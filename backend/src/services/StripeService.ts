@@ -47,9 +47,7 @@ interface CreatePaymentIntentParams {
   taskId: string;
   posterId: string;
   escrowId: string;
-  amount: number; // USD cents
-  /** Immutable Price Book margin stored on the escrow. When present, this is
-   * authoritative; the configured percentage is only a legacy fallback. */
+  amount: number;
   platformFeeCents?: number | null;
   description?: string;
 }
@@ -66,6 +64,12 @@ interface PaymentIntentProcessingFeeResult {
   balanceTransactionId: string;
   feeCents: number;
   currency: string;
+}
+
+interface CreateTaxPaymentIntentResult {
+  paymentIntentId: string;
+  clientSecret: string;
+  amountCents: number;
 }
 
 function feeUnavailable(message: string): ServiceResult<PaymentIntentProcessingFeeResult> {
@@ -169,92 +173,86 @@ export const StripeService = {
    * Create payment intent for escrow funding
    */
   createPaymentIntent: async (
-    params: CreatePaymentIntentParams
-  ): Promise<ServiceResult<CreatePaymentIntentResult>> => {
-    const frozen = newPaymentCreationFailure('escrow_funding');
-    if (frozen) return frozen;
-    if (!stripe) {
-      return {
-        success: false,
-        error: {
-          code: 'STRIPE_NOT_CONFIGURED',
-          message: 'Stripe is not configured',
-        },
-      };
-    }
+      params: CreatePaymentIntentParams
+    ): Promise<ServiceResult<CreatePaymentIntentResult>> => {
+      const frozen = newPaymentCreationFailure('escrow_funding');
+      if (frozen) return frozen;
 
-    const { taskId, posterId, escrowId, amount, platformFeeCents, description } = params;
-
-    // Binding task-price floor. Configuration may raise this value but cannot
-    // lower it below the canonical $15.00 contract.
-    if (amount < config.stripe.minimumTaskValueCents) {
-      return {
-        success: false,
-        error: {
-          code: 'INVALID_AMOUNT',
-          message: `Task value must be at least $${config.stripe.minimumTaskValueCents / 100}.00 (${config.stripe.minimumTaskValueCents} cents)`,
-        },
-      };
-    }
-
-    try {
-      // The escrow's immutable Price Book margin is authoritative. Only legacy
-      // rows without canonical evidence may use the configured fallback.
-      const platformFee = resolvePlatformFeeCents(
-        amount,
-        config.stripe.platformFeePercent,
-        platformFeeCents,
-      );
-
-      // NOTE on application_fee_amount (FIX 2 analysis):
-      // `application_fee_amount` only works on Connect charges where the payment
-      // destination is a connected account (i.e. when `on_behalf_of` or
-      // `transfer_data.destination` is set on the PaymentIntent).  In HustleXP's
-      // architecture, the poster's payment goes to the *platform* account first
-      // (standard Stripe charge), and the worker payout is executed as a separate
-      // Stripe Transfer via StripeService.createTransfer().  Setting
-      // `application_fee_amount` here would cause a Stripe API error ("You cannot
-      // pass `application_fee_amount` on a non-Connect charge").
-      // The platform fee is therefore collected via the manual reconciliation
-      // approach: the fee amount is stored in metadata so EscrowService.release()
-      // can calculate and record it in the revenue ledger via RevenueService.logEvent().
-      // If the architecture is ever changed to route payments through a connected
-      // account (on_behalf_of + transfer_data), `application_fee_amount: platformFee`
-      // should be added here and the manual RevenueService.logEvent() call removed.
-      const paymentIntent = await stripeBreaker.execute(() => stripe!.paymentIntents.create(
-        {
-          amount,
-          currency: 'usd',
-          automatic_payment_methods: { enabled: true },
-          metadata: {
-            task_id: taskId,
-            poster_id: posterId,
-            platform_fee: platformFee.toString(),
+      if (!stripe) {
+        return {
+          success: false,
+          error: {
+            code: 'STRIPE_NOT_CONFIGURED',
+            message: 'Stripe is not configured',
           },
-          description: description || `HustleXP Task ${taskId}`,
-        },
-        { idempotencyKey: `pi_create_${escrowId}` }
-      ));
+        };
+      }
 
-      return {
-        success: true,
-        data: {
-          paymentIntentId: paymentIntent.id,
-          clientSecret: paymentIntent.client_secret!,
+      const {
+        taskId,
+        posterId,
+        escrowId,
+        amount,
+        platformFeeCents,
+        description,
+      } = params;
+
+      if (amount < config.stripe.minimumTaskValueCents) {
+        return {
+          success: false,
+          error: {
+            code: 'INVALID_AMOUNT',
+            message:
+              `Task value must be at least $${config.stripe.minimumTaskValueCents / 100}.00 (${config.stripe.minimumTaskValueCents} cents)`,
+          },
+        };
+      }
+
+      try {
+        const platformFee = resolvePlatformFeeCents(
           amount,
-        },
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: {
-          code: 'STRIPE_ERROR',
-          message: error instanceof Error ? error.message : 'Unknown Stripe error',
-        },
-      };
-    }
-  },
+          config.stripe.platformFeePercent,
+          platformFeeCents,
+        );
 
+        const paymentIntent = await stripeBreaker.execute(() =>
+          stripe!.paymentIntents.create(
+            {
+              amount,
+              currency: 'usd',
+              automatic_payment_methods: { enabled: true },
+              metadata: {
+                task_id: taskId,
+                poster_id: posterId,
+                platform_fee: platformFee.toString(),
+              },
+              description: description || `HustleXP Task ${taskId}`,
+            },
+            {
+              idempotencyKey: `pi_create_${escrowId}`,
+            },
+          )
+        );
+
+        return {
+          success: true,
+          data: {
+            paymentIntentId: paymentIntent.id,
+            clientSecret: paymentIntent.client_secret!,
+            amount: paymentIntent.amount,
+          },
+        };
+      } catch (error) {
+        return {
+          success: false,
+          error: {
+            code: 'STRIPE_ERROR',
+            message:
+              error instanceof Error ? error.message : 'Unknown error',
+          },
+        };
+      }
+    },
   /**
    * Create payment intent for XP tax payments.
    * Unlike escrow funding, tax payments have no minimum task value
@@ -268,7 +266,7 @@ export const StripeService = {
     userId: string,
     amountCents: number,
     timestamp: number,
-  ): Promise<ServiceResult<CreatePaymentIntentResult>> => {
+  ): Promise<ServiceResult<CreateTaxPaymentIntentResult>> => {
     const frozen = newPaymentCreationFailure('xp_tax');
     if (frozen) return frozen;
     if (!stripe) {
@@ -303,7 +301,7 @@ export const StripeService = {
         data: {
           paymentIntentId: paymentIntent.id,
           clientSecret: paymentIntent.client_secret!,
-          amount: amountCents,
+          amountCents,
         },
       };
     } catch (error) {
@@ -730,6 +728,100 @@ export const StripeService = {
         error: {
           code: 'WEBHOOK_PROCESSING_ERROR',
           message: error instanceof Error ? error.message : 'Unknown error',
+        },
+      };
+    }
+  },
+  createQuotePaymentIntent: async (
+    params: {
+      quoteId: string;
+      quoteVersionId: string;
+      posterId: string;
+      amountCents: number;
+      platformFeeCents?: number | null;
+      description?: string;
+    },
+  ): Promise<ServiceResult<{
+    paymentIntentId: string;
+    clientSecret: string;
+    amountCents: number;
+  }>> => {
+    const frozen = newPaymentCreationFailure('escrow_funding');
+    if (frozen) return frozen;
+
+    if (!stripe) {
+      return {
+        success: false,
+        error: {
+          code: 'STRIPE_NOT_CONFIGURED',
+          message: 'Stripe is not configured',
+        },
+      };
+    }
+
+    const {
+      quoteId,
+      quoteVersionId,
+      posterId,
+      amountCents,
+      platformFeeCents,
+      description,
+    } = params;
+
+    if (amountCents < config.stripe.minimumTaskValueCents) {
+      return {
+        success: false,
+        error: {
+          code: 'INVALID_AMOUNT',
+          message:
+            `Task value must be at least $${config.stripe.minimumTaskValueCents / 100}.00`,
+        },
+      };
+    }
+
+    try {
+      const platformFee = resolvePlatformFeeCents(
+        amountCents,
+        config.stripe.platformFeePercent,
+        platformFeeCents,
+      );
+
+      const paymentIntent = await stripeBreaker.execute(() =>
+        stripe!.paymentIntents.create(
+          {
+            amount: amountCents,
+            currency: 'usd',
+            automatic_payment_methods: { enabled: true },
+            metadata: {
+              quote_id: quoteId,
+              quote_version_id: quoteVersionId,
+              poster_id: posterId,
+              platform_fee: platformFee.toString(),
+            },
+            description: description || `HustleXP Quote ${quoteId}`,
+          },
+          {
+            idempotencyKey:
+              `pi_create_quote_${quoteId}_v${quoteVersionId}`,
+          },
+        ),
+      );
+
+      return {
+        success: true,
+        data: {
+          paymentIntentId: paymentIntent.id,
+          clientSecret: paymentIntent.client_secret!,
+          amountCents: paymentIntent.amount,
+        },
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'STRIPE_ERROR',
+          message:
+            error instanceof Error ? error.message : 'Unknown error',
         },
       };
     }

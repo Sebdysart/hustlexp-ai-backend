@@ -41,6 +41,7 @@ import { biometricRouter } from './biometric.js';
 import { aiRouter } from './ai.js';
 import { intentRouter } from './intent.js';
 import { identityVerificationRouter } from './identityVerification.js';
+import { hustlerOnboardingRouter } from './hustlerOnboarding.js';
 
 // ── POSTER DOMAIN ───────────────────────────────────────────────────────
 // Employers creating, managing, and paying for tasks.
@@ -123,6 +124,7 @@ export const appRouter = router({
   ai: aiRouter,
   intent: intentRouter,
   identityVerification: identityVerificationRouter,
+  hustlerOnboarding: hustlerOnboardingRouter,
 
   // ── Poster Domain ──────────────────────────────────────────────────────
   recurringTask: recurringTaskRouter,
