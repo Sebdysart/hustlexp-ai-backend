@@ -150,6 +150,7 @@ export const REGION_POLICY_LEGAL_APPROVAL_ACTIVATION_MIGRATION =
 export const RECURRING_PAYMENT_DISPATCH_GATE_MIGRATION = '20260722_recurring_payment_dispatch_gate';
 export const SERVICE_BUSINESS_ASSIGNMENT_CONTRACT_MIGRATION =
   '20260722_service_business_assignment_contract';
+export const OPS_WEB_HARDENING_MIGRATION = '20260819_ops_web_hardening';
 
 type QueryResult<Row extends Record<string, unknown> = Record<string, unknown>> = {
   rows: Row[];
