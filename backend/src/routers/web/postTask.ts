@@ -3,6 +3,7 @@ import { z } from 'zod';
 import crypto from 'node:crypto';
 import { router, publicProcedure } from '../../trpc.js';
 import { db } from '../../db.js';
+import { QuoteGenerationService } from '@services/QuoteGenerationService.js';
 
 const PostTaskSchema = z.object({
   lead: z.object({
@@ -193,7 +194,7 @@ async function handlePostTask({
             message: 'Failed to create task draft',
         });
         }
-
+        
         return {
             leadId,
             taskDraftId,
@@ -202,10 +203,17 @@ async function handlePostTask({
             replayed: false,
         };
     });
-
+    const quote = await QuoteGenerationService.generateForDraft(
+    result.taskDraftId,
+    {
+        executionEnvironment: 'TEST',
+        record: true,
+    },
+    );
     return {
         ok: true,
         ...result,
+        quote,
         correlation_id: correlationId,
     };
     } catch (error) {
