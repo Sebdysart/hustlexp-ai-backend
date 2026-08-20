@@ -5,6 +5,7 @@ import { posterProcedure, router } from '../trpc.js';
 import { paymentCreationErrorCause } from '../services/NewPaymentCreationGuard.js';
 import { StripeQuotePaymentProvider } from '../services/payment/StripeQuotePaymentProvider.js';
 import { finalizePaidQuote } from '../services/QuotePaymentFinalizationService.js';
+import { StripeService } from "../services/StripeService.js"
 
 export const quotePaymentRouter = router({
   createPaymentIntent: posterProcedure
@@ -215,6 +216,26 @@ export const quotePaymentRouter = router({
 
       return result.data;
     }),
+  confirmTestPayment: posterProcedure
+  .input(
+    z.object({
+      paymentIntentId: z.string().min(10).max(255),
+    }).strict(),
+  )
+  .mutation(async ({ input }) => {
+    const result = await StripeService.confirmTestPaymentIntent(
+      input.paymentIntentId,
+    );
+
+    if (!result.success) {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: result.error.message,
+      });
+    }
+
+    return result.data;
+  }),
 });
 
 export type QuotePaymentRouter = typeof quotePaymentRouter;

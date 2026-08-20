@@ -145,7 +145,16 @@ export function mapQuoteToCreateTaskParams(
     // TaskCreatePersistence will redact/store it according to the
     // existing location policy.
     roughArea: asString(draft.zip),
-    regionCode: asString(draft.region),
+    regionCode: (() => {
+      const region = asString(draft.region);
+      if (!region) return undefined;
+
+      const normalized = region.toUpperCase();
+
+      return normalized.startsWith('US-')
+        ? normalized
+        : `US-${normalized}`;
+    })(),
 
     price,
     hustlerPayoutCents: payout,

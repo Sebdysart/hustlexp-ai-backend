@@ -791,7 +791,10 @@ export const StripeService = {
           {
             amount: amountCents,
             currency: 'usd',
-            automatic_payment_methods: { enabled: true },
+            automatic_payment_methods: {
+              enabled: true,
+              allow_redirects: 'never',
+            },
             metadata: {
               quote_id: quoteId,
               quote_version_id: quoteVersionId,
@@ -822,6 +825,69 @@ export const StripeService = {
           code: 'STRIPE_ERROR',
           message:
             error instanceof Error ? error.message : 'Unknown error',
+        },
+      };
+    }
+  },
+  /**
+   * TEST ONLY: Confirm a PaymentIntent using a Stripe test PaymentMethod.
+   *
+   * This exists so backend-only integration tests can complete a sandbox
+   * payment without requiring Stripe.js / Elements.
+   */
+  confirmTestPaymentIntent: async (
+    paymentIntentId: string,
+  ): Promise<ServiceResult<{
+    paymentIntentId: string;
+    status: string;
+    amountCents: number;
+  }>> => {
+    if (!stripe) {
+      return {
+        success: false,
+        error: {
+          code: 'STRIPE_NOT_CONFIGURED',
+          message: 'Stripe is not configured',
+        },
+      };
+    }
+
+    if (process.env.NODE_ENV === 'production') {
+      return {
+        success: false,
+        error: {
+          code: 'TEST_PAYMENT_DISABLED',
+          message: 'Test payment confirmation is disabled in production.',
+        },
+      };
+    }
+
+    try {
+      // The PaymentIntent was originally created with automatic payment
+      // methods that may include redirect-based methods. Disable redirects
+      // for our backend-only test confirmation path.
+
+      const paymentIntent = await stripeBreaker.execute(() =>
+        stripe!.paymentIntents.confirm(paymentIntentId, {
+          payment_method: 'pm_card_visa',
+        }),
+      );
+
+      return {
+        success: true,
+        data: {
+          paymentIntentId: paymentIntent.id,
+          status: paymentIntent.status,
+          amountCents: paymentIntent.amount,
+        },
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'STRIPE_ERROR',
+          message:
+            error instanceof Error ? error.message : 'Unknown Stripe error',
         },
       };
     }
