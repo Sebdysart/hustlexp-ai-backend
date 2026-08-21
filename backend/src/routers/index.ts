@@ -98,6 +98,8 @@ import { webPostTaskRouter } from './web/postTask.js';
 
 import { quotePaymentRouter } from './quotePayment.js';
 
+import { testPayoutRouter } from './testPayout.js';
+
 // ============================================================================
 // APP ROUTER
 // ============================================================================
@@ -175,6 +177,8 @@ export const appRouter = router({
   webPostTask: webPostTaskRouter,
 
   quotePayment: quotePaymentRouter,
+
+  testPayout: testPayoutRouter,
   
   // ── Web Platform Domain ─────────────────────────────────────────────────
   // Replaces Supabase edge functions for the website and ops cockpit.
