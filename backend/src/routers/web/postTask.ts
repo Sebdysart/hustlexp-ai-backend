@@ -3,7 +3,7 @@ import { z } from 'zod';
 import crypto from 'node:crypto';
 import { router, publicProcedure } from '../../trpc.js';
 import { db } from '../../db.js';
-import { QuoteGenerationService } from '@services/QuoteGenerationService.js';
+import { QuoteGenerationService } from '../../services/QuoteGenerationService.js';
 
 const PostTaskSchema = z.object({
   lead: z.object({
