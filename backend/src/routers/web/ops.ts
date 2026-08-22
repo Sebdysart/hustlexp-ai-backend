@@ -92,6 +92,19 @@ function quoteEligibilityError(code: 'not_eligible' | 'already_linked' | 'not_fo
   throw new TRPCError({ code: 'CONFLICT', message: `${code}:${message}` });
 }
 
+function generateBusinessClaimToken(): {
+  rawToken: string;
+  tokenHash: string;
+} {
+  const rawToken = crypto.randomBytes(32).toString('hex');
+  const tokenHash = crypto
+    .createHash('sha256')
+    .update(rawToken)
+    .digest('hex');
+
+  return { rawToken, tokenHash };
+}
+
 export const webOpsRouter = router({
 
   // ── Canonical engine lifecycle (E1) — service key only ─────────────────────
@@ -536,7 +549,7 @@ export const webOpsRouter = router({
         [input.limit],
       );
 
-      const tasks = engine.data.tasks as Array<Record<string, unknown>>;
+      const tasks = engine.data.tasks as unknown as Array<Record<string, unknown>>;
 
       // Railway quotes may not yet store engine_task_id; return engine tasks for KPIs.
       // Pointer rows are context only — never projected as canonical lifecycle truth.
@@ -612,4 +625,151 @@ export const webOpsRouter = router({
       });
       return { ok: true };
     }),
+    createBusinessClaimLink: operationsAdminProcedure
+  .input(
+    z.object({
+      task_draft_id: z.string().uuid(),
+      expires_in_hours: z.number().int().min(1).max(168).default(72),
+    }).strict(),
+  )
+  .mutation(async ({ ctx, input }) => {
+    const { rawToken, tokenHash } = generateBusinessClaimToken();
+
+    try {
+      const created = await db.transaction(async (tx) => {
+        const draftResult = await tx<{
+          id: string;
+          status: string;
+          quote_id: string | null;
+          title: string | null;
+        }>(
+          `
+          SELECT
+            id,
+            status,
+            quote_id,
+            title
+          FROM task_drafts
+          WHERE id = $1
+          FOR UPDATE
+          `,
+          [input.task_draft_id],
+        );
+
+        const draft = draftResult.rows[0];
+
+        if (!draft) {
+          throw new TRPCError({
+            code: 'NOT_FOUND',
+            message: 'Task draft not found',
+          });
+        }
+
+        if (draft.status === 'abandoned') {
+          throw new TRPCError({
+            code: 'CONFLICT',
+            message: 'Abandoned task drafts cannot receive business claim links.',
+          });
+        }
+
+        /*
+         * One live link per draft.
+         *
+         * Revoking the old one makes issuing a replacement deterministic:
+         * whoever has the newest link is the only party holding a valid link.
+         */
+        await tx(
+          `
+          UPDATE ops_business_claim_links
+          SET
+            status = 'REVOKED',
+            revoked_at = NOW(),
+            updated_at = NOW()
+          WHERE task_draft_id = $1
+            AND status = 'OPEN'
+          `,
+          [input.task_draft_id],
+        );
+
+        const expiresAt = new Date(
+          Date.now() + input.expires_in_hours * 60 * 60 * 1000,
+        );
+
+        const insertResult = await tx<{ id: string }>(
+          `
+          INSERT INTO ops_business_claim_links (
+            task_draft_id,
+            token_hash,
+            status,
+            created_by,
+            expires_at
+          )
+          VALUES ($1, $2, 'OPEN', $3, $4)
+          RETURNING id
+          `,
+          [
+            input.task_draft_id,
+            tokenHash,
+            ctx.user.id,
+            expiresAt,
+          ],
+        );
+
+        const linkId = insertResult.rows[0]?.id;
+
+        if (!linkId) {
+          throw new TRPCError({
+            code: 'INTERNAL_SERVER_ERROR',
+            message: 'Failed to create business claim link.',
+          });
+        }
+
+        return {
+          id: linkId,
+          expiresAt,
+          title: draft.title,
+          quoteId: draft.quote_id,
+        };
+      });
+
+      await recordOpsAudit({
+        actorUserId: ctx.user.id,
+        action: 'business_claim_link_created',
+        targetType: 'task_draft',
+        targetId: input.task_draft_id,
+        meta: {
+          claim_link_id: created.id,
+          expires_at: created.expiresAt.toISOString(),
+        },
+      });
+
+      return {
+        ok: true,
+        claim_link_id: created.id,
+        task_draft_id: input.task_draft_id,
+
+        // The raw secret is returned only from this creation call.
+        token: rawToken,
+
+        // Frontend can prepend its configured origin.
+        claim_path: `/claim/${rawToken}`,
+
+        expires_at: created.expiresAt.toISOString(),
+        title: created.title,
+        quote_id: created.quoteId,
+      };
+    } catch (error) {
+      if (error instanceof TRPCError) throw error;
+
+      log.error(
+        { err: error instanceof Error ? error.message : String(error) },
+        'Business claim link creation failed',
+      );
+
+      throw new TRPCError({
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Business claim link creation failed.',
+      });
+    }
+  }),
 });

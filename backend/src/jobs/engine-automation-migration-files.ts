@@ -103,4 +103,7 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260815_quote_columns_extra_v4' , fileName: '20260815_quote_columns_extra_v4.sql' },
   { name: '20260819_quote_payments', fileName: '20260819_quote_payments.sql'},
   { name: '20260819_ops_web_hardening', fileName: '20260819_ops_web_hardening.sql' },
+  { name: '20260821_ops_business_claim_links', fileName: '20260821_ops_business_claim_links.sql' },
+  { name: '20260821_business_ownership', fileName: '20260821_business_ownership.sql' },
+  { name: '20260821_business_claim_links_extra', fileName: '20260821_business_claim_links_extra.sql' },
 ] as const;

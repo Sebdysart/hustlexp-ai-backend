@@ -56,6 +56,10 @@ export interface CreateTaskParams {
   counterSourceTaskId?: string;
   counterOfferId?: string;
   counterCandidateId?: string;
+  businessOrganizationId?: string;
+  businessLocationId?: string;
+  providerOrganizationId?: string;
+  providerServiceProfileId?: string;
 }
 
 export interface AcceptTaskParams {
@@ -121,6 +125,10 @@ export function buildTaskCreateRequestHash(params: CreateTaskParams): string {
     sensitive: defaultValue(params.sensitive, false),
     templateSlug: optionalValue(params.templateSlug),
     automationClassification: defaultValue(params.automationClassification, 'PRODUCTION'),
+    businessOrganizationId: optionalValue(params.businessOrganizationId),
+    businessLocationId: optionalValue(params.businessLocationId),
+    providerOrganizationId: optionalValue(params.providerOrganizationId),
+    providerServiceProfileId: optionalValue(params.providerServiceProfileId),
     ...(params.insideHome !== undefined ? { insideHome: params.insideHome } : {}),
     ...(params.peoplePresent !== undefined ? { peoplePresent: params.peoplePresent } : {}),
     ...(params.petsPresent !== undefined ? { petsPresent: params.petsPresent } : {}),

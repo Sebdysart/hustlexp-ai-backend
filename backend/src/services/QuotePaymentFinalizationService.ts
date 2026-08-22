@@ -31,6 +31,11 @@ interface QuoteRow {
   status: string;
   environment: string | null;
   is_test: boolean;
+
+  business_organization_id: string | null;
+  business_location_id: string | null;
+  provider_service_profile_id: string | null;
+  claimed_by_user_id: string | null;
 }
 
 interface QuoteVersionRow {
@@ -167,28 +172,43 @@ export async function finalizePaidQuote(
       const quoteResult = await query<QuoteRow>(
         `
         SELECT
-          id,
-          task_draft_id,
-          active_version_id,
-          status,
-          environment,
-          is_test
-        FROM quotes
-        WHERE id = $1
-        FOR UPDATE
+  	id,
+  	task_draft_id,
+  	active_version_id,
+  	status,
+  	environment,
+  	is_test,
+  	business_organization_id,
+  	business_location_id,
+  	provider_service_profile_id,
+  	claimed_by_user_id
+	FROM quotes
+	WHERE id = $1
+	FOR UPDATE
         `,
         [input.quoteId],
       );
 
-      const quote = quoteResult.rows[0];
+	const quote = quoteResult.rows[0];
 
-      if (!quote) {
-        throw new Error('QUOTE_NOT_FOUND');
-      }
+	if (!quote) {
+	  throw new Error('QUOTE_NOT_FOUND');
+	}
 
-      if (quote.active_version_id !== input.quoteVersionId) {
-        throw new Error('QUOTE_VERSION_NOT_ACTIVE');
-      }
+	const hasBusinessClaim = Boolean(quote.business_organization_id);
+
+	if (hasBusinessClaim) {
+	  if (
+	    !quote.business_location_id ||
+	    !quote.provider_service_profile_id
+	  ) {
+	    throw new Error('BUSINESS_CLAIM_BINDING_INCOMPLETE');
+	  }
+	}
+
+	if (quote.active_version_id !== input.quoteVersionId) {
+	  throw new Error('QUOTE_VERSION_NOT_ACTIVE');
+	}
 
       const versionResult = await query<QuoteVersionRow>(
         `
@@ -383,8 +403,11 @@ export async function finalizePaidQuote(
           quote.environment === 'TEST'
             ? 'CONTROLLED_TEST'
             : 'PRODUCTION',
-        clientIdempotencyKey:
-          `quote-finalize:${input.quoteId}:v${input.quoteVersionId}`,
+        clientIdempotencyKey: `quote-finalize:${input.quoteId}:v${input.quoteVersionId}`,
+  	businessOrganizationId: quote.business_organization_id,
+  	businessLocationId: quote.business_location_id,
+  	providerServiceProfileId: quote.provider_service_profile_id,
+  	claimedByUserId: quote.claimed_by_user_id,          
       };
 
       const taskParams =
@@ -583,6 +606,10 @@ export async function finalizePaidQuote(
       QUOTE_PAYMENT_IDEMPOTENCY_CONFLICT: [
         'QUOTE_PAYMENT_IDEMPOTENCY_CONFLICT',
         'This quote is already bound to a different payment.',
+      ],
+      BUSINESS_CLAIM_BINDING_INCOMPLETE: [
+  	'BUSINESS_CLAIM_BINDING_INCOMPLETE',
+  	'Business quote is missing its organization, location, or service profile binding.',
       ],
     };
 
