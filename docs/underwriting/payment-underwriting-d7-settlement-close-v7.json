@@ -1,0 +1,39 @@
+{
+  "schema": "HX_PAYMENT_UNDERWRITING_TRACEABILITY_V7",
+  "slice": "D7_SETTLEMENT_DOUBLE_ENTRY_RECONCILE_CLOSE",
+  "sourceAuthority": {
+    "googleDocId": "1PYpWdbnlhRBoovc6GfTyxMuu1IzMIdDQpV6hHHraXaQ",
+    "driveRevision": "7",
+    "docsRevision": "AIroW37g_sqKNU_dvvRNUndw-qUeooFwAYIHqN60aHvPSR178sKjMMu5rMzGTzODqgDKERue3ZbAT8UesInsUZvT6p1Z0bUvPByrgwaPDA",
+    "textPlainSha256": "ba8dc04bfc43feb24bd78698c6e5b820ecdf22177f915fb04856a55d8076bd26"
+  },
+  "parentCommit": "7e1fc60f9afa270b4a19f0aee9b1f36bd1e25674",
+  "acceptedDependencyCommit": "7e1fc60f9afa270b4a19f0aee9b1f36bd1e25674",
+  "acceptedDependencyTree": "30d1df8705cbdbca5105fe594ce1b4ea53b3de40",
+  "migration": "20260825_payment_underwriting_settlement_close_v7",
+  "migrationSha256": "246af87cf69c5e890eb1ce4a2b468bfc127967dd5dab79b51d449a996c129b04",
+  "startupRegistered": false,
+  "operationallyEnabled": false,
+  "runtimeAuthority": "NONE_SCHEMA_ARTIFACT_ONLY",
+  "tests": [
+    "backend/tests/unit/payment-underwriting-settlement-close-v7-rejection-contract.test.ts",
+    "backend/tests/integration/payment-underwriting-settlement-close-v7.pg.sql"
+  ],
+  "invariants": [
+    "CAPTURE_AGREEMENT_PRECEDES_SETTLEMENT",
+    "VERSIONED_ECONOMICS_SUM_TO_CUSTOMER_AMOUNT",
+    "TERMINAL_SETTLEMENT_REQUIRES_AUTHENTICATED_PROCESSOR_EVIDENCE",
+    "POSTED_LEDGER_IS_COMPONENT_COMPLETE_AND_DOUBLE_ENTRY_BALANCED",
+    "RECONCILIATION_BINDS_PROCESSOR_SETTLEMENT_AND_LEDGER",
+    "NO_PROCESSOR_LEDGER_AGREEMENT_NO_CLOSED",
+    "OPEN_POST_FUNDING_EXPOSURE_BLOCKS_CLOSED"
+  ],
+  "processorEffects": {
+    "providerCallAdded": false,
+    "settlementInvocationAdded": false,
+    "payoutInvocationAdded": false,
+    "refundAdded": false,
+    "transferAdded": false
+  },
+  "deferredDependencies": ["D8_REFUND_DISPUTE_REPLACEMENT_RECURRING_VARIANTS"]
+}

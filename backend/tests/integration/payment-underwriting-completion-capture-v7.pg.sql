@@ -1,4 +1,7 @@
+\if :{?HXP_D7_COMPOSED}
+\else
 BEGIN;
+\endif
 
 SET LOCAL hustlexp.local_test_identity_enabled = 'true';
 
@@ -539,4 +542,7 @@ BEGIN
 END;
 $$;
 
+\if :{?HXP_D7_COMPOSED}
+\else
 ROLLBACK;
+\endif
