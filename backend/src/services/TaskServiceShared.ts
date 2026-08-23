@@ -60,6 +60,7 @@ export interface CreateTaskParams {
   businessLocationId?: string;
   providerOrganizationId?: string;
   providerServiceProfileId?: string;
+  businessFulfillerOrganizationId?: string;
 }
 
 export interface AcceptTaskParams {

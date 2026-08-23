@@ -135,7 +135,7 @@ async function loadStripeDestination(
 ):Promise<string|null> {
   if (!task.worker_id) return null;
   const destination=await loadCurrentTaskPayoutDestination(db.query.bind(db),{
-    taskId,workerId:task.worker_id,payoutRecipientUserId,
+    taskId,workerId:task.worker_id,payoutRecipientUserId,kind: 'WORKER',
   });
   if (destination.ready) return destination.stripeConnectId;
   log.error({ escrowId:escrow.id,taskId,payoutRecipientUserId,reason:destination.reason },

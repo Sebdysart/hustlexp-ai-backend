@@ -36,6 +36,7 @@ interface QuoteRow {
   business_location_id: string | null;
   provider_service_profile_id: string | null;
   claimed_by_user_id: string | null;
+  business_fulfiller_organization_id: string | null;
 }
 
 interface QuoteVersionRow {
@@ -404,10 +405,11 @@ export async function finalizePaidQuote(
             ? 'CONTROLLED_TEST'
             : 'PRODUCTION',
         clientIdempotencyKey: `quote-finalize:${input.quoteId}:v${input.quoteVersionId}`,
-  	businessOrganizationId: quote.business_organization_id,
-  	businessLocationId: quote.business_location_id,
-  	providerServiceProfileId: quote.provider_service_profile_id,
-  	claimedByUserId: quote.claimed_by_user_id,          
+        businessOrganizationId: quote.business_organization_id,
+        businessLocationId: quote.business_location_id,
+        providerServiceProfileId: quote.provider_service_profile_id,
+        claimedByUserId: quote.claimed_by_user_id,  
+        businessFulfillerOrganizationId: quote.business_organization_id ?? undefined,        
       };
 
       const taskParams =

@@ -46,6 +46,7 @@ export interface MapQuoteToTaskParamsInput {
   businessLocationId?: string | null;
   providerServiceProfileId?: string | null;
   claimedByUserId?: string | null;
+  businessFulfillerOrganizationId?: string | null;
 }
 
 function asString(value: unknown): string | undefined {
@@ -195,5 +196,6 @@ export function mapQuoteToCreateTaskParams(
     businessLocationId: input.businessLocationId ?? undefined,
     providerOrganizationId: input.businessOrganizationId ?? undefined,
     providerServiceProfileId: input.providerServiceProfileId ?? undefined,
+    businessFulfillerOrganizationId: input.businessFulfillerOrganizationId ?? undefined,
   };
 }

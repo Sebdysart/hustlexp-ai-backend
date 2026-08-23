@@ -106,4 +106,6 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260821_ops_business_claim_links', fileName: '20260821_ops_business_claim_links.sql' },
   { name: '20260821_business_ownership', fileName: '20260821_business_ownership.sql' },
   { name: '20260821_business_claim_links_extra', fileName: '20260821_business_claim_links_extra.sql' },
+  { name: '20260823_business_fulfiller_lifecycle', fileName: '20260823_business_fulfiller_lifecycle.sql' },
+
 ] as const;

@@ -110,6 +110,7 @@ function trailingTaskValues(input: TaskPersistenceInput): unknown[] {
     params.counterOfferId ?? null,
     params.counterCandidateId ?? null,
     params.aiScopeObservationId ?? null,
+    params.businessFulfillerOrganizationId ?? null,
   ];
 }
 
@@ -139,13 +140,13 @@ export async function insertCanonicalTask(query: Query, input: TaskPersistenceIn
     insurance_required, background_check_required, proof_min_photos,
     proof_max_photos, proof_gps_required, currency, repeat_source_task_id,
     preferred_worker_id, retention_conversion, counter_source_task_id,
-    counter_offer_id, counter_candidate_id, ai_scope_observation_id
+    counter_offer_id, counter_candidate_id, ai_scope_observation_id, business_fulfiller_organization_id
   ) VALUES (
     $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
     $11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
     $21,$22,$23,$24,$25,$26::jsonb,$27,$28,$29,$30,
     $31,$32,$33::jsonb,$34,$35,$36,$37,$38,$39,$40,$41,$42::jsonb,
-    $43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,$57,$58
+    $43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,$57,$58,$59
   )
   RETURNING *`,
   publicTaskValues(input),

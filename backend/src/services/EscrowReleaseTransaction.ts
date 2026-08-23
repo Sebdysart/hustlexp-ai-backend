@@ -104,7 +104,7 @@ async function verifyLocalProvider(query: QueryFn, input: {
 
 async function verifyStripeRecipient(
   query: QueryFn,
-  input: { taskId:string;workerId:string;payoutRecipientUserId:string },
+  input: { taskId:string;workerId:string;payoutRecipientUserId:string,kind: 'WORKER'},
 ): Promise<ServiceResult<Escrow> | null> {
   const destination = await loadCurrentTaskPayoutDestination(query,input);
   return destination.ready
@@ -150,6 +150,7 @@ async function validateProvider(query: QueryFn, input: {
     return { error: await verifyStripeRecipient(query, {
       taskId:input.escrow.task_id,workerId:input.workerId,
       payoutRecipientUserId:input.payoutRecipientUserId,
+      kind: 'WORKER',
     }), manualRequired: false };
   }
   return {
