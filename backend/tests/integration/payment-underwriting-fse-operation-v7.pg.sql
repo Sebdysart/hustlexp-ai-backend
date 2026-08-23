@@ -1,4 +1,25 @@
+\if :{?HXP_D5_COMPOSED}
+\else
 BEGIN;
+\endif
+
+CREATE TEMP TABLE IF NOT EXISTS hxp_d4_composed_fixture_v7 (
+  poster_id UUID NOT NULL,
+  provider_id UUID NOT NULL,
+  draft_id UUID NOT NULL,
+  lifecycle_id UUID NOT NULL,
+  hold_id UUID NOT NULL,
+  initial_hold_event_id UUID NOT NULL,
+  financial_security_event_id UUID NOT NULL,
+  operation_id UUID NOT NULL,
+  provider_account_ref_id UUID NOT NULL,
+  agreement_sha256 CHAR(64) NOT NULL,
+  provider_expires_at TIMESTAMPTZ NOT NULL,
+  prior_lifecycle_event_id UUID NOT NULL,
+  lifecycle_sequence_number INTEGER NOT NULL,
+  scope_sha256 CHAR(64) NOT NULL,
+  economics_sha256 CHAR(64) NOT NULL
+) ON COMMIT DROP;
 
 DO $$
 <<d4_test>>
@@ -96,10 +117,25 @@ BEGIN
     RAISE EXCEPTION 'D4 catalog is incomplete';
   END IF;
 
-  INSERT INTO users(id, email, full_name, default_mode) VALUES
-    (poster_id, 'd4-poster-' || poster_id || '@example.invalid', 'D4 Poster', 'poster'),
-    (provider_id, 'd4-provider-' || provider_id || '@example.invalid', 'D4 Provider', 'worker'),
-    (second_provider_id, 'd4-second-' || second_provider_id || '@example.invalid', 'D4 Second', 'worker');
+  INSERT INTO users(
+    id, email, full_name, default_mode, date_of_birth, is_minor,
+    trust_tier, phone
+  ) VALUES
+    (
+      poster_id, 'd4-poster-' || poster_id || '@example.invalid',
+      'D4 Poster', 'poster', DATE '1990-01-01', FALSE, 0,
+      '+1206' || translate(substr(replace(poster_id::TEXT, '-', ''), 1, 7), 'abcdef', '012345')
+    ),
+    (
+      provider_id, 'd4-provider-' || provider_id || '@example.invalid',
+      'D4 Provider', 'worker', DATE '1990-01-01', FALSE, 2,
+      '+1206' || translate(substr(replace(provider_id::TEXT, '-', ''), 1, 7), 'abcdef', '012345')
+    ),
+    (
+      second_provider_id, 'd4-second-' || second_provider_id || '@example.invalid',
+      'D4 Second', 'worker', DATE '1990-01-01', FALSE, 2,
+      '+1206' || translate(substr(replace(second_provider_id::TEXT, '-', ''), 1, 7), 'abcdef', '012345')
+    );
 
   INSERT INTO task_drafts(id, submission_id, card_token_hash, raw_input, poster_user_id)
   VALUES (draft_id, gen_random_uuid(), 'd4-' || draft_id, 'D4 source', poster_id);
@@ -889,6 +925,24 @@ BEGIN
       'publicFunctions', public_function_privileges
     );
   END IF;
+
+  INSERT INTO hxp_d4_composed_fixture_v7(
+    poster_id, provider_id, draft_id, lifecycle_id, hold_id,
+    initial_hold_event_id, financial_security_event_id, operation_id,
+    provider_account_ref_id, agreement_sha256, provider_expires_at,
+    prior_lifecycle_event_id, lifecycle_sequence_number,
+    scope_sha256, economics_sha256
+  ) VALUES (
+    poster_id, provider_id, draft_id, lifecycle_id, hold_id,
+    initial_hold_event_id, fse_id, operation_id,
+    provider_ref_id,
+    hxos_payment_fse_agreement_sha256_v7(
+      fse_id, api_material_sha, good_webhook_material_sha,
+      provider_operation_sha, provider_expires_at
+    ),
+    provider_expires_at, previous_event_id, sequence_number,
+    repeat('3', 64), repeat('4', 64)
+  );
 END;
 $$;
 
@@ -920,4 +974,7 @@ BEGIN
 END;
 $$;
 
+\if :{?HXP_D5_COMPOSED}
+\else
 ROLLBACK;
+\endif

@@ -1,0 +1,60 @@
+{
+  "schema": "HX_PAYMENT_UNDERWRITING_TRACEABILITY_V7",
+  "slice": "D5_ATOMIC_WORK_ORDER_ASSIGNMENT_ADDRESS",
+  "sourceAuthority": {
+    "googleDocId": "1PYpWdbnlhRBoovc6GfTyxMuu1IzMIdDQpV6hHHraXaQ",
+    "driveRevision": "7",
+    "docsRevision": "AIroW37g_sqKNU_dvvRNUndw-qUeooFwAYIHqN60aHvPSR178sKjMMu5rMzGTzODqgDKERue3ZbAT8UesInsUZvT6p1Z0bUvPByrgwaPDA",
+    "textPlainSha256": "ba8dc04bfc43feb24bd78698c6e5b820ecdf22177f915fb04856a55d8076bd26"
+  },
+  "parentCommit": "b5bf643def5365312a8e08d845f42afc6e79252d",
+  "acceptedDependencyCommit": "b5bf643def5365312a8e08d845f42afc6e79252d",
+  "acceptedDependencyTree": "b4ff045172abe0160d080cdf3eac7618335489a2",
+  "migration": "20260823_payment_underwriting_work_order_materialization_v7",
+  "startupRegistered": false,
+  "operationallyEnabled": false,
+  "runtimeAuthority": "NONE_SCHEMA_ARTIFACT_ONLY",
+  "successGraph": [
+    "FINANCIALLY_SECURED",
+    "MATERIALIZATION_AUTHORITY",
+    "CANONICAL_WORK_ORDER",
+    "HARD_ASSIGNMENT",
+    "SEALED_PRIVATE_FULFILLMENT_GRANT",
+    "HOLD_CONSUMED",
+    "WORK_ORDER_MATERIALIZED",
+    "ASSIGNED"
+  ],
+  "compensationGraph": [
+    "FINANCIALLY_SECURED",
+    "MATERIALIZATION_AUTHORITY",
+    "VOID_OBLIGATION_PLANNED"
+  ],
+  "invariants": [
+    "SUCCESS_AND_COMPENSATION_ARE_MUTUALLY_EXCLUSIVE",
+    "DEFERRED_TRANSACTION_VALIDATION_REJECTS_PARTIAL_GRAPHS",
+    "WORK_ORDER_TASK_DRAFT_CUSTOMER_PROVIDER_FSE_HOLD_AND_PROCESSOR_ARE_CROSS_BOUND",
+    "HARD_ASSIGNMENT_MATCHES_TASK_WORKER_AND_PROVIDER_ACCOUNT",
+    "PRIVATE_FULFILLMENT_GRANTS_REFERENCE_ONLY_SEALED_KEY_AND_FINGERPRINT",
+    "NO_WORK_ORDER_OR_ASSIGNMENT_WITHOUT_CURRENT_FSE_AGREEMENT",
+    "MATERIALIZATION_FAILURE_REQUIRES_IDEMPOTENT_VOID_OBLIGATION",
+    "ALL_D5_EVIDENCE_IS_APPEND_ONLY"
+  ],
+  "privacy": {
+    "scope": "EXACT_FULFILLMENT_LOCATION",
+    "plaintextPersistedByD5": false,
+    "runtimeReadCallableAdded": false,
+    "runtimeGrantAdded": false
+  },
+  "processorEffects": {
+    "providerCallAdded": false,
+    "captureAdded": false,
+    "refundAdded": false,
+    "transferAdded": false,
+    "voidObligationIsEvidenceOnly": true
+  },
+  "deferredDependencies": [
+    "D6_COMPLETION_APPROVAL_MANUAL_CAPTURE",
+    "D7_SETTLEMENT_DOUBLE_ENTRY_RECONCILE_CLOSE",
+    "D8_VARIANTS"
+  ]
+}
