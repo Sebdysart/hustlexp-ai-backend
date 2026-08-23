@@ -31,7 +31,7 @@ describe('dispute release authority contract', () => {
     );
     expect(RUNNER).toContain("fileName: '20260720_dispute_release_authority_contract.sql'");
     expect(DOCKERFILE).toContain(
-      '/app/backend/database/migrations/20260720_dispute_release_authority_contract.sql'
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
     );
   });
 

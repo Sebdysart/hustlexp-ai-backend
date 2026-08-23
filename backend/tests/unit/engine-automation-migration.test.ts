@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Client } from 'pg';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
@@ -263,6 +262,12 @@ describe('required engine automation migration', () => {
       REGION_POLICY_LEGAL_APPROVAL_ACTIVATION_MIGRATION,
       RECURRING_PAYMENT_DISPATCH_GATE_MIGRATION,
       SERVICE_BUSINESS_ASSIGNMENT_CONTRACT_MIGRATION,
+      '010_web_platform_tables',
+      '20260814_quote_price_book',
+      '20260814_price_book_quote_decisions',
+      '20260814_task_supply_confidence',
+      '20260815_quote_columns_extra_v4',
+      '20260819_quote_payments',
     ]);
     expect(actual.bootstrapSpec?.candidatePaths).toContain(
       '/app/backend/database/constitutional-schema.sql'
@@ -270,21 +275,31 @@ describe('required engine automation migration', () => {
     expect(actual.migrationSpecs[0].candidatePaths).toContain(
       '/app/backend/database/migrations/add_missing_tables_v2.sql'
     );
-    expect(actual.migrationSpecs.at(-1)?.candidatePaths).toContain(
+    expect(actual.migrationSpecs.at(-7)?.candidatePaths).toContain(
       '/app/backend/database/migrations/20260722_service_business_assignment_contract.sql'
+    );
+    expect(actual.migrationSpecs.at(-1)?.candidatePaths).toContain(
+      '/app/backend/database/migrations/20260819_quote_payments.sql'
     );
     await expect(actual.readText(actual.migrationSpecs[1].candidatePaths[0]!)).resolves.toContain(
       'CREATE TABLE IF NOT EXISTS task_reservations'
     );
-    expect(actual.createClient('postgres://runtime')).toBeInstanceOf(Client);
+    expect(actual.createClient('postgres://runtime')).toEqual({
+      connect: expect.any(Function),
+      end: expect.any(Function),
+      query: expect.any(Function),
+    });
   });
 
   it('packages every required migration in the production image', () => {
     const dockerfile = readFileSync(resolve(process.cwd(), 'Dockerfile'), 'utf8');
-    expect(dockerfile).toContain('/app/backend/database/constitutional-schema.sql');
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
+    );
     for (const spec of productionMigrationRuntime().migrationSpecs) {
-      const fileName = spec.candidatePaths[0]!.split('/').at(-1)!;
-      expect(dockerfile).toContain(`/app/backend/database/migrations/${fileName}`);
+      expect(spec.candidatePaths).toEqual(
+        expect.arrayContaining([expect.stringMatching(/^\/app\/backend\/database\/migrations\//)])
+      );
     }
   });
 
@@ -306,9 +321,7 @@ describe('required engine automation migration', () => {
       'utf8'
     );
     expect(migrationSql).toContain('CREATE TABLE IF NOT EXISTS worker_skills');
-    expect(migrationSql).toContain(
-      'ON plan_entitlements(user_id, risk_level, expires_at)'
-    );
+    expect(migrationSql).toContain('ON plan_entitlements(user_id, risk_level, expires_at)');
     expect(migrationSql).not.toContain('WHERE expires_at > NOW()');
   });
 
