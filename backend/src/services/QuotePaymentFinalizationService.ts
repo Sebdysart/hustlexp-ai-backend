@@ -7,6 +7,7 @@ import {
   type MapQuoteToTaskParamsInput,
 } from './QuoteTaskParamsMapper.js';
 import { StripeQuotePaymentProvider } from './payment/StripeQuotePaymentProvider.js';
+import { newPaymentCreationFailure } from './NewPaymentCreationGuard.js';
 
 interface FinalizePaidQuoteInput {
   quoteId: string;
@@ -83,6 +84,9 @@ function fail<T>(
 export async function finalizePaidQuote(
   input: FinalizePaidQuoteInput,
 ): Promise<ServiceResult<FinalizePaidQuoteResult>> {
+  const frozen = newPaymentCreationFailure('quote_materialization');
+  if (frozen) return frozen;
+
   try {
     /*
      * Step 1:

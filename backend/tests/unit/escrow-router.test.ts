@@ -14,7 +14,8 @@
  * with a fake user context to bypass middleware.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 // ---------------------------------------------------------------------------
 // Mocks — must come before any imports that transitively touch these modules
@@ -114,6 +115,14 @@ const mockDb = vi.mocked(db);
 const mockEscrowService = vi.mocked(EscrowService);
 const mockStripeService = vi.mocked(StripeService);
 const mockXPService = vi.mocked(XPService);
+
+beforeEach(() => {
+  enableControlledStripePaymentTestCohortV7();
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -540,14 +549,22 @@ describe('escrow.createPaymentIntent', () => {
   });
 
   describe('stripe configuration guard', () => {
-    it('throws PRECONDITION_FAILED when Stripe is not configured', async () => {
-      mockStripeService.isConfigured.mockReturnValue(false);
+    it('preserves the provider configuration failure without inventing a payment', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: ESCROW_ID }], rowCount: 1 } as any);
+      mockStripeService.createPaymentIntent.mockResolvedValueOnce({
+        success: false,
+        error: {
+          code: 'STRIPE_NOT_CONFIGURED',
+          message: 'Stripe is not configured',
+        },
+      });
 
       const caller = makeCaller(POSTER_ID);
       await expect(caller.createPaymentIntent({ taskId: TASK_ID, amount: 5000 }))
         .rejects.toMatchObject({
-          code: 'PRECONDITION_FAILED',
-          message: 'Payment processing is not configured',
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Stripe is not configured',
         });
     });
   });
@@ -1626,7 +1643,7 @@ describe('SECURITY FIX v2.9.4 — confirmFunding: Stripe PI verification', () =>
       stripePaymentIntentId: 'pi_fake_123',
     })).rejects.toMatchObject({
       code: 'PRECONDITION_FAILED',
-      message: 'Payment intent not found or could not be verified',
+      message: 'Payment intent could not be verified',
     });
 
     // EscrowService.fund must NOT be called — escrow stays PENDING

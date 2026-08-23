@@ -14,7 +14,7 @@ afterEach(() => {
 });
 
 describe('new-payment incident guard', () => {
-  it('fails closed in production unless explicitly enabled', () => {
+  it('cannot be enabled outside the exact controlled Stripe test cohort', () => {
     expect(newPaymentCreationMode({ NODE_ENV: 'production' })).toBe('frozen');
     expect(newPaymentCreationMode({
       NODE_ENV: 'production',
@@ -23,23 +23,51 @@ describe('new-payment incident guard', () => {
     expect(newPaymentCreationMode({
       NODE_ENV: 'production',
       HX_PAYMENT_CREATION_MODE: 'enabled',
+      STRIPE_MODE: 'live',
+      STRIPE_SECRET_KEY: 'sk_live_forbidden',
+    })).toBe('frozen');
+    expect(newPaymentCreationMode({
+      NODE_ENV: 'development',
+      HX_PAYMENT_CREATION_MODE: 'enabled',
+      STRIPE_MODE: 'test',
+      STRIPE_SECRET_KEY: 'sk_test_not_a_certification_runtime',
+    })).toBe('frozen');
+    expect(newPaymentCreationMode({
+      NODE_ENV: 'test',
+      ENGINE_API_MODE: 'test',
+      HX_PAYMENT_CREATION_MODE: 'enabled',
+      STRIPE_MODE: 'live',
+      STRIPE_SECRET_KEY: 'sk_live_forbidden',
+    })).toBe('frozen');
+  });
+
+  it('permits only an explicit controlled Stripe test cohort', () => {
+    expect(newPaymentCreationMode({ NODE_ENV: 'test' })).toBe('frozen');
+    expect(newPaymentCreationMode({
+      NODE_ENV: 'test',
+      ENGINE_API_MODE: 'test',
+      STRIPE_MODE: 'test',
+      STRIPE_SECRET_KEY: 'sk_test_controlled',
+      HX_PAYMENT_CREATION_MODE: 'frozen',
+    })).toBe('frozen');
+    expect(newPaymentCreationMode({
+      NODE_ENV: 'test',
+      ENGINE_API_MODE: 'test',
+      STRIPE_MODE: 'test',
+      STRIPE_SECRET_KEY: 'sk_test_controlled',
+      HX_PAYMENT_CREATION_MODE: 'enabled',
     })).toBe('enabled');
   });
 
-  it('keeps local tests enabled by default while honoring an explicit freeze', () => {
-    expect(newPaymentCreationMode({ NODE_ENV: 'test' })).toBe('enabled');
-    expect(newPaymentCreationMode({
-      NODE_ENV: 'test',
-      HX_PAYMENT_CREATION_MODE: 'frozen',
-    })).toBe('frozen');
-    expect(newPaymentCreationFailure('escrow_funding', {
-      NODE_ENV: 'production',
-      HX_PAYMENT_CREATION_MODE: 'enabled',
-    })).toBeNull();
-  });
-
   it('returns one truthful, recovery-oriented failure contract for every new-money lane', () => {
-    for (const lane of ['escrow_funding', 'xp_tax', 'tip', 'subscription'] as const) {
+    for (const lane of [
+      'escrow_funding',
+      'xp_tax',
+      'tip',
+      'subscription',
+      'quote_payment',
+      'quote_materialization',
+    ] as const) {
       const result = newPaymentCreationFailure(lane, {
         NODE_ENV: 'production',
       });
@@ -47,8 +75,11 @@ describe('new-payment incident guard', () => {
         success: false,
         error: {
           code: 'PAYMENT_CREATION_FROZEN',
-          message: 'New payments are temporarily paused while existing payment records are reconciled. No new charge was created. Try again after Operations clears the payment incident.',
-          details: { lane },
+          message: 'New customer-money creation is disabled until the processor-neutral lifecycle and written underwriting decisions are certified. No new charge was created.',
+          details: {
+            lane,
+            authority: 'UNDERWRITING_DECISIONS_UNRESOLVED',
+          },
         },
       });
     }
@@ -58,13 +89,15 @@ describe('new-payment incident guard', () => {
     expect(newPaymentCreationHealth({ NODE_ENV: 'production' })).toEqual({
       mode: 'frozen',
       acceptsNewCustomerMoney: false,
+      authority: 'UNDERWRITING_DECISIONS_UNRESOLVED',
     });
     expect(newPaymentCreationHealth({
       NODE_ENV: 'production',
       HX_PAYMENT_CREATION_MODE: 'enabled',
     })).toEqual({
-      mode: 'enabled',
-      acceptsNewCustomerMoney: true,
+      mode: 'frozen',
+      acceptsNewCustomerMoney: false,
+      authority: 'UNDERWRITING_DECISIONS_UNRESOLVED',
     });
   });
 
@@ -82,8 +115,12 @@ describe('new-payment incident guard', () => {
     const firstIntentCreate = stripeService.indexOf('paymentIntents.create(');
     const taxGuard = stripeService.indexOf("newPaymentCreationFailure('xp_tax')");
     const secondIntentCreate = stripeService.indexOf('paymentIntents.create(', firstIntentCreate + 1);
+    const quoteGuard = stripeService.indexOf("newPaymentCreationFailure('quote_payment')");
+    const thirdIntentCreate = stripeService.indexOf('paymentIntents.create(', secondIntentCreate + 1);
     expect(escrowGuard).toBeLessThan(firstIntentCreate);
     expect(taxGuard).toBeLessThan(secondIntentCreate);
+    expect(quoteGuard).toBeGreaterThan(secondIntentCreate);
+    expect(quoteGuard).toBeLessThan(thirdIntentCreate);
     expect(tippingService.indexOf("newPaymentCreationFailure('tip')"))
       .toBeLessThan(tippingService.indexOf('paymentIntents.create('));
     expect(subscriptionRouter.indexOf("newPaymentCreationFailure('subscription')"))
@@ -91,6 +128,11 @@ describe('new-payment incident guard', () => {
 
     const creatingCalls = [stripeService, tippingService, subscriptionRouter]
       .flatMap((source) => source.match(/(?:paymentIntents|subscriptions)\.create\(/g) ?? []);
-    expect(creatingCalls).toHaveLength(4);
+    expect(creatingCalls).toHaveLength(5);
+
+    const finalization = read('backend/src/services/QuotePaymentFinalizationService.ts');
+    expect(finalization).toContain("newPaymentCreationFailure('quote_materialization')");
+    expect(finalization.indexOf("newPaymentCreationFailure('quote_materialization')"))
+      .toBeLessThan(finalization.indexOf('await db.query'));
   });
 });

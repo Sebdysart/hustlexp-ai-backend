@@ -5,6 +5,7 @@
  * getting tips for tasks, and total tips received.
  */
 import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 // vi.hoisted() runs before vi.mock() hoisting, so these refs are safe to use
 // inside the MockStripe class initializer even though vi.mock is hoisted.
@@ -57,6 +58,7 @@ const mockDb = vi.mocked(db);
 
 beforeEach(() => {
   vi.resetAllMocks();
+  enableControlledStripePaymentTestCohortV7();
 });
 
 afterEach(() => {

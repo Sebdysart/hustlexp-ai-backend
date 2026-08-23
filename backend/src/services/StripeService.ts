@@ -746,7 +746,7 @@ export const StripeService = {
     clientSecret: string;
     amountCents: number;
   }>> => {
-    const frozen = newPaymentCreationFailure('escrow_funding');
+    const frozen = newPaymentCreationFailure('quote_payment');
     if (frozen) return frozen;
 
     if (!stripe) {
@@ -842,6 +842,9 @@ export const StripeService = {
     status: string;
     amountCents: number;
   }>> => {
+    const frozen = newPaymentCreationFailure('quote_payment');
+    if (frozen) return frozen;
+
     if (!stripe) {
       return {
         success: false,
