@@ -1,0 +1,75 @@
+{
+  "schema": "HX_PAYMENT_UNDERWRITING_TRACEABILITY_V7",
+  "slice": "D3_OPPORTUNITY_PRIVACY_PROVIDER_ELIGIBILITY_CONDITIONAL_HOLD",
+  "parentCommit": "adbe29d14495392d60efea431c3b18f15c3868bb",
+  "rejectedPredecessorCommit": "adbe29d14495392d60efea431c3b18f15c3868bb",
+  "supersededRejectedCommits": [
+    "119b70f5ad7755aaba9fca5e69dd8b69f457dc0c",
+    "adbe29d14495392d60efea431c3b18f15c3868bb"
+  ],
+  "acceptedDependencyCommit": "2abbddf7ababcbfe1c8f3ba96147f562421be2e5",
+  "acceptedDependencyTree": "93362123c41609307077365302e7348f8a680113",
+  "sourceAuthority": {
+    "googleDocId": "1PYpWdbnlhRBoovc6GfTyxMuu1IzMIdDQpV6hHHraXaQ",
+    "driveRevision": "7",
+    "docsRevision": "AIroW37g_sqKNU_dvvRNUndw-qUeooFwAYIHqN60aHvPSR178sKjMMu5rMzGTzODqgDKERue3ZbAT8UesInsUZvT6p1Z0bUvPByrgwaPDA",
+    "textPlainSha256": "ba8dc04bfc43feb24bd78698c6e5b820ecdf22177f915fb04856a55d8076bd26"
+  },
+  "migration": "20260821_payment_underwriting_opportunity_privacy_v7",
+  "contractVersion": 7,
+  "startupRegistered": false,
+  "operationallyEnabled": false,
+  "runtimeAuthority": "NONE_SCHEMA_ARTIFACT_ONLY",
+  "legacyExternalBridge": "CURRENT_TASK_BASED_NOT_D3_AUTHORITY",
+  "maxSoftHoldTtlSeconds": 900,
+  "invariants": [
+    "NO_REAL_OPEN_TASK_DRAFT_NO_OPPORTUNITY_LINK",
+    "NO_REDACTED_PREVIEW_NO_LINK",
+    "NO_CANONICAL_LINK_MATERIAL_AND_FRESH_SIGNATURE_VERIFICATION_NO_LINK",
+    "NO_REGISTERED_CURRENT_SIGNING_KEY_AND_VALID_HMAC_NO_LINK",
+    "NO_CURRENT_PROVIDER_SOURCING_STAGE_NO_LINK",
+    "NO_CURRENT_PROVIDER_SOURCING_STAGE_NO_EXPRESS_INTEREST",
+    "NO_CURRENT_ADMIN_ROLE_AND_BOUND_AUTHORITY_NO_ADMIN_REVOCATION",
+    "NO_RAW_TOKEN_OR_PRIVATE_FULFILLMENT_DATA",
+    "EXPRESS_INTEREST_CREATES_NO_RESERVATION_ASSIGNMENT_APPLICATION_PAYABLE_OR_MONEY_EVENT",
+    "NO_DATABASE_CURRENT_PROVIDER_PAYMENT_AND_TASK_ELIGIBILITY_NO_REVALIDATION",
+    "NO_EXACT_REVALIDATION_NO_SOFT_HOLD",
+    "NO_PROVIDER_VALIDITY_COVERING_REVALIDATION_AND_HOLD_NO_SOFT_HOLD",
+    "NO_SOFT_HOLD_BEYOND_FIFTEEN_MINUTES",
+    "NO_BOUND_POSTER_PROVIDER_OR_SYSTEM_ACTOR_NO_HOLD_TRANSITION",
+    "HOLD_TRANSITIONS_ACCEPT_ONLY_BOUND_PROVIDER_POSTER_OR_SYSTEM_ACTORS",
+    "NO_CONSUMED_HOLD_EVENT_BEFORE_D4_FINANCIAL_SECURITY_AUTHORITY",
+    "NO_SUCCESSFUL_FSE_NO_HARD_ASSIGNMENT_OR_PRIVATE_DETAIL_RELEASE"
+  ],
+  "redactedPreviewFields": [
+    "categoryCode",
+    "generalAreaCode",
+    "scheduleWindowStart",
+    "scheduleWindowEnd",
+    "scopeSummarySha256",
+    "requirementsSha256",
+    "pricingLane",
+    "grossEarningsMinCents",
+    "grossEarningsMaxCents",
+    "currency"
+  ],
+  "providerEligibilityFlags": [
+    "paymentEligible",
+    "merchantContextApproved",
+    "categoryEligible",
+    "credentialsEligible",
+    "trustEligible",
+    "availabilityEligible"
+  ],
+  "deferredDependencies": [
+    "D4_FSE_OPERATION_IDEMPOTENCY_WEBHOOK",
+    "D5_ATOMIC_WORK_ORDER_ASSIGNMENT_ADDRESS",
+    "D6_COMPLETION_APPROVAL_MANUAL_CAPTURE",
+    "D7_SETTLEMENT_DOUBLE_ENTRY_RECONCILE_CLOSE",
+    "D8_VARIANTS"
+  ],
+  "tests": [
+    "backend/tests/unit/payment-underwriting-opportunity-privacy-v7-rejection-contract.test.ts",
+    "backend/tests/integration/payment-underwriting-opportunity-privacy-v7.pg.sql"
+  ]
+}
