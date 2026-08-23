@@ -1,6 +1,14 @@
+\if :{?HXP_D8_COMPOSED}
+\else
 BEGIN;
+\endif
 
 SET LOCAL hustlexp.local_test_identity_enabled = 'true';
+\if :{?HXP_D8_COMPOSED}
+SET LOCAL hustlexp.d8_composed = 'true';
+\else
+SET LOCAL hustlexp.d8_composed = 'false';
+\endif
 
 \set HXP_D7_COMPOSED true
 \ir payment-underwriting-completion-capture-v7.pg.sql
@@ -72,6 +80,7 @@ DECLARE
   crossed_reconciliation_rejected BOOLEAN := FALSE;
   reconciliation_exception_blocks_close BOOLEAN := FALSE;
   premature_closed_rejected BOOLEAN := FALSE;
+  d8_composed BOOLEAN := current_setting('hustlexp.d8_composed', true) = 'true';
 BEGIN
   SELECT * INTO capture FROM payment_captures_v7 LIMIT 1;
   SELECT * INTO latest_event FROM payment_underwriting_lifecycle_events_v7
@@ -483,35 +492,37 @@ BEGIN
     premature_closed_rejected := TRUE;
   END;
 
-  closed_at := date_trunc('milliseconds', clock_timestamp());
-  closure_material_sha := hxos_payment_closure_attestation_sha256_v7(
-    closure_attestation_id, capture.lifecycle_id, capture.capture_id,
-    funded_record_id, ledger_transaction_id, reconciliation_run_id,
-    reconciliation_item_id, 0, closed_at, closure_evidence_sha
-  );
-  INSERT INTO payment_closure_attestations_v7(
-    closure_attestation_id, lifecycle_id, capture_id, settlement_record_id,
-    ledger_transaction_id, reconciliation_run_id, reconciliation_item_id,
-    open_post_funding_exposure_count, closed_at, evidence_sha256,
-    closure_material_sha256
-  ) VALUES (
-    closure_attestation_id, capture.lifecycle_id, capture.capture_id,
-    funded_record_id, ledger_transaction_id, reconciliation_run_id,
-    reconciliation_item_id, 0, closed_at, closure_evidence_sha,
-    closure_material_sha
-  );
-  INSERT INTO payment_underwriting_lifecycle_events_v7(
-    event_id, lifecycle_id, task_draft_id, sequence_number, prior_event_id,
-    command_id, stage, actor_type, evidence_sha256, event_material, event_sha256
-  )
-  SELECT closed_event_id, capture.lifecycle_id, event.task_draft_id,
-    event.sequence_number + 1, event.event_id, gen_random_uuid(),
-    'CLOSED', 'SYSTEM', closure_material_sha,
-    jsonb_build_object('schema', 'HX_PAYMENT_D7_CLOSED_EVENT_V7'),
-    encode(digest(closed_event_id::TEXT || ':closed', 'sha256'), 'hex')
-  FROM payment_underwriting_lifecycle_events_v7 event
-  WHERE event.lifecycle_id = capture.lifecycle_id
-  ORDER BY event.sequence_number DESC LIMIT 1;
+  IF NOT d8_composed THEN
+    closed_at := date_trunc('milliseconds', clock_timestamp());
+    closure_material_sha := hxos_payment_closure_attestation_sha256_v7(
+      closure_attestation_id, capture.lifecycle_id, capture.capture_id,
+      funded_record_id, ledger_transaction_id, reconciliation_run_id,
+      reconciliation_item_id, 0, closed_at, closure_evidence_sha
+    );
+    INSERT INTO payment_closure_attestations_v7(
+      closure_attestation_id, lifecycle_id, capture_id, settlement_record_id,
+      ledger_transaction_id, reconciliation_run_id, reconciliation_item_id,
+      open_post_funding_exposure_count, closed_at, evidence_sha256,
+      closure_material_sha256
+    ) VALUES (
+      closure_attestation_id, capture.lifecycle_id, capture.capture_id,
+      funded_record_id, ledger_transaction_id, reconciliation_run_id,
+      reconciliation_item_id, 0, closed_at, closure_evidence_sha,
+      closure_material_sha
+    );
+    INSERT INTO payment_underwriting_lifecycle_events_v7(
+      event_id, lifecycle_id, task_draft_id, sequence_number, prior_event_id,
+      command_id, stage, actor_type, evidence_sha256, event_material, event_sha256
+    )
+    SELECT closed_event_id, capture.lifecycle_id, event.task_draft_id,
+      event.sequence_number + 1, event.event_id, gen_random_uuid(),
+      'CLOSED', 'SYSTEM', closure_material_sha,
+      jsonb_build_object('schema', 'HX_PAYMENT_D7_CLOSED_EVENT_V7'),
+      encode(digest(closed_event_id::TEXT || ':closed', 'sha256'), 'hex')
+    FROM payment_underwriting_lifecycle_events_v7 event
+    WHERE event.lifecycle_id = capture.lifecycle_id
+    ORDER BY event.sequence_number DESC LIMIT 1;
+  END IF;
 
   IF NOT unbalanced_economics_rejected
      OR NOT unauthenticated_settlement_rejected
@@ -537,9 +548,10 @@ DO $$
 DECLARE
   lifecycle_stage TEXT;
   counts BIGINT[];
+  d8_composed BOOLEAN := current_setting('hustlexp.d8_composed', true) = 'true';
 BEGIN
   SELECT stage INTO lifecycle_stage FROM payment_underwriting_lifecycle_status_v7
-   WHERE lifecycle_id = (SELECT lifecycle_id FROM payment_closure_attestations_v7 LIMIT 1);
+   WHERE lifecycle_id = (SELECT lifecycle_id FROM payment_capture_economics_v7 LIMIT 1);
   SELECT ARRAY[
     (SELECT count(*) FROM payment_capture_economics_v7),
     (SELECT count(*) FROM payment_settlement_records_v7),
@@ -549,8 +561,10 @@ BEGIN
     (SELECT count(*) FROM payment_reconciliation_items_v7),
     (SELECT count(*) FROM payment_closure_attestations_v7)
   ] INTO counts;
-  IF lifecycle_stage IS DISTINCT FROM 'CLOSED'
-     OR counts IS DISTINCT FROM ARRAY[1, 2, 1, 3, 1, 1, 1]::BIGINT[] THEN
+  IF lifecycle_stage IS DISTINCT FROM (CASE WHEN d8_composed THEN 'RECONCILED' ELSE 'CLOSED' END)
+     OR counts IS DISTINCT FROM (CASE WHEN d8_composed
+       THEN ARRAY[1, 2, 1, 3, 1, 1, 0]::BIGINT[]
+       ELSE ARRAY[1, 2, 1, 3, 1, 1, 1]::BIGINT[] END) THEN
     RAISE EXCEPTION 'D7 valid path mismatch: %', jsonb_build_object(
       'stage', lifecycle_stage, 'counts', counts
     );
@@ -561,7 +575,9 @@ $$;
 \ir ../../database/migrations/20260825_payment_underwriting_settlement_close_v7.sql
 
 DO $$
-DECLARE counts BIGINT[];
+DECLARE
+  counts BIGINT[];
+  d8_composed BOOLEAN := current_setting('hustlexp.d8_composed', true) = 'true';
 BEGIN
   SELECT ARRAY[
     (SELECT count(*) FROM payment_capture_economics_v7),
@@ -572,10 +588,15 @@ BEGIN
     (SELECT count(*) FROM payment_reconciliation_items_v7),
     (SELECT count(*) FROM payment_closure_attestations_v7)
   ] INTO counts;
-  IF counts IS DISTINCT FROM ARRAY[1, 2, 1, 3, 1, 1, 1]::BIGINT[] THEN
+  IF counts IS DISTINCT FROM (CASE WHEN d8_composed
+    THEN ARRAY[1, 2, 1, 3, 1, 1, 0]::BIGINT[]
+    ELSE ARRAY[1, 2, 1, 3, 1, 1, 1]::BIGINT[] END) THEN
     RAISE EXCEPTION 'D7 replay changed evidence: %', counts;
   END IF;
 END;
 $$;
 
+\if :{?HXP_D8_COMPOSED}
+\else
 ROLLBACK;
+\endif

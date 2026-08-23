@@ -153,7 +153,10 @@ describe('payment underwriting settlement, ledger, reconciliation, and close v7'
     ]) {
       expect(pgContract).toContain(proof);
     }
-    expect(pgContract).toContain("lifecycle_stage IS DISTINCT FROM 'CLOSED'");
+    expect(pgContract).toContain('\\if :{?HXP_D8_COMPOSED}');
+    expect(pgContract).toContain(
+      "lifecycle_stage IS DISTINCT FROM (CASE WHEN d8_composed THEN 'RECONCILED' ELSE 'CLOSED' END)"
+    );
     expect(pgContract).toContain(
       '\\ir ../../database/migrations/20260825_payment_underwriting_settlement_close_v7.sql'
     );

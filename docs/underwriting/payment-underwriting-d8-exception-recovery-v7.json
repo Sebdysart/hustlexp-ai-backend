@@ -1,0 +1,42 @@
+{
+  "schema": "HX_PAYMENT_UNDERWRITING_TRACEABILITY_V7",
+  "slice": "D8_EXCEPTION_RECOVERY_RECURRING_CONTAINMENT",
+  "sourceAuthority": {
+    "googleDocId": "1PYpWdbnlhRBoovc6GfTyxMuu1IzMIdDQpV6hHHraXaQ",
+    "driveRevision": "7",
+    "docsRevision": "AIroW37g_sqKNU_dvvRNUndw-qUeooFwAYIHqN60aHvPSR178sKjMMu5rMzGTzODqgDKERue3ZbAT8UesInsUZvT6p1Z0bUvPByrgwaPDA",
+    "textPlainSha256": "ba8dc04bfc43feb24bd78698c6e5b820ecdf22177f915fb04856a55d8076bd26"
+  },
+  "parentCommit": "44db114aa548189413ec62cee380d2a9fb86c6ab",
+  "acceptedDependencyCommit": "44db114aa548189413ec62cee380d2a9fb86c6ab",
+  "acceptedDependencyTree": "c7a2abb06038b332cdc08cba1fbc402841800170",
+  "migration": "20260826_payment_underwriting_exception_recovery_v7",
+  "migrationSha256": "99606ddee1748b663134215cfa1d1680f2b24abd09cbf02ac03306ad7f5f4ba5",
+  "startupRegistered": false,
+  "operationallyEnabled": false,
+  "runtimeAuthority": "NONE_SCHEMA_ARTIFACT_ONLY",
+  "refundAutomationEnabled": false,
+  "disputeAutomationEnabled": false,
+  "replacementAutomationEnabled": false,
+  "recurringPaymentsEnabled": false,
+  "tests": [
+    "backend/tests/unit/payment-underwriting-exception-recovery-v7-rejection-contract.test.ts",
+    "backend/tests/integration/payment-underwriting-exception-recovery-v7.pg.sql"
+  ],
+  "invariants": [
+    "WRITTEN_PROCESSOR_DECISION_PRECEDES_EXCEPTION_RESOLUTION",
+    "REFUND_AND_DISPUTE_ACTIONS_CANNOT_CONFLICT",
+    "OPEN_OR_UNRECONCILED_EXPOSURE_INVALIDATES_FINANCIAL_CLOSURE",
+    "LOSS_ALLOCATION_IS_EXPLICIT_AND_RECONCILED",
+    "PROVIDER_REPLACEMENT_REQUIRES_PRIOR_SECURITY_REVERSAL_AND_CUSTOMER_AUTHORITY",
+    "EACH_RECURRING_OCCURRENCE_HAS_AN_INDEPENDENT_PAYMENT_LIFECYCLE",
+    "LONG_TERM_PREPAYMENT_IS_PROHIBITED"
+  ],
+  "unresolvedWrittenDecisions": [
+    "REFUND_ALLOCATION_AND_AUTHORITY",
+    "DISPUTE_CHARGEBACK_AND_LOSS_WATERFALL",
+    "TOKEN_PORTABILITY_FOR_PROVIDER_REPLACEMENT",
+    "POST_EXCEPTION_RECLOSURE_AUTHORITY",
+    "RECURRING_OCCURRENCE_TOKEN_AND_AUTHORIZATION_POLICY"
+  ]
+}

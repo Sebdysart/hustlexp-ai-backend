@@ -1,0 +1,87 @@
+{
+  "schema": "HX_PAYMENT_UNDERWRITING_GIT_RECOVERY_V7",
+  "recoveryDate": "2026-08-23",
+  "sourceAuthority": {
+    "googleDocId": "1PYpWdbnlhRBoovc6GfTyxMuu1IzMIdDQpV6hHHraXaQ",
+    "driveRevision": "7",
+    "docsRevision": "AIroW37g_sqKNU_dvvRNUndw-qUeooFwAYIHqN60aHvPSR178sKjMMu5rMzGTzODqgDKERue3ZbAT8UesInsUZvT6p1Z0bUvPByrgwaPDA",
+    "textPlainSha256": "ba8dc04bfc43feb24bd78698c6e5b820ecdf22177f915fb04856a55d8076bd26"
+  },
+  "incident": {
+    "kind": "LOCAL_GIT_OBJECT_STORE_DELETION",
+    "cause": "The shared D1-D8 Git object store was misclassified as a disposable clean worktree and permanently deleted during local storage cleanup.",
+    "oldCommitObjectsRecovered": false,
+    "sourceSnapshotsPreserved": true,
+    "productionEffects": "NONE"
+  },
+  "method": {
+    "base": "Fresh shallow clone of exact remote main commit ab4a76cbc8ea32c663c36982eafe94b20d2dc879",
+    "stageReplay": "Each preserved D1-D7 snapshot was synchronized onto its predecessor, staged, and admitted only when git write-tree equaled the recorded accepted tree SHA.",
+    "commitIdentity": "Recovered commits intentionally have new identities because the deleted commit objects and metadata were unavailable.",
+    "branch": "codex/underwriting-recovered-stack"
+  },
+  "treeEquivalence": [
+    {
+      "stage": "D0",
+      "recordedHistoricalCommit": "ab4a76cbc8ea32c663c36982eafe94b20d2dc879",
+      "preservedSnapshotTree": "4b1527e0d6d356292e10fae9a70c18e00251fdd8",
+      "recoveredCommit": "ab4a76cbc8ea32c663c36982eafe94b20d2dc879",
+      "recoveredTree": "4b1527e0d6d356292e10fae9a70c18e00251fdd8"
+    },
+    {
+      "stage": "D1",
+      "recordedHistoricalCommit": "567f5a848d7045d5ec5958bd7ba677217e13b9ab",
+      "preservedSnapshotTree": "d6da64961806eb90829d44f3f46f0644f2fccb9a",
+      "recoveredCommit": "31a6b0252e445130fccdbfdc7aac31bca5b9c965",
+      "recoveredTree": "d6da64961806eb90829d44f3f46f0644f2fccb9a"
+    },
+    {
+      "stage": "D2",
+      "recordedHistoricalCommit": "2abbddf7ababcbfe1c8f3ba96147f562421be2e5",
+      "preservedSnapshotTree": "93362123c41609307077365302e7348f8a680113",
+      "recoveredCommit": "df5d50ff389ae49a63a5e57c01d220a9b5e0ca83",
+      "recoveredTree": "93362123c41609307077365302e7348f8a680113"
+    },
+    {
+      "stage": "D3",
+      "recordedHistoricalCommit": "f4c2acef976ce8e1bdf2d97c208fe5a2d47e7245",
+      "preservedSnapshotTree": "182c2f81a1f1d02c575e559af4ab308cf1ac42f1",
+      "recoveredCommit": "178e428034de9e4bc53223d207d11bb06d7b1fec",
+      "recoveredTree": "182c2f81a1f1d02c575e559af4ab308cf1ac42f1"
+    },
+    {
+      "stage": "D4",
+      "recordedHistoricalCommit": "b5bf643def5365312a8e08d845f42afc6e79252d",
+      "preservedSnapshotTree": "b4ff045172abe0160d080cdf3eac7618335489a2",
+      "recoveredCommit": "3c5d46cd33b58669c95159cf672ac91cbf9ed683",
+      "recoveredTree": "b4ff045172abe0160d080cdf3eac7618335489a2"
+    },
+    {
+      "stage": "D5",
+      "recordedHistoricalCommit": "9ba77a24ec23a5de8c9193655894d25b4e67a9c0",
+      "preservedSnapshotTree": "80b67e44db9d159dfa96d4b6303448e98cb3cb4f",
+      "recoveredCommit": "9b18be6c10ff7220d1a1ea113e497e05fdb890cc",
+      "recoveredTree": "80b67e44db9d159dfa96d4b6303448e98cb3cb4f"
+    },
+    {
+      "stage": "D6",
+      "recordedHistoricalCommit": "7e1fc60f9afa270b4a19f0aee9b1f36bd1e25674",
+      "preservedSnapshotTree": "30d1df8705cbdbca5105fe594ce1b4ea53b3de40",
+      "recoveredCommit": "e7104d8dd3affb8bb03d74d9470d82aafef5a27e",
+      "recoveredTree": "30d1df8705cbdbca5105fe594ce1b4ea53b3de40"
+    },
+    {
+      "stage": "D7",
+      "recordedHistoricalCommit": "44db114aa548189413ec62cee380d2a9fb86c6ab",
+      "preservedSnapshotTree": "c7a2abb06038b332cdc08cba1fbc402841800170",
+      "recoveredCommit": "78282f94ae0ccacf8eea4149e1101342ac095dc2",
+      "recoveredTree": "c7a2abb06038b332cdc08cba1fbc402841800170"
+    }
+  ],
+  "d8": {
+    "rejectedInitialCommit": "f8cc72057ae2775a843137908b0e57b97646ecae",
+    "rejectedInitialTree": "d4439248c6881cbf329c5d7637f798f3603d5924",
+    "repairedMigrationSha256": "99606ddee1748b663134215cfa1d1680f2b24abd09cbf02ac03306ad7f5f4ba5",
+    "status": "BUILT_PENDING_INDEPENDENT_REVIEW"
+  }
+}
