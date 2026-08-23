@@ -71,10 +71,7 @@ interface QuotePaymentRow {
   status: 'PENDING' | 'SUCCEEDED' | 'FAILED' | 'REFUNDED';
 }
 
-function fail<T>(
-  code: string,
-  message: string,
-): ServiceResult<T> {
+function fail<T>(code: string, message: string): ServiceResult<T> {
   return {
     success: false,
     error: { code, message },
@@ -82,7 +79,7 @@ function fail<T>(
 }
 
 export async function finalizePaidQuote(
-  input: FinalizePaidQuoteInput,
+  input: FinalizePaidQuoteInput
 ): Promise<ServiceResult<FinalizePaidQuoteResult>> {
   const frozen = newPaymentCreationFailure('quote_materialization');
   if (frozen) return frozen;
@@ -122,39 +119,32 @@ export async function finalizePaidQuote(
         AND qv.id = $2
       LIMIT 1
       `,
-      [input.quoteId, input.quoteVersionId, input.posterId],
+      [input.quoteId, input.quoteVersionId, input.posterId]
     );
 
     const context = quoteContext.rows[0];
 
     if (!context) {
-      return fail(
-        'QUOTE_NOT_FOUND',
-        'Quote or quote version was not found.',
-      );
+      return fail('QUOTE_NOT_FOUND', 'Quote or quote version was not found.');
     }
 
-    if (
-      context.poster_email.trim().toLowerCase()
-      !== context.lead_email.trim().toLowerCase()
-    ) {
+    if (context.poster_email.trim().toLowerCase() !== context.lead_email.trim().toLowerCase()) {
       return fail(
         'QUOTE_POSTER_MISMATCH',
-        'This quote does not belong to the authenticated poster.',
+        'This quote does not belong to the authenticated poster.'
       );
     }
 
     /*
      * Verify that the payment actually belongs to this quote.
      */
-    const verified =
-      await StripeQuotePaymentProvider.verifySucceededPayment({
-        paymentIntentId: input.paymentIntentId,
-        quoteId: input.quoteId,
-        quoteVersionId: input.quoteVersionId,
-        posterId: input.posterId,
-        amountCents: Number(context.total_cents),
-      });
+    const verified = await StripeQuotePaymentProvider.verifySucceededPayment({
+      paymentIntentId: input.paymentIntentId,
+      quoteId: input.quoteId,
+      quoteVersionId: input.quoteVersionId,
+      posterId: input.posterId,
+      amountCents: Number(context.total_cents),
+    });
 
     if (!verified.success) {
       return {
@@ -181,7 +171,7 @@ export async function finalizePaidQuote(
         WHERE id = $1
         FOR UPDATE
         `,
-        [input.quoteId],
+        [input.quoteId]
       );
 
       const quote = quoteResult.rows[0];
@@ -211,7 +201,7 @@ export async function finalizePaidQuote(
           AND quote_id = $2
         FOR UPDATE
         `,
-        [input.quoteVersionId, input.quoteId],
+        [input.quoteVersionId, input.quoteId]
       );
 
       const version = versionResult.rows[0];
@@ -239,7 +229,7 @@ export async function finalizePaidQuote(
           AND quote_version_id = $2
         FOR UPDATE
         `,
-        [input.quoteId, input.quoteVersionId],
+        [input.quoteId, input.quoteVersionId]
       );
 
       const existingPayment = paymentResult.rows[0];
@@ -253,7 +243,7 @@ export async function finalizePaidQuote(
           ORDER BY created_at DESC
           LIMIT 1
           `,
-          [existingPayment.task_id],
+          [existingPayment.task_id]
         );
 
         const escrow = escrowResult.rows[0];
@@ -269,10 +259,7 @@ export async function finalizePaidQuote(
         };
       }
 
-      if (
-        existingPayment
-        && existingPayment.provider_payment_id !== input.paymentIntentId
-      ) {
+      if (existingPayment && existingPayment.provider_payment_id !== input.paymentIntentId) {
         throw new Error('QUOTE_PAYMENT_IDEMPOTENCY_CONFLICT');
       }
 
@@ -298,7 +285,7 @@ export async function finalizePaidQuote(
         WHERE id = $1
         FOR UPDATE
         `,
-        [quote.task_draft_id],
+        [quote.task_draft_id]
       );
 
       const draft = draftResult.rows[0];
@@ -318,7 +305,7 @@ export async function finalizePaidQuote(
         WHERE id = $1
         LIMIT 1
         `,
-        [draft.lead_id],
+        [draft.lead_id]
       );
 
       const lead = leadResult.rows[0];
@@ -334,7 +321,7 @@ export async function finalizePaidQuote(
         WHERE id = $1
         LIMIT 1
         `,
-        [input.posterId],
+        [input.posterId]
       );
 
       const poster = posterResult.rows[0];
@@ -343,10 +330,7 @@ export async function finalizePaidQuote(
         throw new Error('POSTER_NOT_FOUND');
       }
 
-      if (
-        poster.email.trim().toLowerCase()
-        !== lead.email.trim().toLowerCase()
-      ) {
+      if (poster.email.trim().toLowerCase() !== lead.email.trim().toLowerCase()) {
         throw new Error('QUOTE_POSTER_MISMATCH');
       }
 
@@ -371,39 +355,23 @@ export async function finalizePaidQuote(
           amount_cents = EXCLUDED.amount_cents,
           updated_at = NOW()
         `,
-        [
-          input.quoteId,
-          input.quoteVersionId,
-          input.paymentIntentId,
-          version.total_cents,
-        ],
+        [input.quoteId, input.quoteVersionId, input.paymentIntentId, version.total_cents]
       );
 
       const taskParamsInput: MapQuoteToTaskParamsInput = {
         posterId: input.posterId,
         draft,
         quoteVersion: version,
-        automationClassification:
-          quote.environment === 'TEST'
-            ? 'CONTROLLED_TEST'
-            : 'PRODUCTION',
-        clientIdempotencyKey:
-          `quote-finalize:${input.quoteId}:v${input.quoteVersionId}`,
+        automationClassification: quote.environment === 'TEST' ? 'CONTROLLED_TEST' : 'PRODUCTION',
+        clientIdempotencyKey: `quote-finalize:${input.quoteId}:v${input.quoteVersionId}`,
       };
 
-      const taskParams =
-        mapQuoteToCreateTaskParams(taskParamsInput);
+      const taskParams = mapQuoteToCreateTaskParams(taskParamsInput);
 
-      const taskResult =
-        await TaskCreateService.createInTransaction(
-          query,
-          taskParams,
-        );
+      const taskResult = await TaskCreateService.createInTransaction(query, taskParams);
 
       if (!taskResult.success) {
-        throw new Error(
-          `TASK_CREATE_FAILED:${taskResult.error.code}:${taskResult.error.message}`,
-        );
+        throw new Error(`TASK_CREATE_FAILED:${taskResult.error.code}:${taskResult.error.message}`);
       }
 
       const taskId = taskResult.data.id;
@@ -421,7 +389,7 @@ export async function finalizePaidQuote(
         LIMIT 1
         FOR UPDATE
         `,
-        [taskId],
+        [taskId]
       );
 
       const escrow = escrowResult.rows[0];
@@ -443,12 +411,7 @@ export async function finalizePaidQuote(
           AND quote_version_id = $3
           AND provider_payment_id = $4
         `,
-        [
-          taskId,
-          input.quoteId,
-          input.quoteVersionId,
-          input.paymentIntentId,
-        ],
+        [taskId, input.quoteId, input.quoteVersionId, input.paymentIntentId]
       );
 
       return {
@@ -492,12 +455,7 @@ export async function finalizePaidQuote(
         AND provider_payment_id = $3
         AND task_id = $4
       `,
-      [
-        input.quoteId,
-        input.quoteVersionId,
-        input.paymentIntentId,
-        materialized.taskId,
-      ],
+      [input.quoteId, input.quoteVersionId, input.paymentIntentId, materialized.taskId]
     );
 
     await db.query(
@@ -510,7 +468,7 @@ export async function finalizePaidQuote(
         AND quote_id = $2
         AND status = 'draft'
       `,
-      [input.quoteVersionId, input.quoteId],
+      [input.quoteVersionId, input.quoteId]
     );
 
     await db.query(
@@ -522,7 +480,7 @@ export async function finalizePaidQuote(
       WHERE id = $1
         AND status IN ('quote_ready', 'quote_send_ready')
       `,
-      [input.quoteId],
+      [input.quoteId]
     );
 
     return {
@@ -540,38 +498,17 @@ export async function finalizePaidQuote(
     const message = err instanceof Error ? err.message : String(err);
 
     const errors: Record<string, [string, string]> = {
-      QUOTE_NOT_FOUND: [
-        'QUOTE_NOT_FOUND',
-        'Quote not found.',
-      ],
+      QUOTE_NOT_FOUND: ['QUOTE_NOT_FOUND', 'Quote not found.'],
       QUOTE_VERSION_NOT_ACTIVE: [
         'QUOTE_VERSION_NOT_ACTIVE',
         'The requested quote version is not active.',
       ],
-      QUOTE_VERSION_NOT_FOUND: [
-        'QUOTE_VERSION_NOT_FOUND',
-        'Quote version not found.',
-      ],
-      QUOTE_EXPIRED: [
-        'QUOTE_EXPIRED',
-        'This quote has expired.',
-      ],
-      TASK_DRAFT_NOT_FOUND: [
-        'TASK_DRAFT_NOT_FOUND',
-        'Task draft not found.',
-      ],
-      TASK_DRAFT_LEAD_MISSING: [
-        'TASK_DRAFT_LEAD_MISSING',
-        'Task draft is not linked to a lead.',
-      ],
-      LEAD_NOT_FOUND: [
-        'LEAD_NOT_FOUND',
-        'Lead not found.',
-      ],
-      POSTER_NOT_FOUND: [
-        'POSTER_NOT_FOUND',
-        'Poster not found.',
-      ],
+      QUOTE_VERSION_NOT_FOUND: ['QUOTE_VERSION_NOT_FOUND', 'Quote version not found.'],
+      QUOTE_EXPIRED: ['QUOTE_EXPIRED', 'This quote has expired.'],
+      TASK_DRAFT_NOT_FOUND: ['TASK_DRAFT_NOT_FOUND', 'Task draft not found.'],
+      TASK_DRAFT_LEAD_MISSING: ['TASK_DRAFT_LEAD_MISSING', 'Task draft is not linked to a lead.'],
+      LEAD_NOT_FOUND: ['LEAD_NOT_FOUND', 'Lead not found.'],
+      POSTER_NOT_FOUND: ['POSTER_NOT_FOUND', 'Poster not found.'],
       QUOTE_POSTER_MISMATCH: [
         'QUOTE_POSTER_MISMATCH',
         'This quote does not belong to the authenticated poster.',
@@ -599,15 +536,9 @@ export async function finalizePaidQuote(
     if (message.startsWith('TASK_CREATE_FAILED:')) {
       const [, code, ...rest] = message.split(':');
 
-      return fail(
-        code || 'TASK_CREATE_FAILED',
-        rest.join(':') || 'Task creation failed.',
-      );
+      return fail(code || 'TASK_CREATE_FAILED', rest.join(':') || 'Task creation failed.');
     }
 
-    return fail(
-      'QUOTE_FINALIZATION_FAILED',
-      'Unable to finalize the paid quote.',
-    );
+    return fail('QUOTE_FINALIZATION_FAILED', 'Unable to finalize the paid quote.');
   }
 }

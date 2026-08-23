@@ -16,7 +16,7 @@ export const PAYMENT_CREATION_FROZEN_MESSAGE =
   'New customer-money creation is disabled until the processor-neutral lifecycle and written underwriting decisions are certified. No new charge was created.';
 
 export function paymentCreationErrorCause(
-  code: string,
+  code: string
 ): { applicationCode: typeof PAYMENT_CREATION_FROZEN_CODE } | undefined {
   return code === PAYMENT_CREATION_FROZEN_CODE
     ? { applicationCode: PAYMENT_CREATION_FROZEN_CODE }
@@ -29,9 +29,7 @@ export function paymentCreationErrorCause(
  * Stripe test cohort may exercise sandbox adapters. Existing cancellation,
  * refund, dispute, transfer-reversal, and payout-recovery paths remain available.
  */
-export function newPaymentCreationMode(
-  env: Environment = process.env,
-): NewPaymentCreationMode {
+export function newPaymentCreationMode(env: Environment = process.env): NewPaymentCreationMode {
   const configured = env.HX_PAYMENT_CREATION_MODE?.trim().toLowerCase();
   if (configured === 'frozen') return 'frozen';
   const controlledStripeTest =
@@ -45,7 +43,7 @@ export function newPaymentCreationMode(
 
 export function newPaymentCreationFailure(
   lane: NewPaymentLane,
-  env: Environment = process.env,
+  env: Environment = process.env
 ): Extract<ServiceResult<never>, { success: false }> | null {
   if (newPaymentCreationMode(env) === 'enabled') return null;
   return {
