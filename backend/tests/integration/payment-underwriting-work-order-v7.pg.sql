@@ -1,4 +1,7 @@
+\if :{?HXP_D6_COMPOSED}
+\else
 BEGIN;
+\endif
 
 SET LOCAL hustlexp.local_test_identity_enabled = 'true';
 
@@ -328,6 +331,7 @@ DECLARE
   wrong_void_planned_at TIMESTAMPTZ;
   offer_issued_at TIMESTAMPTZ;
   offer_expires_at TIMESTAMPTZ;
+  capability_expires_at TIMESTAMPTZ;
   authority_sha TEXT;
   wrong_scope_authority_sha TEXT;
   work_order_sha TEXT;
@@ -518,6 +522,7 @@ BEGIN
      SET estimated_duration_minutes = 60
    WHERE tasks.id = d5_test.task_id;
 
+  capability_expires_at := clock_timestamp() + INTERVAL '2 hours';
   INSERT INTO hxos_local_test_provider_capability_evidence(
     id, task_id, worker_id, source_hustler_id, category, tools,
     service_city, service_state, service_radius_miles,
@@ -528,9 +533,9 @@ BEGIN
     provider_capability_evidence_id, task_id, fixture.provider_id,
     fixture.provider_id, 'yard', ARRAY['hand truck']::TEXT[],
     'Seattle', 'WA', 10, 'hxos-d5-capability-test-v1', repeat('7', 64),
-    clock_timestamp() + INTERVAL '2 hours', repeat('8', 64), repeat('9', 64),
+    capability_expires_at, repeat('8', 64), repeat('9', 64),
     'hxp-d5-capability-' || task_id::TEXT, fixture.provider_id::TEXT,
-    'CONTROLLED_TEST', TRUE, clock_timestamp() + INTERVAL '2 hours'
+    'CONTROLLED_TEST', TRUE, capability_expires_at
   );
 
   INSERT INTO zone_category_cells(
@@ -1192,4 +1197,7 @@ BEGIN
 END;
 $$;
 
+\if :{?HXP_D6_COMPOSED}
+\else
 ROLLBACK;
+\endif

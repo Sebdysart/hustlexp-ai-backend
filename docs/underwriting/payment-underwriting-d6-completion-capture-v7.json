@@ -1,0 +1,41 @@
+{
+  "schema": "HX_PAYMENT_UNDERWRITING_TRACEABILITY_V7",
+  "slice": "D6_COMPLETION_APPROVAL_MANUAL_CAPTURE",
+  "sourceAuthority": {
+    "googleDocId": "1PYpWdbnlhRBoovc6GfTyxMuu1IzMIdDQpV6hHHraXaQ",
+    "driveRevision": "7",
+    "docsRevision": "AIroW37g_sqKNU_dvvRNUndw-qUeooFwAYIHqN60aHvPSR178sKjMMu5rMzGTzODqgDKERue3ZbAT8UesInsUZvT6p1Z0bUvPByrgwaPDA",
+    "textPlainSha256": "ba8dc04bfc43feb24bd78698c6e5b820ecdf22177f915fb04856a55d8076bd26"
+  },
+  "parentCommit": "9ba77a24ec23a5de8c9193655894d25b4e67a9c0",
+  "acceptedDependencyCommit": "9ba77a24ec23a5de8c9193655894d25b4e67a9c0",
+  "acceptedDependencyTree": "80b67e44db9d159dfa96d4b6303448e98cb3cb4f",
+  "migration": "20260824_payment_underwriting_completion_capture_v7",
+  "migrationSha256": "25d6cb7acb0e529cfb5f43a0b183e94a8bbb758ce4c91dd29ca480b1a195f31a",
+  "startupRegistered": false,
+  "operationallyEnabled": false,
+  "runtimeAuthority": "NONE_SCHEMA_ARTIFACT_ONLY",
+  "captureModel": "POSTER_APPROVED_MANUAL_CAPTURE",
+  "tests": [
+    "backend/tests/unit/payment-underwriting-completion-capture-v7-rejection-contract.test.ts",
+    "backend/tests/integration/payment-underwriting-completion-capture-v7.pg.sql"
+  ],
+  "fixtureCorrections": ["D5_CAPABILITY_EXPIRY_SINGLE_TIMESTAMP"],
+  "invariants": [
+    "NO_COMPLETION_EVIDENCE_NO_COMPLETION_SUBMITTED",
+    "NO_POSTER_CUSTOMER_NOTICE_AMOUNT_AND_INCIDENT_APPROVAL_NO_CAPTURE_AUTHORITY",
+    "APPROVED_AMOUNT_EQUALS_FINANCIAL_SECURITY_AMOUNT",
+    "CAPTURE_OPERATION_IS_IDEMPOTENT_AND_EXPIRES_WITH_FINANCIAL_SECURITY",
+    "CAPTURE_OPERATION_BINDS_COMPLETION_AMOUNT_AND_INCIDENT_EVIDENCE",
+    "NO_API_AND_AUTHENTICATED_WEBHOOK_AGREEMENT_NO_CAPTURED",
+    "COMPLETION_CAPTURE_AND_PROVIDER_OBSERVATIONS_ARE_APPEND_ONLY",
+    "SETTLEMENT_PAYOUT_RECONCILIATION_AND_CLOSE_REMAIN_DEFERRED"
+  ],
+  "processorEffects": {
+    "providerCallAdded": false,
+    "captureInvocationAdded": false,
+    "refundAdded": false,
+    "transferAdded": false
+  },
+  "deferredDependencies": ["D7_SETTLEMENT_DOUBLE_ENTRY_RECONCILE_CLOSE", "D8_VARIANTS"]
+}
