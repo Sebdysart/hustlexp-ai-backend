@@ -122,7 +122,6 @@ describe('processStripeEventJob', () => {
       'customer.subscription.created',
       'checkout.session.completed',
       'invoice.payment_failed',
-      'invoice.paid',
     ])('retains %s without invoking its canonical-effect handler', async (type) => {
       vi.stubEnv('NODE_ENV', 'production');
       vi.stubEnv('ENGINE_API_MODE', 'production');
@@ -137,6 +136,44 @@ describe('processStripeEventJob', () => {
       expect(EscrowService.fund).not.toHaveBeenCalled();
       expect(mockDb.query).toHaveBeenCalledTimes(2);
       expect(String(mockDb.query.mock.calls[1]?.[0])).toContain('PAYMENT_CREATION_FROZEN');
+    });
+
+    it('reconciles invoice.paid revenue while frozen without granting authority', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('ENGINE_API_MODE', 'production');
+      vi.stubEnv('STRIPE_MODE', 'live');
+      vi.stubEnv('STRIPE_SECRET_KEY', 'sk_live_forbidden');
+      vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'enabled');
+      const invoice = {
+        id: 'in_frozen_reconciliation',
+        metadata: { user_id: 'user-frozen' },
+        amount_paid: 999,
+      };
+      mockDb.query
+        .mockResolvedValueOnce({
+          rows: [{
+            payload_json: { id: 'evt_test_123', data: { object: invoice } },
+            type: 'invoice.paid',
+          }],
+          rowCount: 1,
+        } as never)
+        .mockResolvedValueOnce({ rows: [{ id: 'revenue-reconciliation' }], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      await processStripeEventJob(makeJob('invoice.paid', invoice));
+
+      expect(processSubscriptionEvent).not.toHaveBeenCalled();
+      expect(EscrowService.fund).not.toHaveBeenCalled();
+      const insertCall = mockDb.query.mock.calls.find(
+        (call) => String(call[0]).includes('INSERT INTO revenue_ledger'),
+      );
+      expect(insertCall?.[1]).toEqual([
+        'user-frozen',
+        999,
+        'evt_test_123',
+        '{}',
+      ]);
+      expect(String(mockDb.query.mock.calls[2]?.[0])).toContain("result = 'success'");
     });
 
     it('allows only a negative canceled subscription update while frozen', async () => {

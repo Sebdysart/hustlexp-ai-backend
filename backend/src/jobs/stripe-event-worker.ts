@@ -58,7 +58,6 @@ const ALWAYS_POSITIVE_PAYMENT_EVENTS = new Set([
   'checkout.session.completed',
   'payment_intent.succeeded',
   'invoice.payment_failed',
-  'invoice.paid',
 ]);
 
 // ============================================================================
