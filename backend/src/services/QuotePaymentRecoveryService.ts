@@ -29,7 +29,6 @@ interface LockedQuotePayment {
   provider_payment_id: string;
   amount_cents: number;
   status: PaymentStatus;
-  updated_at: Date;
   poster_email: string;
   lead_email: string;
 }
@@ -40,7 +39,7 @@ interface RecoveryOperation {
   actor_id: string;
   reason_code: QuotePaymentRecoveryReason;
   expected_status: PaymentStatus;
-  expected_payment_updated_at: Date;
+  expected_payment_version_matches: boolean;
   operation_state: 'CLAIMED' | 'COMPLETED' | 'RECONCILIATION_REQUIRED';
   claim_token: string;
   correlation_id: string;
@@ -83,7 +82,7 @@ async function readPayment(
 ): Promise<LockedQuotePayment | undefined> {
   const result = await query<LockedQuotePayment>(
     `SELECT qp.id, qp.task_id, qp.provider, qp.provider_payment_id,
-            qp.amount_cents, qp.status, qp.updated_at, u.email AS poster_email,
+            qp.amount_cents, qp.status, u.email AS poster_email,
             l.email AS lead_email
      FROM quote_payments qp
      JOIN quotes q ON q.id = qp.quote_id
@@ -135,12 +134,19 @@ async function readOperation(
   quotePaymentId: string,
 ): Promise<RecoveryOperation | undefined> {
   const result = await query<RecoveryOperation>(
-    `SELECT id, quote_payment_id, actor_id, reason_code, expected_status,
-            expected_payment_updated_at, operation_state, claim_token, correlation_id,
-            lease_expires_at <= NOW() AS lease_expired,
-            recovery_action, provider_status, provider_operation_id
-     FROM quote_payment_recovery_operations
-     WHERE quote_payment_id = $1
+    `SELECT operation.id, operation.quote_payment_id, operation.actor_id,
+            operation.reason_code, operation.expected_status,
+            operation.expected_payment_updated_at = (
+              SELECT payment.updated_at
+              FROM quote_payments payment
+              WHERE payment.id = operation.quote_payment_id
+            ) AS expected_payment_version_matches,
+            operation.operation_state, operation.claim_token, operation.correlation_id,
+            operation.lease_expires_at <= NOW() AS lease_expired,
+            operation.recovery_action, operation.provider_status,
+            operation.provider_operation_id
+     FROM quote_payment_recovery_operations operation
+     WHERE operation.quote_payment_id = $1
      FOR UPDATE`,
     [quotePaymentId],
   );
@@ -341,7 +347,6 @@ async function claimRecovery(
             payment: {
               ...payment,
               status: existing.expected_status,
-              updated_at: existing.expected_payment_updated_at,
             },
           },
         },
@@ -353,14 +358,17 @@ async function claimRecovery(
          quote_payment_id, actor_id, reason_code, expected_status,
          expected_payment_updated_at, claim_token, correlation_id,
          lease_expires_at, idempotency_key
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW() + INTERVAL '5 minutes', $8)
+       ) VALUES (
+         $1, $2, $3, $4,
+         (SELECT updated_at FROM quote_payments WHERE id = $1),
+         $5, $6, NOW() + INTERVAL '5 minutes', $7
+       )
        RETURNING id`,
       [
         payment.id,
         input.posterId,
         input.reasonCode,
         payment.status,
-        payment.updated_at,
         claimToken,
         correlationId,
         `quote-payment-recovery:${payment.id}`,
@@ -473,13 +481,20 @@ async function finalizeRecovery(
     if (!payment) throw new Error('QUOTE_PAYMENT_NOT_FOUND_AFTER_PROVIDER_RECOVERY');
 
     const operation = await query<RecoveryOperation>(
-      `SELECT id, quote_payment_id, actor_id, reason_code, expected_status,
-              expected_payment_updated_at, operation_state, claim_token, correlation_id,
-              false AS lease_expired,
-              recovery_action, provider_status, provider_operation_id
-       FROM quote_payment_recovery_operations
-       WHERE id = $1
-         AND claim_token = $2
+      `SELECT operation.id, operation.quote_payment_id, operation.actor_id,
+              operation.reason_code, operation.expected_status,
+              operation.expected_payment_updated_at = (
+                SELECT payment.updated_at
+                FROM quote_payments payment
+                WHERE payment.id = operation.quote_payment_id
+              ) AS expected_payment_version_matches,
+              operation.operation_state, operation.claim_token,
+              operation.correlation_id, false AS lease_expired,
+              operation.recovery_action, operation.provider_status,
+              operation.provider_operation_id
+       FROM quote_payment_recovery_operations operation
+       WHERE operation.id = $1
+         AND operation.claim_token = $2
        FOR UPDATE`,
       [claim.operationId, claim.claimToken],
     );
@@ -503,10 +518,11 @@ async function finalizeRecovery(
     const nextStatus: 'FAILED' | 'REFUNDED' = recovered.disposition === 'VOIDED'
       ? 'FAILED'
       : 'REFUNDED';
-    const expectedTimestampMatches = payment.updated_at.getTime()
-      === claim.payment.updated_at.getTime();
     if (
-      (payment.status !== claim.payment.status || !expectedTimestampMatches)
+      (
+        payment.status !== claim.payment.status
+        || !operation.rows[0].expected_payment_version_matches
+      )
       && payment.status !== nextStatus
     ) {
       return markReconciliationRequired(
@@ -525,9 +541,13 @@ async function finalizeRecovery(
          WHERE id = $2
            AND task_id IS NULL
            AND status = $3
-           AND updated_at = $4
+           AND updated_at = (
+             SELECT expected_payment_updated_at
+             FROM quote_payment_recovery_operations
+             WHERE id = $4
+           )
          RETURNING id`,
-        [nextStatus, payment.id, claim.payment.status, claim.payment.updated_at],
+        [nextStatus, payment.id, claim.payment.status, claim.operationId],
       );
       if (updatedPayment.rowCount !== 1) {
         return markReconciliationRequired(

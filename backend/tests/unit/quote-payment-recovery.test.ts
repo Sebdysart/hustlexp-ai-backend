@@ -51,7 +51,7 @@ function operation(overrides: Record<string, unknown> = {}) {
     actor_id: ids.poster,
     reason_code: input.reasonCode,
     expected_status: 'PENDING',
-    expected_payment_updated_at: new Date('2026-08-23T00:00:00.000Z'),
+    expected_payment_version_matches: true,
     operation_state: 'CLAIMED',
     claim_token: '10000000-0000-4000-8000-000000000006',
     correlation_id: '10000000-0000-4000-8000-000000000007',
@@ -167,7 +167,7 @@ describe('quote payment orphan recovery', () => {
       'FROM quote_payment_recovery_operations',
     );
     expect(finalQuery?.mock.calls[2]?.[1]).toEqual([
-      'FAILED', ids.payment, 'PENDING', new Date('2026-08-23T00:00:00.000Z'),
+      'FAILED', ids.payment, 'PENDING', ids.operation,
     ]);
     const sql = [...claimQuery!.mock.calls, ...finalQuery!.mock.calls]
       .map(([statement]) => String(statement))
@@ -198,7 +198,7 @@ describe('quote payment orphan recovery', () => {
       data: { status: 'REFUNDED', recoveryAction: 'REFUNDED', replayed: false },
     });
     expect(finalQuery?.mock.calls[2]?.[1]).toEqual([
-      'REFUNDED', ids.payment, 'SUCCEEDED', new Date('2026-08-23T00:00:00.000Z'),
+      'REFUNDED', ids.payment, 'SUCCEEDED', ids.operation,
     ]);
   });
 
@@ -366,6 +366,46 @@ describe('quote payment orphan recovery', () => {
       "operation_state = 'RECONCILIATION_REQUIRED'",
     );
     expect(finalQuery?.mock.calls[3]?.[1]).toContain('RECONCILIATION_REQUIRED');
+  });
+
+  it('uses the database-native payment witness and reconciles any version drift', async () => {
+    const quoteProvider = provider();
+    quoteProvider.recoverOrphanPayment.mockResolvedValueOnce({
+      success: true,
+      data: {
+        disposition: 'VOIDED',
+        providerStatus: 'canceled',
+        providerOperationId: input.paymentIntentId,
+      },
+    });
+    const [, finalQuery] = transactionSequences(
+      successfulClaim(),
+      [
+        { rows: [row()], rowCount: 1 },
+        {
+          rows: [operation({
+            claim_token: expect.any(String),
+            expected_payment_version_matches: false,
+          })],
+          rowCount: 1,
+        },
+        { rows: [{ id: ids.operation }], rowCount: 1 },
+        { rows: [{ id: 'reconcile-event' }], rowCount: 1 },
+      ],
+    );
+
+    const result = await recoverOrphanQuotePayment(input, quoteProvider);
+
+    expect(result).toMatchObject({
+      success: false,
+      error: { code: 'QUOTE_PAYMENT_RECOVERY_RECONCILIATION_REQUIRED' },
+    });
+    expect(String(finalQuery?.mock.calls[1]?.[0])).toContain(
+      'expected_payment_version_matches',
+    );
+    expect(String(finalQuery?.mock.calls[2]?.[0])).toContain(
+      "operation_state = 'RECONCILIATION_REQUIRED'",
+    );
   });
 
   it('persists provider failure on the durable claim without canonical money mutation', async () => {

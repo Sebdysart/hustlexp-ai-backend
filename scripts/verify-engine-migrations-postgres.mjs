@@ -133,6 +133,146 @@ async function verifyUpgrade(url) {
   await assertExactRegistry(url);
 }
 
+async function verifyRecoveryTimestampPrecision(url) {
+  const fixtureClient = new Client({ connectionString: url });
+  await fixtureClient.connect();
+  try {
+    await fixtureClient.query(`
+      INSERT INTO users(id, email, full_name, default_mode)
+      VALUES (
+        'd1000000-0000-4000-8000-000000000001',
+        'hx-recovery-precision@e2e.invalid',
+        'HX Recovery Precision',
+        'poster'
+      );
+
+      INSERT INTO leads(id, submission_id, lead_type, email, user_id)
+      VALUES (
+        'd2000000-0000-4000-8000-000000000001',
+        'd2000000-0000-4000-8000-000000000002',
+        'poster',
+        'hx-recovery-precision@e2e.invalid',
+        'd1000000-0000-4000-8000-000000000001'
+      );
+
+      INSERT INTO task_drafts(
+        id, submission_id, card_token_hash, raw_input, lead_id, poster_user_id
+      ) VALUES (
+        'd3000000-0000-4000-8000-000000000001',
+        'd3000000-0000-4000-8000-000000000002',
+        repeat('e', 64),
+        'Recovery precision fixture',
+        'd2000000-0000-4000-8000-000000000001',
+        'd1000000-0000-4000-8000-000000000001'
+      );
+
+      INSERT INTO quotes(id, lead_id, task_draft_id, title, status)
+      VALUES (
+        'd4000000-0000-4000-8000-000000000001',
+        'd2000000-0000-4000-8000-000000000001',
+        'd3000000-0000-4000-8000-000000000001',
+        'Recovery precision quote',
+        'quote_ready'
+      );
+
+      INSERT INTO quote_versions(
+        id, quote_id, version_number, customer_description, total_cents, pay_token
+      ) VALUES (
+        'd5000000-0000-4000-8000-000000000001',
+        'd4000000-0000-4000-8000-000000000001',
+        1,
+        'Recovery precision quote version',
+        12500,
+        repeat('f', 32)
+      );
+
+      UPDATE quotes
+      SET active_version_id = 'd5000000-0000-4000-8000-000000000001'
+      WHERE id = 'd4000000-0000-4000-8000-000000000001';
+
+      INSERT INTO quote_payments(
+        id, quote_id, quote_version_id, provider, provider_payment_id,
+        amount_cents, status, updated_at
+      ) VALUES (
+        'd6000000-0000-4000-8000-000000000001',
+        'd4000000-0000-4000-8000-000000000001',
+        'd5000000-0000-4000-8000-000000000001',
+        'stripe',
+        'pi_quote_recovery_precision',
+        12500,
+        'PENDING',
+        TIMESTAMPTZ '2026-08-23 00:00:00.123456+00'
+      );
+    `);
+  } finally {
+    await fixtureClient.end();
+  }
+
+  process.env.DATABASE_URL = url;
+  process.env.NODE_ENV = 'test';
+  process.env.HX_PAYMENT_CREATION_MODE = 'frozen';
+  const [{ recoverOrphanQuotePayment }, { db }] = await Promise.all([
+    import('../dist/backend/src/services/QuotePaymentRecoveryService.js'),
+    import('../dist/backend/src/db.js'),
+  ]);
+  try {
+    const result = await recoverOrphanQuotePayment(
+      {
+        quoteId: 'd4000000-0000-4000-8000-000000000001',
+        quoteVersionId: 'd5000000-0000-4000-8000-000000000001',
+        posterId: 'd1000000-0000-4000-8000-000000000001',
+        paymentIntentId: 'pi_quote_recovery_precision',
+        reasonCode: 'UNDERWRITING_CONTAINMENT',
+      },
+      {
+        recoverOrphanPayment: async () => ({
+          success: true,
+          data: {
+            disposition: 'VOIDED',
+            providerStatus: 'canceled',
+            providerOperationId: 'pi_quote_recovery_precision',
+          },
+        }),
+      },
+    );
+    assert.deepEqual(result, {
+      success: true,
+      data: {
+        quoteId: 'd4000000-0000-4000-8000-000000000001',
+        quoteVersionId: 'd5000000-0000-4000-8000-000000000001',
+        paymentIntentId: 'pi_quote_recovery_precision',
+        status: 'FAILED',
+        recoveryAction: 'VOIDED',
+        replayed: false,
+      },
+    });
+    const evidence = await db.query(`
+      SELECT payment.status,
+             operation.operation_state,
+             operation.expected_payment_updated_at =
+               TIMESTAMPTZ '2026-08-23 00:00:00.123456+00' AS witness_exact,
+             EXISTS (
+               SELECT 1
+               FROM quote_payment_recovery_events event
+               WHERE event.recovery_operation_id = operation.id
+                 AND event.event_type = 'COMPLETED'
+             ) AS completed_event
+      FROM quote_payments payment
+      JOIN quote_payment_recovery_operations operation
+        ON operation.quote_payment_id = payment.id
+      WHERE payment.id = 'd6000000-0000-4000-8000-000000000001'
+    `);
+    assert.deepEqual(evidence.rows[0], {
+      status: 'FAILED',
+      operation_state: 'COMPLETED',
+      witness_exact: true,
+      completed_event: true,
+    });
+  } finally {
+    await db.close();
+  }
+}
+
 const admin = new Client({ connectionString: adminDatabaseUrl });
 await admin.connect();
 try {
@@ -143,7 +283,9 @@ try {
 }
 
 await verifyFresh(databaseUrl(databaseNames.fresh));
-await verifyUpgrade(databaseUrl(databaseNames.upgrade));
+const upgradeDatabaseUrl = databaseUrl(databaseNames.upgrade);
+await verifyUpgrade(upgradeDatabaseUrl);
+await verifyRecoveryTimestampPrecision(upgradeDatabaseUrl);
 process.stdout.write(
   `HXOS_ENGINE_MIGRATIONS_POSTGRES_OK ${REQUIRED_MIGRATION_FILES.length}\n`,
 );
