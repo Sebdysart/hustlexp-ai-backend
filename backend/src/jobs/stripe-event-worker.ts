@@ -22,6 +22,7 @@ import { processEntitlementPurchase } from '../services/StripeEntitlementProcess
 import { EscrowService } from '../services/EscrowService.js';
 import { ChargebackService } from '../services/ChargebackService.js';
 import { verifyJobSignature } from './queues.js';
+import { newPaymentCreationMode } from '../services/NewPaymentCreationGuard.js';
 import type { Job } from 'bullmq';
 import { workerLogger } from '../logger.js';
 const log = workerLogger.child({ worker: 'stripe-event' });
@@ -52,6 +53,13 @@ const ALLOWED_STRIPE_EVENT_TYPES = new Set([
   'account.updated',
 ]);
 
+const ALWAYS_POSITIVE_PAYMENT_EVENTS = new Set([
+  'customer.subscription.created',
+  'checkout.session.completed',
+  'payment_intent.succeeded',
+  'invoice.payment_failed',
+]);
+
 // ============================================================================
 // TYPES
 // ============================================================================
@@ -66,6 +74,35 @@ interface StripeEventEnvelope {
   data?: {
     object?: Record<string, unknown>;
   };
+}
+
+function eventCreatesPositivePaymentState(type: string, event: StripeEventEnvelope): boolean {
+  if (ALWAYS_POSITIVE_PAYMENT_EVENTS.has(type)) return true;
+  if (type !== 'customer.subscription.updated') return false;
+  const status = String(event.data?.object?.status ?? '').toLowerCase();
+  // The current processor has an explicitly negative branch only for these
+  // statuses. Every other update would write/extend plan authority.
+  return !['canceled', 'unpaid'].includes(status);
+}
+
+async function containFrozenPositiveEvent(
+  stripeEventId: string,
+  type: string,
+  event: StripeEventEnvelope,
+): Promise<boolean> {
+  if (newPaymentCreationMode() !== 'frozen' || !eventCreatesPositivePaymentState(type, event)) {
+    return false;
+  }
+  await db.query(
+    `UPDATE stripe_events
+     SET result = 'skipped',
+         processed_at = NOW(),
+         error_message = 'PAYMENT_CREATION_FROZEN: positive processor fact retained for reconciliation; canonical success effects suppressed'
+     WHERE stripe_event_id = $1`,
+    [stripeEventId],
+  );
+  log.warn({ stripeEventId, type }, 'Frozen payment event retained without positive canonical effects');
+  return true;
 }
 
 // ============================================================================
@@ -161,6 +198,8 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
       );
       return;
     }
+
+    if (await containFrozenPositiveEvent(stripeEventId, type, event)) return;
 
     // Dispatch by type (SKELETON ONLY - no business logic here)
     switch (type) {

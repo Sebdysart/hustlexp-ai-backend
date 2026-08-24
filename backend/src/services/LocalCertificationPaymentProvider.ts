@@ -1,6 +1,10 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { db } from '../db.js';
 import type { ServiceResult } from '../types.js';
+import {
+  newPaymentCreationFailure,
+  newPaymentCreationMode,
+} from './NewPaymentCreationGuard.js';
 
 const INTENT_RE = /^pi_hxos_test_[a-f0-9]{32}$/;
 type Environment = NodeJS.ProcessEnv | Record<string, string | undefined>;
@@ -59,12 +63,60 @@ function equalHex(left: string, right: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+interface LocalStorageIdentity {
+  database_name: string;
+  database_user: string;
+}
+
+function configuredDisposableStorage(env: Environment = process.env): boolean {
+  try {
+    const databaseUrl = new URL(env.DATABASE_URL?.trim() ?? '');
+    const databaseName = databaseUrl.pathname.replace(/^\//, '');
+    const loopback = ['127.0.0.1', 'localhost', '::1'].includes(databaseUrl.hostname);
+    return loopback
+      && /(?:^|[_-])(?:test|e2e|startup)(?:$|[_-])/i.test(databaseName)
+      && env.HXOS_LOCAL_TEST_DATABASE_NAME === databaseName
+      && typeof env.HXOS_LOCAL_TEST_DATABASE_ROLE === 'string'
+      && env.HXOS_LOCAL_TEST_DATABASE_ROLE.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function assertDisposableStorage(env: Environment = process.env): Promise<ServiceResult<void>> {
+  if (!configuredDisposableStorage(env)) {
+    return failure(
+      'LOCAL_TEST_STORAGE_NOT_DISPOSABLE',
+      'Local certification payments require an explicitly named loopback disposable database.',
+    );
+  }
+  const result = await db.query<LocalStorageIdentity>(
+    `SELECT current_database() AS database_name, current_user AS database_user`,
+  );
+  const identity = result.rows[0];
+  if (
+    !identity
+    || identity.database_name !== env.HXOS_LOCAL_TEST_DATABASE_NAME
+    || identity.database_user !== env.HXOS_LOCAL_TEST_DATABASE_ROLE
+  ) {
+    return failure(
+      'LOCAL_TEST_STORAGE_IDENTITY_MISMATCH',
+      'Local certification database identity does not match the disposable test binding.',
+    );
+  }
+  return { success: true, data: undefined };
+}
+
 export function localCertificationPaymentEnabled(env: Environment = process.env): boolean {
-  return env.NODE_ENV !== 'production'
+  return newPaymentCreationMode(env) === 'enabled'
+    && env.NODE_ENV === 'test'
     && env.HXOS_ALLOW_LOCAL_TEST_PAYMENT === 'true'
     && env.ENGINE_API_MODE === 'test'
     && env.STRIPE_MODE === 'test'
-    && secret(env).length >= 32;
+    && env.STRIPE_SECRET_KEY?.startsWith('sk_test_') === true
+    && env.HX_PAYMENT_CREATION_MODE === 'enabled'
+    && secret(env).length >= 32
+    && configuredDisposableStorage(env);
 }
 
 export function isLocalCertificationPaymentIntentId(value: string): boolean {
@@ -83,9 +135,13 @@ export const LocalCertificationPaymentProvider = {
   createIntent: async (
     params: CreateIntentParams,
   ): Promise<ServiceResult<{ paymentIntentId: string; clientSecret: string; amount: number }>> => {
+    const frozen = newPaymentCreationFailure('escrow_funding');
+    if (frozen) return frozen;
     if (!localCertificationPaymentEnabled()) {
       return failure('LOCAL_TEST_PAYMENT_DISABLED', 'Local certification payments are disabled.');
     }
+    const storage = await assertDisposableStorage();
+    if (!storage.success) return storage;
     const { paymentIntentId, clientSecret } = identifiers(params.escrowId);
     try {
       const row = await db.transaction(async (query) => {
@@ -138,9 +194,13 @@ export const LocalCertificationPaymentProvider = {
   confirmIntent: async (
     params: ConfirmIntentParams,
   ): Promise<ServiceResult<{ paymentIntentId: string; status: 'succeeded'; idempotencyReplayed: boolean }>> => {
+    const frozen = newPaymentCreationFailure('escrow_funding');
+    if (frozen) return frozen;
     if (!localCertificationPaymentEnabled()) {
       return failure('LOCAL_TEST_PAYMENT_DISABLED', 'Local certification payments are disabled.');
     }
+    const storage = await assertDisposableStorage();
+    if (!storage.success) return storage;
     if (!isLocalCertificationPaymentIntentId(params.paymentIntentId)) {
       return failure('LOCAL_TEST_PAYMENT_INVALID', 'Local certification payment identity is invalid.');
     }
@@ -206,6 +266,8 @@ export const LocalCertificationPaymentProvider = {
     if (!localCertificationPaymentEnabled()) {
       return failure('LOCAL_TEST_PAYMENT_DISABLED', 'Local certification payments are disabled.');
     }
+    const storage = await assertDisposableStorage();
+    if (!storage.success) return storage;
     const result = await db.query<PaymentIntentRow>(
       `SELECT p.id, p.task_id, p.escrow_id, p.poster_id, p.amount_cents,
               p.status, p.client_secret_hash, p.is_test

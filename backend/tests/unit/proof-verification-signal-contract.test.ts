@@ -64,10 +64,10 @@ describe('HX/OS proof verification signal contract', () => {
     expect(runner).toContain("fileName: '20260720_proof_verification_signal_contract.sql'");
     expect(runner).toContain("fileName: '20260720_proof_media_metadata_minimization.sql'");
     expect(dockerfile).toContain(
-      '/app/backend/database/migrations/20260720_proof_verification_signal_contract.sql'
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
     );
     expect(dockerfile).toContain(
-      '/app/backend/database/migrations/20260720_proof_media_metadata_minimization.sql'
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
     );
     expect(harness).toContain('out-of-range liveness score unexpectedly succeeded');
     expect(harness).toContain('fabricated VERIFIED signal state unexpectedly succeeded');

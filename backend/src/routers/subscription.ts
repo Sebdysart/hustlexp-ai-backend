@@ -295,6 +295,15 @@ export const subscriptionRouter = router({
     .input(z.object({ stripeSubscriptionId: z.string() }))
     .mutation(async ({ ctx, input }) => {
       const userId = ctx.user.id;
+      const frozen = newPaymentCreationFailure('subscription');
+      if (frozen) {
+        const cause = paymentCreationErrorCause(frozen.error.code);
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: frozen.error.message,
+          ...(cause ? { cause } : {}),
+        });
+      }
 
       // AUDIT FIX M5: shared client + breaker
       const stripe = getSharedStripe();

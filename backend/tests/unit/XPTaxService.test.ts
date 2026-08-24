@@ -3,7 +3,8 @@
  *
  * Covers adminForgiveTax (F47-1) and payTax (F47-2) bug fixes.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -45,10 +46,15 @@ const mockStripe = vi.mocked(StripeService);
 
 beforeEach(() => {
   vi.resetAllMocks();
+  enableControlledStripePaymentTestCohortV7();
   // Re-bind serializableTransaction after resetAllMocks wipes the implementation
   mockDb.serializableTransaction.mockImplementation(
     async (fn: (q: typeof mockDb.query) => Promise<unknown>) => fn(mockDb.query)
   );
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 // ---------------------------------------------------------------------------
@@ -104,6 +110,21 @@ describe('XPTaxService.adminForgiveTax', () => {
 // ---------------------------------------------------------------------------
 
 describe('XPTaxService.payTax', () => {
+  it('blocks a newly presented payment while frozen before provider or entitlement effects', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('ENGINE_API_MODE', 'production');
+    vi.stubEnv('STRIPE_MODE', 'live');
+    vi.stubEnv('STRIPE_SECRET_KEY', 'sk_live_forbidden');
+    vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'enabled');
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+    const result = await XPTaxService.payTax('user-1', 'pi_unbound');
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.code).toBe('PAYMENT_CREATION_FROZEN');
+    expect(mockStripe.isConfigured).not.toHaveBeenCalled();
+    expect(mockStripe.verifyPaymentIntent).not.toHaveBeenCalled();
+    expect(mockDb.serializableTransaction).not.toHaveBeenCalled();
+  });
+
   it('wraps FIFO loop in serializableTransaction (F47-2)', async () => {
     mockStripe.isConfigured.mockReturnValue(true);
     mockStripe.verifyPaymentIntent.mockResolvedValueOnce({
@@ -142,40 +163,28 @@ describe('XPTaxService.payTax', () => {
     expect(mockDb.serializableTransaction).toHaveBeenCalledOnce();
   });
 
-  it('falls through idempotency guard when some rows still unpaid (partial-failure resume, F47-2)', async () => {
-    mockStripe.isConfigured.mockReturnValue(true);
-    mockStripe.verifyPaymentIntent.mockResolvedValueOnce({
-      success: true,
-      data: {
-        status: 'succeeded',
-        amountCents: 500,
-        metadata: { type: 'xp_tax', user_id: 'user-1' },
-      },
-    } as any);
+  it('blocks an old PI from paying later unpaid rows while frozen', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('ENGINE_API_MODE', 'production');
+    vi.stubEnv('STRIPE_MODE', 'live');
+    vi.stubEnv('STRIPE_SECRET_KEY', 'sk_live_forbidden');
+    vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'enabled');
 
     mockDb.query
-      // 1. Idempotency check — one row already paid (partial loop from previous attempt)
+      // 1. The PI was used by an earlier obligation.
       .mockResolvedValueOnce({ rows: [{ id: 'tax-0' }], rowCount: 1 } as never)
-      // 2. Remaining unpaid check — still has unpaid rows
-      .mockResolvedValueOnce({ rows: [{ id: 'tax-1' }], rowCount: 1 } as never)
-      // Inside serializableTransaction:
-      // 3. SELECT unpaid taxes
-      .mockResolvedValueOnce({
-        rows: [{ id: 'tax-1', tax_amount_cents: 500, gross_payout_cents: 5000, created_at: new Date() }],
-        rowCount: 1,
-      } as never)
-      // 4. UPDATE xp_tax_ledger
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
-      // 5. UPDATE users
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
-      // 6. UPDATE user_xp_tax_status
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      // 2. A later/new obligation remains unpaid.
+      .mockResolvedValueOnce({ rows: [{ id: 'tax-new' }], rowCount: 1 } as never);
 
     const result = await XPTaxService.payTax('user-1', 'pi_test_123');
 
-    // Should have fallen through to process the remaining row, not returned early
-    expect(result.success).toBe(true);
-    expect(mockDb.serializableTransaction).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({
+      success: false,
+      error: { code: 'PAYMENT_CREATION_FROZEN' },
+    });
+    expect(mockStripe.isConfigured).not.toHaveBeenCalled();
+    expect(mockStripe.verifyPaymentIntent).not.toHaveBeenCalled();
+    expect(mockDb.serializableTransaction).not.toHaveBeenCalled();
   });
 
   it('returns early (idempotent) when PI already processed AND no unpaid rows remain (F47-2)', async () => {
@@ -198,6 +207,7 @@ describe('XPTaxService.payTax', () => {
 
   it('returns error when Stripe is not configured', async () => {
     mockStripe.isConfigured.mockReturnValue(false);
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
     const result = await XPTaxService.payTax('user-1', 'pi_test');
 

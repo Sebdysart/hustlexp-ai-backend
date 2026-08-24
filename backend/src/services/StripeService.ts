@@ -1,15 +1,15 @@
 /**
  * StripeService v1.0.0
- * 
+ *
  * CONSTITUTIONAL: Supports payment flow for escrow system
- * 
+ *
  * Stripe is authoritative for payment state (ARCHITECTURE.md §4).
  * This service handles:
  * - Payment intent creation (poster funds escrow)
  * - Transfer to worker (escrow release)
  * - Refunds (escrow refund)
  * - Webhook processing
- * 
+ *
  * @see PRODUCT_SPEC.md §4
  * @see ARCHITECTURE.md §1.1
  */
@@ -76,19 +76,26 @@ function feeUnavailable(message: string): ServiceResult<PaymentIntentProcessingF
   return { success: false, error: { code: 'STRIPE_FEE_UNAVAILABLE', message } };
 }
 
-async function resolvePaymentIntentCharge(paymentIntent: Stripe.PaymentIntent): Promise<Stripe.Charge | null> {
+async function resolvePaymentIntentCharge(
+  paymentIntent: Stripe.PaymentIntent
+): Promise<Stripe.Charge | null> {
   if (typeof paymentIntent.latest_charge === 'string') {
-    return stripeBreaker.execute(() => stripe!.charges.retrieve(
-      paymentIntent.latest_charge as string,
-      { expand: ['balance_transaction'] },
-    ));
+    return stripeBreaker.execute(() =>
+      stripe!.charges.retrieve(paymentIntent.latest_charge as string, {
+        expand: ['balance_transaction'],
+      })
+    );
   }
   return paymentIntent.latest_charge || null;
 }
 
-async function resolveChargeBalanceTransaction(charge: Stripe.Charge): Promise<Stripe.BalanceTransaction | null> {
+async function resolveChargeBalanceTransaction(
+  charge: Stripe.Charge
+): Promise<Stripe.BalanceTransaction | null> {
   if (typeof charge.balance_transaction === 'string') {
-    return stripeBreaker.execute(() => stripe!.balanceTransactions.retrieve(charge.balance_transaction as string));
+    return stripeBreaker.execute(() =>
+      stripe!.balanceTransactions.retrieve(charge.balance_transaction as string)
+    );
   }
   return charge.balance_transaction || null;
 }
@@ -173,86 +180,77 @@ export const StripeService = {
    * Create payment intent for escrow funding
    */
   createPaymentIntent: async (
-      params: CreatePaymentIntentParams
-    ): Promise<ServiceResult<CreatePaymentIntentResult>> => {
-      const frozen = newPaymentCreationFailure('escrow_funding');
-      if (frozen) return frozen;
+    params: CreatePaymentIntentParams
+  ): Promise<ServiceResult<CreatePaymentIntentResult>> => {
+    const frozen = newPaymentCreationFailure('escrow_funding');
+    if (frozen) return frozen;
 
-      if (!stripe) {
-        return {
-          success: false,
-          error: {
-            code: 'STRIPE_NOT_CONFIGURED',
-            message: 'Stripe is not configured',
-          },
-        };
-      }
+    if (!stripe) {
+      return {
+        success: false,
+        error: {
+          code: 'STRIPE_NOT_CONFIGURED',
+          message: 'Stripe is not configured',
+        },
+      };
+    }
 
-      const {
-        taskId,
-        posterId,
-        escrowId,
+    const { taskId, posterId, escrowId, amount, platformFeeCents, description } = params;
+
+    if (amount < config.stripe.minimumTaskValueCents) {
+      return {
+        success: false,
+        error: {
+          code: 'INVALID_AMOUNT',
+          message: `Task value must be at least $${config.stripe.minimumTaskValueCents / 100}.00 (${config.stripe.minimumTaskValueCents} cents)`,
+        },
+      };
+    }
+
+    try {
+      const platformFee = resolvePlatformFeeCents(
         amount,
-        platformFeeCents,
-        description,
-      } = params;
+        config.stripe.platformFeePercent,
+        platformFeeCents
+      );
 
-      if (amount < config.stripe.minimumTaskValueCents) {
-        return {
-          success: false,
-          error: {
-            code: 'INVALID_AMOUNT',
-            message:
-              `Task value must be at least $${config.stripe.minimumTaskValueCents / 100}.00 (${config.stripe.minimumTaskValueCents} cents)`,
-          },
-        };
-      }
-
-      try {
-        const platformFee = resolvePlatformFeeCents(
-          amount,
-          config.stripe.platformFeePercent,
-          platformFeeCents,
-        );
-
-        const paymentIntent = await stripeBreaker.execute(() =>
-          stripe!.paymentIntents.create(
-            {
-              amount,
-              currency: 'usd',
-              automatic_payment_methods: { enabled: true },
-              metadata: {
-                task_id: taskId,
-                poster_id: posterId,
-                platform_fee: platformFee.toString(),
-              },
-              description: description || `HustleXP Task ${taskId}`,
+      const paymentIntent = await stripeBreaker.execute(() =>
+        stripe!.paymentIntents.create(
+          {
+            amount,
+            currency: 'usd',
+            automatic_payment_methods: { enabled: true },
+            metadata: {
+              task_id: taskId,
+              poster_id: posterId,
+              platform_fee: platformFee.toString(),
             },
-            {
-              idempotencyKey: `pi_create_${escrowId}`,
-            },
-          )
-        );
+            description: description || `HustleXP Task ${taskId}`,
+          },
+          {
+            idempotencyKey: `pi_create_${escrowId}`,
+          }
+        )
+      );
 
-        return {
-          success: true,
-          data: {
-            paymentIntentId: paymentIntent.id,
-            clientSecret: paymentIntent.client_secret!,
-            amount: paymentIntent.amount,
-          },
-        };
-      } catch (error) {
-        return {
-          success: false,
-          error: {
-            code: 'STRIPE_ERROR',
-            message:
-              error instanceof Error ? error.message : 'Unknown error',
-          },
-        };
-      }
-    },
+      return {
+        success: true,
+        data: {
+          paymentIntentId: paymentIntent.id,
+          clientSecret: paymentIntent.client_secret!,
+          amount: paymentIntent.amount,
+        },
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'STRIPE_ERROR',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        },
+      };
+    }
+  },
   /**
    * Create payment intent for XP tax payments.
    * Unlike escrow funding, tax payments have no minimum task value
@@ -265,7 +263,7 @@ export const StripeService = {
   createTaxPaymentIntent: async (
     userId: string,
     amountCents: number,
-    timestamp: number,
+    timestamp: number
   ): Promise<ServiceResult<CreateTaxPaymentIntentResult>> => {
     const frozen = newPaymentCreationFailure('xp_tax');
     if (frozen) return frozen;
@@ -285,16 +283,21 @@ export const StripeService = {
     }
 
     try {
-      const paymentIntent = await stripeBreaker.execute(() => stripe!.paymentIntents.create({
-        amount: amountCents,
-        currency: 'usd',
-        automatic_payment_methods: { enabled: true },
-        metadata: {
-          type: 'xp_tax',
-          user_id: userId,
-        },
-        description: `HustleXP XP Tax Payment`,
-      }, { idempotencyKey: `xp_tax_pi_${userId}_${amountCents}_${timestamp}` }));
+      const paymentIntent = await stripeBreaker.execute(() =>
+        stripe!.paymentIntents.create(
+          {
+            amount: amountCents,
+            currency: 'usd',
+            automatic_payment_methods: { enabled: true },
+            metadata: {
+              type: 'xp_tax',
+              user_id: userId,
+            },
+            description: `HustleXP XP Tax Payment`,
+          },
+          { idempotencyKey: `xp_tax_pi_${userId}_${amountCents}_${timestamp}` }
+        )
+      );
 
       return {
         success: true,
@@ -320,8 +323,10 @@ export const StripeService = {
    * Used by XPTaxService to verify tax payment before releasing XP.
    */
   verifyPaymentIntent: async (
-    paymentIntentId: string,
-  ): Promise<ServiceResult<{ status: string; amountCents: number; metadata: Record<string, string> }>> => {
+    paymentIntentId: string
+  ): Promise<
+    ServiceResult<{ status: string; amountCents: number; metadata: Record<string, string> }>
+  > => {
     if (!stripe) {
       return {
         success: false,
@@ -330,7 +335,9 @@ export const StripeService = {
     }
 
     try {
-      const pi = await stripeBreaker.execute(() => stripe!.paymentIntents.retrieve(paymentIntentId));
+      const pi = await stripeBreaker.execute(() =>
+        stripe!.paymentIntents.retrieve(paymentIntentId)
+      );
       return {
         success: true,
         data: {
@@ -358,7 +365,7 @@ export const StripeService = {
    * treating an estimated margin as profit.
    */
   getPaymentIntentProcessingFee: async (
-    paymentIntentId: string,
+    paymentIntentId: string
   ): Promise<ServiceResult<PaymentIntentProcessingFeeResult>> => {
     if (!stripe) {
       return {
@@ -368,10 +375,11 @@ export const StripeService = {
     }
 
     try {
-      const paymentIntent = await stripeBreaker.execute(() => stripe!.paymentIntents.retrieve(
-        paymentIntentId,
-        { expand: ['latest_charge.balance_transaction'] },
-      ));
+      const paymentIntent = await stripeBreaker.execute(() =>
+        stripe!.paymentIntents.retrieve(paymentIntentId, {
+          expand: ['latest_charge.balance_transaction'],
+        })
+      );
 
       const charge = await resolvePaymentIntentCharge(paymentIntent);
 
@@ -381,7 +389,11 @@ export const StripeService = {
 
       const balanceTransaction = await resolveChargeBalanceTransaction(charge);
 
-      if (!balanceTransaction || !Number.isInteger(balanceTransaction.fee) || balanceTransaction.fee < 0) {
+      if (
+        !balanceTransaction ||
+        !Number.isInteger(balanceTransaction.fee) ||
+        balanceTransaction.fee < 0
+      ) {
         return feeUnavailable(`PaymentIntent ${paymentIntentId} has no settled processing fee`);
       }
 
@@ -412,7 +424,8 @@ export const StripeService = {
   createTransfer: async (
     params: CreateTransferParams
   ): Promise<ServiceResult<CreateTransferResult>> => {
-    const { escrowId, workerId, workerStripeAccountId, amount, description, idempotencyKeySuffix } = params;
+    const { escrowId, workerId, workerStripeAccountId, amount, description, idempotencyKeySuffix } =
+      params;
 
     // Stripe stubbing for tests (Evil Test A) — never active in production
     if (process.env.HX_STRIPE_STUB === '1' && process.env.NODE_ENV !== 'production') {
@@ -449,19 +462,21 @@ export const StripeService = {
       const idempotencyKey = idempotencyKeySuffix
         ? `tr_create_${escrowId}_${amount}${destSuffix}_${idempotencyKeySuffix}`
         : `tr_create_${escrowId}_${amount}${destSuffix}`;
-      const transfer = await stripeBreaker.execute(() => stripe!.transfers.create(
-        {
-          amount,
-          currency: 'usd',
-          destination: workerStripeAccountId,
-          metadata: {
-            escrow_id: escrowId,
-            worker_id: workerId,
+      const transfer = await stripeBreaker.execute(() =>
+        stripe!.transfers.create(
+          {
+            amount,
+            currency: 'usd',
+            destination: workerStripeAccountId,
+            metadata: {
+              escrow_id: escrowId,
+              worker_id: workerId,
+            },
+            description: description || `HustleXP Payout ${escrowId}`,
           },
-          description: description || `HustleXP Payout ${escrowId}`,
-        },
-        { idempotencyKey }
-      ));
+          { idempotencyKey }
+        )
+      );
 
       return {
         success: true,
@@ -484,9 +499,7 @@ export const StripeService = {
   /**
    * Create refund (escrow refund)
    */
-  createRefund: async (
-    params: CreateRefundParams
-  ): Promise<ServiceResult<CreateRefundResult>> => {
+  createRefund: async (params: CreateRefundParams): Promise<ServiceResult<CreateRefundResult>> => {
     const { paymentIntentId, escrowId, amount, reason, idempotencyKeySuffix } = params;
 
     // Stripe stubbing for tests (Evil Test A) — never active in production
@@ -517,18 +530,20 @@ export const StripeService = {
         ? `re_create_${paymentIntentId}_${amount ?? 'full'}_${idempotencyKeySuffix}`
         : `re_create_${paymentIntentId}_${amount ?? 'full'}`;
 
-      const refund = await stripeBreaker.execute(() => stripe!.refunds.create(
-        {
-          payment_intent: paymentIntentId,
-          amount, // undefined = full refund
-          reason,
-          metadata: {
-            escrow_id: escrowId,
-            payment_intent_id: paymentIntentId,
+      const refund = await stripeBreaker.execute(() =>
+        stripe!.refunds.create(
+          {
+            payment_intent: paymentIntentId,
+            amount, // undefined = full refund
+            reason,
+            metadata: {
+              escrow_id: escrowId,
+              payment_intent_id: paymentIntentId,
+            },
           },
-        },
-        { idempotencyKey }
-      ));
+          { idempotencyKey }
+        )
+      );
 
       return {
         success: true,
@@ -554,7 +569,9 @@ export const StripeService = {
    * Stripe only allows cancellation of refunds in 'pending' state.
    * Returns success=true if cancelled or already in a terminal state that is not 'failed'.
    */
-  cancelRefund: async (refundId: string): Promise<ServiceResult<{ refundId: string; status: string }>> => {
+  cancelRefund: async (
+    refundId: string
+  ): Promise<ServiceResult<{ refundId: string; status: string }>> => {
     if (!stripe) {
       return {
         success: false,
@@ -564,7 +581,10 @@ export const StripeService = {
 
     try {
       const cancelled = await stripeBreaker.execute(() => stripe!.refunds.cancel(refundId));
-      return { success: true, data: { refundId: cancelled.id, status: cancelled.status ?? 'cancelled' } };
+      return {
+        success: true,
+        data: { refundId: cancelled.id, status: cancelled.status ?? 'cancelled' },
+      };
     } catch (error) {
       return {
         success: false,
@@ -582,7 +602,7 @@ export const StripeService = {
    */
   createTransferReversal: async (
     transferId: string,
-    escrowId: string,
+    escrowId: string
   ): Promise<ServiceResult<{ reversalId: string }>> => {
     if (!stripe) {
       return {
@@ -620,10 +640,7 @@ export const StripeService = {
   /**
    * Verify webhook signature
    */
-  verifyWebhook: (
-    payload: string | Buffer,
-    signature: string
-  ): ServiceResult<WebhookEvent> => {
+  verifyWebhook: (payload: string | Buffer, signature: string): ServiceResult<WebhookEvent> => {
     if (!stripe) {
       return {
         success: false,
@@ -645,11 +662,7 @@ export const StripeService = {
     }
 
     try {
-      const event = stripe.webhooks.constructEvent(
-        payload,
-        signature,
-        config.stripe.webhookSecret
-      );
+      const event = stripe.webhooks.constructEvent(payload, signature, config.stripe.webhookSecret);
 
       return {
         success: true,
@@ -695,17 +708,20 @@ export const StripeService = {
       // the next delivery attempt sees the existing row, returns claimed=false,
       // and skips the event permanently — causing silent data loss.
       try {
-        await db.query(
-          'DELETE FROM processed_stripe_events WHERE event_id = $1',
-          [eventId]
+        await db.query('DELETE FROM processed_stripe_events WHERE event_id = $1', [eventId]);
+        stripeLogger.warn(
+          { eventId },
+          'Handler failed — rolled back idempotency row so retry can re-claim'
         );
-        stripeLogger.warn({ eventId }, 'Handler failed — rolled back idempotency row so retry can re-claim');
       } catch (deleteError) {
         // BUG 7 FIX: The DELETE failed, meaning the idempotency row is permanently stuck.
         // Stripe's next retry delivery will see the existing row, return claimed=false, and
         // skip the event — causing silent permanent data loss. Alert ops immediately.
         stripeLogger.error(
-          { err: deleteError instanceof Error ? deleteError.message : String(deleteError), eventId },
+          {
+            err: deleteError instanceof Error ? deleteError.message : String(deleteError),
+            eventId,
+          },
           '[stripe-webhook] PERMANENT: Failed to delete idempotency row — this Stripe event will never be retried. Manual intervention required.'
         );
         try {
@@ -714,11 +730,18 @@ export const StripeService = {
             body: `Stripe event ${eventId} is permanently stuck — idempotency row deletion failed. Manual DB intervention required.`,
             deepLink: `/admin/stripe-events/${eventId}`,
             priority: 'CRITICAL',
-            metadata: { event_id: eventId, delete_error: deleteError instanceof Error ? deleteError.message : String(deleteError) },
+            metadata: {
+              event_id: eventId,
+              delete_error:
+                deleteError instanceof Error ? deleteError.message : String(deleteError),
+            },
           });
         } catch (notifyError) {
           stripeLogger.error(
-            { err: notifyError instanceof Error ? notifyError.message : String(notifyError), eventId },
+            {
+              err: notifyError instanceof Error ? notifyError.message : String(notifyError),
+              eventId,
+            },
             '[stripe-webhook] Failed to notify admins of stuck event — check both DB and notification service'
           );
         }
@@ -732,21 +755,21 @@ export const StripeService = {
       };
     }
   },
-  createQuotePaymentIntent: async (
-    params: {
-      quoteId: string;
-      quoteVersionId: string;
-      posterId: string;
-      amountCents: number;
-      platformFeeCents?: number | null;
-      description?: string;
-    },
-  ): Promise<ServiceResult<{
-    paymentIntentId: string;
-    clientSecret: string;
+  createQuotePaymentIntent: async (params: {
+    quoteId: string;
+    quoteVersionId: string;
+    posterId: string;
     amountCents: number;
-  }>> => {
-    const frozen = newPaymentCreationFailure('escrow_funding');
+    platformFeeCents?: number | null;
+    description?: string;
+  }): Promise<
+    ServiceResult<{
+      paymentIntentId: string;
+      clientSecret: string;
+      amountCents: number;
+    }>
+  > => {
+    const frozen = newPaymentCreationFailure('quote_payment');
     if (frozen) return frozen;
 
     if (!stripe) {
@@ -759,22 +782,15 @@ export const StripeService = {
       };
     }
 
-    const {
-      quoteId,
-      quoteVersionId,
-      posterId,
-      amountCents,
-      platformFeeCents,
-      description,
-    } = params;
+    const { quoteId, quoteVersionId, posterId, amountCents, platformFeeCents, description } =
+      params;
 
     if (amountCents < config.stripe.minimumTaskValueCents) {
       return {
         success: false,
         error: {
           code: 'INVALID_AMOUNT',
-          message:
-            `Task value must be at least $${config.stripe.minimumTaskValueCents / 100}.00`,
+          message: `Task value must be at least $${config.stripe.minimumTaskValueCents / 100}.00`,
         },
       };
     }
@@ -783,7 +799,7 @@ export const StripeService = {
       const platformFee = resolvePlatformFeeCents(
         amountCents,
         config.stripe.platformFeePercent,
-        platformFeeCents,
+        platformFeeCents
       );
 
       const paymentIntent = await stripeBreaker.execute(() =>
@@ -804,10 +820,9 @@ export const StripeService = {
             description: description || `HustleXP Quote ${quoteId}`,
           },
           {
-            idempotencyKey:
-              `pi_create_quote_${quoteId}_v${quoteVersionId}`,
-          },
-        ),
+            idempotencyKey: `pi_create_quote_${quoteId}_v${quoteVersionId}`,
+          }
+        )
       );
 
       return {
@@ -823,8 +838,7 @@ export const StripeService = {
         success: false,
         error: {
           code: 'STRIPE_ERROR',
-          message:
-            error instanceof Error ? error.message : 'Unknown error',
+          message: error instanceof Error ? error.message : 'Unknown error',
         },
       };
     }
@@ -836,12 +850,17 @@ export const StripeService = {
    * payment without requiring Stripe.js / Elements.
    */
   confirmTestPaymentIntent: async (
-    paymentIntentId: string,
-  ): Promise<ServiceResult<{
-    paymentIntentId: string;
-    status: string;
-    amountCents: number;
-  }>> => {
+    paymentIntentId: string
+  ): Promise<
+    ServiceResult<{
+      paymentIntentId: string;
+      status: string;
+      amountCents: number;
+    }>
+  > => {
+    const frozen = newPaymentCreationFailure('quote_payment');
+    if (frozen) return frozen;
+
     if (!stripe) {
       return {
         success: false,
@@ -870,7 +889,7 @@ export const StripeService = {
       const paymentIntent = await stripeBreaker.execute(() =>
         stripe!.paymentIntents.confirm(paymentIntentId, {
           payment_method: 'pm_card_visa',
-        }),
+        })
       );
 
       return {
@@ -886,8 +905,7 @@ export const StripeService = {
         success: false,
         error: {
           code: 'STRIPE_ERROR',
-          message:
-            error instanceof Error ? error.message : 'Unknown Stripe error',
+          message: error instanceof Error ? error.message : 'Unknown Stripe error',
         },
       };
     }
