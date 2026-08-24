@@ -50,6 +50,7 @@ describe('quote payment underwriting containment v7', () => {
   });
 
   it('blocks legacy captured-payment materialization before DB or provider work', async () => {
+    mocks.dbQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
     const result = await finalizePaidQuote({
       quoteId: '10000000-0000-4000-8000-000000000001',
       quoteVersionId: '10000000-0000-4000-8000-000000000002',
@@ -69,7 +70,36 @@ describe('quote payment underwriting containment v7', () => {
         },
       },
     });
-    expect(mocks.dbQuery).not.toHaveBeenCalled();
+    expect(mocks.dbQuery).toHaveBeenCalledTimes(1);
+    expect(mocks.dbTransaction).not.toHaveBeenCalled();
+    expect(mocks.verifySucceededPayment).not.toHaveBeenCalled();
+    expect(mocks.taskCreate).not.toHaveBeenCalled();
+    expect(mocks.escrowFund).not.toHaveBeenCalled();
+  });
+
+  it('replays an already-materialized payment without provider or mutation work', async () => {
+    mocks.dbQuery.mockResolvedValueOnce({
+      rows: [{ task_id: 'task-existing', escrow_id: 'escrow-existing' }],
+      rowCount: 1,
+    });
+    const result = await finalizePaidQuote({
+      quoteId: '10000000-0000-4000-8000-000000000001',
+      quoteVersionId: '10000000-0000-4000-8000-000000000002',
+      posterId: '10000000-0000-4000-8000-000000000003',
+      paymentIntentId: 'pi_existing_materialized',
+    });
+    expect(result).toEqual({
+      success: true,
+      data: {
+        taskId: 'task-existing',
+        escrowId: 'escrow-existing',
+        quoteId: '10000000-0000-4000-8000-000000000001',
+        quoteVersionId: '10000000-0000-4000-8000-000000000002',
+        paymentIntentId: 'pi_existing_materialized',
+        replayed: true,
+      },
+    });
+    expect(mocks.dbQuery).toHaveBeenCalledTimes(1);
     expect(mocks.dbTransaction).not.toHaveBeenCalled();
     expect(mocks.verifySucceededPayment).not.toHaveBeenCalled();
     expect(mocks.taskCreate).not.toHaveBeenCalled();

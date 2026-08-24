@@ -19,6 +19,8 @@ const enabled = {
   HXOS_ALLOW_LOCAL_TEST_PAYMENT: 'true',
   ENGINE_API_MODE: 'test',
   STRIPE_MODE: 'test',
+  STRIPE_SECRET_KEY: 'sk_test_local_certification',
+  HX_PAYMENT_CREATION_MODE: 'enabled',
   HXOS_LOCAL_TEST_PAYMENT_SECRET: 'local-payment-secret-is-at-least-thirty-two-chars',
 };
 
@@ -36,11 +38,40 @@ describe('local certification payment provider', () => {
     expect(localCertificationPaymentEnabled(enabled)).toBe(true);
     for (const override of [
       { NODE_ENV: 'production' },
+      { NODE_ENV: 'development' },
       { HXOS_ALLOW_LOCAL_TEST_PAYMENT: 'false' },
       { ENGINE_API_MODE: 'live' },
       { STRIPE_MODE: 'live' },
+      { STRIPE_SECRET_KEY: 'sk_live_forbidden' },
+      { HX_PAYMENT_CREATION_MODE: 'frozen' },
       { HXOS_LOCAL_TEST_PAYMENT_SECRET: 'weak' },
     ]) expect(localCertificationPaymentEnabled({ ...enabled, ...override })).toBe(false);
+  });
+
+  it('cannot write a fake intent while the global creation authority is frozen', async () => {
+    enable();
+    vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'frozen');
+    const result = await LocalCertificationPaymentProvider.createIntent({
+      taskId: 'task-1', escrowId: 'escrow-1', posterId: 'poster-1', amountCents: 13000,
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.code).toBe('PAYMENT_CREATION_FROZEN');
+    expect(db.transaction).not.toHaveBeenCalled();
+    expect(db.query).not.toHaveBeenCalled();
+  });
+
+  it('cannot confirm fake money while the global creation authority is frozen', async () => {
+    enable();
+    vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'frozen');
+    const result = await LocalCertificationPaymentProvider.confirmIntent({
+      paymentIntentId: `pi_hxos_test_${'a'.repeat(32)}`,
+      clientSecret: 'x'.repeat(64),
+      posterId: 'poster-1',
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.code).toBe('PAYMENT_CREATION_FROZEN');
+    expect(db.transaction).not.toHaveBeenCalled();
+    expect(db.query).not.toHaveBeenCalled();
   });
 
   it('creates a deterministic TEST intent and reuses only equivalent state', async () => {

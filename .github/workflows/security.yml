@@ -46,8 +46,6 @@ jobs:
   snyk:
     if: ${{ vars.ENABLE_SNYK == 'true' }}
     runs-on: ubuntu-latest
-    env:
-      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -55,6 +53,8 @@ jobs:
           node-version: '22'
       - run: npm ci
       - name: Snyk scan
-        uses: snyk/actions/node@master
+        uses: snyk/actions/node@12140f4059e244892ae643824a95459a102120dd
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
           args: --severity-threshold=high

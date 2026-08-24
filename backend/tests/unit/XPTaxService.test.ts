@@ -3,7 +3,8 @@
  *
  * Covers adminForgiveTax (F47-1) and payTax (F47-2) bug fixes.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -45,10 +46,15 @@ const mockStripe = vi.mocked(StripeService);
 
 beforeEach(() => {
   vi.resetAllMocks();
+  enableControlledStripePaymentTestCohortV7();
   // Re-bind serializableTransaction after resetAllMocks wipes the implementation
   mockDb.serializableTransaction.mockImplementation(
     async (fn: (q: typeof mockDb.query) => Promise<unknown>) => fn(mockDb.query)
   );
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 // ---------------------------------------------------------------------------
@@ -104,6 +110,21 @@ describe('XPTaxService.adminForgiveTax', () => {
 // ---------------------------------------------------------------------------
 
 describe('XPTaxService.payTax', () => {
+  it('blocks a newly presented payment while frozen before provider or entitlement effects', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('ENGINE_API_MODE', 'production');
+    vi.stubEnv('STRIPE_MODE', 'live');
+    vi.stubEnv('STRIPE_SECRET_KEY', 'sk_live_forbidden');
+    vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'enabled');
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+    const result = await XPTaxService.payTax('user-1', 'pi_unbound');
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.code).toBe('PAYMENT_CREATION_FROZEN');
+    expect(mockStripe.isConfigured).not.toHaveBeenCalled();
+    expect(mockStripe.verifyPaymentIntent).not.toHaveBeenCalled();
+    expect(mockDb.serializableTransaction).not.toHaveBeenCalled();
+  });
+
   it('wraps FIFO loop in serializableTransaction (F47-2)', async () => {
     mockStripe.isConfigured.mockReturnValue(true);
     mockStripe.verifyPaymentIntent.mockResolvedValueOnce({
@@ -198,6 +219,7 @@ describe('XPTaxService.payTax', () => {
 
   it('returns error when Stripe is not configured', async () => {
     mockStripe.isConfigured.mockReturnValue(false);
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
     const result = await XPTaxService.payTax('user-1', 'pi_test');
 

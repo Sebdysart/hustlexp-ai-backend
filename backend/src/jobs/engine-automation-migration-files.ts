@@ -102,4 +102,5 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260814_task_supply_confidence', fileName: '20260814_task_supply_confidence.sql' },
   { name: '20260815_quote_columns_extra_v4' , fileName: '20260815_quote_columns_extra_v4.sql' },
   { name: '20260819_quote_payments', fileName: '20260819_quote_payments.sql'},
+  { name: '20260823_quote_payment_recovery', fileName: '20260823_quote_payment_recovery.sql' },
 ] as const;

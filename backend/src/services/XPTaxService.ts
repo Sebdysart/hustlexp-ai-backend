@@ -18,6 +18,7 @@ import { logger } from '../logger.js';
 import type { ServiceResult } from '../types.js';
 import { StripeService } from './StripeService.js';
 import { xpForPriceCents } from '../lib/money.js';
+import { newPaymentCreationFailure } from './NewPaymentCreationGuard.js';
 
 const log = logger.child({ service: 'XPTaxService' });
 
@@ -192,17 +193,6 @@ export const XPTaxService = {
     stripePaymentIntentId: string
   ): Promise<ServiceResult<{ xp_released: number }>> => {
     try {
-      // FIX: Hard-block if Stripe is not configured — never process tax payments without verification
-      if (!StripeService.isConfigured()) {
-        return {
-          success: false,
-          error: {
-            code: 'XP_TAX_PAYMENT_UNAVAILABLE',
-            message: 'XP_TAX_PAYMENT_UNAVAILABLE: Stripe is not configured. Cannot process tax payment.',
-          },
-        };
-      }
-
       // IDEMPOTENCY CHECK: Return early only if ALL unpaid rows have been processed for
       // this payment intent — i.e. the PI is recorded AND no rows remain with tax_paid=FALSE.
       // F47-2 FIX: The old guard returned early if ANY row was marked paid with this PI,
@@ -231,6 +221,21 @@ export const XPTaxService = {
         }
         // Some rows still unpaid — fall through to finish the FIFO loop
         log.info({ userId, stripePaymentIntentId }, 'payTax: idempotent replay — resuming partial FIFO loop');
+      } else {
+        const frozen = newPaymentCreationFailure('xp_tax');
+        if (frozen) return frozen;
+      }
+
+      // Hard-block if Stripe is not configured — never process tax payments without verification.
+      // This follows the idempotency lookup so complete recovery replay remains available.
+      if (!StripeService.isConfigured()) {
+        return {
+          success: false,
+          error: {
+            code: 'XP_TAX_PAYMENT_UNAVAILABLE',
+            message: 'XP_TAX_PAYMENT_UNAVAILABLE: Stripe is not configured. Cannot process tax payment.',
+          },
+        };
       }
 
       // Verify Stripe payment succeeded

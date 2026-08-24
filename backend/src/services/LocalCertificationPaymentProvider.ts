@@ -1,6 +1,10 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { db } from '../db.js';
 import type { ServiceResult } from '../types.js';
+import {
+  newPaymentCreationFailure,
+  newPaymentCreationMode,
+} from './NewPaymentCreationGuard.js';
 
 const INTENT_RE = /^pi_hxos_test_[a-f0-9]{32}$/;
 type Environment = NodeJS.ProcessEnv | Record<string, string | undefined>;
@@ -60,10 +64,13 @@ function equalHex(left: string, right: string): boolean {
 }
 
 export function localCertificationPaymentEnabled(env: Environment = process.env): boolean {
-  return env.NODE_ENV !== 'production'
+  return newPaymentCreationMode(env) === 'enabled'
+    && env.NODE_ENV === 'test'
     && env.HXOS_ALLOW_LOCAL_TEST_PAYMENT === 'true'
     && env.ENGINE_API_MODE === 'test'
     && env.STRIPE_MODE === 'test'
+    && env.STRIPE_SECRET_KEY?.startsWith('sk_test_') === true
+    && env.HX_PAYMENT_CREATION_MODE === 'enabled'
     && secret(env).length >= 32;
 }
 
@@ -83,6 +90,8 @@ export const LocalCertificationPaymentProvider = {
   createIntent: async (
     params: CreateIntentParams,
   ): Promise<ServiceResult<{ paymentIntentId: string; clientSecret: string; amount: number }>> => {
+    const frozen = newPaymentCreationFailure('escrow_funding');
+    if (frozen) return frozen;
     if (!localCertificationPaymentEnabled()) {
       return failure('LOCAL_TEST_PAYMENT_DISABLED', 'Local certification payments are disabled.');
     }
@@ -138,6 +147,8 @@ export const LocalCertificationPaymentProvider = {
   confirmIntent: async (
     params: ConfirmIntentParams,
   ): Promise<ServiceResult<{ paymentIntentId: string; status: 'succeeded'; idempotencyReplayed: boolean }>> => {
+    const frozen = newPaymentCreationFailure('escrow_funding');
+    if (frozen) return frozen;
     if (!localCertificationPaymentEnabled()) {
       return failure('LOCAL_TEST_PAYMENT_DISABLED', 'Local certification payments are disabled.');
     }

@@ -10,6 +10,9 @@ export type NewPaymentLane =
   | 'quote_materialization';
 export type NewPaymentCreationMode = 'enabled' | 'frozen';
 type Environment = Record<string, string | undefined>;
+interface PaymentCreationRuntimeBoundary {
+  isolatedTestRunner: boolean;
+}
 
 export const PAYMENT_CREATION_FROZEN_CODE = 'PAYMENT_CREATION_FROZEN';
 export const PAYMENT_CREATION_FROZEN_MESSAGE =
@@ -29,10 +32,25 @@ export function paymentCreationErrorCause(
  * Stripe test cohort may exercise sandbox adapters. Existing cancellation,
  * refund, dispute, transfer-reversal, and payout-recovery paths remain available.
  */
-export function newPaymentCreationMode(env: Environment = process.env): NewPaymentCreationMode {
+function isIsolatedTestRunner(): boolean {
+  const runnerEvidence = [...process.argv, ...process.execArgv]
+    .some((argument) => /(?:^|\/)(?:@?vitest|vite-node)(?:\/|\.|$)/.test(argument));
+  const stackEvidence = new Error().stack?.includes('/node_modules/@vitest/') === true;
+  return process.env.VITEST === 'true'
+    && typeof process.env.VITEST_WORKER_ID === 'string'
+    && (runnerEvidence || stackEvidence);
+}
+
+export function newPaymentCreationMode(
+  env: Environment = process.env,
+  runtime?: PaymentCreationRuntimeBoundary,
+): NewPaymentCreationMode {
   const configured = env.HX_PAYMENT_CREATION_MODE?.trim().toLowerCase();
   if (configured === 'frozen') return 'frozen';
+  const isolatedTestRunner = runtime?.isolatedTestRunner
+    ?? isIsolatedTestRunner();
   const controlledStripeTest =
+    isolatedTestRunner &&
     configured === 'enabled' &&
     env.NODE_ENV === 'test' &&
     env.ENGINE_API_MODE === 'test' &&

@@ -105,3 +105,18 @@ jobs:
       - run: npm ci
       - name: Validate build compiles cleanly
         run: npm run compile
+      - name: Build production container
+        env:
+          IMAGE_TAG: hustlexp-backend-ci:${{ github.sha }}
+        run: |
+          docker build \
+            --build-arg GITHUB_SHA="${GITHUB_SHA}" \
+            --tag "${IMAGE_TAG}" \
+            .
+      - name: Verify production image migration packaging
+        env:
+          IMAGE_TAG: hustlexp-backend-ci:${{ github.sha }}
+        run: |
+          expected_count="$(find backend/database/migrations -type f -name '*.sql' | wc -l | tr -d ' ')"
+          actual_count="$(docker run --rm --entrypoint node "${IMAGE_TAG}" -e "const fs=require('fs'); console.log(fs.readdirSync('/app/backend/database/migrations').filter((name)=>name.endsWith('.sql')).length)")"
+          test "$actual_count" = "$expected_count"

@@ -81,10 +81,41 @@ function fail<T>(code: string, message: string): ServiceResult<T> {
 export async function finalizePaidQuote(
   input: FinalizePaidQuoteInput
 ): Promise<ServiceResult<FinalizePaidQuoteResult>> {
-  const frozen = newPaymentCreationFailure('quote_materialization');
-  if (frozen) return frozen;
-
   try {
+    const replay = await db.query<{ task_id: string; escrow_id: string }>(
+      `
+      SELECT qp.task_id, e.id AS escrow_id
+      FROM quote_payments qp
+      JOIN tasks t ON t.id = qp.task_id
+      JOIN escrows e ON e.task_id = qp.task_id
+      WHERE qp.quote_id = $1
+        AND qp.quote_version_id = $2
+        AND qp.provider_payment_id = $3
+        AND qp.status = 'SUCCEEDED'
+        AND qp.task_id IS NOT NULL
+        AND t.poster_id = $4
+      ORDER BY e.created_at DESC
+      LIMIT 1
+      `,
+      [input.quoteId, input.quoteVersionId, input.paymentIntentId, input.posterId]
+    );
+    if (replay.rows[0]) {
+      return {
+        success: true,
+        data: {
+          taskId: replay.rows[0].task_id,
+          escrowId: replay.rows[0].escrow_id,
+          quoteId: input.quoteId,
+          quoteVersionId: input.quoteVersionId,
+          paymentIntentId: input.paymentIntentId,
+          replayed: true,
+        },
+      };
+    }
+
+    const frozen = newPaymentCreationFailure('quote_materialization');
+    if (frozen) return frozen;
+
     /*
      * Step 1:
      * Validate the quote/payment outside the DB transaction.

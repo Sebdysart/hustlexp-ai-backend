@@ -268,6 +268,7 @@ describe('required engine automation migration', () => {
       '20260814_task_supply_confidence',
       '20260815_quote_columns_extra_v4',
       '20260819_quote_payments',
+      '20260823_quote_payment_recovery',
     ]);
     expect(actual.bootstrapSpec?.candidatePaths).toContain(
       '/app/backend/database/constitutional-schema.sql'
@@ -275,11 +276,15 @@ describe('required engine automation migration', () => {
     expect(actual.migrationSpecs[0].candidatePaths).toContain(
       '/app/backend/database/migrations/add_missing_tables_v2.sql'
     );
-    expect(actual.migrationSpecs.at(-7)?.candidatePaths).toContain(
+    expect(actual.migrationSpecs.find(
+      (spec) => spec.name === SERVICE_BUSINESS_ASSIGNMENT_CONTRACT_MIGRATION,
+    )?.candidatePaths).toContain(
       '/app/backend/database/migrations/20260722_service_business_assignment_contract.sql'
     );
-    expect(actual.migrationSpecs.at(-1)?.candidatePaths).toContain(
-      '/app/backend/database/migrations/20260819_quote_payments.sql'
+    expect(actual.migrationSpecs.find(
+      (spec) => spec.name === '20260823_quote_payment_recovery',
+    )?.candidatePaths).toContain(
+      '/app/backend/database/migrations/20260823_quote_payment_recovery.sql'
     );
     await expect(actual.readText(actual.migrationSpecs[1].candidatePaths[0]!)).resolves.toContain(
       'CREATE TABLE IF NOT EXISTS task_reservations'
