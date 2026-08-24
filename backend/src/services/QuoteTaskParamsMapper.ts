@@ -194,8 +194,9 @@ export function mapQuoteToCreateTaskParams(
     
     businessOrganizationId: input.businessOrganizationId ?? undefined,
     businessLocationId: input.businessLocationId ?? undefined,
-    providerOrganizationId: input.businessOrganizationId ?? undefined,
-    providerServiceProfileId: input.providerServiceProfileId ?? undefined,
+    providerOrganizationId: undefined,
+    providerServiceProfileId: undefined,
     businessFulfillerOrganizationId: input.businessFulfillerOrganizationId ?? undefined,
+    orchestrationMode: input.businessOrganizationId ? 'OPS_MANUAL' : 'AUTOMATED',
   };
 }

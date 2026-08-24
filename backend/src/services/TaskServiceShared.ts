@@ -61,6 +61,7 @@ export interface CreateTaskParams {
   providerOrganizationId?: string;
   providerServiceProfileId?: string;
   businessFulfillerOrganizationId?: string;
+  orchestrationMode?: 'OPS_MANUAL' | 'AUTOMATED';
 }
 
 export interface AcceptTaskParams {

@@ -409,7 +409,7 @@ export async function finalizePaidQuote(
         businessLocationId: quote.business_location_id,
         providerServiceProfileId: quote.provider_service_profile_id,
         claimedByUserId: quote.claimed_by_user_id,  
-        businessFulfillerOrganizationId: quote.business_organization_id ?? undefined,        
+        businessFulfillerOrganizationId: quote.business_organization_id ?? undefined,       
       };
 
       const taskParams =
@@ -432,12 +432,18 @@ export async function finalizePaidQuote(
       /*
        * TaskCreateService already created the pending escrow.
        */
-      const escrowResult = await query<{ id: string }>(
+      const escrowResult = await query<{
+        id: string;
+        state: string;
+        amount: number;
+      }>(
         `
-        SELECT id
+        SELECT
+          id,
+          state,
+          amount
         FROM escrows
         WHERE task_id = $1
-          AND state = 'PENDING'
         ORDER BY created_at DESC
         LIMIT 1
         FOR UPDATE
@@ -448,7 +454,7 @@ export async function finalizePaidQuote(
       const escrow = escrowResult.rows[0];
 
       if (!escrow) {
-        throw new Error('PENDING_ESCROW_NOT_CREATED');
+        throw new Error('ESCROW_NOT_CREATED');
       }
 
       /*
@@ -475,29 +481,102 @@ export async function finalizePaidQuote(
       return {
         taskId,
         escrowId: escrow.id,
-        replayed: false,
+        replayed: taskResult.replayed === true,
       };
     });
 
     /*
-     * Step 3:
-     * Fund the escrow.
-     *
-     * EscrowService.fund() owns its own transaction. It is idempotent and
-     * will safely convert the PENDING escrow created above to FUNDED.
-     */
-    const funded = await EscrowService.fund({
-      escrowId: materialized.escrowId,
-      stripePaymentIntentId: input.paymentIntentId,
-    });
+    * Step 3:
+    * Fund the escrow.
+    *
+    * The task-create transaction may be replayed after a partial finalization.
+    * In that case the escrow may already be FUNDED. Resume safely instead of
+    * trying to fund it a second time.
+    */
+    const escrowState = await db.query<{ state: string }>(
+      `
+      SELECT state
+      FROM escrows
+      WHERE id = $1
+      FOR UPDATE
+      `,
+      [materialized.escrowId],
+    );
 
-    if (!funded.success) {
+    const currentEscrowState = escrowState.rows[0]?.state;
+
+    if (!currentEscrowState) {
       return {
         success: false,
-        error: funded.error,
+        error: {
+          code: 'ESCROW_NOT_FOUND',
+          message: 'The task escrow could not be found during payment finalization.',
+        },
       };
     }
 
+    if (currentEscrowState === 'PENDING') {
+      const funded = await EscrowService.fund({
+        escrowId: materialized.escrowId,
+        stripePaymentIntentId: input.paymentIntentId,
+      });
+
+      if (!funded.success) {
+        return {
+          success: false,
+          error: funded.error,
+        };
+      }
+    } else if (currentEscrowState !== 'FUNDED') {
+      return {
+        success: false,
+        error: {
+          code: 'ESCROW_INVALID_STATE',
+          message: `Cannot finalize payment with escrow in state '${currentEscrowState}'.`,
+        },
+      };
+    }
+    // Business quote payment is the Business's commitment to perform.
+    // Once the customer has funded the escrow, move the Business task into execution.
+    //
+    // This is intentionally state-aware rather than replay-aware because a previous
+    // finalization attempt may have already funded the escrow but failed before the
+    // Business task was accepted.
+    const accepted = await db.query<{ id: string }>(
+      `
+      UPDATE tasks
+      SET
+        state = 'ACCEPTED',
+        progress_state = 'ACCEPTED',
+        progress_updated_at = NOW(),
+        progress_by = NULL,
+        accepted_at = COALESCE(accepted_at, NOW()),
+        updated_at = NOW()
+      WHERE id = $1
+        AND state = 'OPEN'
+        AND business_fulfiller_organization_id IS NOT NULL
+        AND worker_id IS NULL
+      RETURNING id
+      `,
+      [materialized.taskId],
+    );
+
+    if ((accepted.rowCount ?? 0) !== 1) {
+      const currentTask = await db.query<{ state: string }>(
+        `
+        SELECT state
+        FROM tasks
+        WHERE id = $1
+        `,
+        [materialized.taskId],
+      );
+
+      const state = currentTask.rows[0]?.state;
+
+      if (state !== 'ACCEPTED') {
+        throw new Error('BUSINESS_TASK_ACCEPT_FAILED');
+      }
+    }
     /*
      * Step 4:
      * Finalize the payment/quote state.
