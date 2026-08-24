@@ -15,6 +15,7 @@ import { consumeFinalizedMediaReceipt } from './MediaUploadReceiptService.js';
 
 interface ProofTaskRow {
   worker_id: string | null;
+  business_fulfiller_organization_id: string | null;
   state: string;
   active_scope_version_id: string | null;
   scope_hash: string | null;
@@ -72,7 +73,7 @@ function assertGpsEvidence(params: SubmitProofParams): void {
 
 async function lockTask(query: QueryFn, taskId: string): Promise<ProofTaskRow> {
   const result = await query<ProofTaskRow>(
-    `SELECT t.worker_id, t.state, t.active_scope_version_id, t.scope_hash, t.version,
+    `SELECT t.worker_id,   t.business_fulfiller_organization_id, t.state, t.active_scope_version_id, t.scope_hash, t.version,
             t.proof_min_photos, t.proof_max_photos, t.proof_gps_required,
             EXISTS (
               SELECT 1 FROM task_scope_change_proposals p
@@ -126,10 +127,53 @@ function assertTaskEvidencePolicy(task: ProofTaskRow, params: SubmitProofParams)
   }
 }
 
-function assertSubmitter(task: ProofTaskRow, params: SubmitProofParams): void {
-  if (task.worker_id !== params.submitterId) {
-    throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Only the assigned worker can submit proof.' });
+async function assertSubmitter(
+  query: QueryFn,
+  task: ProofTaskRow,
+  params: SubmitProofParams,
+): Promise<void> {
+  // Normal individual worker task
+  if (task.worker_id) {
+    if (task.worker_id !== params.submitterId) {
+      throw new TRPCError({
+        code: 'UNAUTHORIZED',
+        message: 'Only the assigned worker can submit proof.',
+      });
+    }
+    return;
   }
+
+  // Business-fulfilled task
+  if (task.business_fulfiller_organization_id) {
+    const result = await query<{ allowed: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+         FROM business_memberships membership
+         WHERE membership.organization_id = $1
+           AND membership.user_id = $2
+           AND membership.status = 'ACTIVE'
+           AND membership.role IN ('OWNER','ADMIN','DISPATCHER')
+       ) AS allowed`,
+      [
+        task.business_fulfiller_organization_id,
+        params.submitterId,
+      ],
+    );
+
+    if (!result.rows[0]?.allowed) {
+      throw new TRPCError({
+        code: 'UNAUTHORIZED',
+        message: 'Only an authorized member of the fulfilling Business can submit proof.',
+      });
+    }
+
+    return;
+  }
+
+  throw new TRPCError({
+    code: 'PRECONDITION_FAILED',
+    message: 'Task has no valid fulfillment entity.',
+  });
 }
 
 function assertTaskReady(task: ProofTaskRow, params: SubmitProofParams): void {
@@ -325,7 +369,7 @@ async function submitTransaction(
   submissionHash: string | null,
 ): Promise<Proof> {
   const task = await lockTask(query, params.taskId);
-  assertSubmitter(task, params);
+  await assertSubmitter(query, task, params);
   const replay = await replayedProof(query, params, submissionHash);
   if (replay) return replay;
   await assertOfflineSyncOrder(query, task, params);

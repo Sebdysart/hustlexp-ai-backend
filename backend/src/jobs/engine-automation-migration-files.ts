@@ -107,5 +107,7 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260821_business_ownership', fileName: '20260821_business_ownership.sql' },
   { name: '20260821_business_claim_links_extra', fileName: '20260821_business_claim_links_extra.sql' },
   { name: '20260823_business_fulfiller_lifecycle', fileName: '20260823_business_fulfiller_lifecycle.sql' },
-
+  { name: '20260823_business_payout_tables', fileName: '20260823_business_payout_tables.sql' },
+  { name: '20260824_enforce_controlled_test_business_acceptance', fileName: '20260824_enforce_controlled_test_business_acceptance.sql' },
+  { name: '20260824_business_controlled_test_acceptance', fileName: '20260824_business_controlled_test_acceptance.sql' },
 ] as const;
