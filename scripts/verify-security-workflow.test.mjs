@@ -45,17 +45,36 @@ test('public-repository security checks cannot be disabled by a repository varia
   assert.doesNotMatch(source, /ENABLE_GITHUB_ADVANCED_SECURITY/);
 });
 
-test('build validation executes the production image and verifies packaged migrations', async () => {
+test('build validation executes migrations on PostgreSQL and verifies the exact image artifact', async () => {
   const workflow = yaml.load(await readFile(ciWorkflowUrl, 'utf8'));
+  const build = workflow.jobs.build;
+  assert.equal(build.services.postgres.image, 'postgres:16-alpine');
   const steps = workflow.jobs.build.steps;
   const containerBuild = steps.find((step) => step.name === 'Build production container');
+  const postgresProof = steps.find(
+    (step) => step.name === 'Execute fresh, upgrade, replay, and recovery migrations on PostgreSQL'
+  );
   const migrationProof = steps.find(
-    (step) => step.name === 'Verify production image migration packaging'
+    (step) => step.name === 'Verify exact production image migration artifact'
   );
 
   assert.match(containerBuild.run, /docker build/);
   assert.match(containerBuild.run, /--build-arg GITHUB_SHA=/);
+  assert.equal(postgresProof.run, 'node scripts/verify-engine-migrations-postgres.mjs');
+  assert.match(postgresProof.env.DATABASE_URL, /127\.0\.0\.1.*hx_ci_admin_test/);
   assert.match(migrationProof.run, /docker run --rm --entrypoint node/);
-  assert.match(migrationProof.run, /backend\/database\/migrations/);
-  assert.match(migrationProof.run, /test "\$actual_count" = "\$expected_count"/);
+  assert.match(migrationProof.run, /engine-migration-artifact\.sha256/);
+  assert.match(migrationProof.run, /test "\$image_digest" = "\$expected_digest"/);
+});
+
+test('pull-request database and Redis secrets reach only the test execution step', async () => {
+  const workflow = yaml.load(await readFile(ciWorkflowUrl, 'utf8'));
+  const testJob = workflow.jobs.test;
+  assert.equal(testJob.env.DATABASE_URL, undefined);
+  assert.equal(testJob.env.UPSTASH_REDIS_REST_URL, undefined);
+  assert.equal(testJob.env.UPSTASH_REDIS_REST_TOKEN, undefined);
+  const testStep = testJob.steps.find((step) => step.name === 'Tests — zero failures');
+  assert.equal(testStep.env.DATABASE_URL, '${{ secrets.TEST_DATABASE_URL }}');
+  assert.equal(testStep.env.UPSTASH_REDIS_REST_URL, '${{ secrets.TEST_UPSTASH_REDIS_REST_URL }}');
+  assert.equal(testStep.env.UPSTASH_REDIS_REST_TOKEN, '${{ secrets.TEST_UPSTASH_REDIS_REST_TOKEN }}');
 });

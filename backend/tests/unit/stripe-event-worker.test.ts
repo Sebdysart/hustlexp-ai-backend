@@ -10,7 +10,8 @@
  * Critical bug fix (payment_intent.succeeded escrow funding):
  * - payment_intent.succeeded → EscrowService.fund (PENDING → FUNDED)
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -79,6 +80,7 @@ import { RevenueService } from '../../src/services/RevenueService.js';
 import { ChargebackService } from '../../src/services/ChargebackService.js';
 import { EscrowService } from '../../src/services/EscrowService.js';
 import { verifyJobSignature } from '../../src/jobs/queues.js';
+import { processSubscriptionEvent } from '../../src/services/StripeSubscriptionProcessor.js';
 import type { Job } from 'bullmq';
 
 const mockDb = vi.mocked(db);
@@ -103,6 +105,11 @@ function setupClaim(type: string, eventObject: Record<string, unknown>) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  enableControlledStripePaymentTestCohortV7();
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 // ===========================================================================
@@ -110,6 +117,43 @@ beforeEach(() => {
 // ===========================================================================
 
 describe('processStripeEventJob', () => {
+  describe('frozen positive-effect containment', () => {
+    it.each([
+      'customer.subscription.created',
+      'checkout.session.completed',
+      'invoice.payment_failed',
+      'invoice.paid',
+    ])('retains %s without invoking its canonical-effect handler', async (type) => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('ENGINE_API_MODE', 'production');
+      vi.stubEnv('STRIPE_MODE', 'live');
+      vi.stubEnv('STRIPE_SECRET_KEY', 'sk_live_forbidden');
+      vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'enabled');
+      setupClaim(type, { id: `${type}-object`, status: 'active', amount_paid: 999 });
+
+      await processStripeEventJob(makeJob(type, { id: `${type}-object` }));
+
+      expect(processSubscriptionEvent).not.toHaveBeenCalled();
+      expect(EscrowService.fund).not.toHaveBeenCalled();
+      expect(mockDb.query).toHaveBeenCalledTimes(2);
+      expect(String(mockDb.query.mock.calls[1]?.[0])).toContain('PAYMENT_CREATION_FROZEN');
+    });
+
+    it('allows only a negative canceled subscription update while frozen', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('ENGINE_API_MODE', 'production');
+      vi.stubEnv('STRIPE_MODE', 'live');
+      vi.stubEnv('STRIPE_SECRET_KEY', 'sk_live_forbidden');
+      vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'enabled');
+      const subscription = { id: 'sub_cancel', status: 'canceled' };
+      setupClaim('customer.subscription.updated', subscription);
+
+      await processStripeEventJob(makeJob('customer.subscription.updated', subscription));
+
+      expect(processSubscriptionEvent).toHaveBeenCalledOnce();
+      expect(String(mockDb.query.mock.calls[1]?.[0])).toContain("result = 'success'");
+    });
+  });
   // -------------------------------------------------------------------------
   // invoice.paid
   // BUG 5 FIX: handleInvoicePaid now uses db.query with INSERT ON CONFLICT
@@ -377,6 +421,22 @@ describe('processStripeEventJob', () => {
   // the same mockDb.query, queued with mockResolvedValueOnce.
   // -------------------------------------------------------------------------
   describe('payment_intent.succeeded', () => {
+    it('retains the provider fact but suppresses entitlement and escrow effects while frozen', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('ENGINE_API_MODE', 'production');
+      vi.stubEnv('STRIPE_MODE', 'live');
+      vi.stubEnv('STRIPE_SECRET_KEY', 'sk_live_forbidden');
+      vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'enabled');
+      const paymentIntent = { id: 'pi_frozen', metadata: { user_id: 'user-1', risk_level: 'HIGH' } };
+      setupClaim('payment_intent.succeeded', paymentIntent);
+
+      await processStripeEventJob(makeJob('payment_intent.succeeded', paymentIntent));
+
+      expect(EscrowService.fund).not.toHaveBeenCalled();
+      expect(mockDb.query).toHaveBeenCalledTimes(2);
+      expect(String(mockDb.query.mock.calls[1]?.[0])).toContain("result = 'skipped'");
+      expect(String(mockDb.query.mock.calls[1]?.[0])).toContain('PAYMENT_CREATION_FROZEN');
+    });
     const paymentIntent = { id: 'pi_test_abc', amount: 5000 };
 
     /** Helper: prime the claim query (call 1 of 3) */

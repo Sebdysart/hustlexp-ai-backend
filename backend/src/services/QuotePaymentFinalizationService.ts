@@ -265,6 +265,19 @@ export async function finalizePaidQuote(
 
       const existingPayment = paymentResult.rows[0];
 
+      if (existingPayment) {
+        const recovery = await query<{ operation_state: string }>(
+          `SELECT operation_state
+           FROM quote_payment_recovery_operations
+           WHERE quote_payment_id = $1
+           LIMIT 1`,
+          [existingPayment.id],
+        );
+        if (recovery.rows[0]) {
+          throw new Error('QUOTE_PAYMENT_RECOVERY_ACTIVE');
+        }
+      }
+
       if (existingPayment?.status === 'SUCCEEDED' && existingPayment.task_id) {
         const escrowResult = await query<{ id: string }>(
           `
@@ -555,6 +568,10 @@ export async function finalizePaidQuote(
       QUOTE_PAYMENT_IDEMPOTENCY_CONFLICT: [
         'QUOTE_PAYMENT_IDEMPOTENCY_CONFLICT',
         'This quote is already bound to a different payment.',
+      ],
+      QUOTE_PAYMENT_RECOVERY_ACTIVE: [
+        'QUOTE_PAYMENT_RECOVERY_ACTIVE',
+        'This quote payment is owned by the recovery and reconciliation lane.',
       ],
     };
 

@@ -22,6 +22,9 @@ const enabled = {
   STRIPE_SECRET_KEY: 'sk_test_local_certification',
   HX_PAYMENT_CREATION_MODE: 'enabled',
   HXOS_LOCAL_TEST_PAYMENT_SECRET: 'local-payment-secret-is-at-least-thirty-two-chars',
+  DATABASE_URL: 'postgresql://hx_test_role@127.0.0.1:5432/hx_payment_test',
+  HXOS_LOCAL_TEST_DATABASE_NAME: 'hx_payment_test',
+  HXOS_LOCAL_TEST_DATABASE_ROLE: 'hx_test_role',
 };
 
 function enable(): void {
@@ -45,6 +48,10 @@ describe('local certification payment provider', () => {
       { STRIPE_SECRET_KEY: 'sk_live_forbidden' },
       { HX_PAYMENT_CREATION_MODE: 'frozen' },
       { HXOS_LOCAL_TEST_PAYMENT_SECRET: 'weak' },
+      { DATABASE_URL: 'postgresql://hx_test_role@prod.internal:5432/hx_payment_test' },
+      { DATABASE_URL: 'postgresql://hx_test_role@127.0.0.1:5432/hustlexp' },
+      { HXOS_LOCAL_TEST_DATABASE_NAME: 'wrong_test' },
+      { HXOS_LOCAL_TEST_DATABASE_ROLE: '' },
     ]) expect(localCertificationPaymentEnabled({ ...enabled, ...override })).toBe(false);
   });
 
@@ -76,6 +83,10 @@ describe('local certification payment provider', () => {
 
   it('creates a deterministic TEST intent and reuses only equivalent state', async () => {
     enable();
+    vi.mocked(db.query).mockResolvedValueOnce({
+      rows: [{ database_name: 'hx_payment_test', database_user: 'hx_test_role' }],
+      rowCount: 1,
+    } as never);
     const query = vi.fn();
     vi.mocked(db.transaction).mockImplementation(async (work) => work(query));
     let inserted: unknown[] = [];
@@ -105,6 +116,10 @@ describe('local certification payment provider', () => {
 
   it('rejects confirmation with the wrong hashed client secret', async () => {
     enable();
+    vi.mocked(db.query).mockResolvedValueOnce({
+      rows: [{ database_name: 'hx_payment_test', database_user: 'hx_test_role' }],
+      rowCount: 1,
+    } as never);
     const query = vi.fn().mockResolvedValueOnce({ rows: [{
       id: `pi_hxos_test_${'a'.repeat(32)}`, task_id: 'task-1', escrow_id: 'escrow-1',
       poster_id: 'poster-1', amount_cents: 13000, status: 'requires_confirmation',
@@ -123,15 +138,38 @@ describe('local certification payment provider', () => {
 
   it('verifies only a succeeded intent with exact task, escrow, Poster, and amount', async () => {
     enable();
-    vi.mocked(db.query).mockResolvedValueOnce({ rows: [{ amount_cents: 13000 }], rowCount: 1 });
+    vi.mocked(db.query)
+      .mockResolvedValueOnce({
+        rows: [{ database_name: 'hx_payment_test', database_user: 'hx_test_role' }],
+        rowCount: 1,
+      } as never)
+      .mockResolvedValueOnce({ rows: [{ amount_cents: 13000 }], rowCount: 1 } as never);
     const result = await LocalCertificationPaymentProvider.verifySucceededIntent({
       paymentIntentId: `pi_hxos_test_${'a'.repeat(32)}`,
       escrowId: 'escrow-1', taskId: 'task-1', posterId: 'poster-1', amountCents: 13000,
     });
     expect(result).toEqual({ success: true, data: { status: 'succeeded', amountCents: 13000 } });
-    const params = vi.mocked(db.query).mock.calls[0]?.[1];
+    const params = vi.mocked(db.query).mock.calls[1]?.[1];
     expect(params).toEqual([
       `pi_hxos_test_${'a'.repeat(32)}`, 'escrow-1', 'task-1', 'poster-1', 13000,
     ]);
+  });
+
+  it('fails before mutation when the connected database identity is not disposable', async () => {
+    enable();
+    vi.mocked(db.query).mockResolvedValueOnce({
+      rows: [{ database_name: 'production', database_user: 'app_owner' }],
+      rowCount: 1,
+    } as never);
+
+    const result = await LocalCertificationPaymentProvider.createIntent({
+      taskId: 'task-1', escrowId: 'escrow-1', posterId: 'poster-1', amountCents: 13000,
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      error: { code: 'LOCAL_TEST_STORAGE_IDENTITY_MISMATCH' },
+    });
+    expect(db.transaction).not.toHaveBeenCalled();
   });
 });

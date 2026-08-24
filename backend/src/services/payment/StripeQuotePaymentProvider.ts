@@ -173,6 +173,12 @@ export const StripeQuotePaymentProvider: QuotePaymentProvider = {
         const existingRefunds = await stripeBreaker.execute(() =>
           stripe.refunds.list({ payment_intent: paymentIntent.id, limit: 100 }),
         );
+        if (existingRefunds.has_more) {
+          return recoveryFailure(
+            'PAYMENT_REFUND_RECONCILIATION_INCOMPLETE',
+            'Refund history exceeds the bounded reconciliation window',
+          );
+        }
         const existingRefund = existingRefunds.data.find(
           (refund) => refund.metadata?.hx_quote_recovery_key === input.recoveryKey,
         );

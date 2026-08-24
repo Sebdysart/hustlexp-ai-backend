@@ -256,6 +256,19 @@ describe('Stripe quote payment recovery adapter', () => {
     expect(mocks.createRefund).not.toHaveBeenCalled();
   });
 
+  it('fails closed when the refund history exceeds the bounded reconciliation page', async () => {
+    mocks.retrieve.mockResolvedValueOnce(payment('succeeded'));
+    mocks.listRefunds.mockResolvedValueOnce({ data: [], has_more: true });
+
+    const result = await StripeQuotePaymentProvider.recoverOrphanPayment(input);
+
+    expect(result).toMatchObject({
+      success: false,
+      error: { code: 'PAYMENT_REFUND_RECONCILIATION_INCOMPLETE' },
+    });
+    expect(mocks.createRefund).not.toHaveBeenCalled();
+  });
+
   it.each([
     [{ amount: 1 }, 'PAYMENT_AMOUNT_MISMATCH'],
     [{ metadata: { quote_id: 'wrong' } }, 'PAYMENT_QUOTE_MISMATCH'],

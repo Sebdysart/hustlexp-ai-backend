@@ -169,4 +169,31 @@ describe('new-payment incident guard', () => {
     expect(finalization.indexOf("newPaymentCreationFailure('quote_materialization')"))
       .toBeLessThan(finalization.indexOf('await db.transaction'));
   });
+
+  it('guards asynchronous success materialization and old-payment replay boundaries', () => {
+    const stripeWorker = read('backend/src/jobs/stripe-event-worker.ts');
+    expect(stripeWorker).toContain('containFrozenPositiveEvent');
+    expect(stripeWorker.indexOf('await containFrozenPositiveEvent'))
+      .toBeLessThan(stripeWorker.indexOf('await processEntitlementPurchase'));
+    expect(stripeWorker.indexOf('await containFrozenPositiveEvent'))
+      .toBeLessThan(stripeWorker.indexOf('await fundEscrowForPaymentIntent'));
+
+    const paymentWorker = read('backend/src/jobs/payment-worker.ts');
+    expect(paymentWorker).toContain("eventType === 'payment_intent.succeeded'");
+    expect(paymentWorker.indexOf("eventType === 'payment_intent.succeeded'"))
+      .toBeLessThan(paymentWorker.indexOf('await handlePaymentIntentSucceeded'));
+
+    const xpTax = read('backend/src/services/XPTaxService.ts');
+    const mutationGuard = xpTax.indexOf("newPaymentCreationFailure('xp_tax')", xpTax.indexOf('payTax: async'));
+    expect(mutationGuard).toBeGreaterThan(0);
+    expect(mutationGuard).toBeLessThan(xpTax.indexOf('StripeService.verifyPaymentIntent'));
+    expect(mutationGuard).toBeLessThan(
+      xpTax.indexOf('db.serializableTransaction', xpTax.indexOf('payTax: async')),
+    );
+
+    const localProvider = read('backend/src/services/LocalCertificationPaymentProvider.ts');
+    expect(localProvider).toContain('assertDisposableStorage');
+    expect(localProvider).toContain("['127.0.0.1', 'localhost', '::1']");
+    expect(localProvider).toContain('current_database() AS database_name');
+  });
 });
