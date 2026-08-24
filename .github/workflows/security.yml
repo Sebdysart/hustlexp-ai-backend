@@ -5,18 +5,11 @@ on:
   pull_request:
     branches: [main]
 
-# ---------------------------------------------------------------------------
-# ENFORCING security gate = the production-dependency `npm audit` check in
-# ci.yml. It runs on every PR and fails on high or critical advisories.
-#
-# CodeQL and dependency-review require GitHub Advanced Security. Snyk requires
-# an explicitly provisioned token. Capability-dependent jobs stay skipped until
-# their repository variable is enabled; once enabled, failures are enforcing.
-#
-# ENABLE_GITHUB_ADVANCED_SECURITY=true requires GitHub Advanced Security and
-# enables both codeql and dependency-review. ENABLE_SNYK=true requires the
-# SNYK_TOKEN secret. Never enable either variable before its dependency exists.
-# ---------------------------------------------------------------------------
+permissions:
+  contents: read
+
+# CodeQL and dependency review are enforcing on this public repository. Snyk
+# remains disabled until its token is explicitly provisioned.
 
 jobs:
   audit:
@@ -26,11 +19,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - run: npm run verify:security-workflow:contract
       - run: npm ci
       - run: npm audit --omit=dev --audit-level=high
 
   codeql:
-    if: ${{ vars.ENABLE_GITHUB_ADVANCED_SECURITY == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       security-events: write
@@ -45,7 +38,7 @@ jobs:
 
   dependency-review:
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'pull_request' && vars.ENABLE_GITHUB_ADVANCED_SECURITY == 'true' }}
+    if: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/dependency-review-action@v4
