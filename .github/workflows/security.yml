@@ -19,8 +19,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: npm run verify:security-workflow:contract
       - run: npm ci
+      - run: npm run verify:security-workflow:contract
       - run: npm audit --omit=dev --audit-level=high
 
   codeql:

@@ -15,6 +15,14 @@ test('public-repository security checks cannot be disabled by a repository varia
   assert.ok(workflow.on.pull_request);
   assert.ok(workflow.on.schedule);
 
+  const audit = workflow.jobs.audit;
+  const installIndex = audit.steps.findIndex((step) => step.run === 'npm ci');
+  const contractIndex = audit.steps.findIndex(
+    (step) => step.run === 'npm run verify:security-workflow:contract'
+  );
+  assert.ok(installIndex >= 0);
+  assert.ok(contractIndex > installIndex, 'workflow contract requires installed parser dependencies');
+
   const codeql = workflow.jobs.codeql;
   assert.equal(codeql['continue-on-error'], undefined);
   assert.equal(codeql.permissions['security-events'], 'write');
