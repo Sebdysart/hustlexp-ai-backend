@@ -14,7 +14,10 @@ import { TRPCError } from '@trpc/server';
 import { router, hustlerProcedure } from '../trpc.js';
 import { XPTaxService } from '../services/XPTaxService.js';
 import { StripeService } from '../services/StripeService.js';
-import { paymentCreationErrorCause } from '../services/NewPaymentCreationGuard.js';
+import {
+  newPaymentCreationFailure,
+  paymentCreationErrorCause,
+} from '../services/NewPaymentCreationGuard.js';
 import { z } from 'zod';
 import { logger } from '../logger.js';
 
@@ -76,6 +79,14 @@ export const xpTaxRouter = router({
   createPaymentIntent: hustlerProcedure
     .input(z.void())
     .mutation(async ({ ctx }) => {
+      const frozen = newPaymentCreationFailure('xp_tax');
+      if (frozen) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: frozen.error.message,
+          cause: paymentCreationErrorCause(frozen.error.code),
+        });
+      }
       const status = await XPTaxService.checkTaxStatus(ctx.user.id);
       if (!status.success || !status.data) {
         throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Failed to get tax status' });
@@ -84,15 +95,12 @@ export const xpTaxRouter = router({
       if (amountCents <= 0) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'No tax balance to pay' });
       }
-      // Dev/test environment — return mock intent when Stripe is not configured
       if (!StripeService.isConfigured()) {
-        log.warn('Stripe not configured, returning mock intent');
-        return {
-          clientSecret: `pi_tax_${ctx.user.id}_${Date.now()}_secret`,
-          paymentIntentId: `pi_tax_${ctx.user.id}_${Date.now()}`,
-          amountCents,
-          escrowId: null,
-        };
+        log.warn('Stripe not configured; refusing to invent a payment intent');
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'XP tax payment creation is unavailable.',
+        });
       }
 
       // Create real Stripe PaymentIntent for XP tax payment

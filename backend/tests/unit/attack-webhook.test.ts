@@ -11,7 +11,8 @@
  * the actual handling behaviour, and is labelled VERDICT: EXPLOIT / GAP / SAFE.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 // ---------------------------------------------------------------------------
 // Module mocks — must precede all imports
@@ -201,6 +202,7 @@ beforeEach(() => {
   // resetAllMocks clears both call history AND the mockResolvedValueOnce queue,
   // preventing queue pollution between tests in the same describe block.
   vi.resetAllMocks();
+  enableControlledStripePaymentTestCohortV7();
   mockCreateNotification.mockResolvedValue({ success: true });
   // Restore the Stripe constructor mock after reset so processWebhook tests work.
   // The Stripe mock module returns a class — mockConstructEvent is used per-test.
@@ -212,6 +214,10 @@ beforeEach(() => {
     (fn: (trx: typeof mockDb.query) => Promise<unknown>) => fn(mockDb.query)
   );
   mockWalletPayoutSync.mockResolvedValue({ matched: true, workerId: 'worker-payout-1' });
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 // ===========================================================================

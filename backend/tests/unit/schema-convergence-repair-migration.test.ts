@@ -51,17 +51,17 @@ describe('HX/OS clean and upgraded schema convergence repair', () => {
 
   it('registers the omitted admin contract and terminal convergence repair', () => {
     expect(RUNNER).toContain(
-      "ADMIN_CAPABILITY_CONTRACT_MIGRATION = '20260719_admin_capability_contract'",
+      "ADMIN_CAPABILITY_CONTRACT_MIGRATION = '20260719_admin_capability_contract'"
     );
     expect(RUNNER).toContain("fileName: '20260719_admin_capability_contract.sql'");
     expect(RUNNER).toContain(
-      "SCHEMA_CONVERGENCE_REPAIR_MIGRATION = '20260720_schema_convergence_repair'",
+      "SCHEMA_CONVERGENCE_REPAIR_MIGRATION = '20260720_schema_convergence_repair'"
     );
     expect(RUNNER).toContain("fileName: '20260720_schema_convergence_repair.sql'");
   });
 
   it('requires the exact current migration chain and preserves legacy reconciliation classification', () => {
-    expect(UPGRADE_ASSERT).toContain('count(*)=97 AND count(DISTINCT name)=97');
+    expect(UPGRADE_ASSERT).toContain('count(*)=104 AND count(DISTINCT name)=104');
     expect(UPGRADE_ASSERT).toContain('reconciliation_contract_version=0');
     expect(UPGRADE_ASSERT).toContain('offline_payload_hash IS NULL');
   });

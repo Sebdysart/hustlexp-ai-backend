@@ -5,6 +5,7 @@
  * getting tips for tasks, and total tips received.
  */
 import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 // vi.hoisted() runs before vi.mock() hoisting, so these refs are safe to use
 // inside the MockStripe class initializer even though vi.mock is hoisted.
@@ -57,6 +58,7 @@ const mockDb = vi.mocked(db);
 
 beforeEach(() => {
   vi.resetAllMocks();
+  enableControlledStripePaymentTestCohortV7();
 });
 
 afterEach(() => {
@@ -317,6 +319,24 @@ describe('TippingService', () => {
       amount: 500,
       metadata: { type: 'tip', task_id: 'task-1' },
     };
+
+    it('replays an already-completed bound tip while frozen without provider work', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('ENGINE_API_MODE', 'production');
+      vi.stubEnv('STRIPE_MODE', 'live');
+      vi.stubEnv('STRIPE_SECRET_KEY', 'sk_live_forbidden');
+      vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'enabled');
+      const tip = {
+        id: 'tip-existing', task_id: 'task-1', poster_id: 'poster-1', worker_id: 'worker-1',
+        amount_cents: 500, stripe_payment_intent_id: 'pi_existing', status: 'completed',
+        completed_at: new Date(), created_at: new Date(),
+      };
+      mockDb.query.mockResolvedValueOnce({ rows: [tip], rowCount: 1 } as never);
+      const result = await TippingService.confirmTip('tip-existing', 'pi_existing');
+      expect(result).toEqual({ success: true, data: tip });
+      expect(mockPaymentIntentsRetrieve).not.toHaveBeenCalled();
+      expect(mockDb.query).toHaveBeenCalledTimes(1);
+    });
 
     it('confirms tip when payment succeeded', async () => {
       mockPaymentIntentsRetrieve.mockResolvedValueOnce(validPi);

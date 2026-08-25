@@ -46,6 +46,7 @@ import type { Job } from 'bullmq';
 import type Stripe from 'stripe';
 import type { QueryFn } from '../db.js';
 import { ErrorCodes } from '../types.js';
+import { newPaymentCreationMode } from '../services/NewPaymentCreationGuard.js';
 
 const log = workerLogger.child({ worker: 'payment' });
 
@@ -144,6 +145,19 @@ export async function processPaymentJob(job: Job<PaymentJobData>): Promise<void>
     }
 
     const stripeEvent = claimResult.rows[0];
+
+    if (eventType === 'payment_intent.succeeded' && newPaymentCreationMode() === 'frozen') {
+      await db.query(
+        `UPDATE stripe_events
+         SET processed_at = NOW(),
+             result = 'skipped',
+             error_message = 'PAYMENT_CREATION_FROZEN: positive processor fact retained for reconciliation; escrow funding suppressed'
+         WHERE stripe_event_id = $1`,
+        [stripeEventId],
+      );
+      log.warn({ stripeEventId, eventType }, 'Frozen payment event retained without escrow funding');
+      return;
+    }
 
     // Extract event object from payload (Stripe.Event.data.object)
     const eventObject = stripeEvent.payload_json.data.object;
