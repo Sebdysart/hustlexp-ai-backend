@@ -51,9 +51,19 @@ async function authorizeDispute(
 
 async function loadTask(query: QueryFn, taskId: string): Promise<ReleaseTaskRow | null> {
   const result = await query<ReleaseTaskRow>(
-    `SELECT worker_id,payout_recipient_user_id,provider_organization_id,price,
-            payment_method,poster_id,automation_classification,hustler_payout_cents,
-            platform_margin_cents FROM tasks WHERE id=$1`,
+        `SELECT worker_id,
+            payout_recipient_user_id,
+            provider_organization_id,
+            business_fulfiller_organization_id,
+            orchestration_mode,
+            price,
+            payment_method,
+            poster_id,
+            automation_classification,
+            hustler_payout_cents,
+            platform_margin_cents
+    FROM tasks
+    WHERE id=$1`,
     [taskId],
   );
   return result.rows[0] ?? null;
@@ -87,19 +97,59 @@ async function verifyLocalProvider(query: QueryFn, input: {
 }): Promise<ServiceResult<Escrow> | null> {
   const transferId = input.params.localTestTransferId;
   if (!transferId) return null;
+
   if (input.task.automation_classification !== 'CONTROLLED_TEST') {
-    return failed(ErrorCodes.INVALID_STATE, 'Local certification payout cannot release a production-classified task');
+    return failed(
+      ErrorCodes.INVALID_STATE,
+      'Local certification payout cannot release a production-classified task',
+    );
   }
-  const verified = await LocalCertificationPayoutProvider.verifyPaidTransfer(query, {
-    transferId,
-    taskId: input.escrow.task_id,
-    escrowId: input.escrow.id,
-    workerId: input.payoutRecipientUserId,
-    amountCents: input.netPayoutCents,
-  });
+
+  if (
+    input.task.orchestration_mode === 'OPS_MANUAL'
+    && input.task.business_fulfiller_organization_id
+    && !input.task.worker_id
+  ) {
+    const verified =
+      await LocalCertificationPayoutProvider.verifyPaidBusinessTransfer(query, {
+        transferId,
+        taskId: input.escrow.task_id,
+        escrowId: input.escrow.id,
+        organizationId: input.task.business_fulfiller_organization_id,
+        payoutRecipientUserId: input.payoutRecipientUserId,
+        amountCents: input.netPayoutCents,
+      });
+
+    return verified
+      ? null
+      : failed(
+          ErrorCodes.INVALID_STATE,
+          'Business local certification payout is not provider-confirmed for the exact net amount',
+        );
+  }
+
+  if (!input.task.worker_id) {
+    return failed(
+      ErrorCodes.INVALID_STATE,
+      `Task ${input.escrow.task_id} has no recognized payout fulfiller`,
+    );
+  }
+
+  const verified =
+    await LocalCertificationPayoutProvider.verifyPaidTransfer(query, {
+      transferId,
+      taskId: input.escrow.task_id,
+      escrowId: input.escrow.id,
+      workerId: input.task.worker_id,
+      amountCents: input.netPayoutCents,
+    });
+
   return verified
     ? null
-    : failed(ErrorCodes.INVALID_STATE, 'Local certification payout is not provider-confirmed for the exact net amount');
+    : failed(
+        ErrorCodes.INVALID_STATE,
+        'Local certification payout is not provider-confirmed for the exact net amount',
+      );
 }
 
 async function verifyStripeRecipient(
@@ -138,7 +188,7 @@ async function validateProvider(query: QueryFn, input: {
   params: ReleaseEscrowParams;
   escrow: ReleaseEscrowRow;
   task: ReleaseTaskRow;
-  workerId: string;
+  workerId: string | null;
   payoutRecipientUserId: string;
   netPayoutCents: number;
   stripeTransferId: string | null;
@@ -146,6 +196,15 @@ async function validateProvider(query: QueryFn, input: {
   const localError = await verifyLocalProvider(query, input);
   if (localError) return { error: localError, manualRequired: false };
   if (input.params.localTestTransferId) return { error: null, manualRequired: false };
+  if (!input.workerId) {
+    return {
+      error: failed(
+        ErrorCodes.INVALID_STATE,
+        'Production Business payout provider is not configured',
+      ),
+      manualRequired: false,
+    };
+  }
   if (!input.params.adminOverride) {
     return { error: await verifyStripeRecipient(query, {
       taskId:input.escrow.task_id,workerId:input.workerId,
@@ -200,9 +259,52 @@ export async function executeReleaseTransaction(
     return failed(ErrorCodes.INVALID_STATE, 'Cannot release dispute-locked escrow without a resolved worker-favor dispute');
   }
   const task = await loadTask(query, escrow.task_id);
-  if (!task?.worker_id) return failed(ErrorCodes.INVALID_STATE, `Task ${escrow.task_id} has no assigned worker`);
+  if (!task) {
+    return failed(
+      ErrorCodes.NOT_FOUND,
+      `Task ${escrow.task_id} not found`,
+    );
+  }
+
+  const isManualBusiness =
+    task.orchestration_mode === 'OPS_MANUAL'
+    && Boolean(task.business_fulfiller_organization_id)
+    && !task.worker_id;
+
+  if (!task.worker_id && !isManualBusiness) {
+    return failed(
+      ErrorCodes.INVALID_STATE,
+      `Task ${escrow.task_id} has no recognized fulfiller`,
+    );
+  }
+
+  let payoutRecipientUserId: string;
+
+  if (isManualBusiness) {
+    const destination = await query<{ payout_recipient_user_id: string }>(
+      `SELECT payout_recipient_user_id
+      FROM hxos_local_test_business_payout_destinations
+      WHERE organization_id = $1
+        AND status = 'ACTIVE'
+        AND is_test IS TRUE`,
+      [task.business_fulfiller_organization_id],
+    );
+
+    if (destination.rows.length !== 1) {
+      return failed(
+        ErrorCodes.INVALID_STATE,
+        'Business payout destination is not uniquely resolved',
+      );
+    }
+
+    payoutRecipientUserId =
+      destination.rows[0].payout_recipient_user_id;
+  } else {
+    payoutRecipientUserId =
+      task.payout_recipient_user_id ?? task.worker_id!;
+  }
+
   const workerId = task.worker_id;
-  const payoutRecipientUserId = task.payout_recipient_user_id ?? workerId;
   const breakdown = computeFeeBreakdown(
     escrow.amount,
     clampFeePercent(config.stripe.platformFeePercent),
@@ -219,6 +321,7 @@ export async function executeReleaseTransaction(
   if (!transitioned.success) return transitioned;
   const post: ReleasePost = {
     workerId,
+    businessFulfillerOrganizationId: task.business_fulfiller_organization_id,
     payoutRecipientUserId,
     serviceBusinessProvider: task.provider_organization_id != null,
     grossPayoutCents: escrow.amount,

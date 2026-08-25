@@ -25,8 +25,14 @@ interface EscrowSnapshot {
   platform_fee_cents:number|null; stripe_transfer_id:string|null;
 }
 interface TaskSnapshot {
-  state:string; worker_id:string|null; payout_recipient_user_id:string|null;
-  payment_method:string|null; poster_id:string|null; automation_classification:string|null;
+  state: string;
+  worker_id: string | null;
+  payout_recipient_user_id: string | null;
+  business_fulfiller_organization_id: string | null;
+  orchestration_mode: string | null;
+  payment_method: string | null;
+  poster_id: string | null;
+  automation_classification: string | null;
 }
 type CompletionContext =
   | { action:'noop' }
@@ -72,8 +78,16 @@ async function loadCompletionContext(escrowId:string,taskId:string):Promise<Comp
     if (!escrow) throw new Error(`Escrow ${escrowId} not found for completion release`);
     if (!await escrowCanProceed(escrow,taskId)) return {action:'noop'};
     const taskResult=await query<TaskSnapshot>(
-      `SELECT state,worker_id,payout_recipient_user_id,payment_method,poster_id,
-              automation_classification FROM tasks WHERE id=$1`,[taskId],
+            `SELECT state,
+            worker_id,
+            payout_recipient_user_id,
+            business_fulfiller_organization_id,
+            orchestration_mode,
+            payment_method,
+            poster_id,
+            automation_classification
+      FROM tasks
+      WHERE id=$1`,[taskId],
     );
     const task=taskResult.rows[0];
     if (!task) throw new Error(`Task ${taskId} not found for completion release`);
@@ -103,6 +117,27 @@ async function assertLocalReleaseConverged(
   if (row.provider_transfer_status!=='paid') throw new Error('Completion release provider is not paid');
 }
 
+async function resolveBusinessPayoutRecipient(
+  organizationId: string,
+): Promise<string> {
+  const result = await db.query<{ payout_recipient_user_id: string }>(
+    `SELECT payout_recipient_user_id
+     FROM hxos_local_test_business_payout_destinations
+     WHERE organization_id = $1
+       AND status = 'ACTIVE'
+       AND is_test IS TRUE`,
+    [organizationId],
+  );
+
+  if (result.rows.length !== 1) {
+    throw new Error(
+      `Business ${organizationId} must have exactly one active local TEST payout destination`,
+    );
+  }
+
+  return result.rows[0].payout_recipient_user_id;
+}
+
 async function processLocalTestPayout(
   escrow:EscrowSnapshot,
   taskId:string,
@@ -125,6 +160,69 @@ async function processLocalTestPayout(
     escrowId:escrow.id,taskId,transferId:transfer.data.transferId,
     amountCents:transfer.data.amountCents,provider:transfer.data.provider,
   },'Local TEST provider paid and escrow RELEASED');
+}
+
+async function processLocalTestBusinessPayout(
+  escrow: EscrowSnapshot,
+  taskId: string,
+  organizationId: string,
+  payoutRecipientUserId: string,
+): Promise<void> {
+  const transfer =
+    await LocalCertificationPayoutProvider.createPaidBusinessTransfer({
+      taskId,
+      escrowId: escrow.id,
+      organizationId,
+      payoutRecipientUserId,
+      idempotencyKey: `completion-release-local-test-business:${escrow.id}`,
+    });
+
+  if ('error' in transfer) {
+    throw new Error(
+      `Completion release: local TEST Business payout failed — ${transfer.error.message}`,
+    );
+  }
+
+  const release = await EscrowService.release({
+    escrowId: escrow.id,
+    localTestTransferId: transfer.data.transferId,
+  });
+
+  if (
+    !release.success
+    && !TERMINAL_RELEASE_CODES.has(release.error.code)
+  ) {
+    throw new Error(
+      `Completion release: local TEST Business escrow release failed — ${release.error.message}`,
+    );
+  }
+
+  if (!release.success) {
+    await assertLocalReleaseConverged(
+      escrow.id,
+      transfer.data.transferId,
+      release.error.message,
+    );
+  }
+
+  await notifyPaymentReleased(
+    payoutRecipientUserId,
+    taskId,
+    transfer.data.amountCents,
+  );
+
+  log.info(
+    {
+      escrowId: escrow.id,
+      taskId,
+      organizationId,
+      payoutRecipientUserId,
+      transferId: transfer.data.transferId,
+      amountCents: transfer.data.amountCents,
+      provider: transfer.data.provider,
+    },
+    'Local TEST Business provider paid and escrow RELEASED',
+  );
 }
 
 async function loadStripeDestination(
@@ -238,13 +336,68 @@ export async function processCompletionRelease(input:{escrowId:string;taskId:str
   if (context.action==='noop') return;
   const {escrow,task}=context;
   if ((task.payment_method ?? 'escrow')!=='escrow') return;
-  if (!task.worker_id) throw new Error(`Task ${input.taskId} is COMPLETED but has no worker_id — cannot pay out`);
-  const payoutRecipientUserId=task.payout_recipient_user_id ?? task.worker_id;
-  if (task.automation_classification==='CONTROLLED_TEST' && localCertificationPayoutEnabled()) {
-    await processLocalTestPayout(escrow,input.taskId,payoutRecipientUserId);
+  if (
+    task.orchestration_mode === 'OPS_MANUAL'
+    && task.business_fulfiller_organization_id
+    && !task.worker_id
+  ) {
+    if (
+      task.automation_classification === 'CONTROLLED_TEST'
+      && localCertificationPayoutEnabled()
+    ) {
+      const payoutRecipientUserId = await resolveBusinessPayoutRecipient(
+        task.business_fulfiller_organization_id,
+      );
+
+      await processLocalTestBusinessPayout(
+        escrow,
+        input.taskId,
+        task.business_fulfiller_organization_id,
+        payoutRecipientUserId,
+      );
+
+      return;
+    }
+
+    throw new Error(
+      `Task ${input.taskId} is an OPS_MANUAL Business task but no production Business payout provider is configured`,
+    );
+  }
+
+  if (!task.worker_id) {
+    throw new Error(
+      `Task ${input.taskId} is COMPLETED but has no recognized fulfiller payout identity`,
+    );
+  }
+
+  const payoutRecipientUserId =
+    task.payout_recipient_user_id ?? task.worker_id;
+
+  if (
+    task.automation_classification === 'CONTROLLED_TEST'
+    && localCertificationPayoutEnabled()
+  ) {
+    await processLocalTestPayout(
+      escrow,
+      input.taskId,
+      payoutRecipientUserId,
+    );
     return;
   }
-  const transferId=await resolveStripeTransfer(escrow,task,input.taskId,payoutRecipientUserId);
+
+  const transferId = await resolveStripeTransfer(
+    escrow,
+    task,
+    input.taskId,
+    payoutRecipientUserId,
+  );
+
   if (!transferId) return;
-  await releaseAndNotify(escrow,input.taskId,payoutRecipientUserId,transferId);
+
+  await releaseAndNotify(
+    escrow,
+    input.taskId,
+    payoutRecipientUserId,
+    transferId,
+  );
 }

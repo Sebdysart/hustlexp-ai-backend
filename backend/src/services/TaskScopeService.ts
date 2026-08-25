@@ -12,6 +12,9 @@ type ScopeTask = {
   progress_state: string;
   active_scope_version_id: string | null;
   scope_hash: string | null;
+  orchestration_mode: string | null;
+  business_fulfiller_organization_id: string | null;
+  
 };
 type ScopeVersionRow = {
   id: string;
@@ -64,9 +67,19 @@ function participantRole(task: ScopeTask, userId: string): 'POSTER' | 'HUSTLER' 
 
 async function lockTask(query: Query, taskId: string): Promise<ScopeTask> {
   const result = await query<ScopeTask>(
-    `SELECT id, poster_id, worker_id, state, progress_state,
-            active_scope_version_id, scope_hash
-     FROM tasks WHERE id = $1 FOR UPDATE`,
+    `SELECT
+      id,
+      poster_id,
+      worker_id,
+      state,
+      progress_state,
+      active_scope_version_id,
+      scope_hash,
+      orchestration_mode,
+      business_fulfiller_organization_id
+    FROM tasks
+    WHERE id = $1
+    FOR UPDATE`,
     [taskId],
   );
   return result.rows[0] ?? fail('NOT_FOUND', 'Task not found.');
@@ -269,35 +282,116 @@ async function setChecklistItem(params: {
 }) {
   return db.transaction(async (query) => {
     const task = await lockTask(query, params.taskId);
-    if (task.worker_id !== params.workerId) fail('FORBIDDEN', 'Only the reserved Hustler can update execution checklist progress.');
-    if (task.state !== 'ACCEPTED' || task.progress_state !== 'WORKING') {
-      fail('PRECONDITION_FAILED', 'Checklist progress is available only after check-in and work start.');
+
+    if (task.orchestration_mode === 'OPS_MANUAL') {
+      if (!task.business_fulfiller_organization_id) {
+        fail(
+          'PRECONDITION_FAILED',
+          'Manual task has no Business fulfiller.',
+        );
+      }
+
+      const membership = await query<{ id: string }>(
+        `
+        SELECT id
+        FROM business_memberships
+        WHERE organization_id = $1
+          AND user_id = $2
+          AND status = 'ACTIVE'
+          AND role = 'OWNER'
+        LIMIT 1
+        `,
+        [task.business_fulfiller_organization_id, params.workerId],
+      );
+
+      if (!membership.rows[0]) {
+        fail(
+          'FORBIDDEN',
+          'Only the active Business owner can update manual-task checklist progress.',
+        );
+      }
+    } else if (task.worker_id !== params.workerId) {
+      fail(
+        'FORBIDDEN',
+        'Only the reserved Hustler can update execution checklist progress.',
+      );
     }
-    if (task.active_scope_version_id !== params.versionId) fail('CONFLICT', 'Checklist update targets a stale scope version.');
+
+    if (task.state !== 'ACCEPTED' || task.progress_state !== 'WORKING') {
+      fail(
+        'PRECONDITION_FAILED',
+        'Checklist progress is available only while work is in progress.',
+      );
+    }
+
+    if (task.active_scope_version_id !== params.versionId) {
+      fail(
+        'CONFLICT',
+        'Checklist update targets a stale scope version.',
+      );
+    }
+
     const pending = await query<{ id: string }>(
-      `SELECT id FROM task_scope_change_proposals
-       WHERE task_id = $1 AND status = 'PENDING' LIMIT 1 FOR UPDATE`,
+      `
+      SELECT id
+      FROM task_scope_change_proposals
+      WHERE task_id = $1
+        AND status = 'PENDING'
+      LIMIT 1
+      FOR UPDATE
+      `,
       [params.taskId],
     );
-    if (pending.rows[0]) fail('PRECONDITION_FAILED', 'Execution is frozen until the pending scope change is decided.');
-    const version = await activeVersion(query, task);
-    if (!Number.isInteger(params.itemIndex) || params.itemIndex < 0 || params.itemIndex >= version.checklist.length) {
-      fail('BAD_REQUEST', 'Checklist item does not exist in the active scope.');
+
+    if (pending.rows[0]) {
+      fail(
+        'PRECONDITION_FAILED',
+        'Execution is frozen until the pending scope change is decided.',
+      );
     }
+
+    const version = await activeVersion(query, task);
+
+    if (
+      !Number.isInteger(params.itemIndex)
+      || params.itemIndex < 0
+      || params.itemIndex >= version.checklist.length
+    ) {
+      fail(
+        'BAD_REQUEST',
+        'Checklist item does not exist in the active scope.',
+      );
+    }
+
     if (params.completed) {
       await query(
-        `INSERT INTO task_scope_checklist_progress (version_id, item_index, completed_by)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (version_id, item_index) DO NOTHING`,
+        `
+        INSERT INTO task_scope_checklist_progress (
+          version_id,
+          item_index,
+          completed_by
+        )
+        VALUES ($1, $2, $3)
+        ON CONFLICT (version_id, item_index) DO NOTHING
+        `,
         [version.id, params.itemIndex, params.workerId],
       );
     } else {
       await query(
-        'DELETE FROM task_scope_checklist_progress WHERE version_id = $1 AND item_index = $2',
+        `
+        DELETE FROM task_scope_checklist_progress
+        WHERE version_id = $1
+          AND item_index = $2
+        `,
         [version.id, params.itemIndex],
       );
     }
-    return { versionId: version.id, itemIndex: params.itemIndex, completed: params.completed };
+
+    return {
+      versionId: version.id,
+      itemIndex: params.itemIndex,
+      completed: params.completed,
+    };
   });
 }
 
