@@ -40,16 +40,24 @@ const MAX_FILE_SIZE = MAX_MEDIA_UPLOAD_BYTES;
 const PRESIGN_EXPIRY = 15 * 60; // 15 minutes
 
 // Initialize S3 client for Cloudflare R2 (S3-compatible)
-const r2Config = config.cloudflare.r2;
-const isR2Configured = r2Config.endpoint && r2Config.accessKeyId && r2Config.secretAccessKey;
+const b2Config = config.backblaze.b2;
 
-const s3Client = isR2Configured
+const isB2Configured =
+  Boolean(
+    b2Config.endpoint
+    && b2Config.region
+    && b2Config.keyId
+    && b2Config.applicationKey
+    && b2Config.bucketName,
+  );
+
+const s3Client = isB2Configured
   ? new S3Client({
-      region: r2Config.region,
-      endpoint: r2Config.endpoint,
+      endpoint: b2Config.endpoint,
+      region: b2Config.region,
       credentials: {
-        accessKeyId: r2Config.accessKeyId,
-        secretAccessKey: r2Config.secretAccessKey,
+        accessKeyId: b2Config.keyId,
+        secretAccessKey: b2Config.applicationKey,
       },
     })
   : null;
@@ -57,6 +65,8 @@ const s3Client = isR2Configured
 interface TaskUploadAuthority {
   poster_id: string;
   worker_id: string | null;
+  orchestration_mode: 'AUTOMATED' | 'OPS_MANUAL';
+  business_fulfiller_organization_id: string | null;
 }
 
 async function assertUploadAuthority(
@@ -65,20 +75,68 @@ async function assertUploadAuthority(
   purpose: 'proof' | 'message'
 ): Promise<void> {
   const taskCheck = await db.query<TaskUploadAuthority>(
-    'SELECT poster_id, worker_id FROM tasks WHERE id = $1',
-    [taskId]
+    `
+    SELECT
+      poster_id,
+      worker_id,
+      orchestration_mode,
+      business_fulfiller_organization_id
+    FROM tasks
+    WHERE id = $1
+    `,
+    [taskId],
   );
   if (taskCheck.rows.length === 0) {
     throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
   }
-  const { poster_id, worker_id } = taskCheck.rows[0];
-  if (purpose === 'proof' && userId !== worker_id) {
-    throw new TRPCError({
-      code: 'FORBIDDEN',
-      message: 'Only the assigned worker can upload completion proof.',
-    });
+  const {
+    poster_id,
+    worker_id,
+    orchestration_mode,
+    business_fulfiller_organization_id,
+  } = taskCheck.rows[0];
+
+  if (purpose === 'proof') {
+    if (orchestration_mode === 'OPS_MANUAL') {
+      if (!business_fulfiller_organization_id) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Manual task has no Business fulfiller.',
+        });
+      }
+
+      const membership = await db.query<{ id: string }>(
+        `
+        SELECT id
+        FROM business_memberships
+        WHERE organization_id = $1
+          AND user_id = $2
+          AND status = 'ACTIVE'
+          AND role = 'OWNER'
+        LIMIT 1
+        `,
+        [business_fulfiller_organization_id, userId],
+      );
+
+      if (!membership.rows[0]) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'Only the active Business owner can upload completion proof.',
+        });
+      }
+    } else if (userId !== worker_id) {
+      throw new TRPCError({
+        code: 'FORBIDDEN',
+        message: 'Only the assigned worker can upload completion proof.',
+      });
+    }
   }
-  if (purpose === 'message' && userId !== poster_id && userId !== worker_id) {
+
+  if (
+    purpose === 'message'
+    && userId !== poster_id
+    && userId !== worker_id
+  ) {
     throw new TRPCError({
       code: 'FORBIDDEN',
       message: 'Not authorized to upload files for this task',
@@ -133,7 +191,7 @@ export const uploadRouter = router({
       let uploadUrl: string;
       if (s3Client) {
         const command = new PutObjectCommand({
-          Bucket: r2Config.bucketName,
+          Bucket: b2Config.bucketName,
           Key: key,
           ContentType: input.contentType,
           ContentLength: input.fileSize,
@@ -150,9 +208,9 @@ export const uploadRouter = router({
         });
       } else {
         // Fallback remains non-authoritative: finalization still requires a real
-        // quarantine object and therefore fails closed without R2.
-        log.warn('R2 not configured, returning non-authoritative mock upload URL');
-        uploadUrl = `https://r2-not-configured.invalid/upload/${key}?X-Amz-Signature=mock`;
+        // quarantine object and therefore fails closed without Backblaze B2.
+        log.warn('Backblaze B2 not configured, returning non-authoritative mock upload URL');
+        uploadUrl = `https://b2-not-configured.invalid/upload/${key}?X-Amz-Signature=mock`;
       }
 
       await db.query(

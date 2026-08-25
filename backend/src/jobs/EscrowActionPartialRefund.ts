@@ -133,7 +133,7 @@ async function freshTransferId(escrowId: string): Promise<string | null> {
 async function loadPayoutAccount(taskId:string,task:TaskPayoutRow,userId:string|null):Promise<string> {
   if (!userId || !task.worker_id) throw new Error('Payout recipient or fulfiller is missing');
   const destination=await loadCurrentTaskPayoutDestination(db.query.bind(db),{
-    taskId,workerId:task.worker_id,payoutRecipientUserId:userId,
+    taskId,workerId:task.worker_id,payoutRecipientUserId:userId,kind: 'WORKER',
   });
   if (!destination.ready || !destination.stripeConnectId) {
     throw new Error(`Payout destination ${userId} is not current (${destination.reason})`);

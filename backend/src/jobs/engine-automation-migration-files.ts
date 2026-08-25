@@ -102,4 +102,13 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260814_task_supply_confidence', fileName: '20260814_task_supply_confidence.sql' },
   { name: '20260815_quote_columns_extra_v4' , fileName: '20260815_quote_columns_extra_v4.sql' },
   { name: '20260819_quote_payments', fileName: '20260819_quote_payments.sql'},
+  { name: '20260819_ops_web_hardening', fileName: '20260819_ops_web_hardening.sql' },
+  { name: '20260821_ops_business_claim_links', fileName: '20260821_ops_business_claim_links.sql' },
+  { name: '20260821_business_ownership', fileName: '20260821_business_ownership.sql' },
+  { name: '20260821_business_claim_links_extra', fileName: '20260821_business_claim_links_extra.sql' },
+  { name: '20260823_business_fulfiller_lifecycle', fileName: '20260823_business_fulfiller_lifecycle.sql' },
+  { name: '20260823_business_payout_tables', fileName: '20260823_business_payout_tables.sql' },
+  { name: '20260824_enforce_controlled_test_business_acceptance', fileName: '20260824_enforce_controlled_test_business_acceptance.sql' },
+  { name: '20260824_business_controlled_test_acceptance', fileName: '20260824_business_controlled_test_acceptance.sql' },
+  { name: '20260824_orchestration_mode', fileName: '20260824_orchestration_mode.sql' },
 ] as const;

@@ -25,6 +25,7 @@ import { startServer } from './serverStartup.js';
 import { registerTrpcRoutes } from './serverTrpcRoutes.js';
 import type { HustleApp } from './serverTypes.js';
 import { registerWebhookRoutes } from './serverWebhookRoutes.js';
+import { registerOpsAdminRoutes } from './serverOpsAdminRoutes.js';
 
 validateProductionCors();
 const app: HustleApp = new Hono();
@@ -38,6 +39,7 @@ registerGeneralRateLimits(app);
 createMetricsEndpoint(app);
 registerHealthRoutes(app);
 registerActionLinkRoutes(app);
+registerOpsAdminRoutes(app);
 
 app.use('/realtime/stream', publicIpRateLimitMiddleware(), rateLimitMiddleware('sse'));
 registerRealtimeRoute(app);

@@ -53,6 +53,8 @@ function baseTaskValues(input: TaskPersistenceInput): unknown[] {
     location,
     params.dispatchExpiresAt,
     params.automationClassification ?? 'PRODUCTION',
+    params.businessOrganizationId ?? null,
+    params.businessLocationId ?? null,
   ];
 }
 
@@ -108,6 +110,8 @@ function trailingTaskValues(input: TaskPersistenceInput): unknown[] {
     params.counterOfferId ?? null,
     params.counterCandidateId ?? null,
     params.aiScopeObservationId ?? null,
+    params.businessFulfillerOrganizationId ?? null,
+    params.orchestrationMode ?? 'AUTOMATED',
   ];
 }
 
@@ -122,25 +126,32 @@ function publicTaskValues(input: TaskPersistenceInput): unknown[] {
 
 export async function insertCanonicalTask(query: Query, input: TaskPersistenceInput): Promise<Task> {
   const result = await query<Task>(
-    `INSERT INTO tasks (
-      poster_id, title, description, price, xp_reward, requirements, location, category,
-      deadline, requires_proof, risk_level, mode, live_broadcast_radius_miles, instant_mode,
-      sensitive, state, template_slug, rough_location, dispatch_expires_at,
-      automation_classification, hustler_payout_cents, platform_margin_cents,
-      trust_tier_required, completion_criteria, content_release,
-      mutual_consent_required, cancellation_window_hours, late_cancel_pct,
-      cancellation_policy_version, illegal_risk_score, compliance_guardian_notes,
-      scope_hash, active_scope_version_id, estimated_duration_minutes, required_tools,
-      region_code, region_policy_id, region_policy_version, region_policy_hash,
-      region_policy_snapshot, trade_type, location_state, license_required,
-      insurance_required, background_check_required, proof_min_photos,
-      proof_max_photos, proof_gps_required, currency, repeat_source_task_id,
-      preferred_worker_id, retention_conversion, counter_source_task_id,
-      counter_offer_id, counter_candidate_id, ai_scope_observation_id
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24::jsonb,$25,$26,$27,$28,$29,$30,$31::jsonb,$32,$33,$34,$35,$36,$37,$38,$39,$40::jsonb,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56)
-    RETURNING *`,
-    publicTaskValues(input),
-  );
+  `INSERT INTO tasks (
+    poster_id, title, description, price, xp_reward, requirements, location, category,
+    deadline, requires_proof, risk_level, mode, live_broadcast_radius_miles, instant_mode,
+    sensitive, state, template_slug, rough_location, dispatch_expires_at,
+    automation_classification, business_organization_id, business_location_id,
+    hustler_payout_cents, platform_margin_cents,
+    trust_tier_required, completion_criteria, content_release,
+    mutual_consent_required, cancellation_window_hours, late_cancel_pct,
+    cancellation_policy_version, illegal_risk_score, compliance_guardian_notes,
+    scope_hash, active_scope_version_id, estimated_duration_minutes, required_tools,
+    region_code, region_policy_id, region_policy_version, region_policy_hash,
+    region_policy_snapshot, trade_type, location_state, license_required,
+    insurance_required, background_check_required, proof_min_photos,
+    proof_max_photos, proof_gps_required, currency, repeat_source_task_id,
+    preferred_worker_id, retention_conversion, counter_source_task_id,
+    counter_offer_id, counter_candidate_id, ai_scope_observation_id, business_fulfiller_organization_id, orchestration_mode
+  ) VALUES (
+    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
+    $11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
+    $21,$22,$23,$24,$25,$26::jsonb,$27,$28,$29,$30,
+    $31,$32,$33::jsonb,$34,$35,$36,$37,$38,$39,$40,$41,$42::jsonb,
+    $43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,$57,$58,$59,$60
+  )
+  RETURNING *`,
+  publicTaskValues(input),
+);
   return result.rows[0];
 }
 

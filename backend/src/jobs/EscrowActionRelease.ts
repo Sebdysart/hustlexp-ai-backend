@@ -26,7 +26,7 @@ async function loadTask(taskId: string): Promise<TaskPayoutRow> {
 
 async function loadStripeAccount(taskId:string,task:TaskPayoutRow,userId:string):Promise<string> {
   const destination=await loadCurrentTaskPayoutDestination(db.query.bind(db),{
-    taskId,workerId:task.worker_id!,payoutRecipientUserId:userId,
+    taskId,workerId:task.worker_id!,payoutRecipientUserId:userId,kind: 'WORKER',
   });
   if (!destination.ready || !destination.stripeConnectId) {
     throw new Error(`Payout destination ${userId} is not current (${destination.reason})`);
