@@ -1,32 +1,56 @@
 # HustleXP canonical backend
 
-This repository is the authoritative HustleXP marketplace engine. It owns business rules, task and escrow state transitions, XP/trust calculation, web operations, background automation, and PostgreSQL invariants.
+Status: `CURRENT_IMPLEMENTATION_REFERENCE / CONVERGENCE_IN_PROGRESS`
 
-The website and mobile clients are API consumers. They must not recreate these rules in client code or in a second database backend.
+Production launch: `NO-GO`
 
-## Runtime architecture
+Production effects authorized by this repository documentation: `NONE`
+
+[The Team Goal and Execution Contract](docs/HUSTLEXP_TEAM_ALIGNMENT.md) is the stable engineering target. [The Current Backend Checkpoint](docs/HUSTLEXP_CURRENT_BACKEND_CHECKPOINT.md) contains source-dated implementation and external-state facts. The default-branch copy of the target becomes team-operative only at an exact commit accepted by an independent Reviewer; working-copy edits never change adopted policy. [AGENTS.md](AGENTS.md) controls repository workflow; canonical Governor state and accepted evidence control program authority.
+
+Documentation publication and backend implementation use separate candidates. Do not place runtime changes in a documentation branch. The reserved implementation branch is `codex/task-first-fake-fse-postgres-authority-rebuild`; do not create or populate it until persistent targets are closed and a fresh revision lock authorizes its exact base, tree, paths, and migration identity.
+
+This repository is the target owner of HustleXP's canonical marketplace lifecycle. Existing code includes legacy task, escrow, Stripe, admin, and Supabase-bridge behavior that is being contained and converged; repository presence is not proof that a path is authorized, deployed, or safe.
+
+## Current decision
+
+- one transaction root per task occurrence;
+- Railway PostgreSQL owns canonical transaction, fulfillment, financial, audit, and reconciliation facts;
+- Supabase is an acquisition/read-model overlay, not a second lifecycle;
+- a durable Task Draft precedes opportunity and financial security; Work Order materialization, assignment, and exact-address release follow a successful reconciled FSE;
+- processor eligibility and HustleXP task eligibility are separate;
+- Financial Security Event, capture, settlement, platform funding, provider payout, and reconciliation are separate rails;
+- browsers cannot hold shared administrative authority or mutate canonical records directly;
+- target policy requires all 20 unresolved processor-dependent capabilities to fail closed; current global enforcement is not proven and legacy positive processor/payout lanes remain blockers;
+- production authority for new customer-money creation is `NO-GO`; remote `main` still accepts `HX_PAYMENT_CREATION_MODE=enabled`, so structural containment is not proven until an exact repaired candidate passes negative-effect tests.
+
+The active Governor node is `TASK_FIRST_FAKE_FSE_POSTGRES_AUTHORITY_REBUILD`. Migration choice remains locked while persistent PostgreSQL targets are not fully closed. Ledger identity is the exact migration name, never a numeric alias: `20260824_task_first_fake_fse_vertical` has only a prospective, unauthorized clean-baseline append ordinal of 112; `20260825_task_first_fake_fse_postgres_authority_repair` has no assigned source ordinal pending legacy-chain reconstruction. Do not select either path or make backend runtime changes from documentation alone.
+
+## Target runtime boundary
 
 ```text
-Website / iOS
-     │ Firebase JWT + HTTPS
-     ▼
+Website / iOS / approved service clients
+              │ authenticated typed commands and reads
+              ▼
 Railway web service
 Hono + tRPC + REST/webhooks
-     │
-     ├── services and deterministic state machines
-     ├── PostgreSQL transactions, triggers, and outbox
-     └── Redis/BullMQ queues
-                    │
-                    ▼
-           Railway worker service
-           notifications, payments,
-           automation, reconciliation
+              │
+              ├── deterministic domain services and policy gates
+              ├── PostgreSQL transactions, invariants, inbox/outbox
+              └── Redis/BullMQ queues
+                              │
+                              ▼
+                     Railway worker service
+                     retries, recovery,
+                     reconciliation, notifications
 
-Shared state: Railway PostgreSQL
-Supporting services: Redis, Firebase Auth, Stripe, object storage, AI providers
+Canonical state: Railway PostgreSQL
+Overlay: Supabase acquisition, consent, communications, recovery,
+         analytics, and approved read projections only
+External providers: adapters behind closed capabilities and evidence gates
 ```
 
-PostgreSQL is accessed through the standard `pg` driver, so the runtime is not tied to Supabase or Neon. Railway supplies `DATABASE_URL` in production.
+The runtime uses the standard `pg` driver and must not depend on Supabase- or Neon-specific database semantics.
 
 ## Source layout
 
@@ -34,14 +58,14 @@ PostgreSQL is accessed through the standard `pg` driver, so the runtime is not t
 |---|---|
 | `backend/src/server.ts` | Hono composition root |
 | `backend/src/routers/` | Typed API boundary and input validation |
-| `backend/src/services/` | Business use cases and domain rules |
-| `backend/src/jobs/` | BullMQ producers, workers, and runtime migration manifest |
-| `backend/src/db.ts` and `backend/src/db/` | PostgreSQL pools, tagged SQL, and transactions |
+| `backend/src/services/` | Business use cases and deterministic domain rules |
+| `backend/src/jobs/` | Queue producers, workers, and runtime migration manifest |
+| `backend/src/db.ts`, `backend/src/db/` | PostgreSQL pools, tagged SQL, and transactions |
 | `backend/database/constitutional-schema.sql` | Fresh-database baseline and core invariants |
-| `backend/database/migrations/` | Ordered, ledger-backed production migrations |
+| `backend/database/migrations/` | Ordered, ledger-backed incremental migrations |
 | `backend/tests/` | Unit, integration, system, and invariant tests |
 | `scripts/` | Maintained operator and verification commands |
-| `ops/` | Runbooks, security, and compliance material |
+| `ops/` | Classified runbooks, templates, historical evidence, security, and compliance material |
 
 ## Local development
 
@@ -49,7 +73,7 @@ Requirements: Node 22, PostgreSQL, and Redis.
 
 ```bash
 npm ci
-cp .env.template .env
+test -e .env || cp .env.template .env
 npm run db:validate
 npm run dev
 ```
@@ -60,7 +84,7 @@ Run workers in a second terminal:
 npm run dev:workers
 ```
 
-Important commands:
+Verification commands:
 
 ```bash
 npm run typecheck
@@ -68,32 +92,29 @@ npm run lint
 npm test
 npm run verify:architecture
 npm run compile
+git diff --check
 ```
 
-`npm run db:reset:destructive` drops and rebuilds the public schema. It is permitted only for an explicitly disposable development database. Normal runtime migrations are incremental and recorded in `applied_migrations`.
+Test counts and coverage are revision-specific. Report the command, exact SHA, environment, skips, and result; never copy a historical count forward.
 
-## Deployment
+`npm run db:reset:destructive` drops and rebuilds `public`. It is permitted only against an explicitly verified disposable local database. Runtime migrations are incremental and recorded in `applied_migrations`; see [Migrations](docs/MIGRATIONS.md).
 
-Railway is the only maintained backend deployment target:
+## Deployment and external effects
 
-- `railway.json` defines the build and health policy.
-- `Dockerfile` builds the web and worker image.
-- `SERVICE_ROLE=worker` selects the worker process; otherwise the API starts.
-- The manual production workflow verifies and deploys an exact Git revision.
-- Both roles apply the idempotent runtime migration manifest before starting.
+Railway is the only maintained target backend platform, but this document does not authorize a deploy. A production action requires fresh root-specific authority, exact source/build identity, protected approval, and the current Governor/evidence gates.
 
-See [CI/CD](docs/CI_CD.md), [environment variables](docs/ENV.md), and [migrations](docs/MIGRATIONS.md).
+Railway currently auto-deploys `main`. Merging even documentation is therefore a Level 3 production-consequential action until that integration is detached or placed behind the accepted release transaction. Active Railway metadata identifies source `ab4a76…`, while public `/health` reports stale revision `140ce19…`; neither the health response nor `HX_PAYMENT_CREATION_MODE=frozen` proves truthful artifact identity or structural containment.
 
-## Website/Supabase boundary
+Never infer authority from an environment variable, a green check, a historical receipt, a provider test-mode success, or code presence. Preserve refund, void, recovery, webhook, and reconciliation lanes while positive production creation remains frozen.
 
-The engine already exposes replacement web routes under `backend/src/routers/web/`, backed by PostgreSQL tables introduced in `backend/database/migrations/010_web_platform_tables.sql`. Supabase can be retired only after website reads/writes, automation triggers, authentication assumptions, file storage, and production data are moved and verified. Do not delete the Supabase implementation before that cutover.
+## Documentation
 
-## Safety rules
+- [Team Goal and Execution Contract](docs/HUSTLEXP_TEAM_ALIGNMENT.md) — stable mission, target invariants, gates, and definition of done
+- [Current Backend Checkpoint](docs/HUSTLEXP_CURRENT_BACKEND_CHECKPOINT.md) — refreshable exact-identity implementation, repository, migration, and evidence status
+- [Frozen source contracts](docs/source-contracts/README.md) — byte-preserved backend mission and `/OPS` target inputs with SHA-256 provenance
+- [Documentation index and status register](docs/README.md) — current, proposed, historical, frozen, and legacy classifications
+- [Controlling specification pointer](docs/CONTROLLING_SPEC.md) — authority precedence and non-negotiable invariants
+- [Architecture convergence record](docs/architecture/HUSTLEXP_PAYMENT_OPS_CONVERGENCE_RECORD.md) — detailed target design plus a source-dated historical writer snapshot, not current implementation or production authority
+- [CI/CD](docs/CI_CD.md), [environment variables](docs/ENV.md), [migrations](docs/MIGRATIONS.md), and [Supabase cutover](docs/SUPABASE_TO_RAILWAY_CUTOVER.md) — bounded implementation references
 
-- PostgreSQL triggers are the final authority for financial and XP invariants.
-- Money and critical side effects use transactions, idempotency keys, and the outbox/worker path.
-- AI proposes; deterministic code authorizes state and money changes.
-- Secrets belong in local ignored files or Railway variables, never in Git.
-- Schema history and compliance evidence are retained even when they look redundant.
-
-The controlling engineering rules are in [AGENTS.md](AGENTS.md), [CLAUDE.md](CLAUDE.md), and [docs/CONTROLLING_SPEC.md](docs/CONTROLLING_SPEC.md).
+Historical or legacy documents may explain prior behavior. Their content cannot authorize execution.
