@@ -1,3 +1,7 @@
+> Documentation status: `HISTORICAL_EVIDENCE / NON_AUTHORIZING`
+>
+> This 2026-07-27 body is preserved verbatim for provenance. Provider state, owners, plans, and permissions must be re-established; no external action is authorized here.
+
 # EPIC-02 Operator Checklist (parallel to apex TLS)
 
 **As of:** 2026-07-27  

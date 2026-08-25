@@ -1,87 +1,37 @@
-# PCI DSS SAQ-A Compliance Checklist
+# Payment-card security scope decision
 
-**Standard:** PCI DSS v4.0 — Self-Assessment Questionnaire A
-**Applicability:** Card-not-present, fully outsourced to Stripe
-**Last Updated:** 2025-02-21
-**Next Review:** 2025-08-21 (6-month cycle)
+Status: `PROPOSED_NOT_BUILT / PCI_SCOPE_UNDETERMINED`
 
----
+Production effects authorized: `NONE`
 
-## Scope Justification
+This document is not a PCI attestation and assigns no SAQ type. The prior Stripe-only SAQ-A assumption and pass marks are retired. Current scope must be determined with the acquiring bank, approved processor, and qualified assessor after the exact hosted collection method, domains, scripts, redirects/iframes, webhooks, account model, infrastructure, and responsibilities are fixed.
 
-HustleXP uses **Stripe Elements** (client-side) for all payment collection.
-- No cardholder data (CHD) enters our servers
-- No card numbers stored, processed, or transmitted
-- All payment processing delegated to Stripe (PCI Level 1 Service Provider)
-- SAQ-A applies per PCI DSS v4.0 §2.1
+## Scope evidence required
 
----
+- payment-page and redirect/iframe architecture for every client and relationship origin;
+- inventory of browser scripts, tags, content-security policy, subresource controls, and change detection;
+- proof that raw cardholder data and sensitive authentication data do not enter HustleXP systems, logs, analytics, support, or AI;
+- processor/acquirer attestation and shared-responsibility documents;
+- exact domains, TLS, DNS, hosting, WAF, deployment, and incident boundaries;
+- credential, webhook, API, Operations, and service-provider access controls;
+- vulnerability scanning, penetration testing, dependency/code scanning, patching, logging, and incident evidence;
+- third-party service-provider inventory and annual review;
+- approved retention and evidence package for the applicable assessment period.
 
-## SAQ-A Requirements
+## Engineering controls regardless of final scope
 
-### Requirement 2: Secure Configurations
+- never store, log, message, analyze, or expose PAN/CVV or provider secrets;
+- keep processor tokens server-side or in the approved hosted collection contract;
+- verify webhooks before durable inbox acceptance and deduplicate before effects;
+- use least-privilege restricted credentials, rotation, redaction, and monitored access;
+- prohibit payment secrets and shared human admin keys from browser bundles;
+- isolate fake/sandbox/live environments and prevent configuration from bypassing capabilities;
+- preserve refund, void, recovery, incident, and reconciliation when positive creation is frozen.
 
-| # | Control | Status | Evidence |
-|---|---------|--------|----------|
-| 2.1 | Change vendor defaults | ✅ PASS | Custom passwords for all services; no default credentials in production |
-| 2.2 | Develop configuration standards | ✅ PASS | Dockerfile pins image versions; non-root user; read-only filesystem |
-| 2.3 | Encrypt non-console admin access | ✅ PASS | All admin access via HTTPS (Railway enforces TLS) |
+## Gate
 
-### Requirement 6: Secure Development
+**Done Criteria:** The acquirer/processor/assessor confirms the exact scope and assessment method; all applicable controls and evidence are current for one immutable release identity; no open material finding remains.
 
-| # | Control | Status | Evidence |
-|---|---------|--------|----------|
-| 6.2 | Software development security | ✅ PASS | CI pipeline: lint + typecheck + tests required for merge |
-| 6.3 | Security testing | ⚠️ PARTIAL | npm audit in CI; no DAST/penetration test yet |
-| 6.4 | Public-facing web app protection | ✅ PASS | HSTS, CSP, X-Frame-Options headers; rate limiting |
-| 6.5 | Address common vulnerabilities | ✅ PASS | Input validation (Zod), SQL parameterization, XSS headers |
+**Test Plan:** Add one new script, payment domain, collection path, logging sink, provider, or support workflow. Scope determination must rerun and fail closed until the change is reviewed.
 
-### Requirement 8: Identify Users
-
-| # | Control | Status | Evidence |
-|---|---------|--------|----------|
-| 8.1 | Unique user identification | ✅ PASS | Firebase Auth (unique UID per user) |
-| 8.2 | Multi-factor authentication | ⚠️ PARTIAL | Firebase supports MFA; not enforced for all admin users yet |
-| 8.3 | Strong authentication | ✅ PASS | Firebase ID tokens (JWT, RS256, 1h expiry) |
-
-### Requirement 9: Restrict Physical Access
-
-| # | Control | Status | Evidence |
-|---|---------|--------|----------|
-| 9.x | Physical access controls | N/A | Cloud-hosted (Railway); no physical infrastructure |
-
-### Requirement 11: Regular Testing
-
-| # | Control | Status | Evidence |
-|---|---------|--------|----------|
-| 11.2 | Vulnerability scanning | ⚠️ PARTIAL | npm audit (dependency scanning); no infrastructure scanning |
-| 11.3 | Penetration testing | ❌ TODO | Not yet performed; schedule before GA launch |
-
-### Requirement 12: Information Security Policy
-
-| # | Control | Status | Evidence |
-|---|---------|--------|----------|
-| 12.1 | Security policy | ⚠️ PARTIAL | ARCHITECTURE.md documents security; formal policy doc needed |
-| 12.8 | Service provider management | ✅ PASS | Stripe is PCI Level 1; Firebase SOC2 compliant |
-
----
-
-## Stripe Integration Security
-
-| Control | Implementation | File |
-|---------|---------------|------|
-| Webhook signature verification | `stripe.webhooks.constructEvent()` | server.ts:596-626 |
-| Event idempotency | `processed_stripe_events` table | StripeService.ts:98-100 |
-| Circuit breaker on Stripe API | `stripeBreaker` wrapper | middleware/circuit-breaker.ts |
-| No PAN data in logs | PII detection in ai-guard.ts | middleware/ai-guard.ts |
-| API key rotation support | Config from env vars | config.ts |
-
----
-
-## Action Items
-
-1. **[HIGH]** Schedule penetration test before GA launch (Requirement 11.3)
-2. **[MEDIUM]** Enforce MFA for admin users (Requirement 8.2)
-3. **[MEDIUM]** Create formal Information Security Policy document (Requirement 12.1)
-4. **[LOW]** Add infrastructure vulnerability scanning (Requirement 11.2)
-5. **[LOW]** Set up quarterly SAQ-A review cadence
+See [the Team Goal and Execution Contract](../../docs/HUSTLEXP_TEAM_ALIGNMENT.md).

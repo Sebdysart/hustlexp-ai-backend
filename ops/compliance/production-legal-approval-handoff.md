@@ -1,5 +1,9 @@
 # HustleXP Washington production legal approval handoff
 
+Status: `CURRENT_RUNBOOK / PENDING_COUNSEL / NOT_LEGAL_APPROVAL`
+
+This packet is subordinate to [the current Team Goal and Execution Contract](../../docs/HUSTLEXP_TEAM_ALIGNMENT.md) and must be rebound to the exact candidate, processor decisions, jurisdictions, categories, policies, and public copy before counsel review.
+
 **Gate:** `EXT-LEGAL-001`
 
 **Current decision:** `PENDING_COUNSEL`
@@ -65,20 +69,24 @@ The completed JSON record must include:
 - an `APPROVED` result for all seven determinations;
 - the signed record's HTTPS URI, SHA-256, and signature method.
 
-## Activation and expiry rule
+## `EXT-LEGAL-001` acceptance and expiry rule
 
 Approval is invalidated by any policy, category, risk, jurisdiction, public legal copy, worker model, provider contract, screening flow, retention, money-flow, deployment revision, or material legal change. It also expires at `review_at`. A generic approval cannot be carried forward.
 
-Production activation may proceed only after:
+This runbook can establish only acceptance evidence for `EXT-LEGAL-001`. Legal acceptance never authorizes deployment, a production database read or write, regional-flag activation, provider configuration, runtime observation, or any other production effect. Those actions require a separate complete production-release authority after every Governor, repository, security, processor, operational, and evidence gate is satisfied.
 
-1. the target engine revision containing the controlled policy is deployed;
-2. the runtime `region_policies.policy_hash` is captured through a read-only, trusted connection;
-3. the exact site and engine deployment identities are written into the packet;
-4. the signed external approval is attached and all seven determinations are `APPROVED`;
-5. `npm run verify:production-legal-approval` exits zero;
-6. the regional production flag is activated through a reviewed, append-only database event; and
-7. the verifier is rerun against the post-activation deployment.
+The legal gate remains pending unless the packet contains:
+
+1. exact immutable engine and site candidate revisions;
+2. the reviewed regional-policy version and SHA-256 from the attributable candidate artifact or authorized non-production evidence source;
+3. every approved jurisdiction, category, prohibition, public-copy identity, and exception;
+4. the signed external approval and an `APPROVED` result for all seven determinations;
+5. named legal, policy, activation, and expiry owners;
+6. a current `review_at` and immutable evidence URI/hash/signature binding; and
+7. `npm run verify:production-legal-approval` exiting zero against that exact packet.
+
+If a later separately authorized release changes or populates deployed identities, runtime policy evidence, or activation state, the legal packet and verifier must be rebound and re-reviewed. This paragraph records an acceptance requirement; it grants no permission to perform the release or observation.
 
 ## Falsifiable exit test
 
-The gate is closed unless the production legal verifier exits zero with no findings, the target database reports the same active `US-WA` policy version and SHA-256, the exact approved revisions equal the exact deployed revisions, and the signed approval is current. Any mismatch returns the launch decision to NO-GO.
+The gate is closed unless the legal verifier exits zero with no findings against the exact immutable candidate packet and the signed approval is current. A separate production-release review must later prove that authorized deployed identities and runtime policy evidence match the accepted packet. Any absent authority or mismatch preserves `NO-GO`; this runbook cannot cure it.

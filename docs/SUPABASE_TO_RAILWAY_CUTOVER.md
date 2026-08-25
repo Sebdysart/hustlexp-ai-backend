@@ -1,15 +1,22 @@
 # Supabase to Railway PostgreSQL cutover
 
+Status: `PROPOSED_NOT_BUILT / NOT_ACTIVE_GOVERNOR_NODE`
+
+Production effects authorized: `NONE`
+
+Read [the Team Goal and Execution Contract](HUSTLEXP_TEAM_ALIGNMENT.md). Railway PostgreSQL owns the target canonical marketplace lifecycle. Supabase remains an overlay and compatibility surface during convergence; this document is a staged migration proposal, not permission to move data, redirect traffic, delete functions, rotate keys, or deploy.
+
 ## Decision
 
-Migration is feasible and desirable, but Supabase is not currently a removable website SDK. It is a second backend that owns live website data and automation.
+Migration is feasible and desirable, but the inspected source does not support treating Supabase as a removable website SDK. It implements a second backend for website data and automation; whether every observed surface is currently deployed or called remains `UNKNOWN` without exact runtime evidence.
 
-Verified current scope in `hustlexp-site`:
+Source-locked scope observed on `2026-08-25` in the clean site worktree at commit `843e37c0fafa65ba63612cffd0e17476d4c76593` (tree `229958fac537f61d2f342a625dfb6c7a810458cd`):
 
 - 49 executable Supabase Edge Function directories, plus one shared function package
 - 145 SQL migration files
-- 42 non-test frontend/shared files tied to Supabase URLs or contracts
 - lead classification, inbound messaging, quotes, supply, dispatch, payments, action links, webhooks, and lifecycle automation
+
+Those counts are source-dated inventory, not proof of live deployment or current callers. Recompute them at the exact cutover candidate.
 
 The canonical engine has already started the replacement:
 
@@ -28,7 +35,7 @@ Those routes replace only a subset of the Supabase surface. In particular, `hust
 | Edge HTTP functions | Hono REST/tRPC routes with shared Zod contracts |
 | Cron and lifecycle functions | BullMQ repeatable jobs and engine workers |
 | Trigger-produced work | Transactional outbox rows consumed by workers |
-| Admin function authorization | Firebase-authenticated protected/admin procedures; never a browser-supplied shared admin secret |
+| Operations/admin authorization | Named short-lived session into role-scoped `opsProcedure`; server-derived actor, resource RBAC, typed engine command, expected version, immutable accepted/rejected result, recent step-up, and dual approval where policy requires it; never a browser-supplied shared secret |
 | Supabase Auth poster sessions | Firebase Auth or an explicitly designed engine session flow |
 | Supabase Storage uploads | Existing engine object-storage abstraction (R2/S3-compatible) |
 | Realtime subscriptions | Existing SSE/Redis realtime path where needed |
@@ -48,7 +55,7 @@ Those routes replace only a subset of the Supabase surface. In particular, `hust
 - Reconcile the current Supabase schema with the engine baseline and migration ledger.
 - Preserve stable external identifiers and create explicit identity mapping tables where Supabase and Firebase IDs differ.
 - Move shared request/response schemas to a package both the website and engine can test.
-- Replace `publicProcedure + adminKey` scaffolding in the current web routers with protected Firebase/admin capability checks before exposing them to the website.
+- Replace `publicProcedure + adminKey` scaffolding with authenticated, role-scoped `opsProcedure` commands. Identity is server-derived from a named short-lived session; each command requires closed RBAC/capability checks, expected version, strict reason/action codes, immutable accepted or rejected results, recent step-up, and dual approval where policy requires it.
 
 ### 3. Port the public and admin APIs
 
@@ -107,7 +114,7 @@ Do not retire Supabase until all are true:
 - no production frontend file constructs a Supabase URL;
 - every Edge Function has a Railway replacement or an approved deletion record;
 - Supabase cron, webhook, and database-trigger inventories are empty or redirected;
-- Firebase/admin authorization and object storage work without Supabase;
+- named short-lived Operations sessions, role-scoped `opsProcedure`, server-derived identity, resource RBAC, expected-version commands, immutable results, step-up/dual approval policy, and object storage work without Supabase;
 - financial totals and lifecycle state counts reconcile;
 - shadow automation produces equivalent decisions without duplicate messages or charges;
 - Railway backup restore, worker replay, and rollback drills pass;
@@ -115,4 +122,4 @@ Do not retire Supabase until all are true:
 
 ## Immediate recommendation
 
-Keep the Supabase website backend operational while building the Railway replacement behind feature flags. The next implementation slice should secure and contract-test the existing `webLeads`, `webOps`, and `webActionLinks` routes, then port action links and surveys first. Lead ingress and lifecycle automation should be the final major cutover, not the first.
+Keep the Supabase website backend contained while the active task-first fake-FSE PostgreSQL authority node is completed. Freeze new Supabase canonical task/payment/assignment behavior; inventory and quarantine existing bypasses. After the active node and migration lineage are independently accepted, replacement slices must route typed commands through the engine with runtime wiring, authorization, observability, migration proof, and rollback/forward-repair. Lead ingress and lifecycle automation remain late cutover work because moving intake before its dependent automation would silently drop or duplicate effects.
