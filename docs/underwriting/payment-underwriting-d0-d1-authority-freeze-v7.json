@@ -1,0 +1,124 @@
+{
+  "schema": "HX_PAYMENT_UNDERWRITING_TRACEABILITY_V7",
+  "slice": "D0_D1_AUTHORITY_FREEZE",
+  "sourceAuthority": {
+    "googleDocId": "1PYpWdbnlhRBoovc6GfTyxMuu1IzMIdDQpV6hHHraXaQ",
+    "driveRevision": "7",
+    "docsRevision": "AIroW37g_sqKNU_dvvRNUndw-qUeooFwAYIHqN60aHvPSR178sKjMMu5rMzGTzODqgDKERue3ZbAT8UesInsUZvT6p1Z0bUvPByrgwaPDA",
+    "textPlainSha256": "ba8dc04bfc43feb24bd78698c6e5b820ecdf22177f915fb04856a55d8076bd26",
+    "textPlainUtf8Bytes": 71231
+  },
+  "stack": {
+    "currentMainBase": "ab4a76cbc8ea32c663c36982eafe94b20d2dc879",
+    "dependency": "D0_SOURCE_AUTHORITY_AND_LEGACY_INVENTORY",
+    "delivers": "D1_EVIDENCE_BOUND_DECISION_REGISTRY_AND_GLOBAL_FAIL_CLOSE",
+    "migration": {
+      "disposition": "FROZEN_RECOVERY_AND_RECONCILIATION_ONLY",
+      "name": "20260823_quote_payment_recovery",
+      "file": "backend/database/migrations/20260823_quote_payment_recovery.sql",
+      "registry": "backend/src/jobs/engine-automation-migration-files.ts",
+      "requiredChainLength": 104
+    }
+  },
+  "productionDecision": "NO_GO",
+  "processorSpecificMoneyCreation": "DISABLED_PENDING_WRITTEN_APPROVAL",
+  "invariants": [
+    "NO_REAL_TASK_DRAFT_NO_OPPORTUNITY_LINK",
+    "NO_APPROVED_PROVIDER_PAYMENT_ELIGIBILITY_NO_FSE",
+    "NO_PROVIDER_CONDITIONAL_ACCEPTANCE_NO_FSE_ATTEMPT",
+    "NO_SUCCESSFUL_FSE_NO_HARD_ASSIGNMENT_OR_ADDRESS",
+    "NO_COMPLETION_AMOUNT_INCIDENT_APPROVAL_NO_CAPTURE",
+    "NO_PROCESSOR_LEDGER_AGREEMENT_NO_CLOSE",
+    "NO_IDEMPOTENCY_KEY_AND_OPERATION_RECORD_NO_MONEY_CALL"
+  ],
+  "unresolvedDecisions": [
+    "SOLE_PROPRIETOR_PROVIDER_ELIGIBILITY",
+    "PROVIDER_BANK_ACCOUNT_ELIGIBILITY",
+    "MARKETPLACE_PROVIDER_OS_RELATIONSHIP",
+    "MERCHANT_OF_RECORD_AND_SUPPORT_TOPOLOGY",
+    "CONDITIONAL_PROVIDER_ACCEPTANCE_BEFORE_FSE",
+    "CAPTURE_AND_DISBURSEMENT_MODEL",
+    "TOKENIZATION_CONSENT_AND_PORTABILITY",
+    "PLATFORM_ECONOMICS",
+    "AMOUNT_CHANGE_AUTHORITY",
+    "PROVIDER_REPLACEMENT_AUTHORITY",
+    "LOSS_ALLOCATION_WATERFALL",
+    "PROVIDER_PLATFORM_RISK_ISOLATION",
+    "CATEGORY_AND_MCC_APPROVAL",
+    "LIMITS_RESERVES_SETTLEMENT_AND_CAPACITY",
+    "RESTRICTION_AND_TERMINATION_CONTINUITY",
+    "RECURRING_OCCURRENCE_MODEL",
+    "REGULATORY_ROLE_AND_LICENSING",
+    "COMMERCIAL_TERMS",
+    "TASK_OPPORTUNITY_ONBOARDING",
+    "WRITTEN_ARCHITECTURE_SIGNOFF"
+  ],
+  "excludedPullRequests": {
+    "263": {
+      "head": "ce0e622c8ff2069239768d4172a12be531a90061",
+      "disposition": "SUPERSEDED"
+    },
+    "265": {
+      "head": "9cc7f6a7596dacd5f91112ddee61189bf60a1fc8",
+      "disposition": "REJECTED_CONFLICTING"
+    }
+  },
+  "guard": {
+    "authorityCode": "UNDERWRITING_DECISIONS_UNRESOLVED",
+    "lanes": [
+      "escrow_funding",
+      "xp_tax",
+      "tip",
+      "subscription",
+      "quote_payment",
+      "quote_materialization"
+    ],
+    "controlledTestCohort": {
+      "NODE_ENV": "test",
+      "ENGINE_API_MODE": "test",
+      "STRIPE_MODE": "test",
+      "STRIPE_SECRET_KEY_PREFIX": "sk_test_",
+      "HX_PAYMENT_CREATION_MODE": "enabled"
+    }
+  },
+  "productionFiles": [
+    "backend/src/config.ts",
+    "backend/src/contracts/PaymentUnderwritingAuthorityV7.ts",
+    "backend/src/jobs/engine-automation-migration-files.ts",
+    "backend/src/jobs/engine-migration-manifest.ts",
+    "backend/src/jobs/payment-worker.ts",
+    "backend/src/jobs/stripe-event-worker.ts",
+    "backend/src/routers/escrow-payment-procedures.ts",
+    "backend/src/routers/quotePayment.ts",
+    "backend/src/routers/subscription.ts",
+    "backend/src/routers/xpTax.ts",
+    "backend/src/services/LocalCertificationPaymentProvider.ts",
+    "backend/src/services/NewPaymentCreationGuard.ts",
+    "backend/src/services/QuoteGenerationService.ts",
+    "backend/src/services/QuotePaymentFinalizationService.ts",
+    "backend/src/services/QuotePaymentRecoveryService.ts",
+    "backend/src/services/StripeService.ts",
+    "backend/src/services/TippingService.ts",
+    "backend/src/services/XPTaxService.ts",
+    "backend/src/services/payment/QuotePaymentProvider.ts",
+    "backend/src/services/payment/StripeQuotePaymentProvider.ts"
+  ],
+  "contractTests": [
+    "backend/tests/unit/payment-underwriting-authority-v7-rejection-contract.test.ts",
+    "backend/tests/unit/payment-creation-incident-guard.test.ts",
+    "backend/tests/unit/quote-payment-underwriting-containment-v7-rejection-contract.test.ts",
+    "backend/tests/unit/quote-payment-recovery-router.test.ts",
+    "backend/tests/unit/quote-payment-recovery-migration.test.ts",
+    "backend/tests/unit/engine-automation-migration.test.ts",
+    "backend/tests/unit/config.test.ts"
+  ],
+  "deferredDependencies": [
+    "D2_NEUTRAL_SCHEMA_AND_TYPED_LIFECYCLE",
+    "D3_OPPORTUNITY_PRIVACY_PROVIDER_ELIGIBILITY_CONDITIONAL_HOLD",
+    "D4_FSE_OPERATION_IDEMPOTENCY_WEBHOOK",
+    "D5_ATOMIC_WORK_ORDER_ASSIGNMENT_ADDRESS",
+    "D6_COMPLETION_APPROVAL_MANUAL_CAPTURE",
+    "D7_SETTLEMENT_DOUBLE_ENTRY_RECONCILE_CLOSE",
+    "D8_VARIANTS"
+  ]
+}

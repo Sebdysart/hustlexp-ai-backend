@@ -249,6 +249,11 @@ function paymentCreationModeErrors(): string[] {
   if (mode && mode !== 'enabled' && mode !== 'frozen') {
     return ['HX_PAYMENT_CREATION_MODE must be either enabled or frozen'];
   }
+  if (mode === 'enabled') {
+    return [
+      'HX_PAYMENT_CREATION_MODE=enabled is forbidden while underwriting decisions remain unresolved',
+    ];
+  }
   return [];
 }
 

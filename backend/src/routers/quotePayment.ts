@@ -2,9 +2,13 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { db } from '../db.js';
 import { posterProcedure, router } from '../trpc.js';
-import { paymentCreationErrorCause } from '../services/NewPaymentCreationGuard.js';
+import {
+  newPaymentCreationFailure,
+  paymentCreationErrorCause,
+} from '../services/NewPaymentCreationGuard.js';
 import { StripeQuotePaymentProvider } from '../services/payment/StripeQuotePaymentProvider.js';
 import { finalizePaidQuote } from '../services/QuotePaymentFinalizationService.js';
+import { recoverOrphanQuotePayment } from '../services/QuotePaymentRecoveryService.js';
 import { StripeService } from "../services/StripeService.js"
 
 export const quotePaymentRouter = router({
@@ -16,6 +20,15 @@ export const quotePaymentRouter = router({
       }).strict(),
     )
     .mutation(async ({ ctx, input }) => {
+      const frozen = newPaymentCreationFailure('quote_payment');
+      if (frozen) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: frozen.error.message,
+          cause: paymentCreationErrorCause(frozen.error.code),
+        });
+      }
+
       const result = await db.query<{
         quote_id: string;
         task_draft_id: string;
@@ -214,6 +227,32 @@ export const quotePaymentRouter = router({
         });
       }
 
+      return result.data;
+    }),
+  recoverOrphanPayment: posterProcedure
+    .input(
+      z.object({
+        quoteId: z.string().uuid(),
+        quoteVersionId: z.string().uuid(),
+        paymentIntentId: z.string().min(10).max(255),
+      }).strict(),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const result = await recoverOrphanQuotePayment({
+        ...input,
+        posterId: ctx.user.id,
+        reasonCode: 'POSTER_REQUESTED_CANCELLATION',
+      });
+      if (!result.success) {
+        throw new TRPCError({
+          code: result.error.code === 'QUOTE_PAYMENT_NOT_FOUND'
+            ? 'NOT_FOUND'
+            : result.error.code.includes('MISMATCH')
+              ? 'FORBIDDEN'
+              : 'PRECONDITION_FAILED',
+          message: result.error.message,
+        });
+      }
       return result.data;
     }),
   confirmTestPayment: posterProcedure

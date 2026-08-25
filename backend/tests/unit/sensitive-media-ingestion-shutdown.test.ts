@@ -31,25 +31,25 @@ describe('sensitive media ingestion shutdown', () => {
 
   it('rejects direct URLs at every exposed unsupported ingestion boundary', () => {
     expect(source('backend/src/routers/task-router-common.ts')).toContain(
-      'Direct proof media URLs are disabled; use finalized upload receipts.',
+      'Direct proof media URLs are disabled; use finalized upload receipts.'
     );
     expect(source('backend/src/routers/skills.ts')).toContain(
-      'Direct skill-license media URLs are disabled.',
+      'Direct skill-license media URLs are disabled.'
     );
     expect(source('backend/src/routers/tutorial.ts')).toContain(
-      'Equipment photo scanning is unavailable until receipt-backed metadata stripping is implemented.',
+      'Equipment photo scanning is unavailable until receipt-backed metadata stripping is implemented.'
     );
     expect(source('backend/src/routers/user.ts')).toContain(
-      'Avatar updates are disabled until receipt-backed metadata stripping is available.',
+      'Avatar updates are disabled until receipt-backed metadata stripping is available.'
     );
     expect(source('backend/src/routers/biometric.ts')).toContain(
-      'Direct face-photo analysis is disabled.',
+      'Direct face-photo analysis is disabled.'
     );
     expect(source('backend/src/services/LicenseVerificationService.ts')).toContain(
-      'Direct license document URLs are disabled',
+      'Direct license document URLs are disabled'
     );
     expect(source('backend/src/services/InsuranceVerificationService.ts')).toContain(
-      'Direct insurance document URLs are disabled',
+      'Direct insurance document URLs are disabled'
     );
   });
 
@@ -67,6 +67,8 @@ describe('sensitive media ingestion shutdown', () => {
     ].join('\n');
     const dockerfile = source('Dockerfile');
     expect(runner).toContain('20260721_sensitive_media_ingestion_shutdown');
-    expect(dockerfile).toContain('20260721_sensitive_media_ingestion_shutdown.sql');
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
+    );
   });
 });

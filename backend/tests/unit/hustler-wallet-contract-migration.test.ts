@@ -4,27 +4,33 @@ import { describe, expect, it } from 'vitest';
 
 const SQL = readFileSync(
   resolve(process.cwd(), 'backend/database/migrations/20260719_hustler_wallet_contract.sql'),
-  'utf8',
+  'utf8'
 );
 const PROVIDER_EVENT_SQL = readFileSync(
-  resolve(process.cwd(), 'backend/database/migrations/20260719_wallet_provider_event_integrity.sql'),
-  'utf8',
+  resolve(
+    process.cwd(),
+    'backend/database/migrations/20260719_wallet_provider_event_integrity.sql'
+  ),
+  'utf8'
 );
 const PROVIDER_EVENT_REPAIR_SQL = readFileSync(
-  resolve(process.cwd(), 'backend/database/migrations/20260719_wallet_provider_event_integrity_repair.sql'),
-  'utf8',
+  resolve(
+    process.cwd(),
+    'backend/database/migrations/20260719_wallet_provider_event_integrity_repair.sql'
+  ),
+  'utf8'
 );
 const RUNNER = [
   readFileSync(resolve(process.cwd(), 'backend/src/jobs/engine-automation-migration.ts'), 'utf8'),
   readFileSync(
     resolve(process.cwd(), 'backend/src/jobs/engine-automation-migration-files.ts'),
-    'utf8',
+    'utf8'
   ),
 ].join('\n');
 const DOCKERFILE = readFileSync(resolve(process.cwd(), 'Dockerfile'), 'utf8');
 const PG_HARNESS = readFileSync(
   resolve(process.cwd(), 'backend/tests/integration/hustler-wallet-contract.pg.sql'),
-  'utf8',
+  'utf8'
 );
 
 describe('Hustler wallet database contract', () => {
@@ -49,13 +55,17 @@ describe('Hustler wallet database contract', () => {
     expect(PROVIDER_EVENT_SQL).toContain('provider_reported_state');
     expect(PROVIDER_EVENT_SQL).toContain("'APPLIED','NO_STATE_CHANGE','IGNORED_STALE'");
     expect(PROVIDER_EVENT_SQL).toContain('HXWAL7: bound provider payout identity cannot change');
-    expect(PROVIDER_EVENT_SQL).toContain('HXWAL8: provider event does not reconcile to cash-out request');
+    expect(PROVIDER_EVENT_SQL).toContain(
+      'HXWAL8: provider event does not reconcile to cash-out request'
+    );
     expect(PROVIDER_EVENT_SQL).toContain("source = 'PROVIDER_WEBHOOK'");
     expect(PROVIDER_EVENT_SQL).not.toMatch(/UPDATE worker_cash_out_events/u);
     expect(PROVIDER_EVENT_SQL).toContain('receipt_contract_version SMALLINT NOT NULL DEFAULT 1');
     expect(PROVIDER_EVENT_SQL).toContain('ALTER COLUMN receipt_contract_version SET DEFAULT 2');
     expect(PROVIDER_EVENT_REPAIR_SQL).not.toMatch(/UPDATE worker_cash_out_events/u);
-    expect(PROVIDER_EVENT_REPAIR_SQL).toContain('DROP CONSTRAINT IF EXISTS worker_cash_out_provider_event_requires_reported_state');
+    expect(PROVIDER_EVENT_REPAIR_SQL).toContain(
+      'DROP CONSTRAINT IF EXISTS worker_cash_out_provider_event_requires_reported_state'
+    );
   });
 
   it('records an append-only event for every state change', () => {
@@ -80,18 +90,20 @@ describe('Hustler wallet database contract', () => {
   });
 
   it('ships in the required production migration set and image', () => {
-    expect(RUNNER).toContain("HUSTLER_WALLET_CONTRACT_MIGRATION = '20260719_hustler_wallet_contract'");
+    expect(RUNNER).toContain(
+      "HUSTLER_WALLET_CONTRACT_MIGRATION = '20260719_hustler_wallet_contract'"
+    );
     expect(RUNNER).toContain("fileName: '20260719_hustler_wallet_contract.sql'");
     expect(RUNNER).toContain("fileName: '20260719_wallet_provider_event_integrity.sql'");
     expect(RUNNER).toContain("fileName: '20260719_wallet_provider_event_integrity_repair.sql'");
     expect(DOCKERFILE).toContain(
-      'COPY --from=builder /app/backend/database/migrations/20260719_hustler_wallet_contract.sql ./backend/database/migrations/20260719_hustler_wallet_contract.sql',
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
     );
     expect(DOCKERFILE).toContain(
-      'COPY --from=builder /app/backend/database/migrations/20260719_wallet_provider_event_integrity.sql ./backend/database/migrations/20260719_wallet_provider_event_integrity.sql',
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
     );
     expect(DOCKERFILE).toContain(
-      'COPY --from=builder /app/backend/database/migrations/20260719_wallet_provider_event_integrity_repair.sql ./backend/database/migrations/20260719_wallet_provider_event_integrity_repair.sql',
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
     );
   });
 

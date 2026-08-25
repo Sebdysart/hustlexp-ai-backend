@@ -43,12 +43,17 @@ vi.mock('../../src/jobs/queues', () => {
 });
 
 vi.mock('../../src/jobs/outbox-worker', () => ({ startOutboxWorker: vi.fn() }));
+vi.mock('../../src/jobs/engine-automation-migration', () => ({
+  runEngineAutomationMigration: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock('../../src/jobs/worker-health-server', () => ({
   startWorkerHealthServer: startWorkerHealthServerSpy,
 }));
 vi.mock('../../src/jobs/export-worker', () => ({ processExportJob: vi.fn() }));
 vi.mock('../../src/jobs/email-worker', () => ({ processEmailJob: vi.fn() }));
-vi.mock('../../src/jobs/biometric-analyzer-worker', () => ({ processBiometricAnalysisJob: vi.fn() }));
+vi.mock('../../src/jobs/biometric-analyzer-worker', () => ({
+  processBiometricAnalysisJob: vi.fn(),
+}));
 vi.mock('../../src/jobs/expertise-recalc-worker', () => ({ processExpertiseRecalcJob: vi.fn() }));
 vi.mock('../../src/jobs/xp-tax-reminder-worker', () => ({ processXPTaxReminderJob: vi.fn() }));
 
