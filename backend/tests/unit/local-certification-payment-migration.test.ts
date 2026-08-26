@@ -37,7 +37,7 @@ describe('local certification payment provider migration', () => {
   it('ships through the startup migration chain and production image', () => {
     expect(runner).toContain("'20260720_local_certification_payment_provider.sql'");
     expect(dockerfile).toContain(
-      '/app/backend/database/migrations/20260720_local_certification_payment_provider.sql',
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations',
     );
   });
 });

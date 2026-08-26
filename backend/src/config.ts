@@ -88,16 +88,6 @@ export const config = {
       region: process.env.R2_REGION || process.env.AWS_DEFAULT_REGION || 'auto',
     },
   },
-  
-  backblaze: {
-    b2: {
-      endpoint: process.env.B2_ENDPOINT || '',
-      region: process.env.B2_REGION || '',
-      keyId: process.env.B2_KEY_ID || '',
-      applicationKey: process.env.B2_APPLICATION_KEY || '',
-      bucketName: process.env.B2_BUCKET_NAME || '',
-    },
-  },
 
   // Maps & Geocoding (Google Maps Platform)
   googleMaps: {
@@ -258,6 +248,11 @@ function paymentCreationModeErrors(): string[] {
   const mode = process.env.HX_PAYMENT_CREATION_MODE?.trim().toLowerCase();
   if (mode && mode !== 'enabled' && mode !== 'frozen') {
     return ['HX_PAYMENT_CREATION_MODE must be either enabled or frozen'];
+  }
+  if (mode === 'enabled') {
+    return [
+      'HX_PAYMENT_CREATION_MODE=enabled is forbidden while underwriting decisions remain unresolved',
+    ];
   }
   return [];
 }

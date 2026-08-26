@@ -4,7 +4,8 @@
  * F53-6: Tip platform cut must be 0% — verified via RevenueService.logEvent call args
  * F53-7: Self-insurance pool funding path in handlePartialRefundRequest must be reachable
  */
-import { vi, describe, it, expect, beforeEach } from 'vitest';
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 const payoutDestination = vi.hoisted(() => vi.fn());
 
@@ -107,6 +108,7 @@ const mockStripeService = vi.mocked(StripeService);
 
 beforeEach(() => {
   vi.resetAllMocks();
+  enableControlledStripePaymentTestCohortV7();
   // Re-bind default implementations after resetAllMocks
   mockDb.transaction.mockImplementation(async (fn: (q: typeof mockDb.query) => Promise<unknown>) => fn(mockDb.query));
   mockRevenueService.logEvent.mockResolvedValue({ success: true, data: { id: 'rev_mock_id' } } as any);
@@ -118,6 +120,10 @@ beforeEach(() => {
       ? { ready:true,stripeConnectId,reason:'READY' }
       : { ready:false,stripeConnectId:null,reason:'PAYOUT_ACCOUNT_NOT_READY' };
   });
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 // ---------------------------------------------------------------------------

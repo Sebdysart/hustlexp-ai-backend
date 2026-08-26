@@ -122,12 +122,4 @@ Do not retire Supabase until all are true:
 
 ## Immediate recommendation
 
-<<<<<<< HEAD
-Keep the Supabase website backend operational while building the Railway replacement behind feature flags. The next implementation slice should secure and contract-test the existing `webLeads`, `webOps`, and `webActionLinks` routes, then port action links and surveys first. Lead ingress and lifecycle automation should be the final major cutover, not the first.
-
-## Progress note (2026-08-19)
-
-`webOps` browser procedures now use `operationsAdminProcedure` (Firebase + `can_manage_operations`). `listEngineTasks` remains service-key gated for `engine-bridge-admin` with timing-safe compare. Draft reads are display-safe, quote writes are transactional, hustler roster reads are redacted, liquidity is available via `webOps.getLiquidity` / `GET /admin/liquidity`, and Command-center reads land behind Railway-first `opsApi` with Supabase fallback. Mutation panels stay unmounted until their Railway ports are ready.
-=======
 Keep the Supabase website backend contained while the active task-first fake-FSE PostgreSQL authority node is completed. Freeze new Supabase canonical task/payment/assignment behavior; inventory and quarantine existing bypasses. After the active node and migration lineage are independently accepted, replacement slices must route typed commands through the engine with runtime wiring, authorization, observability, migration proof, and rollback/forward-repair. Lead ingress and lifecycle automation remain late cutover work because moving intake before its dependent automation would silently drop or duplicate effects.
->>>>>>> 5a8675b37473d626efbf4bff8635797ba29db7af

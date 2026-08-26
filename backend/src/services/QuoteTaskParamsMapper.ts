@@ -35,20 +35,6 @@ interface DraftAnswers {
   scope_policy_version?: unknown;
 }
 
-export interface MapQuoteToTaskParamsInput {
-  posterId: string;
-  draft: QuoteTaskDraft;
-  quoteVersion: QuoteVersion;
-  automationClassification: 'PRODUCTION' | 'CONTROLLED_TEST';
-  clientIdempotencyKey?: string;
-
-  businessOrganizationId?: string | null;
-  businessLocationId?: string | null;
-  providerServiceProfileId?: string | null;
-  claimedByUserId?: string | null;
-  businessFulfillerOrganizationId?: string | null;
-}
-
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0
     ? value.trim()
@@ -191,12 +177,5 @@ export function mapQuoteToCreateTaskParams(
 
     // Existing task-create policy defaults will handle the rest.
     clientIdempotencyKey: input.clientIdempotencyKey,
-    
-    businessOrganizationId: input.businessOrganizationId ?? undefined,
-    businessLocationId: input.businessLocationId ?? undefined,
-    providerOrganizationId: undefined,
-    providerServiceProfileId: undefined,
-    businessFulfillerOrganizationId: input.businessFulfillerOrganizationId ?? undefined,
-    orchestrationMode: input.businessOrganizationId ? 'OPS_MANUAL' : 'AUTOMATED',
   };
 }

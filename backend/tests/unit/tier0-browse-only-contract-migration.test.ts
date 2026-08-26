@@ -36,7 +36,11 @@ describe('Tier 0 browse-only contract', () => {
 
   it('is included in the production migration sequence', () => {
     expect(productionMigrationRuntime().migrationSpecs.some((spec) => (
-      spec.candidatePaths.includes('/app/backend/database/migrations/20260719_tier0_browse_only_contract.sql')
+      spec.candidatePaths.some((candidatePath) => (
+        candidatePath.replaceAll('\\', '/').endsWith(
+          '/app/backend/database/migrations/20260719_tier0_browse_only_contract.sql',
+        )
+      ))
     ))).toBe(true);
   });
 });

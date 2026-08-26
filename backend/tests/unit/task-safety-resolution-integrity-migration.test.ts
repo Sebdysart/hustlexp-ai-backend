@@ -14,10 +14,16 @@ const ADMIN_ROUTES = read('backend/src/routers/incidentAdminRoutes.ts');
 
 describe('task safety resolution-integrity migration', () => {
   it('binds ownership once and requires an owner-authored resolution witness', () => {
-    expect(MIGRATION).toContain('HX827: safety case owner can be bound only on first acknowledgment');
-    expect(MIGRATION).toContain('HX828: terminal safety state lacks owner-authored resolution evidence');
+    expect(MIGRATION).toContain(
+      'HX827: safety case owner can be bound only on first acknowledgment'
+    );
+    expect(MIGRATION).toContain(
+      'HX828: terminal safety state lacks owner-authored resolution evidence'
+    );
     expect(MIGRATION).toContain("event_type = 'resolved'");
-    expect(MIGRATION).toContain('resolution_event.actor_user_id IS DISTINCT FROM NEW.assigned_admin_id');
+    expect(MIGRATION).toContain(
+      'resolution_event.actor_user_id IS DISTINCT FROM NEW.assigned_admin_id'
+    );
     expect(MIGRATION).toContain("metadata->>'idempotency_key'");
     expect(MIGRATION).toContain("metadata->>'request_hash'");
     expect(MIGRATION).toContain('task_safety_resolution_event_fields_ck');
@@ -26,10 +32,14 @@ describe('task safety resolution-integrity migration', () => {
 
   it('uses one owner-bound, idempotent canonical resolution transaction', () => {
     expect(ADMIN_SERVICE).toContain('Only the assigned safety operator can resolve this case.');
-    expect(ADMIN_SERVICE).toContain('Safety resolution key was reused with different resolution evidence.');
+    expect(ADMIN_SERVICE).toContain(
+      'Safety resolution key was reused with different resolution evidence.'
+    );
     expect(ADMIN_SERVICE).toContain("SET status = 'resolved', resolved_at = NOW()");
     expect(ADMIN_SERVICE).toContain("details->>'safety_incident_id' = $1");
-    expect(ADMIN_ROUTES).toContain('Resolve this safety report through the canonical safety case workflow.');
+    expect(ADMIN_ROUTES).toContain(
+      'Resolve this safety report through the canonical safety case workflow.'
+    );
   });
 
   it('ships migration 80 through startup and the production image', () => {
@@ -37,7 +47,7 @@ describe('task safety resolution-integrity migration', () => {
     expect(RUNNER).toContain("'20260720_task_safety_resolution_integrity'");
     expect(RUNNER).toContain("fileName: '20260720_task_safety_resolution_integrity.sql'");
     expect(DOCKERFILE).toContain(
-      '/app/backend/database/migrations/20260720_task_safety_resolution_integrity.sql',
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
     );
   });
 });

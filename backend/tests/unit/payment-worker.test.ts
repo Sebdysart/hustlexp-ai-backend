@@ -9,7 +9,8 @@
  * - Already-claimed/processed events: silent no-op
  * - transfer.created accepts LOCKED_DISPUTE state (Bug 3 fix — dispute-won path)
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 // ---------------------------------------------------------------------------
 // Mocks — must be declared before any imports that use them
@@ -192,10 +193,15 @@ function setupAlreadyClaimed(stripeEventId = 'evt_pay_123', existingResult = 'pr
 
 beforeEach(() => {
   vi.clearAllMocks();
+  enableControlledStripePaymentTestCohortV7();
   // Re-wire db.transaction mock after clearAllMocks resets it
   vi.mocked(db.transaction).mockImplementation(
     (fn: (trx: typeof mockQuery) => Promise<unknown>) => fn(mockQuery)
   );
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 // ===========================================================================
@@ -315,6 +321,24 @@ describe('processPaymentJob', () => {
   // Success path: processed_at must be set, claimed_at must NOT be reset
   // -------------------------------------------------------------------------
   describe('success path', () => {
+    it('retains succeeded provider evidence but suppresses escrow funding while frozen', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('ENGINE_API_MODE', 'production');
+      vi.stubEnv('STRIPE_MODE', 'live');
+      vi.stubEnv('STRIPE_SECRET_KEY', 'sk_live_forbidden');
+      vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'enabled');
+      setupClaim('payment_intent.succeeded', {
+        id: 'pi_frozen', amount: 5000, amount_received: 5000,
+      });
+      mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+      await processPaymentJob(makeJob('payment_intent.succeeded'));
+
+      expect(db.transaction).not.toHaveBeenCalled();
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+      expect(String(mockQuery.mock.calls[1]?.[0])).toContain("result = 'skipped'");
+      expect(String(mockQuery.mock.calls[1]?.[0])).toContain('PAYMENT_CREATION_FROZEN');
+    });
     it('on success: sets processed_at=NOW() and result=success', async () => {
       setupSuccessfulPaymentIntentSucceeded();
 

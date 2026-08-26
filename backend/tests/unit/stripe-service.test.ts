@@ -4,7 +4,8 @@
  * Tests payment intent creation, amount validation, webhook verification,
  * idempotent event processing, transfer/refund stubbing, and circuit breaker integration.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -50,6 +51,11 @@ const mockDb = vi.mocked(db);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  enableControlledStripePaymentTestCohortV7();
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe('StripeService', () => {

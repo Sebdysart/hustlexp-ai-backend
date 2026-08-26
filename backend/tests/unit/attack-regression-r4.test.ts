@@ -15,7 +15,8 @@
  * REG-13: DB error details leak raw connection info to caller
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -179,6 +180,11 @@ function makeUserRouterCaller(userId: string = POSTER_ID, defaultMode: 'worker' 
 
 beforeEach(() => {
   vi.clearAllMocks();
+  enableControlledStripePaymentTestCohortV7();
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 // ===========================================================================
