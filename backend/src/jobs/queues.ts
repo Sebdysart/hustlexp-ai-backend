@@ -532,7 +532,26 @@ export function createWorker(
 // ============================================================================
 // HMAC PAYLOAD SIGNING (Attack 12 — Redis injection defence)
 // ============================================================================
+function canonicalizeForSigning(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalizeForSigning);
+  }
 
+  if (value !== null && typeof value === 'object') {
+    const object = value as Record<string, unknown>;
+
+    return Object.fromEntries(
+      Object.keys(object)
+        .sort()
+        .map((key) => [
+          key,
+          canonicalizeForSigning(object[key]),
+        ]),
+    );
+  }
+
+  return value;
+}
 /**
  * Sign a financial job payload with HMAC-SHA256.
  * Returns a 64-character hex digest that must be stored as `_sig` in the job.
@@ -540,8 +559,11 @@ export function createWorker(
  * Hard rule: Only call this for FINANCIAL jobs (critical_payments escrow events).
  */
 export function signJobPayload(payload: Record<string, unknown>): string {
-  const body = JSON.stringify(payload);
-  return createHmac('sha256', config.queue.hmacSecret).update(body).digest('hex');
+  const body = JSON.stringify(canonicalizeForSigning(payload));
+
+  return createHmac('sha256', config.queue.hmacSecret)
+    .update(body)
+    .digest('hex');
 }
 
 /**

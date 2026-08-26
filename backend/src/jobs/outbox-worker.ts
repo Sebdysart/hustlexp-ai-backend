@@ -17,7 +17,7 @@
  * @see ARCHITECTURE.md §2.4 (Outbox pattern)
  */
 
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { db } from '../db.js';
 import { enqueueJob, signJobPayload, type QueueName } from './queues.js';
 import { getClient as getRedisClient } from '../cache/redis.js';
@@ -28,6 +28,12 @@ const log = workerLogger.child({ worker: 'outbox' });
 // Maximum delivery attempts before an outbox event is permanently failed.
 // Single source of truth — used by both processOutboxEvents and markOutboxEventFailed.
 const MAX_OUTBOX_ATTEMPTS = 5;
+
+function bullMqJobId(idempotencyKey: string): string {
+  return `outbox-${createHash('sha256')
+    .update(idempotencyKey)
+    .digest('hex')}`;
+}
 
 // Financial event types that require HMAC payload signing
 // Exported for test assertion (membership is financial-critical).
@@ -155,9 +161,10 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
             aggregate_type: event.aggregate_type,
             aggregate_id: event.aggregate_id,
             event_version: event.event_version,
+            outbox_idempotency_key: event.idempotency_key,
             payload: jobPayload,
           },
-          { jobId: event.idempotency_key } // Use idempotency key as job ID (prevents duplicates)
+          { jobId: bullMqJobId(event.idempotency_key) }
         );
 
         // Persist the BullMQ job ID now that we have it (row already 'enqueued').
