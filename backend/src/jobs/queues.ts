@@ -39,10 +39,32 @@ const dlqLog = rootLogger.child({ subsystem: 'dlq-monitor' });
  * Hard rule: Use direct TCP connection for BullMQ, REST API for caching
  * 
  * For Upstash: Get direct TCP connection string from Upstash dashboard
- * Format: redis://default:{password}@{endpoint}.upstash.io:{port}
+ * Format: rediss://default:{password}@{endpoint}.upstash.io:{port}
  * 
  * Alternatively: Use separate Redis instance for BullMQ (recommended for production)
  */
+function redisTlsOptions(redisUrl: string): Record<string, never> | undefined {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(redisUrl);
+  } catch {
+    throw new Error('Redis configuration must be a valid redis:// or rediss:// URL.');
+  }
+
+  const protocol = parsedUrl.protocol.toLowerCase();
+  if (protocol !== 'redis:' && protocol !== 'rediss:') {
+    throw new Error('Redis configuration must use the redis:// or rediss:// protocol.');
+  }
+
+  const hostname = parsedUrl.hostname.toLowerCase().replace(/\.$/u, '');
+  const isUpstash = hostname === 'upstash.io' || hostname.endsWith('.upstash.io');
+  if (isUpstash && protocol !== 'rediss:') {
+    throw new Error('Upstash Redis connections must use the rediss:// protocol.');
+  }
+
+  return protocol === 'rediss:' ? {} : undefined;
+}
+
 function createRedisConnection(): Redis {
   if (!config.redis.url) {
     throw new Error('Redis configuration missing (UPSTASH_REDIS_URL or REDIS_URL required for BullMQ). Get direct TCP connection string from Upstash dashboard.');
@@ -59,8 +81,9 @@ function createRedisConnection(): Redis {
     maxRetriesPerRequest: null,
     enableReadyCheck: true,
     lazyConnect: true,
-    // Upstash-specific settings: requires TLS for direct TCP connections
-    tls: redisUrl.includes('upstash.io') ? {} : undefined,
+    // The URL parser enforces TLS for exact Upstash hostnames and enables it
+    // for every rediss:// connection. Credential-bearing URLs are never logged.
+    tls: redisTlsOptions(redisUrl),
   });
   
   return redis;

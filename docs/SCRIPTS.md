@@ -13,7 +13,16 @@ Safe-by-default local analysis examples, still subject to the active node and ex
 - Run migration safety checks: `npx tsx scripts/analyze-migration-safety.ts`
 - Validate schema: `npx tsx scripts/validate-schema.ts`
 - Generate manifests: `scripts/generate-error-manifest.ts`, `scripts/generate-flag-manifest.ts`, etc.
-- Schema validation: `npm run db:validate`; runtime migrations are applied by the web and worker startup command (see [MIGRATIONS.md](MIGRATIONS.md)).
+- Schema validation: `npm run db:validate`; web and worker startup only verify the admitted schema and never apply migrations (see [MIGRATIONS.md](MIGRATIONS.md)).
+
+Disposable PostgreSQL CI/local verification:
+
+| Script | Classification | Required boundary |
+|---|---|---|
+| `scripts/verify-engine-migrations-postgres.mjs` | `DISPOSABLE_DATABASE_DESTRUCTIVE_VERIFIER` | Creates/drops test databases and roles to prove fresh, upgrade, replay, recovery, drift, and role contracts. Use only with an explicitly verified disposable PostgreSQL 17.7 admin target. |
+| `scripts/verify-pr276-incident-containment-postgres.mjs` | `DISPOSABLE_DATABASE_DESTRUCTIVE_VERIFIER` | Reconstructs the PR276 predecessor, applies D1 containment, and executes preservation/authorization harnesses. Use only with an explicitly verified disposable PostgreSQL 17.7 admin target. |
+
+These scripts are required by protected `Build Validation`; they are never production migration commands and must not receive persistent credentials.
 
 **Tests** that depend on script logic (e.g. migration safety) import from **`scripts/`** (e.g. `scripts/analyze-migration-safety.ts`).
 
@@ -21,7 +30,7 @@ Safe-by-default local analysis examples, still subject to the active node and ex
 
 ## Quarantined or authority-gated writers
 
-Do not run any item below from general onboarding, documentation review, or the current migration `HOLD`:
+Do not run any item below from general onboarding, documentation review, or the current D1 containment node without exact effect authority:
 
 | Script | Classification | Why it is gated |
 |---|---|---|

@@ -378,6 +378,8 @@ describe('TrustTierService.banUser', () => {
     mockQuery.mockResolvedValueOnce({ rows: [] });
     // SELECT poster funded escrows (BUG 3) — none
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    // SELECT active poster funded escrows — none
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
     // UPDATE tasks cancel poster OPEN tasks (BUG 3)
     mockQuery.mockResolvedValueOnce({ rows: [] });
     // SELECT default_mode for instrumentation
@@ -406,6 +408,7 @@ describe('TrustTierService.banUser', () => {
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // select active tasks — none
     mockQuery.mockResolvedValueOnce({ rows: [] }); // cancel worker-side tasks UPDATE
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // SELECT poster funded escrows (BUG 3)
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // SELECT active poster funded escrows
     mockQuery.mockResolvedValueOnce({ rows: [] }); // cancel poster OPEN tasks (BUG 3)
     mockQuery.mockResolvedValueOnce({ rows: [{ default_mode: 'poster' }] }); // instrumentation
 
@@ -415,7 +418,7 @@ describe('TrustTierService.banUser', () => {
     expect(cancelCall[0]).toContain('CANCELLED');
   });
 
-  it('emits escrow refund outbox events for funded escrows on active tasks', async () => {
+  it('records durable reconciliation evidence instead of poisoning the refund queue for a banned worker', async () => {
     const { writeToOutbox: mockWriteToOutbox } = await import('../../src/lib/outbox-helpers');
     const mockWrite = mockWriteToOutbox as ReturnType<typeof vi.fn>;
 
@@ -429,9 +432,13 @@ describe('TrustTierService.banUser', () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ id: 'task-1' }], rowCount: 1 });
     // SELECT escrow for task-1 — funded escrow exists
     mockQuery.mockResolvedValueOnce({ rows: [{ id: 'escrow-1' }], rowCount: 1 });
+    // Persist exact same-state reconciliation evidence.
+    mockQuery.mockResolvedValueOnce({ rows: [{ metadata: {} }], rowCount: 1 });
     // UPDATE tasks (cancel worker-side active tasks)
     mockQuery.mockResolvedValueOnce({ rows: [] });
     // SELECT poster funded escrows (BUG 3) — none for this user
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    // SELECT active poster funded escrows — none for this user
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
     // UPDATE tasks cancel poster OPEN tasks (BUG 3)
     mockQuery.mockResolvedValueOnce({ rows: [] });
@@ -440,16 +447,24 @@ describe('TrustTierService.banUser', () => {
 
     await TrustTierService.banUser('u1', 'fraud');
 
-    expect(mockWrite).toHaveBeenCalledWith(
-      expect.objectContaining({
-        eventType: 'escrow.refund_requested',
-        aggregateType: 'escrow',
-        aggregateId: 'escrow-1',
-        queueName: 'critical_payments',
-        idempotencyKey: 'ban_refund:task-1',
-        payload: expect.objectContaining({ escrowId: 'escrow-1', taskId: 'task-1', reason: 'worker_banned' }),
-      })
+    expect(mockWrite).not.toHaveBeenCalled();
+    const evidenceCall = mockQuery.mock.calls.find(
+      (call) => call[1]?.[3] === 'ban-refund-reconciliation-required-v1:escrow-1:task-1:u1:worker_banned',
     );
+    expect(evidenceCall).toBeDefined();
+    expect(JSON.parse(evidenceCall![1]![2] as string)).toEqual({
+      event_type: 'ban_refund_reconciliation_required_v1',
+      task_id: 'task-1',
+      banned_user_id: 'u1',
+      ban_role: 'WORKER',
+      reason: 'worker_banned',
+      canonical_state: 'FUNDED',
+      requested_action: 'FULL_REFUND',
+      producer_disabled: true,
+      reconciliation_required: true,
+      required_consumer_state: 'LOCKED_DISPUTE',
+      required_payload_contract: 'snake_case_v1',
+    });
   });
 
   it('skips outbox event when active task has no funded escrow', async () => {
@@ -471,6 +486,8 @@ describe('TrustTierService.banUser', () => {
     mockQuery.mockResolvedValueOnce({ rows: [] });
     // SELECT poster funded escrows (BUG 3 fix) — none
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    // SELECT active poster funded escrows — none
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
     // UPDATE tasks cancel poster OPEN tasks (BUG 3 fix)
     mockQuery.mockResolvedValueOnce({ rows: [] });
     // SELECT default_mode for instrumentation
@@ -481,7 +498,7 @@ describe('TrustTierService.banUser', () => {
     expect(mockWrite).not.toHaveBeenCalled();
   });
 
-  it('enqueues poster escrow refund and cancels poster OPEN tasks on ban (BUG 3)', async () => {
+  it('records durable poster reconciliation evidence and emits no incompatible refund job', async () => {
     const { writeToOutbox: mockWriteToOutbox } = await import('../../src/lib/outbox-helpers');
     const mockWrite = mockWriteToOutbox as ReturnType<typeof vi.fn>;
     mockWrite.mockClear();
@@ -498,6 +515,10 @@ describe('TrustTierService.banUser', () => {
     mockQuery.mockResolvedValueOnce({ rows: [] });
     // SELECT poster funded escrows — one funded escrow
     mockQuery.mockResolvedValueOnce({ rows: [{ escrow_id: 'escrow-p1', task_id: 'task-p1' }], rowCount: 1 });
+    // Persist exact same-state reconciliation evidence.
+    mockQuery.mockResolvedValueOnce({ rows: [{ metadata: {} }], rowCount: 1 });
+    // SELECT active poster funded escrows — none
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
     // UPDATE tasks cancel poster OPEN tasks
     mockQuery.mockResolvedValueOnce({ rows: [] });
     // SELECT default_mode for instrumentation
@@ -505,14 +526,24 @@ describe('TrustTierService.banUser', () => {
 
     await TrustTierService.banUser('poster-u1', 'fraud');
 
-    expect(mockWrite).toHaveBeenCalledWith(
-      expect.objectContaining({
-        eventType: 'escrow.refund_requested',
-        aggregateId: 'escrow-p1',
-        payload: expect.objectContaining({ escrowId: 'escrow-p1', taskId: 'task-p1', reason: 'poster_banned' }),
-        idempotencyKey: 'ban_poster_refund:task-p1',
-      })
+    expect(mockWrite).not.toHaveBeenCalled();
+    const evidenceCall = mockQuery.mock.calls.find(
+      (call) => call[1]?.[3] === 'ban-refund-reconciliation-required-v1:escrow-p1:task-p1:poster-u1:poster_banned',
     );
+    expect(evidenceCall).toBeDefined();
+    expect(JSON.parse(evidenceCall![1]![2] as string)).toEqual({
+      event_type: 'ban_refund_reconciliation_required_v1',
+      task_id: 'task-p1',
+      banned_user_id: 'poster-u1',
+      ban_role: 'POSTER',
+      reason: 'poster_banned',
+      canonical_state: 'FUNDED',
+      requested_action: 'FULL_REFUND',
+      producer_disabled: true,
+      reconciliation_required: true,
+      required_consumer_state: 'LOCKED_DISPUTE',
+      required_payload_contract: 'snake_case_v1',
+    });
 
     // Verify poster cancel query was called
     const cancelCall = mockQuery.mock.calls.find(
@@ -534,6 +565,8 @@ describe('TrustTierService.banUser', () => {
     // UPDATE tasks (cancel worker-side active)
     mockQuery.mockResolvedValueOnce({ rows: [] });
     // SELECT poster funded escrows — none
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    // SELECT active poster funded escrows — none
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
     // UPDATE tasks cancel poster active tasks
     mockQuery.mockResolvedValueOnce({ rows: [] });

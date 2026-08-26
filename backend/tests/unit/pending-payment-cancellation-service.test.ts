@@ -36,10 +36,15 @@ const INPUT: PendingPaymentCancellationInput = {
 function escrow(overrides: Record<string, unknown> = {}) {
   return {
     id: INPUT.escrowId,
+    task_id: INPUT.taskId,
+    version: 4,
     state: 'PENDING',
     stripe_payment_intent_id: 'pi_live_controlled',
     stripe_refund_id: null,
     payment_intent_canceled_at: null,
+    task_version: 7,
+    task_state: 'EXPIRED',
+    task_worker_id: null,
     ...overrides,
   };
 }
@@ -60,8 +65,9 @@ describe('PendingPaymentCancellationService', () => {
       data: { paymentIntentId: 'pi_live_controlled', status: 'canceled', canceled: true, idempotencyReplayed: false },
     });
     mocks.query.mockResolvedValueOnce(rows([escrow()]))
-      .mockResolvedValueOnce(rows([{ id: INPUT.escrowId }]))
-      .mockResolvedValueOnce(rows()).mockResolvedValueOnce(rows());
+      .mockResolvedValueOnce(rows([{ id: INPUT.escrowId, version: 5 }]))
+      .mockResolvedValueOnce(rows([{ version: 8 }]))
+      .mockResolvedValueOnce(rows([{ exact: true }]));
     await expect(PendingPaymentCancellationService.execute(INPUT)).resolves.toBeUndefined();
     expect(mocks.cancel).toHaveBeenCalledWith('pi_live_controlled');
     expect(mocks.query.mock.calls[1][0]).toContain('payment_intent_canceled_at');
@@ -70,13 +76,56 @@ describe('PendingPaymentCancellationService', () => {
     expect(mocks.outbox).not.toHaveBeenCalled();
   });
 
-  it('replays persisted cancellation without calling Stripe again', async () => {
-    mocks.query.mockResolvedValueOnce(rows([escrow({ payment_intent_canceled_at: '2026-07-12T00:00:00.000Z' })]))
-      .mockResolvedValueOnce(rows([{ id: INPUT.escrowId }]))
-      .mockResolvedValueOnce(rows()).mockResolvedValueOnce(rows());
+  it('replays a committed cancellation after an ACK crash by validating its original witness', async () => {
+    const persisted = escrow({
+      version: 5,
+      payment_intent_canceled_at: '2026-07-12T00:00:00.000Z',
+    });
+    mocks.query.mockResolvedValueOnce(rows([persisted]))
+      .mockResolvedValueOnce(rows([persisted]))
+      .mockResolvedValueOnce(rows([{ payload: {
+        event_type: 'pending_payment_intent_canceled_v1',
+        reason: INPUT.reason,
+        escrow_id: INPUT.escrowId,
+        task_id: INPUT.taskId,
+        payment_intent_id: 'pi_live_controlled',
+        provider_status: 'canceled',
+        idempotency_replayed: false,
+        escrow_version_before: 4,
+        escrow_version_after: 5,
+        task_version_before: 7,
+        task_version_after: 7,
+      } }]));
     await PendingPaymentCancellationService.execute(INPUT);
     expect(mocks.cancel).not.toHaveBeenCalled();
-    expect(String(mocks.query.mock.calls[3][1][2])).toContain('"idempotencyReplayed":true');
+    expect(mocks.query.mock.calls.some(([sql]) => String(sql).includes('UPDATE escrows'))).toBe(false);
+    expect(mocks.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO engine_automation_events'))).toBe(false);
+  });
+
+  it('rejects a fabricated or drifted cancellation witness on replay', async () => {
+    const persisted = escrow({
+      version: 5,
+      payment_intent_canceled_at: '2026-07-12T00:00:00.000Z',
+    });
+    mocks.query.mockResolvedValueOnce(rows([persisted]))
+      .mockResolvedValueOnce(rows([persisted]))
+      .mockResolvedValueOnce(rows([{ payload: {
+        event_type: 'pending_payment_intent_canceled_v1',
+        reason: INPUT.reason,
+        escrow_id: INPUT.escrowId,
+        task_id: INPUT.taskId,
+        payment_intent_id: 'pi_live_controlled',
+        provider_status: 'canceled',
+        idempotency_replayed: true,
+        escrow_version_before: 5,
+        escrow_version_after: 6,
+        task_version_before: 7,
+        task_version_after: 7,
+      } }]));
+
+    await expect(PendingPaymentCancellationService.execute(INPUT))
+      .rejects.toThrow(`cancellation evidence conflicts for escrow ${INPUT.escrowId}`);
+    expect(mocks.cancel).not.toHaveBeenCalled();
   });
 
   it('escalates a succeeded PaymentIntent onto the idempotent refund rail', async () => {
@@ -177,5 +226,87 @@ describe('PendingPaymentCancellationService', () => {
     mocks.query.mockResolvedValueOnce(rows([escrow()])).mockResolvedValueOnce(rows([], 0));
     await expect(PendingPaymentCancellationService.execute(INPUT))
       .rejects.toThrow('changed before PaymentIntent cancellation persisted');
+  });
+
+  it('fails before provider effects when the escrow belongs to another task', async () => {
+    mocks.query.mockResolvedValueOnce(rows([escrow({
+      task_id: '33333333-3333-4333-8333-333333333333',
+    })]));
+
+    await expect(PendingPaymentCancellationService.execute(INPUT))
+      .rejects.toThrow(`does not belong to task ${INPUT.taskId}`);
+    expect(mocks.cancel).not.toHaveBeenCalled();
+  });
+
+  it('rejects a mismatched provider cancellation witness without persistence', async () => {
+    mocks.query.mockResolvedValueOnce(rows([escrow()]));
+    mocks.cancel.mockResolvedValueOnce({
+      success: true,
+      data: { paymentIntentId: 'pi_wrong', status: 'canceled', canceled: true, idempotencyReplayed: false },
+    });
+
+    await expect(PendingPaymentCancellationService.execute(INPUT))
+      .rejects.toThrow(`cancellation witness does not match escrow ${INPUT.escrowId}`);
+    expect(mocks.query).toHaveBeenCalledOnce();
+
+    mocks.query.mockResolvedValueOnce(rows([escrow()]));
+    mocks.cancel.mockResolvedValueOnce({
+      success: true,
+      data: { paymentIntentId: 'pi_live_controlled', status: 'requires_capture', canceled: true, idempotencyReplayed: false },
+    });
+
+    await expect(PendingPaymentCancellationService.execute(INPUT))
+      .rejects.toThrow(`cancellation witness does not match escrow ${INPUT.escrowId}`);
+  });
+
+  it('rolls back when the task binding drifts after provider cancellation', async () => {
+    mocks.cancel.mockResolvedValueOnce({
+      success: true,
+      data: { paymentIntentId: 'pi_live_controlled', status: 'canceled', canceled: true, idempotencyReplayed: false },
+    });
+    mocks.query.mockResolvedValueOnce(rows([escrow()]))
+      .mockResolvedValueOnce(rows([{ id: INPUT.escrowId, version: 5 }]))
+      .mockResolvedValueOnce(rows([], 0));
+
+    await expect(PendingPaymentCancellationService.execute(INPUT))
+      .rejects.toThrow(`Task ${INPUT.taskId} changed before PaymentIntent cancellation persisted`);
+  });
+
+  it('rolls back when immutable cancellation evidence conflicts', async () => {
+    mocks.cancel.mockResolvedValueOnce({
+      success: true,
+      data: { paymentIntentId: 'pi_live_controlled', status: 'canceled', canceled: true, idempotencyReplayed: false },
+    });
+    mocks.query.mockResolvedValueOnce(rows([escrow()]))
+      .mockResolvedValueOnce(rows([{ id: INPUT.escrowId, version: 5 }]))
+      .mockResolvedValueOnce(rows([{ version: 8 }]))
+      .mockResolvedValueOnce(rows([{ exact: false }]));
+
+    await expect(PendingPaymentCancellationService.execute(INPUT))
+      .rejects.toThrow(`cancellation evidence conflicts for escrow ${INPUT.escrowId}`);
+  });
+
+  it('retries safely after provider success followed by a persistence race', async () => {
+    mocks.cancel.mockResolvedValueOnce({
+      success: true,
+      data: { paymentIntentId: 'pi_live_controlled', status: 'canceled', canceled: true, idempotencyReplayed: false },
+    });
+    mocks.query.mockResolvedValueOnce(rows([escrow()]))
+      .mockResolvedValueOnce(rows([], 0));
+
+    await expect(PendingPaymentCancellationService.execute(INPUT))
+      .rejects.toThrow('changed before PaymentIntent cancellation persisted');
+
+    mocks.cancel.mockResolvedValueOnce({
+      success: true,
+      data: { paymentIntentId: 'pi_live_controlled', status: 'canceled', canceled: true, idempotencyReplayed: true },
+    });
+    mocks.query.mockResolvedValueOnce(rows([escrow()]))
+      .mockResolvedValueOnce(rows([{ id: INPUT.escrowId, version: 5 }]))
+      .mockResolvedValueOnce(rows([{ version: 8 }]))
+      .mockResolvedValueOnce(rows([{ exact: true }]));
+
+    await expect(PendingPaymentCancellationService.execute(INPUT)).resolves.toBeUndefined();
+    expect(mocks.cancel).toHaveBeenCalledTimes(2);
   });
 });

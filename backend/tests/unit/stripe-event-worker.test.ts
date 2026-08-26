@@ -10,11 +10,16 @@
  * Critical bug fix (payment_intent.succeeded escrow funding):
  * - payment_intent.succeeded → EscrowService.fund (PENDING → FUNDED)
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
+const { markStripeEventOutboxesProcessed } = vi.hoisted(() => ({
+  markStripeEventOutboxesProcessed: vi.fn(),
+}));
+
 vi.mock('../../src/db', () => ({
   db: {
     query: vi.fn(),
@@ -73,12 +78,16 @@ vi.mock('../../src/jobs/queues.js', () => ({
   signJobPayload: vi.fn((payload: Record<string, unknown>) => ({ ...payload, _sig: 'test-sig' })),
 }));
 
+vi.mock('../../src/jobs/outbox-worker.js', () => ({ markStripeEventOutboxesProcessed }));
+
 import { db } from '../../src/db';
 import { processStripeEventJob } from '../../src/jobs/stripe-event-worker';
 import { RevenueService } from '../../src/services/RevenueService.js';
 import { ChargebackService } from '../../src/services/ChargebackService.js';
 import { EscrowService } from '../../src/services/EscrowService.js';
 import { verifyJobSignature } from '../../src/jobs/queues.js';
+import { outboxTransportJobId } from '../../src/jobs/OutboxIdentity.js';
+import { processSubscriptionEvent } from '../../src/services/StripeSubscriptionProcessor.js';
 import type { Job } from 'bullmq';
 
 const mockDb = vi.mocked(db);
@@ -88,7 +97,20 @@ const mockDb = vi.mocked(db);
 // ---------------------------------------------------------------------------
 
 function makeJob(type: string, eventObject: Record<string, unknown>): Job {
-  return { data: { stripeEventId: 'evt_test_123', type, payload: { _sig: 'test-sig' } } } as unknown as Job;
+  const outboxKey = 'stripe.event_received:evt_test_123';
+  return {
+    id: outboxTransportJobId(outboxKey),
+    data: {
+      stripeEventId: 'evt_test_123',
+      type,
+      payload: {
+        stripeEventId: 'evt_test_123',
+        type,
+        _outbox_key: outboxKey,
+        _sig: 'test-sig',
+      },
+    },
+  } as unknown as Job;
 }
 
 function setupClaim(type: string, eventObject: Record<string, unknown>) {
@@ -103,6 +125,19 @@ function setupClaim(type: string, eventObject: Record<string, unknown>) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  markStripeEventOutboxesProcessed.mockResolvedValue({
+    signed: {
+      idempotency_key: 'stripe.event_received:evt_test_123',
+      status: 'processed',
+      attempts: 1,
+    },
+    acknowledgedKeys: ['stripe.event_received:evt_test_123'],
+  });
+  enableControlledStripePaymentTestCohortV7();
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 // ===========================================================================
@@ -110,6 +145,73 @@ beforeEach(() => {
 // ===========================================================================
 
 describe('processStripeEventJob', () => {
+  describe('frozen positive-effect containment', () => {
+    it.each([
+      'customer.subscription.created',
+      'checkout.session.completed',
+      'invoice.payment_failed',
+      'invoice.paid',
+    ])('retains %s without invoking its canonical-effect handler', async (type) => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('ENGINE_API_MODE', 'production');
+      vi.stubEnv('STRIPE_MODE', 'live');
+      vi.stubEnv('STRIPE_SECRET_KEY', 'sk_live_forbidden');
+      vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'enabled');
+      setupClaim(type, { id: `${type}-object`, status: 'active', amount_paid: 999 });
+
+      await processStripeEventJob(makeJob(type, { id: `${type}-object` }));
+
+      expect(processSubscriptionEvent).not.toHaveBeenCalled();
+      expect(EscrowService.fund).not.toHaveBeenCalled();
+      expect(mockDb.query).toHaveBeenCalledTimes(2);
+      expect(mockDb.query.mock.calls[1]?.[1]).toContainEqual(
+        expect.stringContaining('PAYMENT_CREATION_FROZEN'),
+      );
+    });
+
+    it('retains invoice.paid while frozen without writing subscription revenue', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('ENGINE_API_MODE', 'production');
+      vi.stubEnv('STRIPE_MODE', 'live');
+      vi.stubEnv('STRIPE_SECRET_KEY', 'sk_live_forbidden');
+      vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'enabled');
+      const invoice = {
+        id: 'in_frozen_reconciliation',
+        metadata: { user_id: 'user-frozen' },
+        amount_paid: 999,
+      };
+      setupClaim('invoice.paid', invoice);
+
+      await processStripeEventJob(makeJob('invoice.paid', invoice));
+
+      expect(processSubscriptionEvent).not.toHaveBeenCalled();
+      expect(EscrowService.fund).not.toHaveBeenCalled();
+      expect(mockDb.query.mock.calls.some(
+        (call) => String(call[0]).includes('INSERT INTO revenue_ledger'),
+      )).toBe(false);
+      expect(mockDb.query).toHaveBeenCalledTimes(2);
+      expect(mockDb.query.mock.calls[1]?.[1]).toContainEqual(
+        expect.stringContaining('PAYMENT_CREATION_FROZEN'),
+      );
+    });
+
+    it('allows only a negative canceled subscription update while frozen', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('ENGINE_API_MODE', 'production');
+      vi.stubEnv('STRIPE_MODE', 'live');
+      vi.stubEnv('STRIPE_SECRET_KEY', 'sk_live_forbidden');
+      vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'enabled');
+      const subscription = { id: 'sub_cancel', status: 'canceled' };
+      setupClaim('customer.subscription.updated', subscription);
+
+      await processStripeEventJob(makeJob('customer.subscription.updated', subscription));
+
+      expect(processSubscriptionEvent).toHaveBeenCalledOnce();
+      expect(String(mockDb.query.mock.calls[1]?.[0])).toContain("result = 'success'");
+      expect((mockDb.query.mock.calls[1]?.[1] as unknown[] | undefined)?.[1])
+        .toBe((mockDb.query.mock.calls[0]?.[1] as unknown[] | undefined)?.[1]);
+    });
+  });
   // -------------------------------------------------------------------------
   // invoice.paid
   // BUG 5 FIX: handleInvoicePaid now uses db.query with INSERT ON CONFLICT
@@ -377,6 +479,24 @@ describe('processStripeEventJob', () => {
   // the same mockDb.query, queued with mockResolvedValueOnce.
   // -------------------------------------------------------------------------
   describe('payment_intent.succeeded', () => {
+    it('retains the provider fact but suppresses entitlement and escrow effects while frozen', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('ENGINE_API_MODE', 'production');
+      vi.stubEnv('STRIPE_MODE', 'live');
+      vi.stubEnv('STRIPE_SECRET_KEY', 'sk_live_forbidden');
+      vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'enabled');
+      const paymentIntent = { id: 'pi_frozen', metadata: { user_id: 'user-1', risk_level: 'HIGH' } };
+      setupClaim('payment_intent.succeeded', paymentIntent);
+
+      await processStripeEventJob(makeJob('payment_intent.succeeded', paymentIntent));
+
+      expect(EscrowService.fund).not.toHaveBeenCalled();
+      expect(mockDb.query).toHaveBeenCalledTimes(2);
+      expect(String(mockDb.query.mock.calls[1]?.[0])).toContain("result = 'skipped'");
+      expect(mockDb.query.mock.calls[1]?.[1]).toContainEqual(
+        expect.stringContaining('PAYMENT_CREATION_FROZEN'),
+      );
+    });
     const paymentIntent = { id: 'pi_test_abc', amount: 5000 };
 
     /** Helper: prime the claim query (call 1 of 3) */
@@ -461,7 +581,8 @@ describe('processStripeEventJob', () => {
       // Idempotency is guaranteed by processed_stripe_events INSERT ON CONFLICT, not claimed_at.
       expect(sql).toContain('claimed_at = NULL');
       // Must NOT tombstone with processed_at — that would silently drop all retries
-      expect(sql).not.toContain('processed_at');
+      expect(sql).not.toMatch(/SET[\s\S]*processed_at\s*=/);
+      expect(sql).toContain('processed_at IS NULL');
       // Must record the failure
       expect(sql).toContain("result = 'failed'");
     });
@@ -548,14 +669,91 @@ describe('processStripeEventJob', () => {
   // -------------------------------------------------------------------------
   // Already processed — no-op
   // -------------------------------------------------------------------------
-  it('returns early when event is already claimed', async () => {
-    // claim query returns 0 rows → already processed
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+  it('returns early without acknowledging outbox when another worker has an active lease', async () => {
+    mockDb.query
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce({ rows: [{ processed_at: null }], rowCount: 1 } as never);
 
     await processStripeEventJob(makeJob('invoice.paid', {}));
 
     expect(RevenueService.logEvent).not.toHaveBeenCalled();
     expect(ChargebackService.handleDisputeCreated).not.toHaveBeenCalled();
+    expect(markStripeEventOutboxesProcessed).not.toHaveBeenCalled();
+  });
+
+  it('acknowledges the exact signed outbox when the inbox row is already terminal', async () => {
+    mockDb.query
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce({ rows: [{ processed_at: new Date() }], rowCount: 1 } as never);
+
+    await processStripeEventJob(makeJob('invoice.paid', {}));
+
+    expect(markStripeEventOutboxesProcessed).toHaveBeenCalledWith({
+      idempotencyKey: 'stripe.event_received:evt_test_123',
+      stripeEventId: 'evt_test_123',
+    });
+  });
+
+  it('rejects a forged BullMQ identity before claiming the inbox row', async () => {
+    const job = makeJob('invoice.paid', {});
+    job.id = 'forged-job';
+
+    await expect(processStripeEventJob(job)).rejects.toThrow('JOB_IDENTITY_INVALID');
+
+    expect(mockDb.query).not.toHaveBeenCalled();
+    expect(markStripeEventOutboxesProcessed).not.toHaveBeenCalled();
+  });
+
+  it('does not acknowledge when a rotated lease defeats the terminal CAS', async () => {
+    mockDb.query
+      .mockResolvedValueOnce({
+        rows: [{
+          payload_json: {
+            id: 'evt_test_123',
+            data: { object: { metadata: {}, amount_paid: 0 } },
+          },
+          type: 'invoice.paid',
+        }],
+        rowCount: 1,
+      } as never)
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+    await expect(processStripeEventJob(makeJob(
+      'invoice.paid',
+      { metadata: {}, amount_paid: 0 },
+    ))).rejects.toThrow('STRIPE_EVENT_INBOX_CLAIM_LOST');
+
+    expect(markStripeEventOutboxesProcessed).not.toHaveBeenCalled();
+  });
+
+  it('retries only the outbox ACK after a crash following terminal inbox persistence', async () => {
+    setupClaim('invoice.paid', { metadata: {}, amount_paid: 0 });
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+    markStripeEventOutboxesProcessed
+      .mockRejectedValueOnce(new Error('crash after inbox terminal'))
+      .mockResolvedValueOnce({
+        signed: {
+          idempotency_key: 'stripe.event_received:evt_test_123',
+          status: 'processed',
+          attempts: 2,
+        },
+        acknowledgedKeys: ['stripe.event_received:evt_test_123'],
+      });
+
+    await expect(processStripeEventJob(makeJob(
+      'invoice.paid',
+      { metadata: {}, amount_paid: 0 },
+    ))).rejects.toThrow('crash after inbox terminal');
+
+    mockDb.query
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce({ rows: [{ processed_at: new Date() }], rowCount: 1 } as never);
+    await expect(processStripeEventJob(makeJob(
+      'invoice.paid',
+      { metadata: {}, amount_paid: 0 },
+    ))).resolves.toBeUndefined();
+
+    expect(markStripeEventOutboxesProcessed).toHaveBeenCalledTimes(2);
   });
 
   // -------------------------------------------------------------------------

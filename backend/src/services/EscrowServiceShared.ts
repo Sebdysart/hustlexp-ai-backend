@@ -2,12 +2,14 @@ import { db } from '../db.js';
 import { escrowLogger } from '../logger.js';
 import type { EscrowState } from '../types.js';
 import { TERMINAL_ESCROW_STATES } from '../types.js';
+import type { StripeTransferWitness } from './EscrowReleaseTypes.js';
 
 export interface CreateEscrowParams { taskId: string; amount: number }
 export interface FundEscrowParams { escrowId: string; stripePaymentIntentId: string }
 export interface ReleaseEscrowParams {
   escrowId: string;
   stripeTransferId?: string;
+  stripeTransferWitness?: StripeTransferWitness;
   localTestTransferId?: string;
   adminOverride?: boolean;
   reason?: string;

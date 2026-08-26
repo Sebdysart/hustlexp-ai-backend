@@ -448,9 +448,7 @@ async function create(params: CreateTaskParams): Promise<ServiceResult<Task>> {
 async function createInTransaction(
   query: TaskCreateQuery,
   params: CreateTaskParams,
-): Promise<ServiceResult<Task> & {
-  replayed?: boolean;
-}> {
+): Promise<ServiceResult<Task>> {
   let savepointOpen = false;
   try {
     const prepared = materializeTemplatePolicy(params);
@@ -470,12 +468,7 @@ async function createInTransaction(
     if (prior) {
       await query('RELEASE SAVEPOINT hustlexp_task_create');
       savepointOpen = false;
-
-      const result = materializeOutcome(prior, prepared.params.posterId);
-
-      return result.success
-        ? { ...result, replayed: prior.kind === 'replay' }
-        : result;
+      return materializeOutcome(prior, prepared.params.posterId);
     }
     const scope = initialScope(prepared.params, money.price);
     const task = await insertCanonicalTask(query, {
@@ -486,7 +479,7 @@ async function createInTransaction(
     });
     await query('RELEASE SAVEPOINT hustlexp_task_create');
     savepointOpen = false;
-    return { success: true, data: task, replayed: false };
+    return { success: true, data: task };
   } catch (error) {
     if (savepointOpen) {
       try {

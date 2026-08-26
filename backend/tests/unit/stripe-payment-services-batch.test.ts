@@ -11,7 +11,8 @@
  * - TwilioSMSService (0%)
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 // ============================================================================
 // ALL MOCKS MUST BE AT THE TOP
@@ -162,8 +163,13 @@ const mockNotificationService = vi.mocked(NotificationService);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  enableControlledStripePaymentTestCohortV7();
   // Reset module-level caches between tests
   invalidateAdminCache();
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 // ============================================================================

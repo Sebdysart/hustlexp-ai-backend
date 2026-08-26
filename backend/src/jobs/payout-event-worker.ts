@@ -6,6 +6,14 @@ import { HustlerWalletService } from '../services/HustlerWalletService.js';
 import { mapStripePayoutState } from '../services/HustlerWalletProvider.js';
 import { NotificationService } from '../services/NotificationService.js';
 import { verifyJobSignature } from './queues.js';
+import {
+  claimStripeEventInbox,
+  finalizeStripeEventInboxClaim,
+  isStripeEventInboxClaimLost,
+  releaseStripeEventInboxClaim,
+  requireExactStripeEventOutboxKey,
+} from './StripeEventInboxLease.js';
+import { markStripeEventOutboxesProcessed } from './outbox-worker.js';
 
 const log = workerLogger.child({ worker: 'payout-event' });
 const PAYOUT_EVENT_TYPES = new Set([
@@ -34,11 +42,13 @@ interface ProviderPayoutObject {
 interface ClaimedPayoutEvent {
   payload_json: StripePayoutEnvelope;
   type: string;
+  claimToken: string;
 }
 
 interface SignedPayoutJob {
   stripeEventId: string;
   type: string;
+  outboxKey: string;
 }
 
 function verifiedJobPayload(job: Job): SignedPayoutJob {
@@ -53,18 +63,15 @@ function verifiedJobPayload(job: Job): SignedPayoutJob {
   if (typeof payload.stripeEventId !== 'string' || typeof payload.type !== 'string') {
     throw new Error('Signed payout job is missing stripeEventId or type');
   }
-  return { stripeEventId: payload.stripeEventId, type: payload.type };
+  return {
+    stripeEventId: payload.stripeEventId,
+    type: payload.type,
+    outboxKey: requireExactStripeEventOutboxKey(job, payload, payload.stripeEventId),
+  };
 }
 
 async function claimEvent(stripeEventId: string): Promise<ClaimedPayoutEvent | null> {
-  const claim = await db.query<ClaimedPayoutEvent>(
-    `UPDATE stripe_events
-     SET claimed_at=NOW(),result='processing',error_message=NULL
-     WHERE stripe_event_id=$1 AND claimed_at IS NULL AND processed_at IS NULL
-     RETURNING payload_json,type`,
-    [stripeEventId],
-  );
-  return claim.rows[0] ?? null;
+  return claimStripeEventInbox<StripePayoutEnvelope>(stripeEventId);
 }
 
 function providerState(type: string, payout: ProviderPayoutObject) {
@@ -207,36 +214,43 @@ async function handlePayout(
   });
 }
 
-async function markSuccess(stripeEventId: string): Promise<void> {
-  await db.query(
-    `UPDATE stripe_events SET result='success',processed_at=NOW()
-     WHERE stripe_event_id=$1`,
-    [stripeEventId],
-  );
+async function markSuccess(stripeEventId: string, claimToken: string): Promise<void> {
+  await finalizeStripeEventInboxClaim({ stripeEventId, claimToken, result: 'success' });
 }
 
-async function releaseFailedClaim(stripeEventId: string, error: unknown): Promise<void> {
+async function releaseFailedClaim(
+  stripeEventId: string,
+  claimToken: string,
+  error: unknown,
+): Promise<void> {
   const message = error instanceof Error ? error.message : 'Unknown error';
-  await db.query(
-    `UPDATE stripe_events
-     SET result='failed',claimed_at=NULL,error_message=$2
-     WHERE stripe_event_id=$1`,
-    [stripeEventId, message],
-  );
+  await releaseStripeEventInboxClaim({ stripeEventId, claimToken, errorMessage: message });
 }
 
 export async function processPayoutEventJob(job: Job): Promise<void> {
-  const { stripeEventId } = verifiedJobPayload(job);
+  const { stripeEventId,outboxKey } = verifiedJobPayload(job);
   const claimed = await claimEvent(stripeEventId);
   if (!claimed) {
+    const existing = await db.query<{ processed_at: Date | null }>(
+      'SELECT processed_at FROM stripe_events WHERE stripe_event_id=$1',
+      [stripeEventId],
+    );
+    if (existing.rows.length !== 1) {
+      throw new Error(`Stripe event ${stripeEventId} not found`);
+    }
+    if (existing.rows[0].processed_at !== null) {
+      await markStripeEventOutboxesProcessed({ idempotencyKey: outboxKey, stripeEventId });
+    }
     log.info({ stripeEventId }, 'Payout event already processed, skipping');
     return;
   }
   try {
     await handlePayout(claimed, stripeEventId);
-    await markSuccess(stripeEventId);
+    await markSuccess(stripeEventId, claimed.claimToken);
+    await markStripeEventOutboxesProcessed({ idempotencyKey: outboxKey, stripeEventId });
   } catch (error) {
-    await releaseFailedClaim(stripeEventId, error);
+    if (isStripeEventInboxClaimLost(error)) throw error;
+    await releaseFailedClaim(stripeEventId, claimed.claimToken, error);
     log.error({ stripeEventId, err: error }, 'Payout event failed; claim released for retry');
     throw error;
   }

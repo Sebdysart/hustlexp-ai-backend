@@ -5,28 +5,16 @@
  *   task-admin, task-quote-admin, supply-admin (hustler roster + skills)
  *   plus Command-center read joins and liquidity snapshot.
  *
- * Browser-facing procedures use operationsAdminProcedure (Firebase + can_manage_operations).
- * listEngineTasks remains service-key gated for engine-bridge-admin only.
+ * Every operator procedure uses operationsAdminProcedure
+ * (named Firebase session + can_manage_operations).
  */
 
 import { z } from 'zod';
 import { router, publicProcedure, operationsAdminProcedure } from '../../trpc.js';
 import { db } from '../../db.js';
-import { logger } from '../../logger.js';
 import { TRPCError } from '@trpc/server';
-import crypto from 'crypto';
 import { AutomationLifecycleService } from '../../services/AutomationLifecycleService.js';
 import { getOpsLiquidityPayload } from '../../services/OpsLiquidityService.js';
-import { assertEngineOpsServiceKey, OpsAuthError } from './opsServiceKey.js';
-
-const log = logger.child({ router: 'web.ops' });
-
-function mapOpsAuth(error: unknown): never {
-  if (error instanceof OpsAuthError) {
-    throw new TRPCError({ code: 'FORBIDDEN', message: error.message });
-  }
-  throw error;
-}
 
 /** Display-safe task_draft columns — never select card_token_hash / ip_hash. */
 const TASK_DRAFT_SAFE_COLS = `
@@ -52,75 +40,23 @@ const UpsertHustlerSchema = z.object({
   skills: z.array(z.string()).default([]),
 });
 
-type UpsertHustlerInput = z.infer<typeof UpsertHustlerSchema>;
-
-function hustlerValues(input: UpsertHustlerInput): unknown[] {
-  return [
-    input.name, input.phone ?? null, input.email ?? null, input.home_zip ?? null,
-    input.radius_miles ?? null, input.vehicle, input.max_lift_lbs ?? null,
-    input.status, input.available, input.availability_note ?? null,
-    input.notes ?? null, input.skills,
-  ];
-}
-
-async function recordOpsAudit(input: {
-  actorUserId?: string | null;
-  action: string;
-  targetType: string;
-  targetId?: string | null;
-  meta?: Record<string, unknown>;
-}): Promise<void> {
-  try {
-    await db.query(
-      `INSERT INTO ops_action_audit (actor_user_id, actor_label, action, target_type, target_id, meta)
-       VALUES ($1, 'ops', $2, $3, $4, $5::jsonb)`,
-      [
-        input.actorUserId ?? null,
-        input.action,
-        input.targetType,
-        input.targetId ?? null,
-        JSON.stringify(input.meta ?? {}),
-      ],
-    );
-  } catch (error) {
-    // Table may not exist until migration applies — never fail the operator action.
-    log.warn({ err: error, action: input.action }, 'ops_action_audit write skipped');
-  }
-}
-
-function quoteEligibilityError(code: 'not_eligible' | 'already_linked' | 'not_found', message: string): never {
-  throw new TRPCError({ code: 'CONFLICT', message: `${code}:${message}` });
-}
-
-function generateBusinessClaimToken(): {
-  rawToken: string;
-  tokenHash: string;
-} {
-  const rawToken = crypto.randomBytes(32).toString('hex');
-  const tokenHash = crypto
-    .createHash('sha256')
-    .update(rawToken)
-    .digest('hex');
-
-  return { rawToken, tokenHash };
+function opsMutationDisabled(capability: string): never {
+  throw new TRPCError({
+    code: 'PRECONDITION_FAILED',
+    message: `HX_OPS_MUTATION_FROZEN:${capability}`,
+  });
 }
 
 export const webOpsRouter = router({
 
-  // ── Canonical engine lifecycle (E1) — service key only ─────────────────────
+  // ── Canonical engine lifecycle (E1) — named operator session only ──────────
 
-  listEngineTasks: publicProcedure
+  listEngineTasks: operationsAdminProcedure
     .input(z.object({
-      adminKey: z.string(),
       limit: z.number().int().min(1).max(100).default(20),
       cursor: z.string().max(512).nullish(),
     }))
     .query(async ({ input }) => {
-      try {
-        assertEngineOpsServiceKey(input.adminKey);
-      } catch (error) {
-        mapOpsAuth(error);
-      }
       const result = await AutomationLifecycleService.listTasks({
         limit: input.limit,
         cursor: input.cursor,
@@ -205,138 +141,11 @@ export const webOpsRouter = router({
       hustler_payout_cents: z.number().optional(),
       scope_json: z.record(z.unknown()).default({}),
     }))
-    .mutation(async ({ ctx, input }) => {
-      const totalCents = input.subtotal_cents + input.service_fee_cents
-        + input.materials_cents - input.discount_cents;
-      const payToken = crypto.randomBytes(16).toString('hex');
-
-      try {
-        const created = await db.transaction(async (tx) => {
-          const draft = await tx<{ id: string; title: string | null; quote_id: string | null; status: string }>(
-            `SELECT id, title, quote_id, status FROM task_drafts WHERE id = $1 FOR UPDATE`,
-            [input.task_draft_id],
-          );
-          if (draft.rows.length === 0) {
-            quoteEligibilityError('not_found', 'Task draft not found');
-          }
-          const row = draft.rows[0];
-          if (row.quote_id) {
-            quoteEligibilityError('already_linked', 'Task draft already has a quote');
-          }
-          if (['abandoned'].includes(row.status)) {
-            quoteEligibilityError('not_eligible', `Draft status ${row.status} is not eligible`);
-          }
-
-          const quoteResult = await tx<{ id: string }>(
-            `INSERT INTO quotes (task_draft_id, title, status)
-             VALUES ($1, COALESCE($2, 'Quote'), 'quote_ready')
-             RETURNING id`,
-            [input.task_draft_id, row.title],
-          );
-          const quoteId = quoteResult.rows[0].id;
-
-          const versionResult = await tx<{ id: string }>(
-            `INSERT INTO quote_versions
-              (quote_id, version_number, status, customer_description, internal_notes,
-               subtotal_cents, service_fee_cents, materials_cents, discount_cents,
-               total_cents, minimum_acceptable_price_cents, hustler_payout_cents,
-               scope_json, pay_token)
-             VALUES ($1, 1, 'draft', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12)
-             RETURNING id`,
-            [
-              quoteId,
-              input.customer_description, input.internal_notes ?? null,
-              input.subtotal_cents, input.service_fee_cents,
-              input.materials_cents, input.discount_cents, totalCents,
-              input.minimum_acceptable_price_cents ?? null,
-              input.hustler_payout_cents ?? null,
-              JSON.stringify(input.scope_json),
-              payToken,
-            ],
-          );
-          const versionId = versionResult.rows[0].id;
-
-          await tx(
-            `UPDATE quotes SET active_version_id = $1, updated_at = now() WHERE id = $2`,
-            [versionId, quoteId],
-          );
-          await tx(
-            `UPDATE task_drafts SET quote_id = $1, updated_at = now() WHERE id = $2`,
-            [quoteId, input.task_draft_id],
-          );
-
-          return { quoteId, versionId };
-        });
-
-        await recordOpsAudit({
-          actorUserId: ctx.user.id,
-          action: 'quote_created',
-          targetType: 'quote',
-          targetId: created.quoteId,
-          meta: { task_draft_id: input.task_draft_id, total_cents: totalCents },
-        });
-
-        log.info({ quoteId: created.quoteId, totalCents }, 'Quote created');
-        return {
-          ok: true,
-          quote_id: created.quoteId,
-          version_id: created.versionId,
-          total_cents: totalCents,
-          status: 'quote_ready',
-        };
-      } catch (error) {
-        if (error instanceof TRPCError) throw error;
-        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Quote create failed' });
-      }
-    }),
+    .mutation(() => opsMutationDisabled('create_quote')),
 
   markQuoteSendReady: operationsAdminProcedure
     .input(z.object({ task_draft_id: z.string().uuid() }))
-    .mutation(async ({ ctx, input }) => {
-      try {
-        const quoteId = await db.transaction(async (tx) => {
-          const draft = await tx<{ id: string; quote_id: string | null }>(
-            `SELECT id, quote_id FROM task_drafts WHERE id = $1 FOR UPDATE`,
-            [input.task_draft_id],
-          );
-          if (draft.rows.length === 0) {
-            quoteEligibilityError('not_found', 'Task draft not found');
-          }
-          if (!draft.rows[0].quote_id) {
-            quoteEligibilityError('not_eligible', 'No quote linked to this draft');
-          }
-
-          const result = await tx<{ id: string; status: string }>(
-            `UPDATE quotes SET status = 'quote_send_ready', updated_at = now()
-             WHERE task_draft_id = $1
-             RETURNING id, status`,
-            [input.task_draft_id],
-          );
-          if (result.rows.length === 0) {
-            quoteEligibilityError('not_found', 'No quote for this draft');
-          }
-
-          await tx(
-            `UPDATE task_drafts SET quote_send_ready_at = now(), updated_at = now() WHERE id = $1`,
-            [input.task_draft_id],
-          );
-          return result.rows[0].id;
-        });
-
-        await recordOpsAudit({
-          actorUserId: ctx.user.id,
-          action: 'quote_mark_send_ready',
-          targetType: 'quote',
-          targetId: quoteId,
-          meta: { task_draft_id: input.task_draft_id },
-        });
-
-        return { ok: true, quote_id: quoteId, status: 'quote_send_ready' };
-      } catch (error) {
-        if (error instanceof TRPCError) throw error;
-        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Mark send ready failed' });
-      }
-    }),
+    .mutation(() => opsMutationDisabled('mark_quote_send_ready')),
 
   listQuotes: operationsAdminProcedure
     .input(z.object({ limit: z.number().int().min(1).max(200).default(50) }))
@@ -410,37 +219,7 @@ export const webOpsRouter = router({
 
   upsertHustler: operationsAdminProcedure
     .input(UpsertHustlerSchema)
-    .mutation(async ({ ctx, input }) => {
-      const id = input.id
-        ? await (async () => {
-          await db.query(
-            `UPDATE leads SET name=$1, phone=$2, email=$3, home_zip=$4, radius_miles=$5,
-             vehicle=$6, max_lift_lbs=$7, status=$8, available=$9,
-             availability_note=$10, notes=$11, skills=$12::text[], updated_at=now()
-             WHERE id=$13 AND lead_type='hustler'`,
-            [...hustlerValues(input), input.id],
-          );
-          return input.id;
-        })()
-        : (await db.query<{ id: string }>(
-          `INSERT INTO leads
-            (lead_type, name, phone, email, home_zip, radius_miles, vehicle,
-             max_lift_lbs, status, available, availability_note, notes, skills,
-             submission_id, consent_version)
-           VALUES ('hustler',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::text[],
-                   gen_random_uuid(),'v1')
-           RETURNING id`,
-          hustlerValues(input),
-        )).rows[0].id;
-
-      await recordOpsAudit({
-        actorUserId: ctx.user.id,
-        action: input.id ? 'hustler_updated' : 'hustler_created',
-        targetType: 'lead',
-        targetId: id,
-      });
-      return { ok: true, id };
-    }),
+    .mutation(() => opsMutationDisabled('upsert_hustler')),
 
   // ── Command-center reads ────────────────────────────────────────────────────
 
@@ -600,176 +379,14 @@ export const webOpsRouter = router({
       key: z.string().min(1).max(200),
       enabled: z.boolean(),
     }))
-    .mutation(async ({ ctx, input }) => {
-      try {
-        await db.query(
-          `INSERT INTO feature_flags (name, key, enabled)
-           VALUES ($1, $1, $2)
-           ON CONFLICT (name) DO UPDATE SET enabled = $2, key = EXCLUDED.key, updated_at = now()`,
-          [input.key, input.enabled],
-        );
-      } catch {
-        await db.query(
-          `INSERT INTO feature_flags (name, enabled)
-           VALUES ($1, $2)
-           ON CONFLICT (name) DO UPDATE SET enabled = $2, updated_at = now()`,
-          [input.key, input.enabled],
-        );
-      }
-      await recordOpsAudit({
-        actorUserId: ctx.user.id,
-        action: 'feature_flag_updated',
-        targetType: 'feature_flag',
-        targetId: input.key,
-        meta: { enabled: input.enabled },
-      });
-      return { ok: true };
-    }),
-    createBusinessClaimLink: operationsAdminProcedure
-  .input(
-    z.object({
-      task_draft_id: z.string().uuid(),
-      expires_in_hours: z.number().int().min(1).max(168).default(72),
-    }).strict(),
-  )
-  .mutation(async ({ ctx, input }) => {
-    const { rawToken, tokenHash } = generateBusinessClaimToken();
+    .mutation(() => opsMutationDisabled('update_feature_flag')),
 
-    try {
-      const created = await db.transaction(async (tx) => {
-        const draftResult = await tx<{
-          id: string;
-          status: string;
-          quote_id: string | null;
-          title: string | null;
-        }>(
-          `
-          SELECT
-            id,
-            status,
-            quote_id,
-            title
-          FROM task_drafts
-          WHERE id = $1
-          FOR UPDATE
-          `,
-          [input.task_draft_id],
-        );
-
-        const draft = draftResult.rows[0];
-
-        if (!draft) {
-          throw new TRPCError({
-            code: 'NOT_FOUND',
-            message: 'Task draft not found',
-          });
-        }
-
-        if (draft.status === 'abandoned') {
-          throw new TRPCError({
-            code: 'CONFLICT',
-            message: 'Abandoned task drafts cannot receive business claim links.',
-          });
-        }
-
-        /*
-         * One live link per draft.
-         *
-         * Revoking the old one makes issuing a replacement deterministic:
-         * whoever has the newest link is the only party holding a valid link.
-         */
-        await tx(
-          `
-          UPDATE ops_business_claim_links
-          SET
-            status = 'REVOKED',
-            revoked_at = NOW(),
-            updated_at = NOW()
-          WHERE task_draft_id = $1
-            AND status = 'OPEN'
-          `,
-          [input.task_draft_id],
-        );
-
-        const expiresAt = new Date(
-          Date.now() + input.expires_in_hours * 60 * 60 * 1000,
-        );
-
-        const insertResult = await tx<{ id: string }>(
-          `
-          INSERT INTO ops_business_claim_links (
-            task_draft_id,
-            token_hash,
-            status,
-            created_by,
-            expires_at
-          )
-          VALUES ($1, $2, 'OPEN', $3, $4)
-          RETURNING id
-          `,
-          [
-            input.task_draft_id,
-            tokenHash,
-            ctx.user.id,
-            expiresAt,
-          ],
-        );
-
-        const linkId = insertResult.rows[0]?.id;
-
-        if (!linkId) {
-          throw new TRPCError({
-            code: 'INTERNAL_SERVER_ERROR',
-            message: 'Failed to create business claim link.',
-          });
-        }
-
-        return {
-          id: linkId,
-          expiresAt,
-          title: draft.title,
-          quoteId: draft.quote_id,
-        };
-      });
-
-      await recordOpsAudit({
-        actorUserId: ctx.user.id,
-        action: 'business_claim_link_created',
-        targetType: 'task_draft',
-        targetId: input.task_draft_id,
-        meta: {
-          claim_link_id: created.id,
-          expires_at: created.expiresAt.toISOString(),
-        },
-      });
-
-      return {
-        ok: true,
-        claim_link_id: created.id,
-        task_draft_id: input.task_draft_id,
-
-        // The raw secret is returned only from this creation call.
-        token: rawToken,
-
-        // Frontend can prepend its configured origin.
-        claim_path: `/claim/${rawToken}`,
-
-        expires_at: created.expiresAt.toISOString(),
-        title: created.title,
-        quote_id: created.quoteId,
-      };
-    } catch (error) {
-      if (error instanceof TRPCError) throw error;
-
-      log.error(
-        { err: error instanceof Error ? error.message : String(error) },
-        'Business claim link creation failed',
-      );
-
-      throw new TRPCError({
-        code: 'INTERNAL_SERVER_ERROR',
-        message: 'Business claim link creation failed.',
-      });
-    }
-  }),
+  createBusinessClaimLink: operationsAdminProcedure
+    .input(
+      z.object({
+        task_draft_id: z.string().uuid(),
+        expires_in_hours: z.number().int().min(1).max(168).default(72),
+      }).strict(),
+    )
+    .mutation(() => opsMutationDisabled('create_business_claim_link')),
 });

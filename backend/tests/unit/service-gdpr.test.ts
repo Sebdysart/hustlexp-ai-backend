@@ -93,6 +93,12 @@ vi.mock('../../src/services/TaskService', () => ({
   },
 }));
 
+vi.mock('../../src/services/PendingPaymentCancellationService', () => ({
+  PendingPaymentCancellationService: {
+    execute: vi.fn().mockResolvedValue(undefined),
+  },
+}));
+
 vi.mock('../../src/auth-cache', () => ({
   invalidateAuthCacheForUser: vi.fn().mockResolvedValue(undefined),
 }));
@@ -114,6 +120,7 @@ import { GDPRService, collectUserDataForExport, _resetGDPRRateLimitMapForTesting
 import { NotificationService } from '../../src/services/NotificationService';
 import { EscrowService } from '../../src/services/EscrowService';
 import { TaskService } from '../../src/services/TaskService';
+import { PendingPaymentCancellationService } from '../../src/services/PendingPaymentCancellationService';
 import { invalidateAuthCacheForUser } from '../../src/auth-cache';
 import { forceDisconnectUser } from '../../src/realtime/connection-registry';
 import { revokeUserSessions } from '../../src/auth/middleware';
@@ -122,6 +129,7 @@ const mockDb = vi.mocked(db);
 const mockNotification = vi.mocked(NotificationService);
 const mockEscrowService = vi.mocked(EscrowService);
 const mockTaskService = vi.mocked(TaskService);
+const mockPendingPaymentCancellation = vi.mocked(PendingPaymentCancellationService);
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -133,6 +141,7 @@ beforeEach(() => {
   vi.mocked(EscrowService.refund).mockResolvedValue({ success: true } as never);
   vi.mocked(EscrowService.partialRefund).mockResolvedValue({ success: true } as never);
   vi.mocked(TaskService.cancel).mockResolvedValue({ success: true } as never);
+  vi.mocked(PendingPaymentCancellationService.execute).mockResolvedValue(undefined);
   vi.mocked(NotificationService.createNotification).mockResolvedValue({ success: true } as never);
   // Auth helpers must return Promises; vi.resetAllMocks() clears their implementations.
   // revokeUserSessions result has .catch() called on it — must be a Promise.
@@ -524,7 +533,7 @@ describe('GDPRService.executeDeletion', () => {
   });
 
   // TT-04: PENDING escrow PI cancellation
-  it('cancels Stripe PaymentIntent and refunds PENDING escrow on poster task deletion', async () => {
+  it('routes PENDING escrow through the canonical void command without refund fallthrough', async () => {
     const pastDeadline = new Date(Date.now() - 86400000);
 
     // 1. Fetch request
@@ -542,7 +551,10 @@ describe('GDPRService.executeDeletion', () => {
     mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'task-poster-1' }], rowCount: 1 } as never);
     // 5. SELECT escrows for poster task — PENDING escrow with PI id
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: 'escrow-pending-1', state: 'PENDING', stripe_payment_intent_id: 'pi_test_pending' }],
+      rows: [{
+        id: 'escrow-pending-1', task_id: 'task-poster-1', state: 'PENDING',
+        stripe_payment_intent_id: 'pi_test_pending',
+      }],
       rowCount: 1,
     } as never);
     // 6. SELECT worker escrows (none)
@@ -559,13 +571,16 @@ describe('GDPRService.executeDeletion', () => {
     const result = await GDPRService.executeDeletion('req-1');
 
     expect(result.success).toBe(true);
-    // Stripe PI should have been cancelled
-    expect(mockPaymentIntentsCancel).toHaveBeenCalledWith('pi_test_pending');
-    // EscrowService.refund should have been called for the PENDING escrow
-    expect(mockEscrowService.refund).toHaveBeenCalledWith({ escrowId: 'escrow-pending-1' });
+    expect(mockPendingPaymentCancellation.execute).toHaveBeenCalledWith({
+      escrowId: 'escrow-pending-1',
+      taskId: 'task-poster-1',
+      reason: 'gdpr_poster_deletion',
+    });
+    expect(mockPaymentIntentsCancel).not.toHaveBeenCalled();
+    expect(mockEscrowService.refund).not.toHaveBeenCalled();
   });
 
-  it('does not cancel Stripe PI for PENDING escrow without a stripe_payment_intent_id', async () => {
+  it('fails closed when canonical PENDING cancellation has no provider identity', async () => {
     const pastDeadline = new Date(Date.now() - 86400000);
 
     mockDb.query.mockResolvedValueOnce({
@@ -577,7 +592,10 @@ describe('GDPRService.executeDeletion', () => {
     mockDb.query.mockResolvedValueOnce({ rows: [{ email: 'test@example.com' }], rowCount: 1 } as never); // email idempotency
     mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'task-poster-2' }], rowCount: 1 } as never); // poster tasks
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: 'escrow-pending-2', state: 'PENDING', stripe_payment_intent_id: null }],
+      rows: [{
+        id: 'escrow-pending-2', task_id: 'task-poster-2', state: 'PENDING',
+        stripe_payment_intent_id: null,
+      }],
       rowCount: 1,
     } as never); // escrows
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // worker escrows
@@ -589,11 +607,19 @@ describe('GDPRService.executeDeletion', () => {
     mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'req-1', status: 'completed' }] } as never);
     mockNotification.createNotification.mockResolvedValue({ success: true } as never);
 
+    mockPendingPaymentCancellation.execute.mockRejectedValueOnce(
+      new Error('Escrow escrow-pending-2 has no stripe_payment_intent_id to cancel'),
+    );
+
     const result = await GDPRService.executeDeletion('req-1');
 
-    expect(result.success).toBe(true);
+    expect(result).toMatchObject({
+      success:false,
+      error:{ code:'ACTIVE_ESCROW_RESOLUTION_FAILED' },
+    });
     expect(mockPaymentIntentsCancel).not.toHaveBeenCalled();
-    expect(mockEscrowService.refund).toHaveBeenCalledWith({ escrowId: 'escrow-pending-2' });
+    expect(mockEscrowService.refund).not.toHaveBeenCalled();
+    expect(mockDb.serializableTransaction).not.toHaveBeenCalled();
   });
 
   it('fails closed when Stripe PI cancellation throws for PENDING escrow', async () => {
@@ -608,18 +634,23 @@ describe('GDPRService.executeDeletion', () => {
     mockDb.query.mockResolvedValueOnce({ rows: [{ email: 'test@example.com' }], rowCount: 1 } as never); // email idempotency
     mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'task-poster-3' }], rowCount: 1 } as never); // poster tasks
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: 'escrow-pending-3', state: 'PENDING', stripe_payment_intent_id: 'pi_already_cancelled' }],
+      rows: [{
+        id: 'escrow-pending-3', task_id: 'task-poster-3', state: 'PENDING',
+        stripe_payment_intent_id: 'pi_already_cancelled',
+      }],
       rowCount: 1,
     } as never); // escrows
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // mark request rejected
 
-    // Stripe throws (PI already cancelled on Stripe side)
-    mockPaymentIntentsCancel.mockRejectedValueOnce(new Error('PaymentIntent cannot be canceled'));
+    mockPendingPaymentCancellation.execute.mockRejectedValueOnce(
+      new Error('PaymentIntent cannot be canceled'),
+    );
 
     const result = await GDPRService.executeDeletion('req-1');
 
     expect(result).toMatchObject({ success: false, error: { code: 'ACTIVE_ESCROW_RESOLUTION_FAILED' } });
     expect(mockEscrowService.refund).not.toHaveBeenCalled();
+    expect(mockPaymentIntentsCancel).not.toHaveBeenCalled();
     expect(mockDb.serializableTransaction).not.toHaveBeenCalled();
   });
 
@@ -672,7 +703,7 @@ describe('GDPRService.executeDeletion', () => {
     expect(mockDb.serializableTransaction).not.toHaveBeenCalled();
   });
 
-  it('fails closed when an active worker dispute cannot be settled', async () => {
+  it('records a worker-dispute reconciliation block without choosing a settlement split', async () => {
     const pastDeadline = new Date(Date.now() - 86400000);
     mockDb.query.mockResolvedValueOnce({
       rows: [{ id: 'req-1', user_id: 'user-1', status: 'pending', request_type: 'deletion', deadline: pastDeadline }],
@@ -683,23 +714,43 @@ describe('GDPRService.executeDeletion', () => {
     mockDb.query.mockResolvedValueOnce({ rows: [{ email: 'test@example.com' }], rowCount: 1 } as never);
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // no poster tasks
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: 'escrow-dispute-1', state: 'LOCKED_DISPUTE' }],
+      rows: [{
+        id: 'escrow-dispute-1',
+        task_id: 'task-dispute-1',
+        state: 'LOCKED_DISPUTE',
+        version: 4,
+        amount: 10_000,
+        stripe_payment_intent_id: 'pi_dispute_1',
+        stripe_transfer_id: null,
+        stripe_refund_id: null,
+        refund_amount: null,
+        release_amount: null,
+      }],
       rowCount: 1,
     } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ metadata: {} }], rowCount: 1 } as never); // immutable block
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // mark rejected
-    mockEscrowService.partialRefund.mockResolvedValueOnce({
-      success: false,
-      error: { code: 'SETTLEMENT_FAILED', message: 'dispute settlement unavailable' },
-    } as never);
 
     const result = await GDPRService.executeDeletion('req-1');
 
     expect(result).toMatchObject({ success: false, error: { code: 'ACTIVE_ESCROW_RESOLUTION_FAILED' } });
+    expect(mockEscrowService.partialRefund).not.toHaveBeenCalled();
+    expect(mockEscrowService.refund).not.toHaveBeenCalled();
+    const eventCall = mockDb.query.mock.calls.find(([sql]) =>
+      String(sql).includes('INSERT INTO escrow_events'));
+    expect(eventCall).toBeDefined();
+    expect(JSON.parse(String(eventCall?.[1]?.[1]))).toMatchObject({
+      event_type: 'gdpr_dispute_deletion_block_v1',
+      reason_code: 'GDPR_DELETION_HAS_NO_SETTLEMENT_AUTHORITY',
+      relationship_origin: 'worker',
+      reconciliation_required: true,
+      escrow_id: 'escrow-dispute-1',
+      escrow_version: 4,
+    });
     expect(mockDb.serializableTransaction).not.toHaveBeenCalled();
   });
 
-  // TT-04: LOCKED_DISPUTE where poster is the deleted user
-  it('calls partialRefund (0/100) for LOCKED_DISPUTE escrow on poster task deletion', async () => {
+  it('blocks RELEASED-origin dispute deletion without refunding or double-paying', async () => {
     const pastDeadline = new Date(Date.now() - 86400000);
 
     mockDb.query.mockResolvedValueOnce({
@@ -711,27 +762,43 @@ describe('GDPRService.executeDeletion', () => {
     mockDb.query.mockResolvedValueOnce({ rows: [{ email: 'test@example.com' }], rowCount: 1 } as never); // email idempotency
     mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'task-poster-4' }], rowCount: 1 } as never); // poster tasks
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: 'escrow-dispute-1', state: 'LOCKED_DISPUTE', stripe_payment_intent_id: null }],
+      rows: [{
+        id: 'escrow-dispute-1',
+        task_id: 'task-poster-4',
+        state: 'LOCKED_DISPUTE',
+        version: 9,
+        amount: 10_000,
+        stripe_payment_intent_id: 'pi_released_origin',
+        stripe_transfer_id: 'tr_original_release',
+        stripe_refund_id: null,
+        refund_amount: null,
+        release_amount: null,
+      }],
       rowCount: 1,
     } as never); // escrows
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // worker escrows
-    mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_customer_id: null }], rowCount: 1 } as never); // D58-8
-    mockDb.serializableTransaction.mockImplementation(async (fn) => {
-      const q = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 } as never);
-      return fn(q) as Promise<unknown>;
-    });
-    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'req-1', status: 'completed' }] } as never);
-    mockNotification.createNotification.mockResolvedValue({ success: true } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ metadata: {} }], rowCount: 1 } as never); // immutable block
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // mark rejected
 
     const result = await GDPRService.executeDeletion('req-1');
 
-    expect(result.success).toBe(true);
-    expect(mockEscrowService.partialRefund).toHaveBeenCalledWith({
-      escrowId: 'escrow-dispute-1',
-      workerPercent: 0,
-      posterPercent: 100,
+    expect(result).toMatchObject({
+      success: false,
+      error: { code: 'ACTIVE_ESCROW_RESOLUTION_FAILED' },
     });
+    expect(mockEscrowService.partialRefund).not.toHaveBeenCalled();
     expect(mockEscrowService.refund).not.toHaveBeenCalled();
+    const eventCall = mockDb.query.mock.calls.find(([sql]) =>
+      String(sql).includes('INSERT INTO escrow_events'));
+    expect(eventCall).toBeDefined();
+    expect(JSON.parse(String(eventCall?.[1]?.[1]))).toMatchObject({
+      event_type: 'gdpr_dispute_deletion_block_v1',
+      reason_code: 'GDPR_DELETION_HAS_NO_SETTLEMENT_AUTHORITY',
+      relationship_origin: 'poster',
+      reconciliation_required: true,
+      stripe_transfer_id: 'tr_original_release',
+      stripe_refund_id: null,
+    });
+    expect(mockDb.serializableTransaction).not.toHaveBeenCalled();
   });
 });
 

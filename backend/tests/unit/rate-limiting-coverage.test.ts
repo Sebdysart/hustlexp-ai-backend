@@ -39,17 +39,31 @@ const orderedPatterns = [
   { pattern: '/trpc/*', category: 'general' },
 ] as const;
 
+function escapeRegexLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+function wildcardPatternToRegex(pattern: string): RegExp {
+  const exactSegments = pattern.split('*').map(escapeRegexLiteral);
+  return new RegExp(`^${exactSegments.join('.*')}$`);
+}
+
 function firstMatch(route: string): string | null {
   for (const { pattern, category } of orderedPatterns) {
-    const regex = new RegExp(
-      '^' + pattern.replace(/\.\*/g, '.*').replace(/\*/g, '.*') + '$',
-    );
+    const regex = wildcardPatternToRegex(pattern);
     if (regex.test(route)) return category;
   }
   return null;
 }
 
 describe('Rate Limiting Coverage', () => {
+  it('treats dots as exact path characters and only asterisks as wildcards', () => {
+    const regex = wildcardPatternToRegex('/trpc/stripe.*');
+
+    expect(regex.test('/trpc/stripe.createPaymentIntent')).toBe(true);
+    expect(regex.test('/trpc/stripeXcreatePaymentIntent')).toBe(false);
+  });
+
   it('all tRPC routes are covered by rate limit middleware patterns', () => {
     const sampleMutations = [
       '/trpc/task.create',

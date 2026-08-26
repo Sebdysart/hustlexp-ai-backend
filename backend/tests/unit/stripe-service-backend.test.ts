@@ -12,7 +12,8 @@
  * - processWebhookEvent: already processed, new event + handler success, handler throws
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 // ============================================================================
 // ALL MOCKS — hoisted above imports
@@ -29,6 +30,7 @@ const mockStripeInstance = {
   },
   refunds: {
     create: vi.fn(),
+    retrieve: vi.fn(),
   },
   webhooks: {
     constructEvent: vi.fn(),
@@ -103,6 +105,11 @@ const mockDb = vi.mocked(db);
 beforeEach(() => {
   vi.clearAllMocks();
   delete process.env.HX_STRIPE_STUB;
+  enableControlledStripePaymentTestCohortV7();
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 // ---------------------------------------------------------------------------
@@ -296,8 +303,10 @@ describe('StripeService.createRefund (backend)', () => {
 
     const localRefundsCreate = vi.fn().mockResolvedValue({
       id: 're_partial_123',
-      amount: 2000,
-      status: 'succeeded',
+    });
+    const localRefundsRetrieve = vi.fn().mockResolvedValue({
+      id: 're_partial_123', amount: 2000, status: 'succeeded', currency: 'usd',
+      payment_intent: 'pi_partial_abc', charge: 'ch_partial_abc',
     });
 
     // Must use a regular function (not arrow) — `new Stripe(...)` requires a constructor.
@@ -306,7 +315,7 @@ describe('StripeService.createRefund (backend)', () => {
         return {
           paymentIntents: { create: vi.fn(), retrieve: vi.fn() },
           transfers: { create: vi.fn() },
-          refunds: { create: localRefundsCreate },
+          refunds: { create: localRefundsCreate, retrieve: localRefundsRetrieve },
           webhooks: { constructEvent: vi.fn() },
         };
       }),
@@ -360,8 +369,10 @@ describe('StripeService.createRefund (backend)', () => {
 
     const localRefundsCreate = vi.fn().mockResolvedValue({
       id: 're_full_456',
-      amount: 10000,
-      status: 'succeeded',
+    });
+    const localRefundsRetrieve = vi.fn().mockResolvedValue({
+      id: 're_full_456', amount: 10000, status: 'succeeded', currency: 'usd',
+      payment_intent: 'pi_full_xyz', charge: 'ch_full_xyz',
     });
 
     // Must use a regular function (not arrow) — `new Stripe(...)` requires a constructor.
@@ -370,7 +381,7 @@ describe('StripeService.createRefund (backend)', () => {
         return {
           paymentIntents: { create: vi.fn(), retrieve: vi.fn() },
           transfers: { create: vi.fn() },
-          refunds: { create: localRefundsCreate },
+          refunds: { create: localRefundsCreate, retrieve: localRefundsRetrieve },
           webhooks: { constructEvent: vi.fn() },
         };
       }),

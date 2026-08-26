@@ -1,4 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  enableControlledStripePaymentTestCohortV7,
+  HOSTILE_PAYMENT_CREATION_ENVIRONMENTS_V7,
+  stubPaymentCreationEnvironmentV7,
+} from '../helpers/payment-underwriting-v7';
 
 vi.mock('../../src/config', () => ({
   config: { stripe: { secretKey: 'placeholder', platformFeePercent: 15 } },
@@ -116,7 +121,12 @@ function baseQuery(sql: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  enableControlledStripePaymentTestCohortV7();
   mockDb.query.mockImplementation(async (sql: string) => baseQuery(sql) as never);
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe('HustlerWalletService.getOverview', () => {
@@ -227,6 +237,24 @@ describe('HustlerWalletService.reviewCashOut', () => {
 });
 
 describe('HustlerWalletService.requestCashOut', () => {
+  it.each(HOSTILE_PAYMENT_CREATION_ENVIRONMENTS_V7)(
+    'rejects $name before review, persistence, or payout submission',
+    async ({ env }) => {
+      stubPaymentCreationEnvironmentV7(env);
+      const payoutProvider = provider();
+      const result = await HustlerWalletService.requestCashOut({
+        workerId: 'worker-frozen', amountCents: 5000, idempotencyKey: 'cashout-frozen-1',
+      }, payoutProvider);
+      expect(result).toMatchObject({
+        success: false,
+        error: { code: 'PAYMENT_CREATION_FROZEN' },
+      });
+      expect(mockDb.query).not.toHaveBeenCalled();
+      expect(payoutProvider.getSnapshot).not.toHaveBeenCalled();
+      expect(payoutProvider.createStandardPayout).not.toHaveBeenCalled();
+    },
+  );
+
   it('records initiating before provider submission and returns only provider-backed submitted state', async () => {
     const calls: string[] = [];
     let inserted = false;

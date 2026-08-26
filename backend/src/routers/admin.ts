@@ -894,13 +894,12 @@ export const adminRouter = router({
   // --------------------------------------------------------------------------
 
   /**
-   * Admin override: force release or refund an escrow.
+   * Administrative escrow exception handling.
    *
-   * v2.9.8 fixes:
-   *   - force_release now calls EscrowService.release() with adminOverride=true:
-   *       runs full fee/XP/insurance pipeline, skips KYC gate only.
-   *   - force_refund now calls EscrowService.refund() (correct state name: LOCKED_DISPUTE).
-   *   - Both actions write to admin_actions audit table.
+   * Both legacy force actions remain in the compatibility contract only so
+   * attempted calls receive an actor-attributed denial audit. Administrative
+   * money mutation has no atomic command/audit/provider boundary; canonical
+   * dispute and refund workers own all recovery effects.
    */
   escrowOverride: escrowAdminProcedure
     .input(z.object({
@@ -925,59 +924,38 @@ export const adminRouter = router({
         });
       }
 
-      if (!serviceResult.success) {
-        // Best-effort audit log of the FAILED attempt — write before throwing
-        // so the failure is always recorded even if the caller never retries.
-        void Promise.resolve(db.query(
-          `INSERT INTO admin_actions (admin_id, action_type, target_id, reason, metadata)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [
-            ctx.user.id,
-            'escrow_override_failed',
-            input.escrowId,
-            input.reason ?? null,
-            JSON.stringify({ override_type: input.action, error: serviceResult.error?.message ?? 'unknown' }),
-          ]
-        )).catch(err => log.warn({ err }, 'Failed to write escrowOverride failure audit log'));
+      const serviceError = serviceResult.success
+        ? {
+            code: 'INVALID_STATE',
+            message: 'Administrative escrow override service violated the fail-closed contract',
+          }
+        : serviceResult.error;
 
-        const errCode = serviceResult.error?.code;
-        // Map internal ErrorCodes to tRPC error codes.
-        // NOT_FOUND → 'NOT_FOUND'
-        // INVALID_STATE / INVALID_TRANSITION / HX002 (ESCROW_TERMINAL) → 'PRECONDITION_FAILED'
-        // Everything else → 'BAD_REQUEST'
-        const tRPCCode: 'NOT_FOUND' | 'PRECONDITION_FAILED' | 'BAD_REQUEST' =
-          errCode === 'NOT_FOUND' ? 'NOT_FOUND' :
-          errCode === 'INVALID_STATE' || errCode === 'INVALID_TRANSITION' || errCode === 'HX002' ? 'PRECONDITION_FAILED' :
-          'BAD_REQUEST';
-
-        throw new TRPCError({ code: tRPCCode, message: serviceResult.error?.message ?? 'Override failed' });
-      }
-
-      // Bug 3 fix: if the escrow was LOCKED_DISPUTE, close any open dispute row so
-      // it does not remain as an orphaned open dispute after the admin override.
+      // A rejected financial command is not complete until its actor-attributed
+      // denial is durable. Do not detach or suppress this write.
       await db.query(
-        `UPDATE disputes
-         SET state = 'RESOLVED',
-             resolved_at = NOW(),
-             resolution_notes = CONCAT('Admin override: escrow ', $1, ' — action: ', $2)
-         WHERE escrow_id = $1
-           AND state != 'RESOLVED'`,
-        [input.escrowId, input.action]
-      );
-
-      await db.query(
-        `INSERT INTO admin_actions (admin_id, action_type, target_id, reason, metadata)
-         VALUES ($1, $2, $3, $4, $5)`,
+        `INSERT INTO admin_actions (
+           admin_user_id, admin_role, action_type, action_details,
+           target_escrow_id, result, result_details
+         ) VALUES ($1, 'admin', $2, $3::jsonb, $4, 'rejected', $5::jsonb)`,
         [
           ctx.user.id,
-          'escrow_override',
+          'escrow_override_failed',
+          JSON.stringify({ override_type: input.action, reason: input.reason }),
           input.escrowId,
-          input.reason,
-          JSON.stringify({ override_type: input.action }),
+          JSON.stringify({
+            error_code: serviceError?.code ?? 'unknown',
+            error_message: serviceError?.message ?? 'unknown',
+          }),
         ]
       );
 
-      return serviceResult.data;
+      const errCode = serviceError?.code;
+      const tRPCCode: 'NOT_FOUND' | 'PRECONDITION_FAILED' | 'BAD_REQUEST' =
+        errCode === 'NOT_FOUND' ? 'NOT_FOUND' :
+        errCode === 'INVALID_STATE' || errCode === 'INVALID_TRANSITION' || errCode === 'HX002' ? 'PRECONDITION_FAILED' :
+        'BAD_REQUEST';
+      throw new TRPCError({ code: tRPCCode, message: serviceError?.message ?? 'Override failed' });
     }),
 });
 

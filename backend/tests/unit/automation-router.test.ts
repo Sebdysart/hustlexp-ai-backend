@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../src/services/AutomationLifecycleService', () => ({
   AutomationLifecycleService: {
@@ -51,6 +51,7 @@ import { LocalCertificationPayoutProvider } from '../../src/services/LocalCertif
 import { notifyPaymentReleased } from '../../src/lib/task-lifecycle-notifications';
 import { db } from '../../src/db';
 import { ErrorCodes } from '../../src/types';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 const TASK_ID = '550e8400-e29b-41d4-a716-446655440000';
 const ADMIN_ID = '550e8400-e29b-41d4-a716-446655440002';
@@ -105,6 +106,10 @@ function unauthorizedCaller() {
 beforeEach(() => {
   vi.clearAllMocks();
   mockDb.query.mockResolvedValue({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe('automation E1/E2/E4 contracts', () => {
@@ -464,6 +469,7 @@ describe('automation E1/E2/E4 contracts', () => {
   });
 
   it('notifies the worker only after a fresh local TEST payout reaches escrow release', async () => {
+    enableControlledStripePaymentTestCohortV7();
     mockDb.query.mockResolvedValueOnce({
       rows: [{
         task_id: TASK_ID,
@@ -503,6 +509,7 @@ describe('automation E1/E2/E4 contracts', () => {
   });
 
   it('treats a canonical terminal escrow code as successful exact TEST settlement convergence', async () => {
+    enableControlledStripePaymentTestCohortV7();
     mockDb.query
       .mockResolvedValueOnce({
         rows: [{
@@ -551,6 +558,7 @@ describe('automation E1/E2/E4 contracts', () => {
   });
 
   it('fails a terminal TEST settlement replay when exact transfer convergence is absent', async () => {
+    enableControlledStripePaymentTestCohortV7();
     mockDb.query
       .mockResolvedValueOnce({
         rows: [{
@@ -590,5 +598,22 @@ describe('automation E1/E2/E4 contracts', () => {
       engineTaskId: TASK_ID,
       idempotencyKey: 'settle:test:replay-0002',
     })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+
+  it('rejects local TEST settlement before any database or escrow effect while creation is frozen', async () => {
+    vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'frozen');
+
+    await expect(bridgeCaller().settleLocalTestPayout({
+      engineTaskId: TASK_ID,
+      idempotencyKey: 'settle:test:frozen-0001',
+    })).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      cause: { applicationCode: 'PAYMENT_CREATION_FROZEN' },
+    });
+
+    expect(mockDb.query).not.toHaveBeenCalled();
+    expect(localPayout.createPaidTransfer).not.toHaveBeenCalled();
+    expect(escrows.release).not.toHaveBeenCalled();
+    expect(mockNotifyPaymentReleased).not.toHaveBeenCalled();
   });
 });

@@ -87,6 +87,8 @@ A single unchecked, stale, contradicted, or unowned requirement preserves `NO-GO
 - [ ] Built assets and source contain no browser-held human admin credential.
 - [ ] Exact addresses and sensitive evidence remain encrypted, masked, purpose-limited, and retention-controlled.
 - [ ] Independent penetration testing covers the API, command surface, webhook inbox, object access, queues, workers, database roles, and recovery paths.
+- [ ] All six source-dated secret-scanning alerts are resolved with provider-side revocation/rotation receipts: two Google API keys and one each for DeepSeek, GitHub personal access token, Groq, and OpenAI. No secret value appears in the evidence packet.
+- [ ] Every replaced credential has least-privilege scope, an identified owner, storage location, rotation date, expiry/next-rotation date, and a negative test proving the exposed predecessor is rejected.
 - [ ] Incident, fraud, dispute, privacy, safety, legal, processor, and reconciliation queues have primary/backup owners and tested escalation.
 - [ ] Accepted and rejected Operations actions produce immutable actor-attributed results.
 
@@ -121,4 +123,4 @@ A single unchecked, stale, contradicted, or unowned requirement preserves `NO-GO
 
 ## Current disposition
 
-`NO-GO`. The active task-first fake-FSE node and migration-lineage closure are incomplete; all 20 processor decisions remain unresolved; full `/OPS` authority convergence, sandbox certification, and production release evidence are absent. Do not convert this checklist into a percentage score.
+`NO-GO`. The active node is `D1_CI_INCIDENT_RECOVERY_20260825`; its local candidate has no frozen SHA, fresh Governor acceptance, full/PostgreSQL evidence, independent review, protected merge, or exact Railway web/worker/database/health convergence. PR #275 was merged unchanged without the requested `whitehorse1016` approval. Six exposed credentials remain without accepted rotation receipts, all 20 processor decisions remain unresolved, and full task-first fake-FSE, `/OPS` authority convergence, sandbox certification, and production release evidence are absent. Do not convert this checklist into a percentage score.

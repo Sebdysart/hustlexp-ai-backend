@@ -9,9 +9,22 @@ export interface BuildIdentity {
   environment: string;
   clean_source: boolean;
   source: string;
+  source_tree?: string;
+  source_archive_sha256?: string;
+  migration_artifact_sha256?: string;
+  provenance_sha256?: string;
 }
 
 const REVISION = /^[0-9a-f]{40}$/u;
+const SHA256 = /^[0-9a-f]{64}$/u;
+
+function hasExactReleaseProvenance(identity: Partial<BuildIdentity>): boolean {
+  return identity.source === 'release-provenance'
+    && REVISION.test(identity.source_tree ?? '')
+    && SHA256.test(identity.source_archive_sha256 ?? '')
+    && SHA256.test(identity.migration_artifact_sha256 ?? '')
+    && SHA256.test(identity.provenance_sha256 ?? '');
+}
 
 function isBuildIdentity(value: unknown): value is BuildIdentity {
   if (!value || typeof value !== 'object') return false;
@@ -25,7 +38,8 @@ function isBuildIdentity(value: unknown): value is BuildIdentity {
     !Number.isNaN(Date.parse(candidate.built_at)) &&
     typeof candidate.environment === 'string' &&
     typeof candidate.clean_source === 'boolean' &&
-    typeof candidate.source === 'string'
+    typeof candidate.source === 'string' &&
+    (candidate.source !== 'release-provenance' || hasExactReleaseProvenance(candidate))
   );
 }
 
@@ -50,7 +64,10 @@ export function readBuildIdentity(
 }
 
 export function isTrustedBuildIdentity(identity: BuildIdentity): boolean {
-  return REVISION.test(identity.revision) && identity.clean_source;
+  return identity.environment === 'production'
+    && REVISION.test(identity.revision)
+    && identity.clean_source
+    && hasExactReleaseProvenance(identity);
 }
 
 export const buildIdentity = readBuildIdentity();

@@ -30,6 +30,8 @@ vi.mock('../../src/db', () => {
 
 vi.mock('../../src/logger', () => ({
   escrowLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
+  stripeLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
+  taskLogger: { child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn() }) },
   logger: { child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn() }) },
 }));
 
@@ -42,7 +44,10 @@ vi.mock('../../src/services/XPTaxService', () => ({
 }));
 
 vi.mock('../../src/services/XPService', () => ({
-  XPService: { awardXP: vi.fn().mockResolvedValue(undefined) },
+  XPService: {
+    awardXP: vi.fn().mockResolvedValue(undefined),
+    clawbackXP: vi.fn().mockResolvedValue(undefined),
+  },
 }));
 
 vi.mock('../../src/services/SelfInsurancePoolService.js', () => ({
@@ -53,10 +58,24 @@ vi.mock('../../src/services/RevenueService', () => ({
   RevenueService: { logEvent: vi.fn().mockResolvedValue({ success: true, data: { id: 'rev-1' } }) },
 }));
 
+vi.mock('../../src/services/TaskService', () => ({
+  TaskService: { advanceProgress: vi.fn().mockResolvedValue({ success: true, data: {} }) },
+}));
+
 vi.mock('../../src/services/StripeService', () => ({
   StripeService: {
-    createRefund: vi.fn().mockResolvedValue({ success: true, data: { refundId: 're_test', amount: 5000, status: 'succeeded' } }),
-    createTransfer: vi.fn().mockResolvedValue({ success: true, data: { transferId: 'tr_test', amount: 3000 } }),
+    createRefund: vi.fn(async (input: { amount: number; paymentIntentId: string }) => ({
+      success: true,
+      data: {
+        refundId: 're_test', amount: input.amount, status: 'succeeded', currency: 'usd',
+        paymentIntentId: input.paymentIntentId, chargeId: 'ch_test',
+      },
+    })),
+    createTransfer: vi.fn(async (input: { amount: number }) => ({
+      success: true,
+      data: { transferId: 'tr_test', amount: input.amount },
+    })),
+    readTransferWitness: vi.fn(),
     cancelRefund: vi.fn().mockResolvedValue({ success: true, data: { refundId: 're_test', status: 'cancelled' } }),
     createTransferReversal: vi.fn().mockResolvedValue({ success: true, data: { reversalId: 'pyr_test' } }),
   },
@@ -72,6 +91,8 @@ import { EarnedVerificationUnlockService } from '../../src/services/EarnedVerifi
 import { XPService } from '../../src/services/XPService';
 import { SelfInsurancePoolService } from '../../src/services/SelfInsurancePoolService.js';
 import { RevenueService } from '../../src/services/RevenueService';
+import { StripeService } from '../../src/services/StripeService';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7.js';
 
 const mockDb = vi.mocked(db);
 const mockIsInvariantViolation = vi.mocked(isInvariantViolation);
@@ -82,10 +103,17 @@ function makeEscrow(overrides: Record<string, unknown> = {}) {
   return {
     id: 'esc-1',
     task_id: 'task-1',
+    version: 0,
     amount: 5000,
     state: 'PENDING',
+    platform_fee_cents: null,
     stripe_payment_intent_id: null,
     stripe_transfer_id: null,
+    stripe_refund_id: null,
+    payout_provider: null,
+    provider_transfer_id: null,
+    provider_transfer_status: null,
+    provider_transfer_paid_at: null,
     funded_at: null,
     released_at: null,
     refunded_at: null,
@@ -94,7 +122,282 @@ function makeEscrow(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function exactSucceededRefundMetadata(input: {
+  canonicalState?: string;
+  amountCents?: number;
+} = {}) {
+  return {
+    event_type: 'exact_succeeded_refund_witness_v1',
+    escrow_id: 'esc-1',
+    task_id: 'task-1',
+    canonical_state: input.canonicalState ?? 'FUNDED',
+    payment_intent_id: 'pi_test',
+    refund_id: 're_test',
+    charge_id: 'ch_test',
+    amount_cents: input.amountCents ?? 5000,
+    currency: 'usd',
+    status: 'succeeded',
+  };
+}
+
+function exactRefundBinding(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'esc-1', task_id: 'task-1', version: 0, state: 'FUNDED', amount: 5000,
+    platform_fee_cents: null, stripe_payment_intent_id: 'pi_test',
+    stripe_refund_id: null, stripe_transfer_id: null, payout_provider: null,
+    provider_transfer_id: null, provider_transfer_status: null,
+    provider_transfer_paid_at: null,
+    ...overrides,
+  };
+}
+
+function refundProviderClaimRow(escrowId: string, version: number) {
+  return {
+    claim_idempotency_key: `refund-provider-create-claim-v1:${escrowId}:${version}`,
+    provider_idempotency_key: `hx-refund-claim-v1:${escrowId}:${version}`,
+    provider_replay_deadline: new Date('2030-01-01T00:00:00.000Z'),
+    exact: true,
+  };
+}
+
+interface PartialRefundFixture {
+  workerPercent?: number;
+  version?: number;
+  existingTransferId?: string | null;
+  existingRefundId?: string | null;
+  workerId?: string;
+  payoutRecipientUserId?: string | null;
+  posterId?: string | null;
+  destinationAccountId?: string;
+}
+
+function installPartialRefundFixture(input: PartialRefundFixture = {}) {
+  const workerPercent = input.workerPercent ?? 60;
+  const version = input.version ?? 0;
+  const workerId = input.workerId ?? 'worker-1';
+  const payoutRecipientUserId = input.payoutRecipientUserId ?? workerId;
+  const destinationAccountId = input.destinationAccountId ?? 'acct_test';
+  const existingTransferId = input.existingTransferId ?? null;
+  const existingRefundId = input.existingRefundId ?? null;
+  const escrowRow = {
+    version,
+    state: 'LOCKED_DISPUTE',
+    task_id: 'task-1',
+    amount: 5000,
+    platform_fee_cents: null,
+    stripe_payment_intent_id: 'pi_test',
+    stripe_transfer_id: existingTransferId,
+    stripe_refund_id: existingRefundId,
+    refund_amount: null,
+    release_amount: null,
+  };
+  const taskRow = {
+    worker_id: workerId,
+    payout_recipient_user_id: input.payoutRecipientUserId ?? null,
+    provider_organization_id: null,
+    provider_assignment_id: null,
+    poster_id: input.posterId ?? null,
+  };
+  const updated = makeEscrow({
+    ...escrowRow,
+    version: version + 1,
+    state: 'REFUND_PARTIAL',
+    stripe_transfer_id: existingTransferId ?? 'tr_test',
+    stripe_refund_id: existingRefundId ?? 're_test',
+    refund_amount: Math.round(5000 * ((100 - workerPercent) / 100)),
+    release_amount: Math.round(5000 * (workerPercent / 100)),
+  });
+  let claimMetadata: Record<string, unknown> | null = null;
+  let refundCheckpointMetadata: Record<string, unknown> | null = null;
+  let transferClaimMetadata: Record<string, unknown> | null = null;
+  let transferCheckpointMetadata: Record<string, unknown> | null = null;
+  let terminalTransitionMetadata: Record<string, unknown> | null = null;
+  let terminalized = false;
+  let insuranceReads = 0;
+  let taskProgressReads = 0;
+  let revenueReads = 0;
+
+  mockDb.query.mockImplementation(async (sqlInput: unknown, paramsInput?: unknown[]) => {
+    const sql = String(sqlInput);
+    const params = paramsInput ?? [];
+    if (sql.includes('SELECT state') && sql.includes('FROM escrows WHERE id=$1')) {
+      return {
+        rows: [{
+          state: terminalized ? 'REFUND_PARTIAL' : 'LOCKED_DISPUTE',
+          provider_transfer_status: null,
+        }],
+        rowCount: 1,
+      } as never;
+    }
+    if (sql.includes('FROM escrows') && sql.includes('FOR UPDATE')) {
+      return { rows: [terminalized ? updated : escrowRow], rowCount: 1 } as never;
+    }
+    if (sql.includes('FROM tasks') && (sql.includes('worker_id') || sql.includes('t.worker_id'))) {
+      return { rows: [taskRow], rowCount: 1 } as never;
+    }
+    if (sql.includes('SELECT payouts_enabled,stripe_connect_id,stripe_connect_status')) {
+      return {
+        rows: [{ payouts_enabled: true, stripe_connect_id: destinationAccountId }],
+        rowCount: 1,
+      } as never;
+    }
+    if (sql.includes('INSERT INTO escrow_events') && sql.includes('RETURNING metadata')) {
+      const serialized = params.find((value) => typeof value === 'string' && value.startsWith('{'));
+      const metadata = JSON.parse(String(serialized)) as Record<string, unknown>;
+      if (metadata.event_type === 'partial_refund_provider_claim_v2') claimMetadata = metadata;
+      if (metadata.event_type === 'partial_refund_transfer_claim_v1') {
+        transferClaimMetadata = metadata;
+      }
+      if (metadata.event_type === 'partial_refund_provider_checkpoint_v3') {
+        refundCheckpointMetadata = metadata;
+      }
+      if (metadata.event_type === 'partial_refund_transfer_checkpoint_v1') {
+        transferCheckpointMetadata = metadata;
+      }
+      if (metadata.event_type === 'partial_refund_terminal_transition_v1') {
+        terminalTransitionMetadata = metadata;
+      }
+      return { rows: [{ metadata }], rowCount: 1 } as never;
+    }
+    if (sql.includes('SELECT idempotency_key,metadata') && sql.includes('idempotency_key=ANY')) {
+      const rows = [
+        ['partial-refund-provider-claim:esc-1', claimMetadata],
+        ['partial-refund-provider-checkpoint:esc-1', refundCheckpointMetadata],
+        ['partial-refund-transfer-claim:esc-1', transferClaimMetadata],
+        ['partial-refund-transfer-checkpoint:esc-1', transferCheckpointMetadata],
+      ].filter((entry): entry is [string, Record<string, unknown>] => entry[1] !== null)
+        .map(([idempotency_key, metadata]) => ({ idempotency_key, metadata }));
+      return { rows, rowCount: rows.length } as never;
+    }
+    if (sql.includes('SELECT metadata FROM escrow_events')) {
+      const key = String(params[1] ?? '');
+      if (key === 'partial-refund-provider-claim:esc-1') {
+        return claimMetadata
+          ? { rows: [{ metadata: claimMetadata }], rowCount: 1 } as never
+          : { rows: [], rowCount: 0 } as never;
+      }
+      if (key === 'partial-refund-transfer-checkpoint:esc-1') {
+        return transferCheckpointMetadata
+          ? { rows: [{ metadata: transferCheckpointMetadata }], rowCount: 1 } as never
+          : { rows: [], rowCount: 0 } as never;
+      }
+      if (key === 'partial-refund-provider-checkpoint:esc-1' && refundCheckpointMetadata) {
+        return { rows: [{ metadata: refundCheckpointMetadata }], rowCount: 1 } as never;
+      }
+      if (key === 'partial-refund-provider-checkpoint:esc-1' && existingRefundId && claimMetadata) {
+        const metadata = {
+          ...claimMetadata,
+          event_type: 'partial_refund_provider_checkpoint_v3',
+          stripe_refund_id: existingRefundId,
+          stripe_refund_amount_cents: claimMetadata.poster_refund_amount_cents,
+          stripe_refund_status: 'succeeded',
+          stripe_refund_currency: 'usd',
+          stripe_refund_payment_intent_id: 'pi_test',
+          stripe_refund_charge_id: 'ch_existing',
+        };
+        refundCheckpointMetadata = metadata;
+        return { rows: [{ metadata }], rowCount: 1 } as never;
+      }
+      if (key === `partial-refund-terminal-transition:esc-1:${version + 1}`) {
+        return terminalTransitionMetadata
+          ? { rows: [{ metadata: terminalTransitionMetadata }], rowCount: 1 } as never
+          : { rows: [], rowCount: 0 } as never;
+      }
+      return { rows: [], rowCount: 0 } as never;
+    }
+    if (sql.includes("SET state='REFUND_PARTIAL'")) {
+      terminalized = true;
+      return { rows: [updated], rowCount: 1 } as never;
+    }
+    if (sql.includes('FROM insurance_contributions')) {
+      insuranceReads += 1;
+      return insuranceReads === 1
+        ? { rows: [], rowCount: 0 } as never
+        : { rows: [{ id: 'insurance-1', contribution_cents: 60, contribution_percentage: 2 }], rowCount: 1 } as never;
+    }
+    if (sql.includes('SELECT progress_state FROM tasks')) {
+      taskProgressReads += 1;
+      return {
+        rows: [{ progress_state: taskProgressReads === 1 ? 'COMPLETED' : 'CLOSED' }],
+        rowCount: 1,
+      } as never;
+    }
+    if (sql.includes('FROM revenue_ledger')) {
+      revenueReads += 1;
+      const releaseAmount = Math.round(5000 * (workerPercent / 100));
+      const fee = Math.round(releaseAmount * 0.20);
+      const insurance = Math.round(releaseAmount * 0.02);
+      return revenueReads === 1
+        ? { rows: [], rowCount: 0 } as never
+        : { rows: [{
+            id: 'revenue-1', event_type: 'platform_fee',
+            user_id: (input.posterId ?? null) ?? workerId, task_id: 'task-1',
+            amount_cents: fee, currency: 'usd', gross_amount_cents: releaseAmount,
+            platform_fee_cents: fee, net_amount_cents: releaseAmount - fee - insurance,
+            fee_basis_points: 2000, escrow_id: 'esc-1',
+            stripe_transfer_id: existingTransferId ?? 'tr_test',
+            metadata: { event: 'escrow_partial_refund' },
+          }], rowCount: 1 } as never;
+    }
+    if (sql.includes('FROM xp_ledger')) {
+      return { rows: [], rowCount: 0 } as never;
+    }
+    if (sql.includes('INSERT INTO escrow_events')) {
+      return { rows: [], rowCount: 1 } as never;
+    }
+    return { rows: [], rowCount: 0 } as never;
+  });
+
+  vi.mocked(StripeService.readTransferWitness).mockImplementation(async (transferId: string) => {
+    if (!claimMetadata) throw new Error('partial-refund claim must precede transfer evidence');
+    return {
+      success: true,
+      data: {
+        provider: 'STRIPE' as const,
+        transferId,
+        amountCents: Number(claimMetadata.worker_settlement_net_cents),
+        currency: 'usd',
+        destinationAccountId,
+        reversed: false,
+        amountReversedCents: 0,
+        escrowId: 'esc-1',
+        taskId: 'task-1',
+        payoutRecipientUserId,
+      },
+    };
+  });
+}
+
+function stripeReleaseParams(
+  transferId:string,
+  overrides:Partial<{
+    escrowId:string;taskId:string;amountCents:number;destinationAccountId:string;
+    payoutRecipientUserId:string;
+  }> = {},
+) {
+  const escrowId=overrides.escrowId ?? 'esc-1';
+  const taskId=overrides.taskId ?? 'task-1';
+  const payoutRecipientUserId=overrides.payoutRecipientUserId ?? 'worker-1';
+  return {
+    escrowId,
+    stripeTransferId:transferId,
+    stripeTransferWitness:{
+      provider:'STRIPE' as const,
+      transferId,
+      amountCents:overrides.amountCents ?? 3900,
+      currency:'usd',
+      destinationAccountId:overrides.destinationAccountId ?? 'acct_test',
+      reversed:false,
+      amountReversedCents:0,
+      escrowId,
+      taskId,
+      payoutRecipientUserId,
+    },
+  };
+}
+
 beforeEach(() => {
+  enableControlledStripePaymentTestCohortV7();
   vi.clearAllMocks();
   // Early-return authority and error-path tests can leave one-time query
   // responses queued. Reset them so one escrow scenario cannot contaminate
@@ -249,7 +552,7 @@ describe('EscrowService', () => {
         .mockResolvedValueOnce({ rows: [workerKycRow], rowCount: 1 } as never) // KYC check
         .mockResolvedValueOnce({ rows: [released], rowCount: 1 } as never); // UPDATE
 
-      const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_123' });
+      const result = await EscrowService.release(stripeReleaseParams('tr_123'));
       expect(result.success).toBe(true);
 
       // Verify gamification: recordEarnings called with net payout
@@ -271,6 +574,56 @@ describe('EscrowService', () => {
       );
     });
 
+    it('routes a stored pre-D1 transfer without task_id to reconciliation until its cohort is admitted', async () => {
+      const escrowRow = {
+        id:'esc-1',task_id:'task-1',amount:5000,platform_fee_cents:null,
+        state:'FUNDED',version:3,stripe_transfer_id:'tr_legacy',
+      };
+      const taskRow = { worker_id:'worker-1',price:5000 };
+      const workerKycRow = {
+        payouts_enabled:true,stripe_connect_id:'acct_test',stripe_connect_status:'complete',
+      };
+      mockDb.query
+        .mockResolvedValueOnce({ rows:[escrowRow],rowCount:1 } as never)
+        .mockResolvedValueOnce({ rows:[taskRow],rowCount:1 } as never)
+        .mockResolvedValueOnce({ rows:[workerKycRow],rowCount:1 } as never);
+
+      const current = stripeReleaseParams('tr_legacy');
+      const result = await EscrowService.release({
+        ...current,
+        stripeTransferWitness:{ ...current.stripeTransferWitness,taskId:null },
+      });
+
+      expect(result).toMatchObject({ success:false,error:{ code:'INVALID_STATE' } });
+      expect(mockDb.query.mock.calls.map(([sql]) => String(sql)).join('\n'))
+        .not.toMatch(/UPDATE\s+escrows\s+SET\s+state='RELEASED'/i);
+    });
+
+    it('rejects a newly presented transfer without task_id even when its other metadata matches', async () => {
+      const escrowRow = {
+        id:'esc-1',task_id:'task-1',amount:5000,platform_fee_cents:null,
+        state:'FUNDED',version:3,stripe_transfer_id:null,
+      };
+      const taskRow = { worker_id:'worker-1',price:5000 };
+      const workerKycRow = {
+        payouts_enabled:true,stripe_connect_id:'acct_test',stripe_connect_status:'complete',
+      };
+      mockDb.query
+        .mockResolvedValueOnce({ rows:[escrowRow],rowCount:1 } as never)
+        .mockResolvedValueOnce({ rows:[taskRow],rowCount:1 } as never)
+        .mockResolvedValueOnce({ rows:[workerKycRow],rowCount:1 } as never);
+
+      const current = stripeReleaseParams('tr_unbound');
+      const result = await EscrowService.release({
+        ...current,
+        stripeTransferWitness:{ ...current.stripeTransferWitness,taskId:null },
+      });
+
+      expect(result).toMatchObject({ success:false,error:{ code:'INVALID_STATE' } });
+      expect(mockDb.query.mock.calls.map(([sql]) => String(sql)).join('\n'))
+        .not.toMatch(/UPDATE\s+escrows\s+SET\s+state='RELEASED'/i);
+    });
+
     it('validates the Service Business payee while preserving fulfiller safety and performance attribution', async () => {
       const escrowRow = { id: 'esc-1', task_id: 'task-1', amount: 5000, state: 'FUNDED' };
       const taskRow = {
@@ -284,7 +637,9 @@ describe('EscrowService', () => {
         .mockResolvedValueOnce({ rows: [payeeKyc], rowCount: 1 } as never)
         .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'RELEASED' })], rowCount: 1 } as never);
 
-      const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_business' });
+      const result = await EscrowService.release(stripeReleaseParams('tr_business', {
+        destinationAccountId:'acct_business',payoutRecipientUserId:'business-payee-1',
+      }));
 
       expect(result.success).toBe(true);
       const kycQuery = mockDb.query.mock.calls.find(([sql]) =>
@@ -297,6 +652,29 @@ describe('EscrowService', () => {
       expect(XPService.awardXP).toHaveBeenCalledWith(expect.objectContaining({
         userId:'crew-worker-1',taskId:'task-1',escrowId:'esc-1',
       }));
+    });
+
+    it('rejects a stale transfer witness after the payout destination rotates', async () => {
+      mockDb.query
+        .mockResolvedValueOnce({
+          rows:[{ id:'esc-1',task_id:'task-1',amount:5000,state:'FUNDED',version:4,
+            platform_fee_cents:null,stripe_transfer_id:null }],rowCount:1,
+        } as never)
+        .mockResolvedValueOnce({
+          rows:[{ worker_id:'worker-1',payout_recipient_user_id:null,
+            provider_organization_id:null,provider_assignment_id:null,price:5000 }],rowCount:1,
+        } as never)
+        .mockResolvedValueOnce({
+          rows:[{ payouts_enabled:true,stripe_connect_id:'acct_rotated' }],rowCount:1,
+        } as never);
+
+      const result = await EscrowService.release(stripeReleaseParams('tr_stale_destination'));
+
+      expect(result).toMatchObject({ success:false,error:{ code:'INVALID_STATE' } });
+      expect(mockDb.query.mock.calls.map(([sql]) => String(sql)).join('\n'))
+        .not.toMatch(/UPDATE\s+escrows\s+SET\s+state='RELEASED'/i);
+      expect(EarnedVerificationUnlockService.recordEarnings).not.toHaveBeenCalled();
+      expect(XPService.awardXP).not.toHaveBeenCalled();
     });
 
     it('continues release even if self-insurance contribution fails', async () => {
@@ -315,7 +693,7 @@ describe('EscrowService', () => {
         new Error('DB pool unreachable')
       );
 
-      const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_svc' });
+      const result = await EscrowService.release(stripeReleaseParams('tr_test_svc'));
       // Payout must still succeed despite insurance failure
       expect(result.success).toBe(true);
     });
@@ -334,7 +712,7 @@ describe('EscrowService', () => {
       mockIsInvariantViolation.mockReturnValueOnce(true);
       mockGetErrorMessage.mockReturnValueOnce('INV-2 VIOLATION');
 
-      const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_svc' });
+      const result = await EscrowService.release(stripeReleaseParams('tr_test_svc'));
       expect(result.success).toBe(false);
       if (!result.success) expect(result.error.code).toBe('HX201'); // ErrorCodes.INV_2_VIOLATION = 'HX201'
     });
@@ -351,7 +729,7 @@ describe('EscrowService', () => {
         .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // UPDATE returns 0
         .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'RELEASED' })], rowCount: 1 } as never); // getById
 
-      const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_svc' });
+      const result = await EscrowService.release(stripeReleaseParams('tr_test_svc'));
       expect(result.success).toBe(false);
       if (!result.success) expect(result.error.code).toBe('HX002'); // ErrorCodes.ESCROW_TERMINAL = 'HX002'
     });
@@ -359,7 +737,9 @@ describe('EscrowService', () => {
     it('returns NOT_FOUND when escrow does not exist', async () => {
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
-      const result = await EscrowService.release({ escrowId: 'esc-missing', stripeTransferId: 'tr_test_svc' });
+      const result = await EscrowService.release(stripeReleaseParams('tr_test_svc', {
+        escrowId:'esc-missing',
+      }));
       expect(result.success).toBe(false);
       if (!result.success) expect(result.error.code).toBe('NOT_FOUND');
     });
@@ -370,7 +750,7 @@ describe('EscrowService', () => {
         .mockResolvedValueOnce({ rows: [escrowRow], rowCount: 1 } as never)
         .mockResolvedValueOnce({ rows: [{ worker_id: null, price: 5000 }], rowCount: 1 } as never);
 
-      const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_svc' });
+      const result = await EscrowService.release(stripeReleaseParams('tr_test_svc'));
       expect(result.success).toBe(false);
       if (!result.success) expect(result.error.message).toContain('no assigned worker');
     });
@@ -389,11 +769,11 @@ describe('EscrowService', () => {
 
       vi.mocked(XPService.awardXP).mockRejectedValueOnce(new Error('XP failure'));
 
-      const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_svc' });
+      const result = await EscrowService.release(stripeReleaseParams('tr_test_svc'));
       expect(result.success).toBe(true);
     });
 
-    it('F-01: logs platform_fee when adminOverride=true and worker has no stripe_connect_id (manual payout required)', async () => {
+    it('blocks admin force-release before terminal state or economic effects', async () => {
       // adminOverride=true, worker has no Stripe Connect ID → adminManualPayoutRequired=true
       // The normal transfer.created webhook will never fire, so platform_fee must be logged here.
       const escrowRow = { id: 'esc-1', task_id: 'task-1', amount: 5000, state: 'FUNDED' };
@@ -413,12 +793,12 @@ describe('EscrowService', () => {
         reason: 'Admin force release',
       });
 
-      expect(result.success).toBe(true);
-      // F-01: RevenueService.logEvent must have been called for platform_fee
-      expect(vi.mocked(RevenueService.logEvent)).toHaveBeenCalledOnce();
-      const logCall = vi.mocked(RevenueService.logEvent).mock.calls[0][0];
-      expect(logCall.eventType).toBe('platform_fee');
-      expect(logCall.metadata).toMatchObject({ event: 'admin_override_release', admin_manual_payout_required: true });
+      expect(result).toMatchObject({ success:false,error:{ code:'INVALID_STATE' } });
+      expect(mockDb.query).not.toHaveBeenCalled();
+      expect(vi.mocked(RevenueService.logEvent)).not.toHaveBeenCalled();
+      expect(EarnedVerificationUnlockService.recordEarnings).not.toHaveBeenCalled();
+      expect(SelfInsurancePoolService.recordContribution).not.toHaveBeenCalled();
+      expect(XPService.awardXP).not.toHaveBeenCalled();
     });
 
     // -----------------------------------------------------------------------
@@ -428,7 +808,7 @@ describe('EscrowService', () => {
     // assertion is RED on pre-fix source (line 641 evaluates to `undefined`,
     // serialized to SQL NULL) and GREEN after the Option B source fix.
     // -----------------------------------------------------------------------
-    it('PR3: admin_override_release logs platform_fee with exact poster-attributed payload (F-23)', async () => {
+    it('blocks poster-attributed admin economics without provider evidence', async () => {
       const escrowRow = { id: 'esc-1', task_id: 'task-1', amount: 5000, state: 'FUNDED' };
       // poster_id seeded — production tasks.poster_id is NOT NULL
       const taskRow = { worker_id: 'worker-1', price: 5000, payment_method: 'escrow', poster_id: 'poster-9' };
@@ -442,27 +822,12 @@ describe('EscrowService', () => {
         .mockResolvedValueOnce({ rows: [released], rowCount: 1 } as never);        // UPDATE → RELEASED
 
       const result = await EscrowService.release({ escrowId: 'esc-1', adminOverride: true, reason: 'Admin force release' });
-      expect(result.success).toBe(true);
-
-      expect(vi.mocked(RevenueService.logEvent)).toHaveBeenCalledOnce();
-      const logCall = vi.mocked(RevenueService.logEvent).mock.calls[0][0];
-      // gross=5000, fallback margin=1000, insurance=100, net=3900
-      expect(logCall).toMatchObject({
-        eventType: 'platform_fee',
-        userId: 'poster-9',        // F-23: fee attributed to the poster (the payer), exact value
-        taskId: 'task-1',
-        escrowId: 'esc-1',
-        amountCents: 1000,         // === platformFeeCents
-        grossAmountCents: 5000,
-        netAmountCents: 3900,
-        platformFeeCents: 1000,
-      });
-      expect(logCall.userId).toBe('poster-9');     // exact attribution, not toBeDefined
-      expect(logCall.stripeEventId).toBeUndefined(); // admin manual payout has no Stripe event
-      expect(logCall.metadata).toMatchObject({ event: 'admin_override_release', admin_manual_payout_required: true });
+      expect(result).toMatchObject({ success:false,error:{ code:'INVALID_STATE' } });
+      expect(mockDb.query).not.toHaveBeenCalled();
+      expect(vi.mocked(RevenueService.logEvent)).not.toHaveBeenCalled();
     });
 
-    it('PR3 F-06: admin_override_release does NOT call logEvent when platform fee rounds to 0', async () => {
+    it('blocks admin force-release even when the calculated fee rounds to zero', async () => {
       const escrowRow = { id: 'esc-1', task_id: 'task-1', amount: 1, state: 'FUNDED' };
       const taskRow = { worker_id: 'worker-1', price: 1, payment_method: 'escrow', poster_id: 'poster-9' };
       const workerNoStripeRow = { stripe_connect_id: null };
@@ -479,8 +844,8 @@ describe('EscrowService', () => {
         adminOverride: true,
         reason: 'Documented administrator payout decision',
       });
-      expect(result.success).toBe(true);
-      // fee = Math.round(1 * 0.15) = 0 → F-06 skip path
+      expect(result).toMatchObject({ success:false,error:{ code:'INVALID_STATE' } });
+      expect(mockDb.query).not.toHaveBeenCalled();
       expect(vi.mocked(RevenueService.logEvent)).not.toHaveBeenCalled();
     });
 
@@ -496,7 +861,7 @@ describe('EscrowService', () => {
         .mockResolvedValueOnce({ rows: [workerKycRow], rowCount: 1 } as never)
         .mockResolvedValueOnce({ rows: [released], rowCount: 1 } as never);
 
-      const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_123' });
+      const result = await EscrowService.release(stripeReleaseParams('tr_123'));
       expect(result.success).toBe(true);
       // F-10: payment-worker's handleTransferCreated is the sole platform_fee source on normal release
       expect(vi.mocked(RevenueService.logEvent)).not.toHaveBeenCalled();
@@ -505,7 +870,7 @@ describe('EscrowService', () => {
     // DEFENSIVE / SCHEMA-INVALID: production tasks.poster_id is NOT NULL, so a missing
     // poster models only a corrupt/legacy row. Asserts the F-23 worker fallback and that
     // attribution never regresses to null. Not a production proof — do not over-weight.
-    it('PR3 defensive (schema-invalid): admin_override falls back to worker when poster_id is missing', async () => {
+    it('blocks admin force-release for schema-invalid legacy rows too', async () => {
       const escrowRow = { id: 'esc-1', task_id: 'task-1', amount: 5000, state: 'FUNDED' };
       const taskRow = { worker_id: 'worker-1', price: 5000, payment_method: 'escrow', poster_id: null };
       const workerNoStripeRow = { stripe_connect_id: null };
@@ -522,19 +887,18 @@ describe('EscrowService', () => {
         adminOverride: true,
         reason: 'Documented administrator payout decision',
       });
-      expect(result.success).toBe(true);
-      const logCall = vi.mocked(RevenueService.logEvent).mock.calls[0][0];
-      expect(logCall.userId).toBe('worker-1'); // F-23 fallback
-      expect(logCall.userId).not.toBeNull();
+      expect(result).toMatchObject({ success:false,error:{ code:'INVALID_STATE' } });
+      expect(mockDb.query).not.toHaveBeenCalled();
+      expect(vi.mocked(RevenueService.logEvent)).not.toHaveBeenCalled();
     });
 
-    it('rejects admin override release without an attributable reason', async () => {
+    it('rejects admin override release regardless of reason text', async () => {
       const result = await EscrowService.release({ escrowId: 'esc-1', adminOverride: true });
 
       expect(result.success).toBe(false);
       if (!result.success) {
-        expect(result.error.code).toBe('INVALID_INPUT');
-        expect(result.error.message).toContain('requires an attributable reason');
+        expect(result.error.code).toBe('INVALID_STATE');
+        expect(result.error.message).toContain('cannot create RELEASED economics');
       }
       expect(mockDb.query).not.toHaveBeenCalled();
     });
@@ -545,7 +909,12 @@ describe('EscrowService', () => {
   // -------------------------------------------------------------------------
   describe('refund', () => {
     it('refunds from FUNDED state', async () => {
-      const refunded = makeEscrow({ state: 'REFUNDED' });
+      const refunded = makeEscrow({
+        state: 'REFUNDED',
+        refund_transition_event_exact: true,
+        event_key: 'escrow-refunded-transition-v1:esc-1:1',
+        event_metadata: {},
+      });
       // Transaction callback query sequence:
       //   T1 — 1st: SELECT ... FOR UPDATE (escrow pre-check — now includes stripe_payment_intent_id + amount)
       //   T1 — 2nd: SELECT worker_id, state FROM tasks (task state check moved inside transaction — LL4)
@@ -554,14 +923,19 @@ describe('EscrowService', () => {
       //   T2 — 4th: UPDATE escrows RETURNING * (state transition using freshly-locked version)
       //   outside — 5th: INSERT INTO escrow_events (logEscrowEvent)
       mockDb.query
-        .mockResolvedValueOnce({ rows: [{ task_id: 'task-1', version: 0, state: 'FUNDED', stripe_payment_intent_id: 'pi_test', amount: 5000 }], rowCount: 1 } as never)
-        .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1', state: 'OPEN' }], rowCount: 1 } as never) // T1: task state check
-        .mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 0, state: 'FUNDED' }], rowCount: 1 } as never) // T2: FOR UPDATE NOWAIT re-read
-        .mockResolvedValueOnce({ rows: [refunded], rowCount: 1 } as never) // T2: UPDATE
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // logEscrowEvent
+        .mockResolvedValueOnce({ rows: [exactRefundBinding()], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [{ id: 'task-1', version: 2, worker_id: null, state: 'OPEN' }], rowCount: 1 } as never) // T1: exact unassigned task
+        .mockResolvedValueOnce({ rows: [refundProviderClaimRow('esc-1', 0)], rowCount: 1 } as never) // T1: immutable provider-call claim
+        .mockResolvedValueOnce({ rows: [{ allowed: true }], rowCount: 1 } as never) // pre-provider DB-clock claim revalidation
+        .mockResolvedValueOnce({ rows: [{ metadata: exactSucceededRefundMetadata() }], rowCount: 1 } as never) // durable exact provider witness
+        .mockResolvedValueOnce({ rows: [exactRefundBinding()], rowCount: 1 } as never) // T2: exact FOR UPDATE NOWAIT re-read
+        .mockResolvedValueOnce({ rows: [{ id: 'task-1', version: 2, worker_id: null, state: 'OPEN' }], rowCount: 1 } as never) // T2: exact task binding
+        .mockResolvedValueOnce({ rows: [{ exact: true }], rowCount: 1 } as never) // T2: immutable claim resolution
+        .mockResolvedValueOnce({ rows: [{ set_config: 'esc-1' }], rowCount: 1 } as never) // T2: transaction-local trigger authority
+        .mockResolvedValueOnce({ rows: [refunded], rowCount: 1 } as never); // T2: UPDATE + transition witness
 
       const result = await EscrowService.refund({ escrowId: 'esc-1' });
-      expect(result.success).toBe(true);
+      expect(result.success, JSON.stringify(result)).toBe(true);
       if (result.success) expect(result.data.state).toBe('REFUNDED');
     });
 
@@ -575,23 +949,15 @@ describe('EscrowService', () => {
       if (!result.success) expect(result.error.message).toContain('accepted by a worker');
     });
 
-    it('returns ESCROW_TERMINAL when already refunded', async () => {
-      // No stripe_payment_intent_id → no Stripe call; T2 detects version mismatch via 0 rowCount.
-      // T1 — 1st: escrow pre-check FOR UPDATE
-      // T1 — 2nd: task state check
-      // T2 — 3rd: SELECT FOR UPDATE NOWAIT (F-05: re-read version — returns FUNDED so allowed)
-      // T2 — 4th: UPDATE → 0 rows (concurrent modification raced ahead)
-      // T2 — 5th: getById fallback (SELECT e.*, t.poster_id, t.worker_id ...) → REFUNDED
-      mockDb.query
-        .mockResolvedValueOnce({ rows: [{ task_id: 'task-1', version: 0, state: 'FUNDED', stripe_payment_intent_id: null, amount: 5000 }], rowCount: 1 } as never)
-        .mockResolvedValueOnce({ rows: [{ worker_id: null, state: 'OPEN' }], rowCount: 1 } as never) // T1: task state check
-        .mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 0, state: 'FUNDED' }], rowCount: 1 } as never) // T2: FOR UPDATE NOWAIT
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // T2: UPDATE rowCount=0
-        .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'REFUNDED' })], rowCount: 1 } as never); // T2: getById fallback
+    it('returns INVALID_STATE when the terminal refund is already visible at preflight', async () => {
+      mockDb.query.mockResolvedValueOnce({
+        rows: [exactRefundBinding({ state: 'REFUNDED', stripe_refund_id: 're_test' })],
+        rowCount: 1,
+      } as never);
 
       const result = await EscrowService.refund({ escrowId: 'esc-1' });
       expect(result.success).toBe(false);
-      if (!result.success) expect(result.error.code).toBe('HX002'); // ErrorCodes.ESCROW_TERMINAL = 'HX002'
+      if (!result.success) expect(result.error.code).toBe('INVALID_STATE');
     });
   });
 
@@ -633,43 +999,14 @@ describe('EscrowService', () => {
   // -------------------------------------------------------------------------
   describe('partialRefund', () => {
     it('partial refunds from LOCKED_DISPUTE with valid percentages', async () => {
-      const partial = makeEscrow({ state: 'REFUND_PARTIAL' });
-      // partialRefund() uses TWO db.transaction() calls (R22 Stripe-first pattern):
-      //
-      // Transaction 1 (read-lock — no UPDATE):
-      //   1st query: SELECT version, state, task_id, amount, stripe_payment_intent_id,
-      //              stripe_transfer_id, stripe_refund_id FROM escrows FOR UPDATE
-      //   2nd query: SELECT worker_id FROM tasks (inside Tx1)
-      //   3rd query: SELECT stripe_connect_id FROM users (inside Tx1)
-      //
-      // Stripe calls (outside DB transactions):
-      //   StripeService.createTransfer → mocked (returns tr_test)
-      //   StripeService.createRefund   → mocked (returns re_test)
-      //
-      // Transaction 2 (terminalize):
-      //   F-05 FIX: SELECT FOR UPDATE NOWAIT re-read (locked version)
-      //   4th query: SELECT id, version, state FROM escrows FOR UPDATE NOWAIT
-      //   5th query: UPDATE escrows SET state='REFUND_PARTIAL' WHERE version=$lockedVersion
-      //
-      //   6th query: INSERT INTO escrow_events (logEscrowEvent — outside Tx2)
-      mockDb.query.mockResolvedValueOnce({
-        rows: [{ version: 0, state: 'LOCKED_DISPUTE', task_id: 'task-1', amount: 5000, stripe_payment_intent_id: 'pi_test', stripe_transfer_id: null, stripe_refund_id: null }],
-        rowCount: 1,
-      } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never);
-      // F-05: T2 NOWAIT re-read
-      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 0, state: 'LOCKED_DISPUTE' }], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [partial], rowCount: 1 } as never);
-      // logEscrowEvent INSERT
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      installPartialRefundFixture();
 
       const { StripeService: MockStripe } = await import('../../src/services/StripeService');
 
       const result = await EscrowService.partialRefund({
         escrowId: 'esc-1', workerPercent: 60, posterPercent: 40,
       });
-      expect(result.success).toBe(true);
+      expect(result.success, JSON.stringify(result)).toBe(true);
 
       // Verify Stripe was called with the correct amounts (60% worker, 40% poster)
       expect(vi.mocked(MockStripe.createTransfer)).toHaveBeenCalledTimes(1);
@@ -677,11 +1014,13 @@ describe('EscrowService', () => {
 
       // Verify the terminalizing UPDATE uses lockedVersion (from NOWAIT re-read) not stale T1 version
       const updateCalls = mockDb.query.mock.calls.filter(
-        (c) => typeof c[0] === 'string' && (c[0] as string).includes("SET state = 'REFUND_PARTIAL'")
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes("SET state='REFUND_PARTIAL'")
       );
       expect(updateCalls).toHaveLength(1);
-      // params: [escrowId, lockedVersion, resolvedTransferId, resolvedRefundId]
-      expect(updateCalls[0][1]).toEqual(['esc-1', 0, 'tr_test', 're_test']);
+      expect(updateCalls[0][1]).toEqual([
+        'esc-1', 0, 'task-1', 5000, null, 'pi_test', null, null,
+        'tr_test', 're_test', 2000, 3000,
+      ]);
     });
 
     it('REVIEW FIX (PR242): withholds 2% self-insurance (gross basis) and records the pool contribution', async () => {
@@ -689,18 +1028,7 @@ describe('EscrowService', () => {
       // fallback margin = round(3000×0.20) = 600 → net = 2400.
       // insurance = round(3000×0.02) = 60 (GROSS basis, matching full release & worker queue).
       // worker transfer = 2400 − 60 = 2340. pool contribution = 60.
-      const partial = makeEscrow({ state: 'REFUND_PARTIAL' });
-      mockDb.query.mockResolvedValueOnce({
-        rows: [{ version: 0, state: 'LOCKED_DISPUTE', task_id: 'task-1', amount: 5000, stripe_payment_intent_id: 'pi_test', stripe_transfer_id: null, stripe_refund_id: null }],
-        rowCount: 1,
-      } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 0, state: 'LOCKED_DISPUTE' }], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [partial], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // logEscrowEvent
-      // platform_fee ledger idempotency pre-check (workerCents>0 && resolvedTransferId set → not hit;
-      // but the ledger-skip branch queries only when !resolvedTransferId, so no extra query here)
+      installPartialRefundFixture();
 
       const { StripeService: MockStripe } = await import('../../src/services/StripeService');
 
@@ -720,19 +1048,12 @@ describe('EscrowService', () => {
     });
 
     it('routes a Service Business partial settlement to the provider payee while insuring the fulfiller', async () => {
-      const partial = makeEscrow({ state: 'REFUND_PARTIAL' });
-      mockDb.query.mockResolvedValueOnce({
-        rows: [{ version: 0, state: 'LOCKED_DISPUTE', task_id: 'task-1', amount: 5000,
-          stripe_payment_intent_id: 'pi_test', stripe_transfer_id: null, stripe_refund_id: null }],
-        rowCount: 1,
-      } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [{
-        worker_id: 'crew-worker-1', payout_recipient_user_id: 'business-payee-1', poster_id: 'poster-1',
-      }], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_business' }], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 0, state: 'LOCKED_DISPUTE' }], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [partial], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+      installPartialRefundFixture({
+        workerId: 'crew-worker-1',
+        payoutRecipientUserId: 'business-payee-1',
+        posterId: 'poster-1',
+        destinationAccountId: 'acct_business',
+      });
       const { StripeService: MockStripe } = await import('../../src/services/StripeService');
 
       const result = await EscrowService.partialRefund({
@@ -751,21 +1072,8 @@ describe('EscrowService', () => {
       );
     });
 
-    it('skips Stripe transfer when stripe_transfer_id already recorded (idempotency)', async () => {
-      const partial = makeEscrow({ state: 'REFUND_PARTIAL', stripe_transfer_id: 'tr_existing' });
-      // Tx1: SELECT FOR UPDATE returns existing stripe_transfer_id — transfer already done
-      mockDb.query.mockResolvedValueOnce({
-        rows: [{ version: 1, state: 'LOCKED_DISPUTE', task_id: 'task-1', amount: 5000, stripe_payment_intent_id: 'pi_test', stripe_transfer_id: 'tr_existing', stripe_refund_id: null }],
-        rowCount: 1,
-      } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never);
-      // F-05: T2 NOWAIT re-read
-      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 1, state: 'LOCKED_DISPUTE' }], rowCount: 1 } as never);
-      // Tx2: terminalizing UPDATE (both Stripe IDs passed via COALESCE)
-      mockDb.query.mockResolvedValueOnce({ rows: [partial], rowCount: 1 } as never);
-      // logEscrowEvent INSERT
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+    it('skips Stripe transfer only when the recorded transfer has an exact current provider witness', async () => {
+      installPartialRefundFixture({ version: 1, existingTransferId: 'tr_existing' });
 
       const { StripeService: MockStripe } = await import('../../src/services/StripeService');
 
@@ -780,21 +1088,8 @@ describe('EscrowService', () => {
       expect(vi.mocked(MockStripe.createRefund)).toHaveBeenCalledTimes(1);
     });
 
-    it('skips Stripe refund when stripe_refund_id already recorded (idempotency)', async () => {
-      const partial = makeEscrow({ state: 'REFUND_PARTIAL', stripe_refund_id: 're_existing' });
-      // Tx1: SELECT FOR UPDATE returns existing stripe_refund_id — refund already done
-      mockDb.query.mockResolvedValueOnce({
-        rows: [{ version: 1, state: 'LOCKED_DISPUTE', task_id: 'task-1', amount: 5000, stripe_payment_intent_id: 'pi_test', stripe_transfer_id: null, stripe_refund_id: 're_existing' }],
-        rowCount: 1,
-      } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never);
-      mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never);
-      // F-05: T2 NOWAIT re-read
-      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 1, state: 'LOCKED_DISPUTE' }], rowCount: 1 } as never);
-      // Tx2: terminalizing UPDATE (both Stripe IDs passed via COALESCE)
-      mockDb.query.mockResolvedValueOnce({ rows: [partial], rowCount: 1 } as never);
-      // logEscrowEvent INSERT
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+    it('skips Stripe refund only when the recorded refund has an exact immutable checkpoint', async () => {
+      installPartialRefundFixture({ version: 1, existingRefundId: 're_existing' });
 
       const { StripeService: MockStripe } = await import('../../src/services/StripeService');
 
@@ -860,59 +1155,34 @@ describe('EscrowService', () => {
   });
 
   // -------------------------------------------------------------------------
-  // F59-5: adminRefund on RELEASED escrow with null stripeTransferId
+  // D1 containment: legacy administrative refunds are compatibility-denial only
   // -------------------------------------------------------------------------
-  describe('refund — F59-5: RELEASED escrow with null stripeTransferId must return MANUAL_PAYOUT_CANNOT_REFUND', () => {
-    it('returns MANUAL_PAYOUT_CANNOT_REFUND when adminOverride=true, state=RELEASED, stripeTransferId=null', async () => {
-      // adminOverride=true, state=RELEASED, stripe_transfer_id=null (manual payout path).
-      // Use task_id=null so the task state guard is skipped (the escrow has no task, or
-      // a task_id that returns no rows). This isolates the MANUAL_PAYOUT_CANNOT_REFUND guard.
-      // Transfer reversal block is skipped (no transfer ID).
-      // The new guard fires: RELEASED + null transferId → MANUAL_PAYOUT_CANNOT_REFUND.
-      // No Stripe refund must be issued.
+  describe('refund — administrative override is disabled before effects', () => {
+    it('rejects a RELEASED escrow without reading the database or issuing a refund', async () => {
       const { StripeService: MockStripe } = await import('../../src/services/StripeService');
-      mockDb.query
-        .mockResolvedValueOnce({
-          rows: [{
-            task_id: null, version: 0, state: 'RELEASED',
-            stripe_payment_intent_id: 'pi_test', stripe_refund_id: null,
-            stripe_transfer_id: null, amount: 5000,
-          }],
-          rowCount: 1,
-        } as never); // T1: SELECT FOR UPDATE (task_id=null skips task state check)
 
       const result = await EscrowService.refund({ escrowId: 'esc-1', adminOverride: true });
 
-      expect(result.success).toBe(false);
-      if (!result.success) expect(result.error.code).toBe('MANUAL_PAYOUT_CANNOT_REFUND');
-      // Stripe refund must NOT have been called
+      expect(result).toMatchObject({
+        success: false,
+        error: { code: 'INVALID_STATE' },
+      });
+      expect(mockDb.query).not.toHaveBeenCalled();
       expect(vi.mocked(MockStripe.createRefund)).not.toHaveBeenCalled();
     });
 
-    it('succeeds (transfer reversal then refund) when adminOverride=true, state=RELEASED, stripeTransferId is set', async () => {
-      // Existing behavior: RELEASED + stripeTransferId present → reversal → refund.
-      // Use task_id=null so the task state guard is skipped (same approach as above).
-      const refunded = makeEscrow({ state: 'REFUNDED' });
+    it('rejects even when a transfer reversal would otherwise be available', async () => {
       const { StripeService: MockStripe } = await import('../../src/services/StripeService');
-
-      mockDb.query
-        .mockResolvedValueOnce({
-          rows: [{
-            task_id: null, version: 0, state: 'RELEASED',
-            stripe_payment_intent_id: 'pi_test', stripe_refund_id: null,
-            stripe_transfer_id: 'tr_existing', amount: 5000,
-          }],
-          rowCount: 1,
-        } as never) // T1: SELECT FOR UPDATE (task_id=null skips task state check)
-        .mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 0, state: 'RELEASED' }], rowCount: 1 } as never) // T2: FOR UPDATE NOWAIT re-read
-        .mockResolvedValueOnce({ rows: [refunded], rowCount: 1 } as never) // T2: UPDATE
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // logEscrowEvent
 
       const result = await EscrowService.refund({ escrowId: 'esc-1', adminOverride: true });
 
-      expect(result.success).toBe(true);
-      expect(vi.mocked(MockStripe.createTransferReversal)).toHaveBeenCalledOnce();
-      expect(vi.mocked(MockStripe.createRefund)).toHaveBeenCalledOnce();
+      expect(result).toMatchObject({
+        success: false,
+        error: { code: 'INVALID_STATE' },
+      });
+      expect(mockDb.query).not.toHaveBeenCalled();
+      expect(vi.mocked(MockStripe.createTransferReversal)).not.toHaveBeenCalled();
+      expect(vi.mocked(MockStripe.createRefund)).not.toHaveBeenCalled();
     });
   });
 });
@@ -937,7 +1207,7 @@ describe('EscrowService — XP/payout side-effects gated on successful RELEASE',
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)            // UPDATE → 0 rows (terminal/raced)
       .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'RELEASED' })], rowCount: 1 } as never); // getById fallback
 
-    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_x' });
+    const result = await EscrowService.release(stripeReleaseParams('tr_x'));
 
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error.code).toBe('HX002'); // ESCROW_TERMINAL
@@ -948,13 +1218,23 @@ describe('EscrowService — XP/payout side-effects gated on successful RELEASE',
   });
 
   it('does NOT award XP on a successful refund (XP requires RELEASED; refund terminalizes to REFUNDED)', async () => {
-    const refunded = makeEscrow({ state: 'REFUNDED' });
+    const refunded = makeEscrow({
+      state: 'REFUNDED',
+      refund_transition_event_exact: true,
+      event_key: 'escrow-refunded-transition-v1:esc-1:1',
+      event_metadata: {},
+    });
     mockDb.query
-      .mockResolvedValueOnce({ rows: [{ task_id: 'task-1', version: 0, state: 'FUNDED', stripe_payment_intent_id: 'pi_test', amount: 5000 }], rowCount: 1 } as never) // T1 pre-check
-      .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1', state: 'OPEN' }], rowCount: 1 } as never) // T1 task state check
-      .mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 0, state: 'FUNDED' }], rowCount: 1 } as never) // T2 FOR UPDATE NOWAIT
-      .mockResolvedValueOnce({ rows: [refunded], rowCount: 1 } as never) // T2 UPDATE → REFUNDED
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never); // logEscrowEvent
+      .mockResolvedValueOnce({ rows: [exactRefundBinding()], rowCount: 1 } as never) // T1 pre-check
+      .mockResolvedValueOnce({ rows: [{ id: 'task-1', version: 2, worker_id: null, state: 'OPEN' }], rowCount: 1 } as never) // T1 exact unassigned task
+      .mockResolvedValueOnce({ rows: [refundProviderClaimRow('esc-1', 0)], rowCount: 1 } as never) // T1 immutable provider-call claim
+      .mockResolvedValueOnce({ rows: [{ allowed: true }], rowCount: 1 } as never) // pre-provider claim revalidation
+      .mockResolvedValueOnce({ rows: [{ metadata: exactSucceededRefundMetadata() }], rowCount: 1 } as never) // durable exact provider witness
+      .mockResolvedValueOnce({ rows: [exactRefundBinding()], rowCount: 1 } as never) // T2 exact FOR UPDATE NOWAIT
+      .mockResolvedValueOnce({ rows: [{ id: 'task-1', version: 2, worker_id: null, state: 'OPEN' }], rowCount: 1 } as never) // T2 exact task binding
+      .mockResolvedValueOnce({ rows: [{ exact: true }], rowCount: 1 } as never) // T2 immutable claim resolution
+      .mockResolvedValueOnce({ rows: [{ set_config: 'esc-1' }], rowCount: 1 } as never) // T2 trigger authority
+      .mockResolvedValueOnce({ rows: [refunded], rowCount: 1 } as never); // T2 UPDATE → REFUNDED + transition
 
     const result = await EscrowService.refund({ escrowId: 'esc-1' });
 

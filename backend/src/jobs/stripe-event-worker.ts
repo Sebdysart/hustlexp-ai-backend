@@ -22,8 +22,17 @@ import { processEntitlementPurchase } from '../services/StripeEntitlementProcess
 import { EscrowService } from '../services/EscrowService.js';
 import { ChargebackService } from '../services/ChargebackService.js';
 import { verifyJobSignature } from './queues.js';
+import { newPaymentCreationMode } from '../services/NewPaymentCreationGuard.js';
 import type { Job } from 'bullmq';
 import { workerLogger } from '../logger.js';
+import {
+  claimStripeEventInbox,
+  finalizeStripeEventInboxClaim,
+  isStripeEventInboxClaimLost,
+  releaseStripeEventInboxClaim,
+  requireExactStripeEventOutboxKey,
+} from './StripeEventInboxLease.js';
+import { markStripeEventOutboxesProcessed } from './outbox-worker.js';
 const log = workerLogger.child({ worker: 'stripe-event' });
 
 // ============================================================================
@@ -52,6 +61,14 @@ const ALLOWED_STRIPE_EVENT_TYPES = new Set([
   'account.updated',
 ]);
 
+const ALWAYS_POSITIVE_PAYMENT_EVENTS = new Set([
+  'customer.subscription.created',
+  'checkout.session.completed',
+  'payment_intent.succeeded',
+  'invoice.payment_failed',
+  'invoice.paid',
+]);
+
 // ============================================================================
 // TYPES
 // ============================================================================
@@ -66,6 +83,34 @@ interface StripeEventEnvelope {
   data?: {
     object?: Record<string, unknown>;
   };
+}
+
+function eventCreatesPositivePaymentState(type: string, event: StripeEventEnvelope): boolean {
+  if (ALWAYS_POSITIVE_PAYMENT_EVENTS.has(type)) return true;
+  if (type !== 'customer.subscription.updated') return false;
+  const status = String(event.data?.object?.status ?? '').toLowerCase();
+  // The current processor has an explicitly negative branch only for these
+  // statuses. Every other update would write/extend plan authority.
+  return !['canceled', 'unpaid'].includes(status);
+}
+
+async function containFrozenPositiveEvent(
+  stripeEventId: string,
+  claimToken: string,
+  type: string,
+  event: StripeEventEnvelope,
+): Promise<boolean> {
+  if (newPaymentCreationMode() !== 'frozen' || !eventCreatesPositivePaymentState(type, event)) {
+    return false;
+  }
+  await finalizeStripeEventInboxClaim({
+    stripeEventId,
+    claimToken,
+    result: 'skipped',
+    errorMessage: 'PAYMENT_CREATION_FROZEN: positive processor fact retained for reconciliation; canonical success effects suppressed',
+  });
+  log.warn({ stripeEventId, type }, 'Frozen payment event retained without positive canonical effects');
+  return true;
 }
 
 // ============================================================================
@@ -115,32 +160,32 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
     );
     throw new Error('JOB_SIGNATURE_INVALID: Payload signature verification failed');
   }
-
-  // Atomic claim (prevents double processing - S-1)
-  const claim = await db.query<{
-    payload_json: Record<string, unknown>;
-    type: string;
-  }>(
-    `
-    UPDATE stripe_events
-    SET claimed_at = NOW(),
-        result = 'processing',
-        error_message = NULL
-    WHERE stripe_event_id = $1
-      AND claimed_at IS NULL
-      AND processed_at IS NULL
-    RETURNING payload_json, type
-    `,
-    [stripeEventId]
+  const outboxKey = requireExactStripeEventOutboxKey(
+    job,
+    payloadWithoutSig,
+    stripeEventId,
   );
 
+  // Atomic claim (prevents double processing - S-1)
+  const claim = await claimStripeEventInbox<Record<string, unknown>>(stripeEventId);
+
   // Already claimed or processed → NO-OP (S-1)
-  if (claim.rowCount === 0) {
+  if (!claim) {
+    const existing = await db.query<{ processed_at: Date | null }>(
+      'SELECT processed_at FROM stripe_events WHERE stripe_event_id=$1',
+      [stripeEventId],
+    );
+    if (existing.rows.length !== 1) {
+      throw new Error(`Stripe event ${stripeEventId} not found`);
+    }
+    if (existing.rows[0].processed_at !== null) {
+      await markStripeEventOutboxesProcessed({ idempotencyKey: outboxKey, stripeEventId });
+    }
     log.info({ stripeEventId }, 'Stripe event already processed, skipping');
     return;
   }
 
-  const { payload_json, type } = claim.rows[0];
+  const { payload_json, type, claimToken } = claim;
   const event = payload_json as unknown as StripeEventEnvelope;
 
   try {
@@ -149,16 +194,18 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
     // cannot reach any handler, even if a developer accidentally adds one.
     if (!ALLOWED_STRIPE_EVENT_TYPES.has(type)) {
       log.warn({ type, stripeEventId }, 'stripe-event-worker: unrecognized event type, skipping');
-      await db.query(
-        `
-        UPDATE stripe_events
-        SET result = 'skipped',
-            processed_at = NOW(),
-            error_message = 'Unrecognized event type (not in allowlist)'
-        WHERE stripe_event_id = $1
-        `,
-        [stripeEventId]
-      );
+      await finalizeStripeEventInboxClaim({
+        stripeEventId,
+        claimToken,
+        result: 'skipped',
+        errorMessage: 'Unrecognized event type (not in allowlist)',
+      });
+      await markStripeEventOutboxesProcessed({ idempotencyKey: outboxKey, stripeEventId });
+      return;
+    }
+
+    if (await containFrozenPositiveEvent(stripeEventId, claimToken, type, event)) {
+      await markStripeEventOutboxesProcessed({ idempotencyKey: outboxKey, stripeEventId });
       return;
     }
 
@@ -207,33 +254,28 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
 
       default:
         // Unknown events are explicitly skipped (not an error)
-        await db.query(
-          `
-          UPDATE stripe_events
-          SET result = 'skipped',
-              processed_at = NOW(),
-              error_message = 'Unhandled event type'
-          WHERE stripe_event_id = $1
-          `,
-          [stripeEventId]
-        );
+        await finalizeStripeEventInboxClaim({
+          stripeEventId,
+          claimToken,
+          result: 'skipped',
+          errorMessage: 'Unhandled event type',
+        });
+        await markStripeEventOutboxesProcessed({ idempotencyKey: outboxKey, stripeEventId });
         log.warn({ type }, 'Unhandled Stripe event type');
         return;
     }
 
     // Mark as successful (S-2: DB NOW() is authoritative)
-    await db.query(
-      `
-      UPDATE stripe_events
-      SET result = 'success',
-          processed_at = NOW()
-      WHERE stripe_event_id = $1
-      `,
-      [stripeEventId]
-    );
+    await finalizeStripeEventInboxClaim({
+      stripeEventId,
+      claimToken,
+      result: 'success',
+    });
+    await markStripeEventOutboxesProcessed({ idempotencyKey: outboxKey, stripeEventId });
 
     log.info({ type, stripeEventId }, 'Stripe event processed');
   } catch (error) {
+    if (isStripeEventInboxClaimLost(error)) throw error;
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
     // Reset claimed_at to NULL so BullMQ retries can re-claim this event.
@@ -242,16 +284,7 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
     // processing — it must be released on failure so the next BullMQ retry
     // can pass the "WHERE claimed_at IS NULL AND processed_at IS NULL" guard.
     // Without this reset, retries exit as no-ops (R24 regression fix).
-    await db.query(
-      `
-      UPDATE stripe_events
-      SET result = 'failed',
-          claimed_at = NULL,
-          error_message = $2
-      WHERE stripe_event_id = $1
-      `,
-      [stripeEventId, errorMessage]
-    );
+    await releaseStripeEventInboxClaim({ stripeEventId, claimToken, errorMessage });
 
     log.error({ type, stripeEventId, err: errorMessage }, 'Stripe event failed — claimed_at reset for BullMQ retry');
     throw error; // Re-throw for BullMQ retry logic

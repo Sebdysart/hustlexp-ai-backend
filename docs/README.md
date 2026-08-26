@@ -1,6 +1,6 @@
 # Backend documentation authority and status register
 
-Status: `CURRENT_DOCUMENTATION_LINE / NOT_IMPLEMENTATION_WORKTREE`
+Status: `CURRENT_DOCUMENTATION_LINE / D1_CI_CANDIDATE`
 
 Production effects authorized by this documentation status register: `NONE`
 
@@ -36,10 +36,10 @@ The first slash-separated token is the primary status. Qualifiers must use upper
 | Document | Status | Purpose |
 |---|---|---|
 | `../README.md` | `CURRENT_IMPLEMENTATION_REFERENCE` | Repository entrypoint and current convergence boundary |
-| `../AGENTS.md` | `CURRENT_WORKFLOW_AUTHORITY / GOAL_ALIGNMENT_PENDING_SEPARATE_CONTROL_CHANGE` | Binding repository and Governor workflow instructions; current public-main bytes are not the accepted alignment target |
-| `../CLAUDE.md` | `CURRENT_IMPLEMENTATION_REFERENCE / GOAL_ALIGNMENT_PENDING_SEPARATE_CONTROL_CHANGE` | Tool-specific workflow and implementation reference; current public-main bytes retain stale implementation claims |
-| `../.greptile/rules.md` | `CURRENT_REVIEW_POLICY / GOAL_ALIGNMENT_PENDING_SEPARATE_CONTROL_CHANGE` | Existing automated review policy; current public-main bytes still encode the legacy collapsed lifecycle review model |
-| [README.md](README.md) | `CURRENT_DOCUMENTATION_LINE / NOT_IMPLEMENTATION_WORKTREE` | This documentation authority/status register |
+| `../AGENTS.md` | `CURRENT_WORKFLOW_AUTHORITY / D1_CI_CANDIDATE` | Binding Governor, implementation, evidence, publication, and release workflow for the candidate |
+| `../CLAUDE.md` | `CURRENT_IMPLEMENTATION_REFERENCE / D1_CI_CANDIDATE` | Implementation invariants and exact verification protocol; mutable metrics live in the checkpoint |
+| `../.greptile/rules.md` | `CURRENT_REVIEW_POLICY / D1_CI_CANDIDATE` | Blocking review policy for payment, queue, lifecycle, Operations, evidence, and release defects |
+| [README.md](README.md) | `CURRENT_DOCUMENTATION_LINE / D1_CI_CANDIDATE` | This documentation authority/status register |
 | [HUSTLEXP_TEAM_ALIGNMENT.md](HUSTLEXP_TEAM_ALIGNMENT.md) | `CURRENT_TEAM_TARGET / NOT_PRODUCTION_AUTHORITY` | Stable mission, ownership, gates, and objective definition of done |
 | [HUSTLEXP_CURRENT_BACKEND_CHECKPOINT.md](HUSTLEXP_CURRENT_BACKEND_CHECKPOINT.md) | `CURRENT_IMPLEMENTATION_INVENTORY / SOURCE_DATED / NOT_PRODUCTION_AUTHORITY` | Refreshable repository, implementation, migration, provider, evidence, and next-action state |
 | [CONTROLLING_SPEC.md](CONTROLLING_SPEC.md) | `CURRENT_TEAM_TARGET_POINTER / NOT_PRODUCTION_AUTHORITY` | Truth-plane rules and non-negotiable target invariants |
@@ -48,23 +48,17 @@ The first slash-separated token is the primary status. Qualifiers must use upper
 | [source-contracts/HUSTLEXP_OPS_CONTROL_PLANE_SPEC.md](source-contracts/HUSTLEXP_OPS_CONTROL_PLANE_SPEC.md) | `FROZEN_EVIDENCE` | Exact supplied `/OPS` target bytes; SHA-256 recorded in the source-contract index |
 | [CI_CD.md](CI_CD.md) | `CURRENT_IMPLEMENTATION_REFERENCE` | Repository checks, release controls, and deployment boundary |
 | [ENV.md](ENV.md) | `CURRENT_IMPLEMENTATION_REFERENCE` | Variable names and capability restrictions |
-| [MIGRATIONS.md](MIGRATIONS.md) | `CURRENT_IMPLEMENTATION_REFERENCE / MIGRATION_SELECTION_HOLD` | Migration mechanism and current selection lock |
+| [MIGRATIONS.md](MIGRATIONS.md) | `CURRENT_IMPLEMENTATION_REFERENCE / RELEASE_BLOCKED` | Migration mechanism, runtime-role separation, and current D1 proof boundary |
 | [SCRIPTS.md](SCRIPTS.md) | `CURRENT_IMPLEMENTATION_REFERENCE` | Supported repository scripts |
 | `../backend/scripts/README.md` | `CURRENT_IMPLEMENTATION_REFERENCE` | Backend-only script inventory |
 | [HustleXP-current-architecture.png](HustleXP-current-architecture.png) | `HISTORICAL_IMPLEMENTATION_SNAPSHOT` | Source-dated architecture image; verify before current use |
 | [API_LIST.md](API_LIST.md) | `HISTORICAL_IMPLEMENTATION_SNAPSHOT` | Source-dated API inventory; source/router registration wins |
 
-### Operative-control alignment gap
+### Operative-control alignment candidate
 
-This documentation-only candidate deliberately leaves the three operative control files byte-identical to public `main`; changing them requires a separate, explicitly authorized control candidate and review. The independently accepted local R6 publication preview (acceptance root `004b8f49d2a0154715f533cd37445573be0f0afd4af565c8368efca24770c645`) identified the intended aligned bytes but granted no commit, publication, or Governor authority.
+The D1/CI working tree now carries aligned `AGENTS.md`, `CLAUDE.md`, and `.greptile/rules.md` instead of the stale Node 20, copied test-count, `adminProcedure`, and collapsed-lifecycle guidance on the base. The new controls distinguish Governor authority, implementation proof, protected publication, deployment identity, and production authority; require Node 22 and zero-warning CI; and make refund/outbox/webhook and production-money containment review-blocking.
 
-| Operative control | Current public-main SHA-256 | Accepted local alignment-target SHA-256 | Blocking divergence |
-|---|---|---|---|
-| `AGENTS.md` | `7583fa68fd333f1918c1fb5983dfc54b5c8a7bd7f6e638f6e39e7e67477abb89` | `6c755ec1e74bd2decb35ed13c9b86842325ad40ccdcd6e75c70d066026c09b5a` | Public-main guidance still names Node 20 while the required CI line uses Node 22. |
-| `CLAUDE.md` | `2ac7252c947b79b46a9645eacdbcd09c7772b6e6e6b8f68863cbcc7a5667bd13` | `aabb12bd682f8ad6b87d6d90bda0bf9be1d0057fdd445e2efa7ab38157708bc4` | Public-main guidance retains stale test-count and implementation claims. |
-| `.greptile/rules.md` | `2dab8769789856717b42333019d26baa0d5c77be731ae0cf6dc37f4d13d7381d` | `928b9ee17ebe38612c4e0b7d62915ba8a5320a285d38454d146b19d70c7e826d` | Public-main review policy still enforces a collapsed legacy task/escrow state model. |
-
-The team is not fully aligned until a separately authorized exact control candidate adopts or supersedes these target bytes and receives independent acceptance. This register exposes the gap; it does not waive it.
+This is still a local candidate, not adopted policy. Final SHA-256 values must be recorded after the tree freezes, then the exact controls require independent review, fresh Governor acceptance, signed publication, required checks, and protected merge. Runtime still exposes `operationsAdminProcedure`; named `opsProcedure`/`opsSensitiveProcedure` is a Gate 3 target, not an implementation claim.
 
 ## Proposed convergence records
 

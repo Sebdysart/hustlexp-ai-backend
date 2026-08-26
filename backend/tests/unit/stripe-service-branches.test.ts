@@ -12,6 +12,7 @@
  * - description fallback (|| default)
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 vi.mock('../../src/db', () => ({
   db: { query: vi.fn() },
@@ -46,7 +47,14 @@ import { StripeService } from '../../src/services/StripeService';
 
 const mockDb = vi.mocked(db);
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  enableControlledStripePaymentTestCohortV7();
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('StripeService branch coverage', () => {
   // ---- createPaymentIntent ----

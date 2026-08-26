@@ -38,14 +38,16 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/Procfile ./Procfile
+COPY --from=builder /app/scripts/start-runtime.sh ./scripts/start-runtime.sh
 COPY --from=builder /app/backend/database/constitutional-schema.sql ./backend/database/constitutional-schema.sql
 COPY --from=builder /app/backend/database/migrations ./backend/database/migrations
 
-RUN chown -R hustlexp:nodejs /app
+RUN chmod 0555 /app/scripts/start-runtime.sh \
+  && chown -R hustlexp:nodejs /app
 USER hustlexp
 
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
   CMD node -e "require('http').get('http://localhost:3000/health',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
 
-CMD ["npm", "start"]
+CMD ["/app/scripts/start-runtime.sh"]

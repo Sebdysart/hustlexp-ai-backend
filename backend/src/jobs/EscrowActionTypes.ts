@@ -1,3 +1,16 @@
+import { z } from 'zod';
+
+export const FinancialJobPayloadSchema = z.object({
+  escrow_id: z.string().uuid(),
+  task_id: z.string().uuid(),
+  dispute_id: z.string().uuid().optional(),
+  reason: z.string().min(1).max(500),
+  refund_amount: z.number().int().nonnegative().optional(),
+  release_amount: z.number().int().nonnegative().optional(),
+  _outbox_key: z.string().min(1).max(500),
+  _sig: z.string().length(64),
+});
+
 export interface EscrowActionPayload {
   escrow_id: string;
   task_id: string;
@@ -13,6 +26,7 @@ export interface EscrowActionJobData {
 
 export interface EscrowActionRow {
   id: string;
+  task_id: string;
   state: string;
   version: number;
   amount: number;
@@ -20,6 +34,12 @@ export interface EscrowActionRow {
   stripe_payment_intent_id: string | null;
   stripe_transfer_id: string | null;
   stripe_refund_id: string | null;
+  refund_amount: number | null;
+  release_amount: number | null;
+  payout_provider: string | null;
+  provider_transfer_id: string | null;
+  provider_transfer_status: string | null;
+  provider_transfer_paid_at: Date | null;
 }
 
 export interface TaskPayoutRow {
@@ -41,4 +61,15 @@ export interface EscrowActionInput {
   reason: string;
   refundAmount?: number;
   releaseAmount?: number;
+}
+
+export interface EscrowActionTerminalProof {
+  escrowId: string;
+  taskId: string;
+  terminalState: 'RELEASED' | 'REFUNDED' | 'REFUND_PARTIAL';
+  providerOperationId: string;
+  evidence:
+    | 'EXACT_RELEASE_RECONCILED_V1'
+    | 'EXACT_REFUND_TERMINALIZED_V1'
+    | 'EXACT_PARTIAL_REFUND_RECONCILED_V1';
 }

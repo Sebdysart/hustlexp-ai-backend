@@ -8,15 +8,31 @@ import { executeReleaseTransaction } from './EscrowReleaseTransaction.js';
 import type { ReleaseEscrowParams } from './EscrowServiceShared.js';
 
 function invalidInput(params:ReleaseEscrowParams):ServiceResult<Escrow>|null {
-  if (params.adminOverride && !params.reason?.trim()) {
+  if (params.adminOverride) {
     return { success:false,error:{
-      code:ErrorCodes.INVALID_INPUT,message:'Admin escrow release requires an attributable reason',
+      code:ErrorCodes.INVALID_STATE,
+      message:'Administrative release cannot create RELEASED economics; record a reconciliation exception instead',
     } };
   }
-  if (!params.adminOverride && Boolean(params.stripeTransferId)===Boolean(params.localTestTransferId)) {
+  if (Boolean(params.stripeTransferId)===Boolean(params.localTestTransferId)) {
     return { success:false,error:{
       code:ErrorCodes.INVALID_STATE,
       message:'Exactly one verified payout-provider transfer is required to release escrow',
+    } };
+  }
+  if (params.stripeTransferId && !params.stripeTransferWitness) {
+    return { success:false,error:{
+      code:ErrorCodes.INVALID_STATE,
+      message:'Canonical Stripe release requires a current normalized transfer witness',
+    } };
+  }
+  if (
+    params.stripeTransferWitness
+    && params.stripeTransferWitness.transferId !== params.stripeTransferId
+  ) {
+    return { success:false,error:{
+      code:ErrorCodes.INVALID_STATE,
+      message:'Stripe transfer identity does not match its provider witness',
     } };
   }
   if (params.localTestTransferId && !localCertificationPayoutEnabled()) {

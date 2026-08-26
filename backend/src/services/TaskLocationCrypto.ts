@@ -85,6 +85,32 @@ function previousKeys(): Record<string, string> {
   }
 }
 
+export interface TaskLocationCryptoStatus {
+  configured: true;
+  currentKeyId: string;
+  decryptionKeyCount: number;
+}
+
+export function taskLocationCryptoStatus(): TaskLocationCryptoStatus {
+  const activeKeyId = currentKeyId();
+  decodeKey(process.env[CURRENT_KEY_ENV], CURRENT_KEY_ENV);
+  const retiredKeys = previousKeys();
+  for (const [keyId, encodedKey] of Object.entries(retiredKeys)) {
+    if (!KEY_ID_PATTERN.test(keyId) || keyId === activeKeyId) {
+      throw new TaskLocationCryptoError(
+        'LOCATION_ENCRYPTION_UNAVAILABLE',
+        `${PREVIOUS_KEYS_ENV} contains an invalid or active key ID`,
+      );
+    }
+    decodeKey(encodedKey, `${PREVIOUS_KEYS_ENV}.${keyId}`);
+  }
+  return {
+    configured: true,
+    currentKeyId: activeKeyId,
+    decryptionKeyCount: Object.keys(retiredKeys).length + 1,
+  };
+}
+
 function keyForDecryption(keyId: string): Buffer {
   if (!KEY_ID_PATTERN.test(keyId)) {
     throw new TaskLocationCryptoError('LOCATION_DECRYPTION_FAILED', 'Stored location key ID is invalid');
@@ -138,9 +164,7 @@ export function encryptTaskLocation(taskId: string, exactLocation: string): Encr
 
 /** Fail production startup before accepting traffic when the current vault key is unusable. */
 export function assertTaskLocationCryptoConfigured(): void {
-  currentKeyId();
-  decodeKey(process.env[CURRENT_KEY_ENV], CURRENT_KEY_ENV);
-  previousKeys();
+  taskLocationCryptoStatus();
 }
 
 export function decryptTaskLocation(

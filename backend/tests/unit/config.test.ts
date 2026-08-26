@@ -27,6 +27,13 @@ describe('config — default values', () => {
     expect(config.database.url).toBe('');
   });
 
+  it('migration database url defaults to empty string', async () => {
+    delete process.env.MIGRATION_DATABASE_URL;
+    vi.resetModules();
+    const { config } = await import('../../src/config');
+    expect(config.database.migrationUrl).toBe('');
+  });
+
   it('database pgbouncer defaults to false', async () => {
     delete process.env.DB_PGBOUNCER;
     vi.resetModules();
@@ -230,6 +237,15 @@ describe('config — env var overrides', () => {
     expect(config.database.url).toBe('postgres://test:5432/db');
   });
 
+  it('reads MIGRATION_DATABASE_URL independently from the runtime connection', async () => {
+    process.env.DATABASE_URL = 'postgres://hx_runtime:runtime@localhost:5432/db';
+    process.env.MIGRATION_DATABASE_URL = 'postgres://hx_migrator:migrator@localhost:5432/db';
+    vi.resetModules();
+    const { config } = await import('../../src/config');
+    expect(config.database.url).toContain('hx_runtime');
+    expect(config.database.migrationUrl).toContain('hx_migrator');
+  });
+
   it('reads DB_PGBOUNCER=true', async () => {
     process.env.DB_PGBOUNCER = 'true';
     vi.resetModules();
@@ -396,6 +412,73 @@ describe('validateConfig', () => {
 
   afterEach(() => {
     exitSpy.mockRestore();
+  });
+
+  it('requires a distinct migration connection only for explicit migration execution', async () => {
+    vi.resetModules();
+    const { validateMigrationConfig } = await import('../../src/config');
+
+    expect(
+      validateMigrationConfig('postgres://hx_runtime:runtime@db:5432/hx', '')
+    ).toEqual({
+      valid: false,
+      errors: ['MIGRATION_DATABASE_URL is required for migration execution'],
+    });
+    expect(
+      validateMigrationConfig(
+        'postgres://hx_runtime:runtime@db:5432/hx',
+        'postgres://hx_migrator:migrator@db:5432/hx'
+      )
+    ).toEqual({ valid: true, errors: [] });
+  });
+
+  it('fails closed when runtime and migration URLs or authenticated roles collapse', async () => {
+    vi.resetModules();
+    const { validateMigrationConfig } = await import('../../src/config');
+    const identical = 'postgres://hx_shared:secret@db:5432/hx';
+
+    expect(validateMigrationConfig(identical, identical).errors).toEqual(
+      expect.arrayContaining([
+        'Runtime and migration database connections must be distinct',
+        'Runtime and migration database roles must be distinct',
+      ])
+    );
+    expect(
+      validateMigrationConfig(
+        'postgres://hx_shared:runtime-password@db:5432/hx?sslmode=require',
+        'postgres://hx_shared:migrator-password@db:5432/hx?sslmode=require'
+      ).errors
+    ).toEqual(
+      expect.arrayContaining([
+        'Runtime and migration database connections must be distinct',
+        'Runtime and migration database roles must be distinct',
+      ])
+    );
+  });
+
+  it('keeps ordinary runtime validation read-only and independent of migration credentials', async () => {
+    process.env.DATABASE_URL = 'postgres://hx_runtime:runtime@localhost:5432/test';
+    delete process.env.MIGRATION_DATABASE_URL;
+    process.env.NODE_ENV = 'test';
+    vi.resetModules();
+    const { validateConfig } = await import('../../src/config');
+
+    expect(validateConfig()).toEqual({ valid: true, errors: [], warnings: [] });
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects a migrator credential that remains visible after the production runtime boundary', async () => {
+    process.env.DATABASE_URL = 'postgres://hx_runtime:runtime@db:5432/hx';
+    process.env.MIGRATION_DATABASE_URL = 'postgres://hx_migrator:migrator@db:5432/hx';
+    process.env.NODE_ENV = 'production';
+    vi.resetModules();
+    const { validateConfig } = await import('../../src/config');
+
+    const result = validateConfig();
+    expect(result.errors).toContain(
+      'MIGRATION_DATABASE_URL must not be visible to runtime processes'
+    );
+    expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
   it('returns valid=false with DATABASE_URL error when not set', async () => {
@@ -692,6 +775,30 @@ describe('validateConfig', () => {
 
     expect(exitSpy).toHaveBeenCalledWith(1);
     expect(result.errors).toContain('HX_PAYMENT_CREATION_MODE must be either enabled or frozen');
+  });
+
+  it('fails production boot when an environment flag attempts to enable new customer money', async () => {
+    process.env.DATABASE_URL = 'postgres://prod';
+    process.env.NODE_ENV = 'production';
+    process.env.FIREBASE_PROJECT_ID = 'proj';
+    process.env.FIREBASE_PRIVATE_KEY = 'key';
+    process.env.FIREBASE_CLIENT_EMAIL = 'a@b.com';
+    process.env.STRIPE_SECRET_KEY = 'sk_live_real';
+    process.env.STRIPE_MODE = 'live';
+    process.env.HX_PAYMENT_CREATION_MODE = 'enabled';
+    process.env.UPSTASH_REDIS_REST_URL = 'https://redis.io';
+    process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
+    process.env.QUEUE_HMAC_SECRET = 'real-hmac-secret';
+    process.env.TAX_TIN_ENCRYPTION_KEY = 'a'.repeat(64);
+    vi.resetModules();
+
+    const { validateConfig } = await import('../../src/config');
+    const result = validateConfig();
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(result.errors).toContain(
+      'HX_PAYMENT_CREATION_MODE=enabled is forbidden while underwriting decisions remain unresolved',
+    );
   });
 
   it.each([

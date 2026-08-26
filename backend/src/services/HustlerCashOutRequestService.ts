@@ -8,6 +8,7 @@ import {
   type CashOutRow,
 } from './HustlerWalletData.js';
 import { HUSTLER_WALLET_POLICY_VERSION } from './HustlerWalletPolicy.js';
+import { newPaymentCreationFailure } from './NewPaymentCreationGuard.js';
 import type {
   CashOutRecord,
   CashOutReview,
@@ -203,6 +204,9 @@ export async function requestHustlerCashOut(
   input: { workerId: string; amountCents: number; idempotencyKey: string },
   provider: WalletProvider,
 ): Promise<ServiceResult<CashOutRecord>> {
+  const frozen = newPaymentCreationFailure('cash_out_payout');
+  if (frozen) return frozen;
+
   try {
     const context = await buildCashOutReviewContext(
       input.workerId,

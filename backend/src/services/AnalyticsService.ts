@@ -11,6 +11,7 @@
  * @see staging/ANALYTICS_SPEC.md
  */
 
+import { randomUUID } from 'node:crypto';
 import { db, isInvariantViolation, getErrorMessage } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { GDPRService } from './GDPRService.js';
@@ -453,7 +454,7 @@ export const AnalyticsService = {
    * ANALYTICS_SPEC.md §4: A/B testing framework
    * 
    * Note: sessionId and deviceId should be provided by the client for proper tracking.
-   * If not provided, will generate placeholder values (not ideal for cross-device tracking).
+   * If omitted, generate one-time cryptographically random UUIDs.
    */
   trackABTest: async (
     userId: string,
@@ -465,9 +466,8 @@ export const AnalyticsService = {
     platform: 'ios' | 'android' | 'web' = 'web'
   ): Promise<ServiceResult<{ assigned: boolean }>> => {
     try {
-      // Generate placeholder values if not provided (not ideal, but allows function to work)
-      const effectiveSessionId = sessionId || `session_${Date.now()}_${Math.random().toString(36).substring(7)}`;
-      const effectiveDeviceId = deviceId || `device_${userId}_${Date.now()}`;
+      const effectiveSessionId = sessionId || randomUUID();
+      const effectiveDeviceId = deviceId || randomUUID();
       
       // Track test assignment
       await AnalyticsService.trackEvent({
@@ -560,4 +560,3 @@ export const AnalyticsService = {
 // ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
-

@@ -34,6 +34,22 @@ At the later 2026-08-25 documentation refresh, canonical Governor preflight was 
 
 Sections 5.1 through 5.7 are a historical implementation snapshot bound to candidate `714e111efa7ae8615313b79338f4a65f71f1df41`, not the active program base. A verified delta at active base `08c9dbd122f64a9c5721e5b44a2356de980a9684` shows `routers/web/ops.ts` importing `opsProcedure` and `opsSensitiveProcedure` and routing consequential writes through `WebOpsCommandService`. That delta closes the snapshot's exact `publicProcedure + adminKey + direct SQL` description for those migrated routes only; it does not prove that all `/OPS`, lead, action-link, admin, bridge, browser, or Supabase writers have converged. Regenerate the complete writer inventory before any runtime slice relies on it.
 
+### 1.1 Source-dated D1/CI containment delta
+
+The mutable current state lives in the [Current Backend Checkpoint](../HUSTLEXP_CURRENT_BACKEND_CHECKPOINT.md). The local `codex/d1-ci-incident-recovery` working tree is based on `73c44eee22fa79c2957583217e69aa972291776f` and has no frozen candidate SHA. It does not rewrite the PR274-bound historical inventory in sections 5 and 10.
+
+Implemented locally, pending full exact-tree and PostgreSQL admission:
+
+- every identified positive production payment, disbursement, processor-account, quote-materialization, and direct funding creation lane enters one structural guard before provider and canonical write effects; only an attested real-Vitest/loopback/disposable/restricted-role cohort can exercise the test adapter;
+- targeted `/OPS` consequential mutations fail closed, but runtime still exposes `operationsAdminProcedure`; named `opsProcedure`/`opsSensitiveProcedure`, MFA/step-up, dual approval, typed command coverage, and all overlay writer convergence remain Gate 3 target work;
+- `escrow_events`, `admin_actions`, migration control, and reviewed financial evidence gain append-only/destructive-mutation backstops and startup definition/owner/grant verification;
+- refund creation uses one escrow-scoped immutable provider claim, a database-clock replay deadline, exact post-window provider discovery, succeeded witness, and claim-bound terminal resolution; version drift cannot mint a second authority;
+- `_outbox_key` remains durable database identity while BullMQ uses `hxoutbox-<full SHA-256>` transport IDs; consumers validate that mapping, financial payloads authenticate it, and ACK occurs only after exact terminal business/inbox evidence;
+- webhook inbox claims use token-fenced stale leases and exact canonical/recovery convergence, including signed `transfer.reversed` dispatch;
+- runtime roles cannot migrate; `20260825_pr276_incident_containment` is registered for an explicit one-shot checksummed migrator and protected PostgreSQL 17.7 verification.
+
+Focused suites are green, but the working tree is mutable, the complete repository matrix has not run, no real PostgreSQL harness ran locally, no independent reviewer has accepted it, and the last accepted Governor manifest does not cover the final tree. These gaps preserve `NO-GO` and prevent merge/deployment credit.
+
 ## 2. Forced decision
 
 `tasks.id` will be the one canonical transaction identity for all relationship origins:

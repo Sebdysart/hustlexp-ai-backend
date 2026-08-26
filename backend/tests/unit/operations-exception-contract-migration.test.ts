@@ -23,7 +23,8 @@ describe('HX/OS Operations exception migration 82', () => {
       "3,\n  'ACTIVE_TASK'",
       "4,\n  'SLA'",
       "6,\n  'COMMUNICATION'",
-    ]) expect(MIGRATION).toContain(priority);
+    ])
+      expect(MIGRATION).toContain(priority);
   });
 
   it('masks sensitive payloads and exposes only classified evidence', () => {
@@ -52,10 +53,12 @@ describe('HX/OS Operations exception migration 82', () => {
 
   it('ships migration 82 through startup, routing, and the production image', () => {
     expect(RUNNER).toMatch(
-      /OPERATIONS_EXCEPTION_CONTRACT_MIGRATION\s*=\s*'20260720_operations_exception_contract'/,
+      /OPERATIONS_EXCEPTION_CONTRACT_MIGRATION\s*=\s*'20260720_operations_exception_contract'/
     );
     expect(RUNNER).toContain("fileName: '20260720_operations_exception_contract.sql'");
-    expect(DOCKERFILE).toContain('/app/backend/database/migrations/20260720_operations_exception_contract.sql');
+    expect(DOCKERFILE).toContain(
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
+    );
     expect(ROUTER).toContain('operationsAdminProcedure');
     expect(ROUTER).toContain('scheduleNotificationRecovery');
     expect(ROUTER).toContain('cancelNotificationRecovery');

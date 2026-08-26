@@ -14,7 +14,6 @@ vi.mock('../../src/logger', () => ({
 import { webOpsRouter } from '../../src/routers/web/ops';
 
 const HUSTLER_ID = '11111111-1111-4111-8111-111111111111';
-const SERVICE_KEY = 'ops-admin-service-key'; // 20 chars
 const USER_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 
 function publicCaller() {
@@ -63,8 +62,6 @@ function grantOps() {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.query.mockReset();
-  process.env.ENGINE_OPS_ADMIN_KEY = SERVICE_KEY;
-  process.env.OPS_ADMIN_KEY = SERVICE_KEY;
 });
 
 describe('web ops edge contracts', () => {
@@ -72,33 +69,20 @@ describe('web ops edge contracts', () => {
     ['INVALID_CURSOR', 'BAD_REQUEST'],
     ['DB_ERROR', 'INTERNAL_SERVER_ERROR'],
   ])('maps lifecycle read failure %s to %s', async (serviceCode, trpcCode) => {
+    grantOps();
     mocks.listTasks.mockResolvedValueOnce({ success: false, error: { code: serviceCode, message: 'blocked' } });
-    await expect(publicCaller().listEngineTasks({ adminKey: SERVICE_KEY, limit: 20 }))
+    await expect(opsCaller().listEngineTasks({ limit: 20 }))
       .rejects.toMatchObject({ code: trpcCode });
   });
 
-  it('inserts a fully characterized hustler for ops admins', async () => {
+  it('freezes roster mutation before every database effect', async () => {
     grantOps();
-    mocks.query
-      .mockResolvedValueOnce({ rows: [{ id: HUSTLER_ID }], rowCount: 1 })
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 }); // audit
-    await expect(opsCaller().upsertHustler(hustler())).resolves.toEqual({ ok: true, id: HUSTLER_ID });
-    const params = mocks.query.mock.calls[1][1] as unknown[];
-    expect(params).toEqual([
-      'Ready Hustler', '+12065550100', 'worker@example.com', '98004', 15, 'truck', 100,
-      'approved', true, 'Weekends', 'Verified', ['yard_cleanup'],
-    ]);
-  });
-
-  it('updates an existing hustler without duplicating identity', async () => {
-    grantOps();
-    mocks.query
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
-    await expect(opsCaller().upsertHustler(hustler({ id: HUSTLER_ID, available: false })))
-      .resolves.toEqual({ ok: true, id: HUSTLER_ID });
-    expect(String(mocks.query.mock.calls[1][0])).toContain("WHERE id=$13 AND lead_type='hustler'");
-    expect(mocks.query.mock.calls[1][1][12]).toBe(HUSTLER_ID);
+    await expect(opsCaller().upsertHustler(hustler()))
+      .rejects.toMatchObject({
+        code: 'PRECONDITION_FAILED',
+        message: 'HX_OPS_MUTATION_FROZEN:upsert_hustler',
+      });
+    expect(mocks.query).toHaveBeenCalledTimes(1);
   });
 
   it('filters the roster by both status and availability', async () => {

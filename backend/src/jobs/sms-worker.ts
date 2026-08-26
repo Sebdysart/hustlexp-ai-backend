@@ -20,6 +20,7 @@
 import { db } from '../db.js';
 import { sendSMS } from '../services/TwilioSMSService.js';
 import { markOutboxEventProcessed, markOutboxEventFailed } from './outbox-worker.js';
+import { requireOutboxDurableKey } from './OutboxIdentity.js';
 import { workerLogger } from '../logger.js';
 import type { Job } from 'bullmq';
 import {
@@ -45,6 +46,7 @@ interface SMSJobData {
     userId?: string;
     toPhone: string;
     body: string;
+    _outbox_key: string;
   };
 }
 
@@ -61,7 +63,7 @@ interface SMSJobData {
 export async function processSMSJob(job: Job<SMSJobData>): Promise<void> {
   // Extract data from job payload (structured as outbox event)
   const { smsId, notificationId, toPhone, body } = job.data.payload;
-  const jobIdempotencyKey = job.id || `sms:${smsId}`;
+  const jobIdempotencyKey = requireOutboxDurableKey(job.id, job.data.payload._outbox_key);
 
   try {
     if (notificationId) {

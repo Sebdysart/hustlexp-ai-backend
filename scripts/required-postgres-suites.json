@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "profiles": [
+    {
+      "name": "least_privilege_runtime",
+      "authority": "runtime",
+      "suites": [
+        {
+          "file": "backend/tests/invariants/n6-mutation-eligibility.pg.test.ts",
+          "expectedTests": 9
+        },
+        {
+          "file": "backend/tests/system/hxos-canonical-lifecycle.pg.test.ts",
+          "expectedTests": 1
+        },
+        {
+          "file": "backend/tests/system/hxos-lifecycle-exceptions.pg.test.ts",
+          "expectedTests": 1
+        },
+        {
+          "file": "backend/tests/system/liquidity-expansion.pg.test.ts",
+          "expectedTests": 3
+        },
+        {
+          "file": "backend/tests/system/worker-counter-offer.pg.test.ts",
+          "expectedTests": 1
+        }
+      ]
+    },
+    {
+      "name": "superuser_fixture_only",
+      "authority": "admin_fixture",
+      "suites": [
+        {
+          "file": "backend/tests/system/escrow-release-outbox.pg.test.ts",
+          "expectedTests": 2
+        },
+        {
+          "file": "backend/tests/system/notification-delivery-contract.pg.test.ts",
+          "expectedTests": 5
+        }
+      ]
+    }
+  ]
+}

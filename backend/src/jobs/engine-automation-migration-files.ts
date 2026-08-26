@@ -1,3 +1,8 @@
+export const CONSTITUTIONAL_BOOTSTRAP_FILE = Object.freeze({
+  name: 'constitutional_schema_v1',
+  fileName: 'constitutional-schema.sql',
+});
+
 export const REQUIRED_MIGRATION_FILES = [
   { name: 'add_missing_tables_v2', fileName: 'add_missing_tables_v2.sql' },
   { name: '20260710_engine_automation_contracts', fileName: '20260710_engine_automation_contracts.sql' },
@@ -111,4 +116,6 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260824_enforce_controlled_test_business_acceptance', fileName: '20260824_enforce_controlled_test_business_acceptance.sql' },
   { name: '20260824_business_controlled_test_acceptance', fileName: '20260824_business_controlled_test_acceptance.sql' },
   { name: '20260824_orchestration_mode', fileName: '20260824_orchestration_mode.sql' },
+  { name: '20260823_quote_payment_recovery', fileName: '20260823_quote_payment_recovery.sql' },
+  { name: '20260825_pr276_incident_containment', fileName: '20260825_pr276_incident_containment.sql' },
 ] as const;

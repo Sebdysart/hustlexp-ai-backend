@@ -1,5 +1,4 @@
 import { db } from '../db.js';
-import { writeToOutbox } from '../lib/outbox-helpers.js';
 import { taskLogger } from '../logger.js';
 import type { ServiceError, ServiceResult, Task, TaskState } from '../types.js';
 import { ErrorCodes } from '../types.js';
@@ -62,29 +61,61 @@ function isLateAcceptedCancellation(row: CancelRow): boolean {
     && Date.now() - new Date(row.accepted_at).getTime() > hours * 60 * 60 * 1000;
 }
 
-async function emitPartialRefund(query: Query, taskId: string, escrowId: string, percentage: number): Promise<void> {
-  await writeToOutbox({
-    eventType: 'escrow.partial_refund_requested',
-    aggregateType: 'escrow',
-    aggregateId: escrowId,
-    eventVersion: 1,
-    payload: { escrowId, reason: 'task_cancelled_late', taskId, workerPercent: percentage },
-    queueName: 'critical_payments',
-    idempotencyKey: `escrow.partial_refund_on_late_cancel:${escrowId}:${taskId}`,
-  }, query);
-  log.info({ escrowId, taskId, lateCancelPct: percentage }, 'Partial refund requested after late cancellation');
-}
-
-async function emitFullRefund(query: Query, taskId: string, escrowId: string, reason: string): Promise<void> {
-  await writeToOutbox({
-    eventType: 'escrow.refund_requested',
-    aggregateType: 'escrow',
-    aggregateId: escrowId,
-    eventVersion: 1,
-    payload: { escrowId, reason, taskId },
-    queueName: 'critical_payments',
-    idempotencyKey: `escrow.refund_on_${reason === 'task_expired' ? 'expire' : 'cancel'}:${escrowId}:${taskId}`,
-  }, query);
+async function persistBlockedTaskCloseRefund(input: {
+  query: Query;
+  taskId: string;
+  escrowId: string;
+  reason: 'task_cancelled' | 'task_cancelled_late' | 'task_expired';
+  workerPercent: number | null;
+}): Promise<void> {
+  const metadata = {
+    event_type: 'task_close_refund_reconciliation_required_v1',
+    task_id: input.taskId,
+    reason: input.reason,
+    requested_action: input.workerPercent === null ? 'FULL_REFUND' : 'PARTIAL_REFUND',
+    worker_percent: input.workerPercent,
+    producer_disabled: true,
+    reconciliation_required: true,
+    required_consumer_state: 'LOCKED_DISPUTE',
+    required_payload_contract: 'snake_case_v1',
+  };
+  const idempotencyKey = [
+    'task-close-refund-reconciliation-required-v1',
+    input.escrowId,
+    input.taskId,
+    input.reason,
+  ].join(':');
+  const evidence = await input.query<{ metadata: unknown }>(
+    `WITH attempted AS (
+       INSERT INTO escrow_events
+         (escrow_id,from_state,to_state,actor_id,actor_type,metadata,idempotency_key)
+       VALUES ($1,'FUNDED','FUNDED',NULL,'system',$2::jsonb,$3)
+       ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+       RETURNING metadata
+     )
+     SELECT metadata FROM attempted
+     UNION ALL
+     SELECT metadata FROM escrow_events
+      WHERE escrow_id=$1
+        AND from_state='FUNDED' AND to_state='FUNDED'
+        AND actor_id IS NULL AND actor_type='system'
+        AND metadata::jsonb=$2::jsonb
+        AND idempotency_key=$3
+        AND NOT EXISTS (SELECT 1 FROM attempted)`,
+    [input.escrowId, JSON.stringify(metadata), idempotencyKey],
+  );
+  if (evidence.rows.length !== 1) {
+    fail(
+      'REFUND_RECONCILIATION_REQUIRED',
+      `Task ${input.taskId} close aborted: exact refund-reconciliation evidence conflicts for escrow ${input.escrowId}`,
+    );
+  }
+  log.warn({
+    escrowId:input.escrowId,
+    taskId:input.taskId,
+    reason:input.reason,
+    workerPercent:input.workerPercent,
+  }, 'Task close refund producer is disabled; durable reconciliation evidence recorded');
 }
 
 async function requestCancellationRefund(query: Query, taskId: string, row: CancelRow): Promise<void> {
@@ -95,11 +126,22 @@ async function requestCancellationRefund(query: Query, taskId: string, row: Canc
   const escrowId = result.rows[0]?.id;
   if (!escrowId) return;
   if (isLateAcceptedCancellation(row)) {
-    await emitPartialRefund(query, taskId, escrowId, row.late_cancel_pct ?? 0);
+    await persistBlockedTaskCloseRefund({
+      query,
+      taskId,
+      escrowId,
+      reason:'task_cancelled_late',
+      workerPercent:row.late_cancel_pct ?? 0,
+    });
     return;
   }
-  await emitFullRefund(query, taskId, escrowId, 'task_cancelled');
-  log.info({ escrowId, taskId }, 'Escrow refund requested on task cancellation');
+  await persistBlockedTaskCloseRefund({
+    query,
+    taskId,
+    escrowId,
+    reason:'task_cancelled',
+    workerPercent:null,
+  });
 }
 
 async function cancelTransaction(query: Query, taskId: string, posterId?: string): Promise<ServiceResult<Task>> {
@@ -127,8 +169,13 @@ async function refundExpiredOpenTask(query: Query, taskId: string, priorState: s
   );
   const escrowId = result.rows[0]?.id;
   if (!escrowId) return;
-  await emitFullRefund(query, taskId, escrowId, 'task_expired');
-  log.info({ escrowId, taskId }, `Escrow refund requested on ${priorState} task expiry`);
+  await persistBlockedTaskCloseRefund({
+    query,
+    taskId,
+    escrowId,
+    reason:'task_expired',
+    workerPercent:null,
+  });
 }
 
 async function expireTransaction(query: Query, taskId: string): Promise<ServiceResult<Task>> {

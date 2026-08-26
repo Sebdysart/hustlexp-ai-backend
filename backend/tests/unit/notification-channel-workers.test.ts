@@ -56,9 +56,11 @@ vi.mock('../../src/logger.js', () => {
 
 import { processEmailJob } from '../../src/jobs/email-worker.js';
 import { processSMSJob } from '../../src/jobs/sms-worker.js';
+import { outboxTransportJobId } from '../../src/jobs/OutboxIdentity.js';
 
+const EMAIL_OUTBOX_KEY = 'email.send_requested:email-1';
 const emailJob = {
-  id: 'email.send_requested:email-1',
+  id: outboxTransportJobId(EMAIL_OUTBOX_KEY),
   data: {
     aggregate_type: 'email',
     aggregate_id: 'email-1',
@@ -68,6 +70,7 @@ const emailJob = {
       userId: 'user-1',
       toEmail: 'worker@example.test',
       template: 'notification',
+      _outbox_key: EMAIL_OUTBOX_KEY,
       params: {
         notificationId: 'notification-1',
         title: 'Task update',
@@ -75,10 +78,11 @@ const emailJob = {
       },
     },
   },
-} as never;
+} as unknown as Parameters<typeof processEmailJob>[0];
 
+const SMS_OUTBOX_KEY = 'sms.send_requested:sms-1';
 const smsJob = {
-  id: 'sms.send_requested:sms-1',
+  id: outboxTransportJobId(SMS_OUTBOX_KEY),
   data: {
     aggregate_type: 'sms',
     aggregate_id: 'sms-1',
@@ -89,15 +93,50 @@ const smsJob = {
       userId: 'user-1',
       toPhone: '+15555550100',
       body: 'Task HX7A changed. Open HustleXP.',
+      _outbox_key: SMS_OUTBOX_KEY,
     },
   },
-} as never;
+} as unknown as Parameters<typeof processSMSJob>[0];
 
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.authorize.mockResolvedValue({ allowed: true });
   mocks.transaction.mockImplementation((fn: (query: typeof mocks.txQuery) => unknown) => fn(mocks.txQuery));
   mocks.breakerExecute.mockImplementation((fn: () => unknown) => fn());
+});
+
+describe('notification outbox transport identity', () => {
+  it('rejects a forged email job ID before authorization, claim, or SendGrid', async () => {
+    const forged = {
+      ...emailJob,
+      id: outboxTransportJobId('email.send_requested:forged'),
+    } as Parameters<typeof processEmailJob>[0];
+    await expect(processEmailJob(forged)).rejects.toThrow('OUTBOX_IDENTITY_MISMATCH');
+    expect(mocks.authorize).not.toHaveBeenCalled();
+    expect(mocks.transaction).not.toHaveBeenCalled();
+    expect(mocks.sendgridSend).not.toHaveBeenCalled();
+    expect(mocks.processed).not.toHaveBeenCalled();
+    expect(mocks.failed).not.toHaveBeenCalled();
+  });
+
+  it('rejects a forged SMS durable key before authorization, claim, or Twilio', async () => {
+    const forged = {
+      ...smsJob,
+      data: {
+        ...smsJob.data,
+        payload: {
+          ...smsJob.data.payload,
+          _outbox_key: 'sms.send_requested:forged',
+        },
+      },
+    } as Parameters<typeof processSMSJob>[0];
+    await expect(processSMSJob(forged)).rejects.toThrow('OUTBOX_IDENTITY_MISMATCH');
+    expect(mocks.authorize).not.toHaveBeenCalled();
+    expect(mocks.transaction).not.toHaveBeenCalled();
+    expect(mocks.sendSms).not.toHaveBeenCalled();
+    expect(mocks.processed).not.toHaveBeenCalled();
+    expect(mocks.failed).not.toHaveBeenCalled();
+  });
 });
 
 describe.each([

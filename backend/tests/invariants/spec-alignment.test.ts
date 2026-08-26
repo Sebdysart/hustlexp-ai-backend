@@ -91,6 +91,17 @@ beforeEach(() => {
   });
 });
 
+function releaseParams(transferId:string) {
+  return {
+    escrowId:'escrow-1',stripeTransferId:transferId,
+    stripeTransferWitness:{
+      provider:'STRIPE' as const,transferId,amountCents:780,currency:'usd',
+      destinationAccountId:'acct_worker1',reversed:false,amountReversedCents:0,
+      escrowId:'escrow-1',taskId:'task-1',payoutRecipientUserId:'worker-1',
+    },
+  };
+}
+
 describe('SPEC ALIGNMENT: Provider trust progression (Local Work Network §5)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -442,7 +453,7 @@ describe('SPEC ALIGNMENT: Escrow State Machine (PRODUCT_SPEC §4.2, §4.3)', () 
       // Mock 6+: Downstream service calls (earnings tracking, XP, etc.)
       db.query.mockResolvedValue({ rowCount: 0, rows: [] });
 
-      const result = await EscrowService.release({ escrowId: 'escrow-1', stripeTransferId: 'tr_test_spec_align' });
+      const result = await EscrowService.release(releaseParams('tr_test_spec_align'));
       expect(result.success).toBe(true);
       expect(result.data?.state).toBe('RELEASED');
     });
@@ -479,7 +490,7 @@ describe('SPEC ALIGNMENT: Escrow State Machine (PRODUCT_SPEC §4.2, §4.3)', () 
       // Mock 5+: Downstream service calls
       db.query.mockResolvedValue({ rowCount: 0, rows: [] });
 
-      await EscrowService.release({ escrowId: 'escrow-1', stripeTransferId: 'tr_test_locked_disp' });
+      await EscrowService.release(releaseParams('tr_test_locked_disp'));
 
       // The UPDATE query is the 4th db.query call (index 3) after adding KYC gate
       const updateSql = db.query.mock.calls[3][0];

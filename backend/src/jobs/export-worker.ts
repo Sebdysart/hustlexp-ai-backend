@@ -23,6 +23,7 @@ import { db } from '../db.js';
 import { r2 } from '../storage/r2.js';
 import { writeToOutbox } from '../lib/outbox-helpers.js';
 import { markOutboxEventProcessed, markOutboxEventFailed } from './outbox-worker.js';
+import { requireOutboxDurableKey } from './OutboxIdentity.js';
 import type { Job } from 'bullmq';
 import { collectUserDataForExport } from '../services/GDPRService.js';
 import { workerLogger } from '../logger.js';
@@ -41,6 +42,7 @@ interface ExportJobData {
     userId: string;
     format: 'json' | 'csv' | 'pdf';
     gdprRequestId?: string; // Optional: if generated from GDPR request
+    _outbox_key: string;
   };
 }
 
@@ -57,7 +59,7 @@ interface ExportJobData {
 export async function processExportJob(job: Job<ExportJobData>): Promise<void> {
   // Extract data from job payload (structured as outbox event)
   const { exportId, userId, format, gdprRequestId } = job.data.payload;
-  const idempotencyKey = job.id || `export:${exportId}`;
+  const idempotencyKey = requireOutboxDurableKey(job.id, job.data.payload._outbox_key);
   
   // Claim the export row atomically: SELECT FOR UPDATE + CAS UPDATE in one transaction.
   // The lock is held for the entire duration of both statements, closing the window

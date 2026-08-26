@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   decryptTaskLocation,
   encryptTaskLocation,
+  taskLocationCryptoStatus,
   TaskLocationCryptoError,
 } from '../../src/services/TaskLocationCrypto.js';
 
@@ -90,5 +91,21 @@ describe('TaskLocationCrypto', () => {
     process.env.TASK_LOCATION_ENCRYPTION_KEY_ID = 'location-test-v2';
     process.env.TASK_LOCATION_DECRYPTION_KEYS = JSON.stringify({ 'location-test-v1': KEY });
     expect(decryptTaskLocation(TASK_ID, stored(encrypted))).toBe('123 Main St');
+    expect(taskLocationCryptoStatus()).toEqual({
+      configured: true,
+      currentKeyId: 'location-test-v2',
+      decryptionKeyCount: 2,
+    });
+  });
+
+  it('rejects malformed, duplicate-active, or invalid retired keyring entries', () => {
+    for (const retired of [
+      { 'location-test-v1': KEY },
+      { 'unsafe key id': ROTATED_KEY },
+      { 'location-retired-v0': 'not-base64' },
+    ]) {
+      process.env.TASK_LOCATION_DECRYPTION_KEYS = JSON.stringify(retired);
+      expect(() => taskLocationCryptoStatus()).toThrow(TaskLocationCryptoError);
+    }
   });
 });

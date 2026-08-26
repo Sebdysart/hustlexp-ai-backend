@@ -29,7 +29,11 @@ import {
   startWorkerHealthServer,
   type WorkerHealthServer,
 } from './worker-health-server.js';
-import { runEngineAutomationMigration } from "./engine-automation-migration.js";
+import { verifyRuntimeSchema } from '../serverStartupMigrations.js';
+import {
+  assertTaskLocationCryptoConfigured,
+  taskLocationCryptoStatus,
+} from '../services/TaskLocationCrypto.js';
 
 // Track all registered workers and outbox interval handles for graceful shutdown
 const activeWorkers: Worker[] = [];
@@ -71,7 +75,6 @@ async function startWorkers(): Promise<void> {
 
   try {
     log.info('Starting HustleXP Worker Runtime...');
-    await runEngineAutomationMigration();
     // Register all BullMQ workers
     registerWorkers();
 
@@ -175,7 +178,11 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
  */
 export async function bootWorkerProcess(): Promise<void> {
   validateConfig();
-  workerHealthServer = await startWorkerHealthServer();
+  const taskLocationCrypto = process.env.NODE_ENV === 'production'
+    ? (assertTaskLocationCryptoConfigured(), taskLocationCryptoStatus())
+    : undefined;
+  const databaseAdmission = await verifyRuntimeSchema(log);
+  workerHealthServer = await startWorkerHealthServer({ databaseAdmission, taskLocationCrypto });
   await startWorkers();
   workerHealthServer.markReady();
 }

@@ -4,7 +4,12 @@
  * Tests contribution calculation, recording, claim filing,
  * claim review, claim payment, pool status, and user claims.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+  enableControlledStripePaymentTestCohortV7,
+  HOSTILE_PAYMENT_CREATION_ENVIRONMENTS_V7,
+  stubPaymentCreationEnvironmentV7,
+} from '../helpers/payment-underwriting-v7';
 
 vi.mock('../../src/db', () => {
   const queryFn = vi.fn();
@@ -40,11 +45,16 @@ const mockStripe = vi.mocked(StripeService);
 
 beforeEach(() => {
   vi.resetAllMocks();
+  enableControlledStripePaymentTestCohortV7();
   // Re-bind transaction mock after resetAllMocks() wipes the implementation
   mockDb.transaction.mockImplementation(async (fn: (q: typeof mockDb.query) => Promise<unknown>) => fn(mockDb.query));
   // Re-bind Stripe mock default after resetAllMocks() wipes the implementation.
   // Tests that need Stripe to throw or return failure must override this with mockResolvedValueOnce/mockRejectedValueOnce.
   mockStripe.createTransfer.mockResolvedValue({ success: true, data: { transferId: 'tr_test', amount: 8000 } } as any);
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 function makePoolRow(overrides: Record<string, unknown> = {}) {
@@ -317,6 +327,23 @@ describe('SelfInsurancePoolService', () => {
   // payClaim
   // --------------------------------------------------------------------------
   describe('payClaim', () => {
+    it.each(HOSTILE_PAYMENT_CREATION_ENVIRONMENTS_V7)(
+      'rejects $name before claim reads, pool writes, or transfer submission',
+      async ({ env }) => {
+        stubPaymentCreationEnvironmentV7(env);
+
+        const result = await SelfInsurancePoolService.payClaim('claim-frozen');
+
+        expect(result).toMatchObject({
+          success: false,
+          error: { code: 'PAYMENT_CREATION_FROZEN' },
+        });
+        expect(mockDb.query).not.toHaveBeenCalled();
+        expect(mockDb.transaction).not.toHaveBeenCalled();
+        expect(mockStripe.createTransfer).not.toHaveBeenCalled();
+      },
+    );
+
     it('returns CLAIM_NOT_FOUND when claim does not exist', async () => {
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 

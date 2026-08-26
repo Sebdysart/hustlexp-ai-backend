@@ -32,8 +32,8 @@ jobs:
     name: TypeScript — zero errors
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -45,8 +45,8 @@ jobs:
     name: "Lint — zero warnings (backend/src/)"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -60,17 +60,16 @@ jobs:
     needs: typecheck
     env:
       NODE_ENV: test
-      DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
-      UPSTASH_REDIS_REST_URL: ${{ secrets.TEST_UPSTASH_REDIS_REST_URL }}
-      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.TEST_UPSTASH_REDIS_REST_TOKEN }}
       FIREBASE_PROJECT_ID: test-project
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
+      - name: Required PostgreSQL CI contract
+        run: node --test scripts/verify-required-postgres-ci.test.mjs
       - name: "Tests — zero failures"
         run: npx vitest run --reporter=verbose
         timeout-minutes: 10
@@ -83,8 +82,8 @@ jobs:
     name: "Security audit — no high/critical production vulnerabilities"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -95,13 +94,82 @@ jobs:
   build:
     name: Build Validation
     runs-on: ubuntu-latest
-    needs: [typecheck, test]
+    needs: [typecheck, lint, test]
+    services:
+      postgres:
+        image: postgres:17.7-alpine
+        env:
+          POSTGRES_USER: hx_ci_admin
+          POSTGRES_PASSWORD: hx_ci_admin_password
+          POSTGRES_DB: hx_ci_admin_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hx_ci_admin -d hx_ci_admin_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
       - name: Validate build compiles cleanly
         run: npm run compile
+      - name: Execute fresh, upgrade, replay, and recovery migrations on PostgreSQL
+        env:
+          ADMIN_DATABASE_URL: postgresql://hx_ci_admin:hx_ci_admin_password@127.0.0.1:5432/hx_ci_admin_test
+          DATABASE_URL: postgresql://hx_ci_runtime:hx_ci_runtime_password@127.0.0.1:5432/hx_ci_fresh_test
+          MIGRATION_DATABASE_URL: postgresql://hx_ci_migrator:hx_ci_migrator_password@127.0.0.1:5432/hx_ci_fresh_test
+        run: node scripts/verify-engine-migrations-postgres.mjs
+      - name: Run required PostgreSQL money and lifecycle suites with zero skips
+        env:
+          HX_REQUIRED_PG_ADMIN_DATABASE_URL: postgresql://hx_ci_admin:hx_ci_admin_password@127.0.0.1:5432/hx_ci_admin_test
+        run: node scripts/run-required-postgres-suites.mjs
+      - name: Verify PR276 prefix, drift, replay, preservation, and role containment
+        env:
+          ADMIN_DATABASE_URL: postgresql://hx_ci_admin:hx_ci_admin_password@127.0.0.1:5432/hx_ci_admin_test
+          DATABASE_URL: postgresql://hx_ci_runtime:hx_ci_runtime_password@127.0.0.1:5432/hx_ci_pr276_base_test
+          MIGRATION_DATABASE_URL: postgresql://hx_ci_migrator:hx_ci_migrator_password@127.0.0.1:5432/hx_ci_pr276_base_test
+        run: node scripts/verify-pr276-incident-containment-postgres.mjs
+      - name: Build production container
+        env:
+          IMAGE_TAG: hustlexp-backend-ci:${{ github.sha }}
+        run: |
+          docker build \
+            --build-arg GITHUB_SHA="${GITHUB_SHA}" \
+            --tag "${IMAGE_TAG}" \
+            .
+      - name: Verify runtime image and process tree exclude the migrator credential
+        env:
+          IMAGE_TAG: hustlexp-backend-ci:${{ github.sha }}
+        run: |
+          if docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "${IMAGE_TAG}" | grep -q '^MIGRATION_DATABASE_URL='; then
+            exit 1
+          fi
+          probe_dir="$(mktemp -d)"
+          printf '%s\n' \
+            '#!/bin/sh' \
+            'set -eu' \
+            'test -z "${MIGRATION_DATABASE_URL+x}"' \
+            '/bin/sh -c '\''test -z "${MIGRATION_DATABASE_URL+x}"'\''' \
+            > "${probe_dir}/node"
+          chmod 0555 "${probe_dir}/node"
+          docker run --rm \
+            --env MIGRATION_DATABASE_URL=hx-ci-migrator-sentinel \
+            --env PATH=/probe:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            --volume "${probe_dir}:/probe:ro" \
+            "${IMAGE_TAG}"
+      - name: Verify exact production image migration artifact
+        env:
+          IMAGE_TAG: hustlexp-backend-ci:${{ github.sha }}
+        run: |
+          expected_digest="$(tr -d '[:space:]' < backend/database/engine-migration-artifact.sha256)"
+          source_digest="$(node dist/backend/src/jobs/engine-migration-manifest.js)"
+          image_digest="$(docker run --rm --entrypoint node "${IMAGE_TAG}" dist/backend/src/jobs/engine-migration-manifest.js)"
+          test "$source_digest" = "$expected_digest"
+          test "$image_digest" = "$expected_digest"

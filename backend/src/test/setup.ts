@@ -2,7 +2,7 @@ import { vi, beforeAll, afterAll, afterEach } from 'vitest';
 
 const originalEnv = process.env;
 const originalConsoleError = console.error;
-let consoleErrorCalls: unknown[][] = [];
+let consoleErrorCallCount = 0;
 
 export function assertTestEnv(): void {
   if (process.env.NODE_ENV !== 'test') {
@@ -29,9 +29,9 @@ beforeAll(() => {
 
   assertTestEnv();
 
-  consoleErrorCalls = [];
-  console.error = (...args: unknown[]) => {
-    consoleErrorCalls.push(args);
+  consoleErrorCallCount = 0;
+  console.error = () => {
+    consoleErrorCallCount += 1;
   };
 });
 
@@ -43,12 +43,9 @@ afterAll(() => {
   process.env = originalEnv;
   console.error = originalConsoleError;
 
-  if (consoleErrorCalls.length > 0) {
-    const originalError = originalConsoleError;
-    originalError('\n=== Console.error calls captured during tests ===');
-    consoleErrorCalls.forEach((call, index) => {
-      originalError(`[${index + 1}]`, ...call);
-    });
-    originalError('===============================================\n');
+  if (consoleErrorCallCount > 0) {
+    originalConsoleError(
+      `\n${consoleErrorCallCount} console.error call(s) were captured during tests; arguments withheld to prevent credential disclosure.\n`,
+    );
   }
 });

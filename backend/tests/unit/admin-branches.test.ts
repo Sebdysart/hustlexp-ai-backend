@@ -333,75 +333,101 @@ describe('admin.aiCostSummary branches', () => {
 describe('admin.escrowOverride branches', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('force_release returns updated escrow with RELEASED state', async () => {
+  it('force_release is denied before canonical mutation and writes one actor-attributed failure audit', async () => {
     prependAdminCheck();
-    // escrowOverride now delegates to EscrowService.release (v2.9.8)
     mockEscrowService.release.mockResolvedValueOnce({
-      success: true,
-      data: { id: ESC_UUID, state: 'RELEASED', amount: 5000 },
+      success: false,
+      error: {
+        code: 'INVALID_STATE',
+        message: 'Administrative release cannot create RELEASED economics',
+      },
     } as any);
-    // admin_actions audit INSERT
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
 
-    const result = await makeAdminCaller().escrowOverride({
-      escrowId: ESC_UUID,
-      action: 'force_release',
-      reason: 'Admin override: work completed off-platform',
-    });
+    await expect(makeAdminCaller().escrowOverride({
+        escrowId: ESC_UUID,
+        action: 'force_release',
+        reason: 'Admin override: work completed off-platform',
+      }))
+      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
 
-    expect(result.state).toBe('RELEASED');
     expect(mockEscrowService.release).toHaveBeenCalledWith({
       escrowId: ESC_UUID,
       adminOverride: true,
       reason: 'Admin override: work completed off-platform',
     });
+    expect(mockEscrowService.refund).not.toHaveBeenCalled();
+
+    const financialWrites = (mockDb.query as any).mock.calls.slice(1);
+    expect(financialWrites).toHaveLength(1);
+    const [sql, params] = financialWrites[0];
+    expect(sql).toContain('INSERT INTO admin_actions');
+    expect(sql).not.toContain('UPDATE disputes');
+    expect(params).toEqual([
+      ADMIN_UUID,
+      'escrow_override_failed',
+      JSON.stringify({
+        override_type: 'force_release',
+        reason: 'Admin override: work completed off-platform',
+      }),
+      ESC_UUID,
+      expect.stringContaining('Administrative release cannot create RELEASED economics'),
+    ]);
   });
 
-  it('force_refund returns updated escrow with REFUNDED state', async () => {
+  it('force_release fails closed when its mandatory denial audit cannot be persisted', async () => {
+    prependAdminCheck();
+    mockEscrowService.release.mockResolvedValueOnce({
+      success: false,
+      error: { code: 'INVALID_STATE', message: 'Administrative release denied' },
+    } as any);
+    mockDb.query.mockRejectedValueOnce(new Error('audit storage unavailable'));
+
+    await expect(makeAdminCaller().escrowOverride({
+      escrowId: ESC_UUID,
+      action: 'force_release',
+      reason: 'Attempt while audit is unavailable',
+    })).rejects.toThrow('audit storage unavailable');
+
+    expect(mockEscrowService.refund).not.toHaveBeenCalled();
+    expect((mockDb.query as any).mock.calls).toHaveLength(2);
+    expect(String((mockDb.query as any).mock.calls[1]?.[0])).toContain('INSERT INTO admin_actions');
+  });
+
+  it('force_refund is denied before money effects and writes one failure audit', async () => {
     prependAdminCheck();
     mockEscrowService.refund.mockResolvedValueOnce({
-      success: true,
-      data: { id: ESC_UUID, state: 'REFUNDED', amount: 5000 },
+      success: false,
+      error: {
+        code: 'INVALID_STATE',
+        message: 'Administrative refund cannot create provider or REFUNDED economics',
+      },
     } as any);
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
 
-    const result = await makeAdminCaller().escrowOverride({
+    await expect(makeAdminCaller().escrowOverride({
       escrowId: ESC_UUID,
       action: 'force_refund',
       reason: 'Refund requested',
-    });
+    })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
 
-    expect(result.state).toBe('REFUNDED');
-    // Admin force_refund passes adminOverride:true so LOCKED_DISPUTE escrows can be refunded
     expect(mockEscrowService.refund).toHaveBeenCalledWith({
       escrowId: ESC_UUID,
       adminOverride: true,
       reason: 'Refund requested',
     });
-  });
-
-  it('force_refund on a LOCKED_DISPUTE escrow succeeds when adminOverride=true is passed', async () => {
-    prependAdminCheck();
-    // EscrowService.refund receives adminOverride=true and returns REFUNDED successfully
-    mockEscrowService.refund.mockResolvedValueOnce({
-      success: true,
-      data: { id: ESC_UUID, state: 'REFUNDED', amount: 7500 },
-    } as any);
-    // admin_actions audit INSERT
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
-
-    const result = await makeAdminCaller().escrowOverride({
-      escrowId: ESC_UUID,
-      action: 'force_refund',
-      reason: 'Admin override: dispute resolved in poster favour',
+    expect(mockEscrowService.release).not.toHaveBeenCalled();
+    expect((mockDb.query as any).mock.calls).toHaveLength(2);
+    const [sql, params] = (mockDb.query as any).mock.calls[1];
+    expect(sql).toContain('INSERT INTO admin_actions');
+    expect(sql).not.toContain('UPDATE disputes');
+    expect(params[0]).toBe(ADMIN_UUID);
+    expect(params[1]).toBe('escrow_override_failed');
+    expect(JSON.parse(params[2])).toEqual({
+      override_type: 'force_refund',
+      reason: 'Refund requested',
     });
-
-    expect(result.state).toBe('REFUNDED');
-    expect(mockEscrowService.refund).toHaveBeenCalledWith({
-      escrowId: ESC_UUID,
-      adminOverride: true,
-      reason: 'Admin override: dispute resolved in poster favour',
-    });
+    expect(params[3]).toBe(ESC_UUID);
   });
 
   it('throws NOT_FOUND when EscrowService returns NOT_FOUND failure', async () => {
@@ -424,26 +450,22 @@ describe('admin.escrowOverride branches', () => {
     ).rejects.toThrow('Escrow not found or not in overridable state');
   });
 
-  it('writes admin_actions audit log with admin user id and escrow id', async () => {
+  it('force_refund fails closed when the denial audit is unavailable', async () => {
     prependAdminCheck();
-    mockEscrowService.release.mockResolvedValueOnce({
-      success: true,
-      data: { id: ESC_UUID, state: 'RELEASED', amount: 1000 },
+    mockEscrowService.refund.mockResolvedValueOnce({
+      success: false,
+      error: { code: 'INVALID_STATE', message: 'Administrative refund denied' },
     } as any);
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // close orphaned disputes
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+    mockDb.query.mockRejectedValueOnce(new Error('audit storage unavailable'));
 
-    await makeAdminCaller().escrowOverride({
+    await expect(makeAdminCaller().escrowOverride({
       escrowId: ESC_UUID,
-      action: 'force_release',
+      action: 'force_refund',
       reason: 'Test',
-    });
+    })).rejects.toThrow('audit storage unavailable');
 
-    // Third db.query call is the admin_actions INSERT (first is isAdmin check, second is UPDATE disputes)
-    const [sql, params] = (mockDb.query as any).mock.calls[2];
-    expect(sql).toContain('admin_actions');
-    expect(params[0]).toBe(ADMIN_UUID); // admin_id
-    expect(params[2]).toBe(ESC_UUID);   // target_id
+    expect((mockDb.query as any).mock.calls).toHaveLength(2);
+    expect(String((mockDb.query as any).mock.calls[1]?.[0])).toContain('INSERT INTO admin_actions');
   });
 });
 

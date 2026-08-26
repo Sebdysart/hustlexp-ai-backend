@@ -11,7 +11,8 @@
  * configured paths, spy on stripeBreaker.execute and inject mock Stripe
  * account objects.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -107,6 +108,11 @@ function makeMockAccount(overrides: Record<string, unknown> = {}): Record<string
 
 beforeEach(() => {
   vi.clearAllMocks();
+  enableControlledStripePaymentTestCohortV7();
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 // ===========================================================================

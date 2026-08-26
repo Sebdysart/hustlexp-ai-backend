@@ -22,6 +22,7 @@ export async function registerScheduledJobs(): Promise<void> {
   await addRepeatable('maintenance', 'cleanup_expired_exports', {}, '0 */6 * * *');
   await addRepeatable('maintenance', 'cleanup_expired_notifications', {}, '30 */6 * * *');
   await addRepeatable('maintenance', 'notification.recover_due', { limit: 100 }, '* * * * *');
+  await addRepeatable('maintenance', 'partial-refund.reconcile_due', { limit: 50 }, '* * * * *');
   await addRepeatable('maintenance', 'notification.release_focus_deferred', { limit: 100 }, '* * * * *');
   await addRepeatable('maintenance', 'notification.business_weekly_digest', { limit: 100 }, '0 15 * * 1');
   await addRepeatable('critical_trust', 'fraud.scan_requested', {}, '*/5 * * * *');

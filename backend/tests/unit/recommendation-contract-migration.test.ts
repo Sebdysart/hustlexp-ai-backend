@@ -4,42 +4,59 @@ import { describe, expect, it } from 'vitest';
 
 const SQL = readFileSync(
   resolve(process.cwd(), 'backend/database/migrations/20260719_recommendation_contract.sql'),
-  'utf8',
+  'utf8'
 );
 const MIGRATION_RUNNER = [
   readFileSync(resolve(process.cwd(), 'backend/src/jobs/engine-automation-migration.ts'), 'utf8'),
   readFileSync(
     resolve(process.cwd(), 'backend/src/jobs/engine-automation-migration-files.ts'),
-    'utf8',
+    'utf8'
   ),
 ].join('\n');
 const DOCKERFILE = readFileSync(resolve(process.cwd(), 'Dockerfile'), 'utf8');
 const TASK_COMPLETION = readFileSync(
   resolve(process.cwd(), 'backend/src/services/TaskCompletionService.ts'),
-  'utf8',
+  'utf8'
 );
 const POSTGRES_HARNESS = readFileSync(
   resolve(process.cwd(), 'backend/tests/integration/recommendation-contract.pg.sql'),
-  'utf8',
+  'utf8'
 );
 
 describe('authoritative Recommendation database contract', () => {
   it('stores immutable provenance, evidence classes, uncertainty, controls, and retention', () => {
     expect(SQL).toContain('CREATE TABLE IF NOT EXISTS recommendations');
     for (const field of [
-      'recipient_user_id', 'subject_type', 'subject_id', 'recommendation_class',
-      'source_type', 'recommendation_text', 'reason', 'evidence_classes',
-      'expected_benefit', 'downside', 'confidence_band', 'model_version',
-      'policy_version', 'scope_affected', 'user_controls', 'request_hash',
-      'idempotency_key', 'retention_class', 'purge_after',
-    ]) expect(SQL).toContain(field);
+      'recipient_user_id',
+      'subject_type',
+      'subject_id',
+      'recommendation_class',
+      'source_type',
+      'recommendation_text',
+      'reason',
+      'evidence_classes',
+      'expected_benefit',
+      'downside',
+      'confidence_band',
+      'model_version',
+      'policy_version',
+      'scope_affected',
+      'user_controls',
+      'request_hash',
+      'idempotency_key',
+      'retention_class',
+      'purge_after',
+    ])
+      expect(SQL).toContain(field);
     expect(SQL).toContain('recommendations_immutable');
     expect(SQL).toContain('prevent_recommendation_mutation');
   });
 
   it('keeps interaction and realized outcome evidence append-only and replay-safe', () => {
     expect(SQL).toContain('CREATE TABLE IF NOT EXISTS recommendation_events');
-    expect(SQL).toContain("'DISPLAYED','OPENED','EDITED','DISMISSED','SNOOZED','IGNORED','OVERRIDDEN','APPEALED'");
+    expect(SQL).toContain(
+      "'DISPLAYED','OPENED','EDITED','DISMISSED','SNOOZED','IGNORED','OVERRIDDEN','APPEALED'"
+    );
     expect(SQL).toContain('ranking_penalty NUMERIC NOT NULL DEFAULT 0 CHECK (ranking_penalty = 0)');
     expect(SQL).toContain('UNIQUE (recommendation_id, idempotency_key)');
     expect(SQL).toContain('CREATE TABLE IF NOT EXISTS recommendation_outcomes');
@@ -69,10 +86,12 @@ describe('authoritative Recommendation database contract', () => {
   });
 
   it('packages the Recommendation contract in the production migration runtime', () => {
-    expect(MIGRATION_RUNNER).toContain("RECOMMENDATION_CONTRACT_MIGRATION = '20260719_recommendation_contract'");
+    expect(MIGRATION_RUNNER).toContain(
+      "RECOMMENDATION_CONTRACT_MIGRATION = '20260719_recommendation_contract'"
+    );
     expect(MIGRATION_RUNNER).toContain("fileName: '20260719_recommendation_contract.sql'");
     expect(DOCKERFILE).toContain(
-      'COPY --from=builder /app/backend/database/migrations/20260719_recommendation_contract.sql ./backend/database/migrations/20260719_recommendation_contract.sql',
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
     );
   });
 

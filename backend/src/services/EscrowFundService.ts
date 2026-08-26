@@ -4,8 +4,12 @@ import { ErrorCodes } from '../types.js';
 import { escrowLogger } from '../logger.js';
 import { logEscrowEvent } from './EscrowServiceShared.js';
 import type { FundEscrowParams } from './EscrowServiceShared.js';
+import { newPaymentCreationFailure } from './NewPaymentCreationGuard.js';
 
 export const fundEscrow = async (params: FundEscrowParams): Promise<ServiceResult<Escrow>> => {
+    const frozen = newPaymentCreationFailure('escrow_funding');
+    if (frozen) return frozen;
+
     const { escrowId, stripePaymentIntentId } = params;
 
     try {

@@ -1,10 +1,37 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  enableControlledStripePaymentTestCohortV7,
+  HOSTILE_PAYMENT_CREATION_ENVIRONMENTS_V7,
+  stubPaymentCreationEnvironmentV7,
+} from '../helpers/payment-underwriting-v7';
 import {
   createStripeWalletProvider,
   mapStripePayoutState,
 } from '../../src/services/HustlerWalletProvider';
 
+beforeEach(() => {
+  enableControlledStripePaymentTestCohortV7();
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 describe('Stripe Hustler wallet provider', () => {
+  it.each(HOSTILE_PAYMENT_CREATION_ENVIRONMENTS_V7)(
+    'rejects $name at the processor payout sink',
+    async ({ env }) => {
+      stubPaymentCreationEnvironmentV7(env);
+      const create = vi.fn();
+      const provider = createStripeWalletProvider({ payouts: { create } } as never);
+      await expect(provider.createStandardPayout({
+        accountId: 'acct_frozen', amountCents: 5000, destinationId: 'ba_frozen',
+        idempotencyKey: 'wallet:frozen:key', requestId: 'req-frozen', workerId: 'worker-frozen',
+      })).rejects.toMatchObject({ code: 'PAYMENT_CREATION_FROZEN' });
+      expect(create).not.toHaveBeenCalled();
+    },
+  );
+
   it('maps provider status without treating pending or transit as bank paid', () => {
     expect(mapStripePayoutState('pending')).toBe('submitted');
     expect(mapStripePayoutState('in_transit')).toBe('provider_processing');

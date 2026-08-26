@@ -14,7 +14,12 @@
  * - getAccountDetails: no accountId, stripe null, catch error vs non-Error
  * - refreshOnboarding: user not found
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+import {
+  enableControlledStripePaymentTestCohortV7,
+  HOSTILE_PAYMENT_CREATION_ENVIRONMENTS_V7,
+  stubPaymentCreationEnvironmentV7,
+} from '../helpers/payment-underwriting-v7';
 
 vi.mock('stripe', () => ({
   default: vi.fn(),
@@ -51,9 +56,37 @@ import { StripeConnectService } from '../../src/services/StripeConnectService';
 
 const mockDb = vi.mocked(db);
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  enableControlledStripePaymentTestCohortV7();
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('StripeConnectService branch coverage', () => {
+  it.each(HOSTILE_PAYMENT_CREATION_ENVIRONMENTS_V7)(
+    'rejects $name before account setup reads or processor writes',
+    async ({ env }) => {
+      stubPaymentCreationEnvironmentV7(env);
+      const onboarding = await StripeConnectService.createOnboardingLink({
+        userId: 'user-frozen', email: 'frozen@example.invalid', fullName: 'Frozen User',
+        refreshUrl: 'https://example.invalid/refresh', returnUrl: 'https://example.invalid/return',
+      });
+      const settings = await StripeConnectService.updatePayoutSettings({
+        userId: 'user-frozen', schedule: 'standard', interval: 'daily',
+      });
+      expect(onboarding).toMatchObject({
+        success: false, error: { code: 'PAYMENT_CREATION_FROZEN' },
+      });
+      expect(settings).toMatchObject({
+        success: false, error: { code: 'PAYMENT_CREATION_FROZEN' },
+      });
+      expect(mockDb.query).not.toHaveBeenCalled();
+    },
+  );
+
   describe('isConfigured', () => {
     it('returns false when stripe is null', () => {
       expect(StripeConnectService.isConfigured()).toBe(false);

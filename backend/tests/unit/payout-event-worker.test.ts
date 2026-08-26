@@ -8,10 +8,16 @@ vi.mock('../../src/logger', () => ({
   },
 }));
 
-const { verifyJobSignature, syncProviderPayoutEvent, createNotification } = vi.hoisted(() => ({
+const {
+  verifyJobSignature,
+  syncProviderPayoutEvent,
+  createNotification,
+  markStripeEventOutboxesProcessed,
+} = vi.hoisted(() => ({
   verifyJobSignature: vi.fn(() => true),
   syncProviderPayoutEvent: vi.fn(),
   createNotification: vi.fn(),
+  markStripeEventOutboxesProcessed: vi.fn(),
 }));
 
 vi.mock('../../src/jobs/queues.js', () => ({ verifyJobSignature }));
@@ -21,17 +27,25 @@ vi.mock('../../src/services/HustlerWalletService.js', () => ({
 vi.mock('../../src/services/NotificationService.js', () => ({
   NotificationService: { createNotification },
 }));
+vi.mock('../../src/jobs/outbox-worker.js', () => ({ markStripeEventOutboxesProcessed }));
 
 import { db } from '../../src/db';
 import { processPayoutEventJob } from '../../src/jobs/payout-event-worker';
+import { outboxTransportJobId } from '../../src/jobs/OutboxIdentity.js';
 
 const mockDb = vi.mocked(db);
 
 function makeJob(type = 'payout.paid'): Job {
+  const outboxKey = 'stripe.event_received:evt_test_123';
   return {
-    id: 'job-1',
+    id: outboxTransportJobId(outboxKey),
     data: {
-      payload: { stripeEventId: 'evt_test_123', type, _sig: 'test-sig' },
+      payload: {
+        stripeEventId: 'evt_test_123',
+        type,
+        _outbox_key: outboxKey,
+        _sig: 'test-sig',
+      },
     },
   } as Job;
 }
@@ -51,6 +65,14 @@ beforeEach(() => {
   verifyJobSignature.mockReturnValue(true);
   syncProviderPayoutEvent.mockResolvedValue({ matched: true, workerId: 'worker-1' });
   createNotification.mockResolvedValue({ success: true });
+  markStripeEventOutboxesProcessed.mockResolvedValue({
+    signed: {
+      idempotency_key: 'stripe.event_received:evt_test_123',
+      status: 'processed',
+      attempts: 1,
+    },
+    acknowledgedKeys: ['stripe.event_received:evt_test_123'],
+  });
 });
 
 describe('payout event worker', () => {
@@ -60,10 +82,37 @@ describe('payout event worker', () => {
     expect(mockDb.query).not.toHaveBeenCalled();
   });
 
-  it('no-ops when another worker already claimed the provider event', async () => {
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+  it('no-ops without outbox ACK when another worker has an active claim', async () => {
+    mockDb.query
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce({ rows: [{ processed_at: null }], rowCount: 1 } as never);
     await expect(processPayoutEventJob(makeJob())).resolves.toBeUndefined();
     expect(syncProviderPayoutEvent).not.toHaveBeenCalled();
+    expect(markStripeEventOutboxesProcessed).not.toHaveBeenCalled();
+  });
+
+  it('acknowledges the exact outbox identity when the inbox row is already terminal', async () => {
+    mockDb.query
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce({ rows: [{ processed_at: new Date() }], rowCount: 1 } as never);
+
+    await expect(processPayoutEventJob(makeJob())).resolves.toBeUndefined();
+
+    expect(markStripeEventOutboxesProcessed).toHaveBeenCalledWith({
+      idempotencyKey: 'stripe.event_received:evt_test_123',
+      stripeEventId: 'evt_test_123',
+    });
+    expect(syncProviderPayoutEvent).not.toHaveBeenCalled();
+  });
+
+  it('rejects a forged BullMQ identity before claiming provider state', async () => {
+    const job = makeJob();
+    job.id = 'forged-job';
+
+    await expect(processPayoutEventJob(job)).rejects.toThrow('JOB_IDENTITY_INVALID');
+
+    expect(mockDb.query).not.toHaveBeenCalled();
+    expect(markStripeEventOutboxesProcessed).not.toHaveBeenCalled();
   });
 
   it('records provider-paid evidence and notifies the Hustler', async () => {
@@ -89,6 +138,17 @@ describe('payout event worker', () => {
       body: expect.stringMatching(/provider-backed receipt/i),
       objectRef: { type: 'payout', id: 'po_paid' },
     }));
+    const claimCall = mockDb.query.mock.calls[0];
+    const successCall = mockDb.query.mock.calls.at(-1);
+    expect(String(claimCall?.[0])).toContain(
+      "claimed_at < NOW() - INTERVAL '1 minute' * $3",
+    );
+    expect((successCall?.[1] as unknown[] | undefined)?.[1])
+      .toBe((claimCall?.[1] as unknown[] | undefined)?.[1]);
+    expect(markStripeEventOutboxesProcessed).toHaveBeenCalledWith({
+      idempotencyKey: 'stripe.event_received:evt_test_123',
+      stripeEventId: 'evt_test_123',
+    });
   });
 
   it('records a replay-safe failed-payout audit and recovery notification', async () => {
@@ -141,8 +201,26 @@ describe('payout event worker', () => {
 
     await expect(processPayoutEventJob(makeJob())).rejects.toThrow('database unavailable');
     const release = mockDb.query.mock.calls.find(([sql]) => (
-      typeof sql === 'string' && sql.includes("claimed_at=NULL")
+      typeof sql === 'string' && sql.includes("claimed_at = NULL")
     ));
-    expect(release?.[1]).toEqual(['evt_test_123', 'database unavailable']);
+    expect(release?.[1]).toEqual([
+      'evt_test_123',
+      expect.stringMatching(/^STRIPE_EVENT_CLAIM:/),
+      'database unavailable',
+    ]);
+    expect(markStripeEventOutboxesProcessed).not.toHaveBeenCalled();
+  });
+
+  it('does not acknowledge when a newer worker rotated the payout claim token', async () => {
+    claim('payout.updated', {
+      id: 'po_rotated', amount: 5000, status: 'in_transit',
+      metadata: { connect_account_id: 'acct_worker' },
+    });
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+    await expect(processPayoutEventJob(makeJob('payout.updated')))
+      .rejects.toThrow('STRIPE_EVENT_INBOX_CLAIM_LOST');
+
+    expect(markStripeEventOutboxesProcessed).not.toHaveBeenCalled();
   });
 });

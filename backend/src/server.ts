@@ -25,10 +25,11 @@ import { startServer } from './serverStartup.js';
 import { registerTrpcRoutes } from './serverTrpcRoutes.js';
 import type { HustleApp } from './serverTypes.js';
 import { registerWebhookRoutes } from './serverWebhookRoutes.js';
-import { registerOpsAdminRoutes } from './serverOpsAdminRoutes.js';
+import type { RuntimeSchemaVerification } from './serverStartupMigrations.js';
 
 validateProductionCors();
 const app: HustleApp = new Hono();
+let databaseAdmission: RuntimeSchemaVerification | null = null;
 
 registerCoreMiddleware(app);
 
@@ -37,9 +38,8 @@ app.use('/trpc/*', publicIpRateLimitMiddleware());
 registerGeneralRateLimits(app);
 
 createMetricsEndpoint(app);
-registerHealthRoutes(app);
+registerHealthRoutes(app, () => databaseAdmission);
 registerActionLinkRoutes(app);
-registerOpsAdminRoutes(app);
 
 app.use('/realtime/stream', publicIpRateLimitMiddleware(), rateLimitMiddleware('sse'));
 registerRealtimeRoute(app);
@@ -54,11 +54,19 @@ app.use('/webhooks/*', rateLimitMiddleware('general'));
 registerWebhookRoutes(app);
 registerErrorHandlers(app);
 
-startServer().catch((error) => logger.fatal({ err: error }, 'Failed to start server'));
+try {
+  // Database connectivity and the exact runtime schema/role contract must be
+  // admitted before a socket can accept even health or public traffic.
+  databaseAdmission = await startServer();
+} catch (error) {
+  logger.fatal({ err: error }, 'Failed to admit server runtime');
+  throw error;
+}
 
 export default { port: config.app.port, fetch: app.fetch };
 
 const server = serve({ fetch: app.fetch, port: config.app.port });
 installProcessHandlers(server);
+logger.info({ port: config.app.port }, 'HustleXP server listening after runtime admission');
 
 export { app };

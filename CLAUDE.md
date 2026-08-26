@@ -1,63 +1,46 @@
-# HustleXP AI Backend — Claude Code Instructions
+# HustleXP backend implementation instructions
 
-For Cursor/IDE instructions, see [AGENTS.md](AGENTS.md).
+Production launch: `NO-GO`
 
-## Project Overview
+[AGENTS.md](AGENTS.md) is the binding workflow and release contract. This file adds implementation-level review rules; it does not grant Governor, provider, migration, merge, deployment, or production authority.
 
-Node.js backend: Hono + tRPC + BullMQ + PostgreSQL. 5,448 tests across 239 files (89.6% stmt, 77.6% branch coverage).
+## Runtime shape
 
-## Key Commands
+The backend is Node.js 22, TypeScript, Hono, tRPC, BullMQ, Redis, and PostgreSQL. Railway PostgreSQL is canonical. The web and worker processes are separate service roles built from one exact source/image identity.
 
-- **Tests:** `npx vitest run`
-- **Type check:** `npx tsc --noEmit`
-- **Lint:** `npx eslint .`
-- **Single test file:** `npx vitest run backend/tests/<file>.test.ts`
+## Commands
 
-## Autonomous Implementation Protocol
+```sh
+npm run typecheck
+npm run lint -- --max-warnings 0
+npm test -- --maxWorkers=1
+npm run compile
+npm audit --omit=dev --audit-level=high
+git diff --check
+```
 
-When implementing from an issue or fixing review comments:
+Run focused tests while iterating, but do not substitute them for the protected full matrix. Do not inject a dummy global `DATABASE_URL`; no-database skips must remain visible. PostgreSQL trigger, migration, role, replay, and recovery claims require the CI PostgreSQL harness.
 
-1. **Context first** — Query Greptile MCP (`search_custom_context`) for relevant codebase patterns before writing code
-2. **Tests first (TDD)** — Write a failing test, run it to verify it fails, then implement
-3. **Verify before pushing** — Run the full test suite (`npx vitest run`), type check (`npx tsc --noEmit`), and lint (`npx eslint .`). All must pass.
-4. **After pushing** — Check for Greptile review comments using Greptile MCP (`get_unaddressed_comments`). Fix all comments, push again.
-5. **Repeat** — Continue the fix-push-review loop until no unaddressed comments remain
-6. **Update tickets** — If a Linear ticket is linked, update its status via Linear MCP
+## Non-negotiable invariants
 
-## Quality Invariants (MUST NOT VIOLATE)
+- New production payment, account, onboarding-link, payout, or other positive processor creation must fail before external and canonical database effects.
+- A future money-creation design is task-first and processor-neutral. A successful PaymentIntent is never authority to create the canonical task.
+- Preserve negative/recovery lanes: refund, void, cancellation, dispute, restriction, webhook replay, reconciliation, and kill-switch behavior.
+- Financial amounts are integer cents. Shared money helpers own fee math; fee, insurance, and provider net must reconcile exactly to gross.
+- Terminal task, escrow, ledger, audit, and outbox facts are protected by PostgreSQL constraints/triggers and typed services. Never mutate them through ad hoc SQL or arbitrary status values.
+- Refund creation requires one immutable escrow-scoped pre-provider claim, a database-clock replay deadline, exact provider metadata discovery after the safe window, an exact succeeded witness, and claim-bound terminalization.
+- Outbox database identity is the durable `_outbox_key`; BullMQ identity is `outboxTransportJobId(_outbox_key)`. Validate the mapping and required signature before claim, dispatch, or ACK.
+- Webhooks verify the correct destination signature, normalize once, claim with a token-fenced lease, process idempotently, and ACK durable outbox rows only after exact terminal inbox evidence.
+- Operations endpoints use authenticated, role-scoped `opsProcedure` or `opsSensitiveProcedure`, typed commands, expected versions, reason codes, step-up where required, and immutable actor-attributed audit events.
+- Use parameterized SQL, shared provider clients, circuit breakers, and explicit transaction boundaries. Do not instantiate Stripe or AI clients ad hoc.
 
-### Financial Invariants (Enforced by PostgreSQL triggers)
-- **INV-1:** Escrow amounts must be positive integers in cents (`escrow_balance_check`)
-- **INV-2:** XP requires released escrow (`xp_requires_released_escrow`)
-- **INV-3:** Escrow can only be released once (`prevent_double_release`)
-- **INV-4:** Ledger entries are immutable — no UPDATE/DELETE (`ledger_entry_immutable`)
-- **INV-5:** Payment amounts must be positive (`payment_amount_check`)
+## Review protocol
 
-### State Machines
-- Task: `open` → `assigned` → `in_progress` → `completed` / `cancelled`
-- Escrow: `PENDING` → `FUNDED` → `RELEASED` / `REFUNDED` / `DISPUTED`
-- Always go through TaskService or EscrowService — never transition states directly
+1. Establish the exact base, active Governor node, and allowed path set.
+2. Write or preserve a hostile test that demonstrates the failure mode.
+3. Implement the smallest runtime-connected correction without weakening assertions.
+4. Verify focused behavior, full typecheck, zero-warning lint, compile, full tests, migration harnesses, audit, and whitespace.
+5. Obtain fresh independent review of the exact final tree. A builder or author cannot provide independent proof.
+6. Publish only through signed commits, protected checks, resolved threads, and exact-final-push approval.
 
-### Architecture Rules
-- External API calls must be wrapped in CircuitBreaker (`backend/src/middleware/circuit-breaker.ts`)
-- AI calls go through AIRouter with budget enforcement — never call providers directly
-- Database queries use parameterized queries — no string interpolation
-- All tRPC procedures need Zod input validation
-- Admin endpoints use `adminProcedure` (not `protectedProcedure`)
-- Stripe webhooks must verify signatures before processing
-
-## Branch Naming
-
-- Autonomous branches: `auto/{issue-number}` (eligible for auto-merge)
-- Human branches: any other pattern (require manual merge)
-
-## Decision Log
-
-**2026-06-11 — audit-fixes-2026-06-11 (full-codebase audit remediation):**
-- **Money math convention = `Math.round`**, single source of truth in `backend/src/lib/money.ts` (`computePlatformFeeCents`, `computeFeeBreakdown`, `xpForPriceCents`). Decompositions are complements of gross: fee + insurance + net === gross, always. Insurance basis is **GROSS** (F54-2) on every release path. Do not reintroduce inline fee/XP math.
-- **revenue_ledger append-only has exactly ONE exemption**: GDPR PII unlink (`user_id → NULL`, all other columns unchanged, row-generic comparison) — `migrations/revenue_ledger_gdpr_user_id_exemption.sql`. Everything else still raises HX701.
-- **Chargeback handlers are atomic** (one `db.transaction` each; ledger writes join via `RevenueService.logEvent(params, q)`); the stripe-event-worker dispatcher throws on `success:false` so BullMQ retries instead of marking failures processed.
-- **Isolation-level doctrine (codified)**: money paths use `db.transaction` (READ COMMITTED) + `SELECT … FOR UPDATE` + `version` optimistic guards — this pattern, not SERIALIZABLE, is the sanctioned standard (XP paths keep `serializableTransaction`). DB backstops: `escrow_terminal_guard` (HX301) + `escrow_amount_immutable` (HX004) enforce single-release at the DB; verified against real Postgres.
-- **External calls**: every Stripe/AI call goes through its CircuitBreaker; routers use the shared client (`lib/stripe-client.ts`), never `new Stripe(...)`. All AI spend is metered to `ai_cost_logs` (including embeddings/vision fetches).
-- **Test hermeticity**: `vitest.config.ts` forces `NODE_ENV=test` (a machine-level `NODE_ENV=production` export was flipping 19 tests red). Never set a global dummy `DATABASE_URL` — `hasDb` skip logic must keep skipping.
-- **Referral redemption**: unique index on `referral_redemptions(referred_id)` + `ON CONFLICT DO NOTHING` is the idempotency witness (`migrations/audit_fixes_concurrency.sql`).
+Test counts, coverage percentages, dependency versions, SHAs, deployments, and alert counts are mutable evidence. Never hard-code them here; record source-dated observations in [the current checkpoint](docs/HUSTLEXP_CURRENT_BACKEND_CHECKPOINT.md).

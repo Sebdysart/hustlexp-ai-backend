@@ -1,8 +1,7 @@
-name: Deploy exact engine revision
+name: Release exact admitted engine revision
 
-# One explicit release transaction for the existing Railway production
-# environment. There is no Railway staging environment; local/CI verification
-# is the pre-production gate. GitHub's production environment owns approval.
+# The protected GitHub environment owns the one-shot migrator credential and
+# independent approval; neither long-lived Railway runtime may receive it.
 on:
   workflow_dispatch:
 
@@ -10,79 +9,462 @@ concurrency:
   group: hustlexp-engine-production
   cancel-in-progress: false
 
+permissions:
+  contents: read
+  checks: read
+  pull-requests: read
+  statuses: read
+
 env:
   NODE_VERSION: '22'
-  RAILWAY_WEB_SERVICE: hustlexp-ai-backend-staging
-  RAILWAY_WORKER_SERVICE: hustlexp-automation-worker
-  RAILWAY_ENVIRONMENT: production
+  RAILWAY_CLI_VERSION: '4.66.0'
+  RAILWAY_PROJECT_ID: e83d489c-fcf8-446f-b35a-f0e78d21c9b4
+  RAILWAY_ENVIRONMENT: f4eb7aa5-c6bf-4fdd-b74f-6e8d5d7cc407
+  RAILWAY_WEB_SERVICE: e3996482-fa94-489b-b474-985437dda612
+  RAILWAY_WORKER_SERVICE: 5295aa04-9c34-489f-a5be-2535468c959a
+  GITHUB_ACTIONS_APP_ID: '15368'
+  # Sebdysart can publish an accepted, content-addressed Governor receipt. That
+  # effect publisher is not independent review: whitehorse1016 must separately
+  # approve the exact PR and the protected production environment.
+  GOVERNOR_PUBLISHER_ID: '192952981'
+  GOVERNOR_CONTROL_REPOSITORY: Sebdysart/hustlexp-site
+  INDEPENDENT_REVIEWER_ID: '19916085'
   PRODUCTION_URL: https://hustlexp-ai-backend-production.up.railway.app
 
 jobs:
   verify-exact-revision:
-    name: Verify dispatched revision
+    name: Verify exact admitted main revision
     runs-on: ubuntu-latest
     steps:
       - name: Checkout dispatched commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.sha }}
-      - uses: actions/setup-node@v4
+          fetch-depth: 0
+      - name: Require current protected main
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          git fetch --no-tags origin main
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse origin/main)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1)"
+      - name: Require exact-tree checks and authenticated Governor admission
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          check_runs="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?per_page=100")"
+          required_main_checks=(
+            "TypeScript — zero errors"
+            "Lint — zero warnings (backend/src/)"
+            "Security audit — no high/critical production vulnerabilities"
+            "Tests — zero failures"
+            "Build Validation"
+            "audit"
+            "codeql"
+          )
+          for required_check in "${required_main_checks[@]}"; do
+            selected="$(jq -c \
+              --arg name "$required_check" \
+              --argjson app_id "$GITHUB_ACTIONS_APP_ID" \
+              '[.check_runs[] | select(.name == $name and .app.id == $app_id)] | sort_by(.id) | last // null' \
+              <<<"$check_runs")"
+            test "$(jq -r '.status // "missing"' <<<"$selected")" = "completed"
+            test "$(jq -r '.conclusion // "missing"' <<<"$selected")" = "success"
+          done
+
+          associated_pulls="$(gh api -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls?per_page=100")"
+          admitted_pulls="$(jq -c --arg sha "$GITHUB_SHA" '[.[] | select(
+            .merged_at != null and
+            .base.ref == "main" and
+            .merge_commit_sha == $sha and
+            .head.repo.full_name == env.GITHUB_REPOSITORY
+          )]' <<<"$associated_pulls")"
+          test "$(jq 'length' <<<"$admitted_pulls")" -eq 1
+          pr_number="$(jq -r '.[0].number' <<<"$admitted_pulls")"
+          pr_head_sha="$(jq -r '.[0].head.sha' <<<"$admitted_pulls")"
+          test "$pr_number" -ge 1
+          [[ "$pr_head_sha" =~ ^[0-9a-f]{40}$ ]]
+
+          git fetch --no-tags origin \
+            "refs/pull/${pr_number}/head:refs/remotes/hx-release/pr-${pr_number}-head"
+          fetched_pr_head="$(git rev-parse "refs/remotes/hx-release/pr-${pr_number}-head")"
+          test "$fetched_pr_head" = "$pr_head_sha"
+          test "$(git rev-parse "${pr_head_sha}^{tree}")" = "$(git rev-parse "${GITHUB_SHA}^{tree}")"
+
+          pr_reviews="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/reviews?per_page=100")"
+          independent_review="$(jq -c \
+            --argjson reviewer_id "$INDEPENDENT_REVIEWER_ID" \
+            '[.[] | select(.user.id == $reviewer_id)] | sort_by(.id) | last // null' \
+            <<<"$pr_reviews")"
+          test "$(jq -r '.state // "missing"' <<<"$independent_review")" = "APPROVED"
+          test "$(jq -r '.commit_id // ""' <<<"$independent_review")" = "$pr_head_sha"
+
+          pr_check_runs="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/commits/${pr_head_sha}/check-runs?per_page=100")"
+          dependency_review="$(jq -c \
+            --argjson app_id "$GITHUB_ACTIONS_APP_ID" \
+            '[.check_runs[] | select(.name == "dependency-review" and .app.id == $app_id)] | sort_by(.id) | last // null' \
+            <<<"$pr_check_runs")"
+          test "$(jq -r '.status // "missing"' <<<"$dependency_review")" = "completed"
+          test "$(jq -r '.conclusion // "missing"' <<<"$dependency_review")" = "success"
+
+          governor_statuses="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/status?per_page=100")"
+          governor_status="$(jq -c \
+            '[.statuses[] | select(.context == "Governor admission")] | first // null' \
+            <<<"$governor_statuses")"
+          test "$(jq -r '.state // "missing"' <<<"$governor_status")" = "success"
+          test "$(jq -r '.creator.id // 0' <<<"$governor_status")" = "$GOVERNOR_PUBLISHER_ID"
+          test "$(jq -r '.creator.type // "missing"' <<<"$governor_status")" = "User"
+          governor_receipt="$(jq -r '.description // ""' <<<"$governor_status" | \
+            sed -nE 's/^governor-control:([0-9a-f]{40}):sha256:([0-9a-f]{64})$/\1 \2/p')"
+          read -r governor_control_sha governor_evidence_sha256 <<<"$governor_receipt"
+          [[ "$governor_control_sha" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$governor_evidence_sha256" =~ ^[0-9a-f]{64}$ ]]
+          expected_governor_target="https://github.com/${GOVERNOR_CONTROL_REPOSITORY}/commit/${governor_control_sha}"
+          test "$(jq -r '.target_url // ""' <<<"$governor_status")" = "$expected_governor_target"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
-      - run: npm run typecheck
       - run: npm run verify:build-identity
       - name: Compile an attributable production artifact
         run: npm run compile
         env:
           HX_BUILD_ENVIRONMENT: production
-          HX_BUILD_REVISION: ${{ github.sha }}
-          HX_BUILD_SOURCE_CLEAN: 'true'
-      - name: Verify compiled identity
+      - name: Verify compiled identity and migration artifact
         run: |
-          node -e "const i=require('./dist/hx-build-identity.json'); if(i.revision!==process.env.GITHUB_SHA||i.clean_source!==true||i.service!=='hustlexp-engine') process.exit(1)"
+          set -euo pipefail
+          node -e "const i=require('./dist/hx-build-identity.json'); if(i.revision!==process.env.GITHUB_SHA||i.clean_source!==true||i.service!=='hustlexp-engine'||i.source!=='GITHUB_SHA') process.exit(1)"
+          expected_digest="$(tr -d '[:space:]' < backend/database/engine-migration-artifact.sha256)"
+          [[ "$expected_digest" =~ ^[0-9a-f]{64}$ ]]
+          test "$(node dist/backend/src/jobs/engine-migration-manifest.js)" = "$expected_digest"
 
-  deploy-production:
-    name: Deploy web and worker to Railway production
+  migrate-and-deploy-production:
+    name: Migrate then deploy exact revision
     needs: verify-exact-revision
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - name: Checkout the verified commit
-        uses: actions/checkout@v4
+      - name: Checkout the admitted commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.sha }}
-      - name: Install pinned Railway CLI
-        run: npm install --global @railway/cli@4.66.0
-      - name: Create release identity
-        run: echo "HX_RELEASE_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
-      - name: Stage identical provenance for web and worker
+          fetch-depth: 0
+      - name: Revalidate main after independent approval
         run: |
-          railway variable set "HX_BUILD_REVISION=${GITHUB_SHA}" HX_BUILD_SOURCE_CLEAN=true "HX_BUILD_TIMESTAMP=${HX_RELEASE_TIMESTAMP}" --service "$RAILWAY_WEB_SERVICE" --environment "$RAILWAY_ENVIRONMENT" --skip-deploys
-          railway variable set "HX_BUILD_REVISION=${GITHUB_SHA}" HX_BUILD_SOURCE_CLEAN=true "HX_BUILD_TIMESTAMP=${HX_RELEASE_TIMESTAMP}" --service "$RAILWAY_WORKER_SERVICE" --environment "$RAILWAY_ENVIRONMENT" --skip-deploys
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-      - name: Deploy web from the verified checkout
-        run: railway up --ci --service "$RAILWAY_WEB_SERVICE" --environment "$RAILWAY_ENVIRONMENT" --message "engine ${GITHUB_SHA}"
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-      - name: Deploy worker from the verified checkout
-        run: railway up --ci --service "$RAILWAY_WORKER_SERVICE" --environment "$RAILWAY_ENVIRONMENT" --message "worker ${GITHUB_SHA}"
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-      - name: Require exact public engine identity
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          git fetch --no-tags origin main
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse origin/main)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1)"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Prepare content-addressed release source
         run: |
-          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+          set -euo pipefail
+          git fetch --no-tags origin main
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse origin/main)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1)"
+          test ! -e .hx-release-provenance.json
+
+          source_tree="$(git rev-parse "${GITHUB_SHA}^{tree}")"
+          [[ "$source_tree" =~ ^[0-9a-f]{40}$ ]]
+          release_timestamp="$(node -e 'console.log(new Date(process.argv[1]).toISOString())' \
+            "$(git show -s --format=%cI "$GITHUB_SHA")")"
+          migration_digest="$(tr -d '[:space:]' < backend/database/engine-migration-artifact.sha256)"
+          [[ "$migration_digest" =~ ^[0-9a-f]{64}$ ]]
+
+          source_archive="$RUNNER_TEMP/hx-source-${GITHUB_SHA}.tar"
+          provenance="$RUNNER_TEMP/hx-release-provenance-${GITHUB_SHA}.json"
+          test ! -e "$source_archive"
+          test ! -e "$provenance"
+          git archive --format=tar --output="$source_archive" "$GITHUB_SHA"
+          source_archive_sha256="$(sha256sum "$source_archive" | awk '{print $1}')"
+          jq -nS \
+            --arg revision "$GITHUB_SHA" \
+            --arg source_tree "$source_tree" \
+            --arg source_archive_sha256 "$source_archive_sha256" \
+            --arg migration_artifact_sha256 "$migration_digest" \
+            --arg built_at "$release_timestamp" \
+            '{schema_version: 1, source: "git-archive", revision: $revision,
+              source_tree: $source_tree, source_archive_sha256: $source_archive_sha256,
+              migration_artifact_sha256: $migration_artifact_sha256,
+              built_at: $built_at, clean_source: true}' > "$provenance"
+          provenance_sha256="$(sha256sum "$provenance" | awk '{print $1}')"
+
+          web_context="$RUNNER_TEMP/hx-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-web"
+          worker_context="$RUNNER_TEMP/hx-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-worker"
+          test ! -e "$web_context"
+          test ! -e "$worker_context"
+          mkdir "$web_context" "$worker_context"
+          tar -xf "$source_archive" -C "$web_context"
+          tar -xf "$source_archive" -C "$worker_context"
+          cp -p "$provenance" "$web_context/.hx-release-provenance.json"
+          cp -p "$provenance" "$worker_context/.hx-release-provenance.json"
+          test "$(sha256sum "$web_context/.hx-release-provenance.json" | awk '{print $1}')" = "$provenance_sha256"
+          test "$(sha256sum "$worker_context/.hx-release-provenance.json" | awk '{print $1}')" = "$provenance_sha256"
+
+          {
+            echo "HX_SOURCE_TREE=$source_tree"
+            echo "HX_SOURCE_ARCHIVE=$source_archive"
+            echo "HX_SOURCE_ARCHIVE_SHA256=$source_archive_sha256"
+            echo "HX_MIGRATION_ARTIFACT_SHA256=$migration_digest"
+            echo "HX_RELEASE_TIMESTAMP=$release_timestamp"
+            echo "HX_RELEASE_PROVENANCE=$provenance"
+            echo "HX_RELEASE_PROVENANCE_SHA256=$provenance_sha256"
+            echo "HX_WEB_CONTEXT=$web_context"
+            echo "HX_WORKER_CONTEXT=$worker_context"
+          } >> "$GITHUB_ENV"
+      - name: Compile the exact migration executable
+        run: npm run compile
+        env:
+          HX_BUILD_ENVIRONMENT: production
+      - name: Revalidate then apply only checksummed registered migrations
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse origin/main)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1)"
+          test "$(sha256sum "$HX_SOURCE_ARCHIVE" | awk '{print $1}')" = "$HX_SOURCE_ARCHIVE_SHA256"
+          test "$(sha256sum "$HX_RELEASE_PROVENANCE" | awk '{print $1}')" = "$HX_RELEASE_PROVENANCE_SHA256"
+          npm run db:migrate:engine
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+          MIGRATION_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATION_DATABASE_URL }}
+          HX_MIGRATION_EXPECTED_DATABASE_NAME: ${{ vars.HX_MIGRATION_EXPECTED_DATABASE_NAME }}
+          HX_MIGRATION_EXPECTED_DATABASE_OID: ${{ vars.HX_MIGRATION_EXPECTED_DATABASE_OID }}
+          HX_MIGRATION_EXPECTED_CLUSTER_SYSTEM_IDENTIFIER: ${{ vars.HX_MIGRATION_EXPECTED_CLUSTER_SYSTEM_IDENTIFIER }}
+      - name: Install and bind the pinned Railway CLI outside the checkout
+        run: |
+          set -euo pipefail
+          npm install --global "@railway/cli@${RAILWAY_CLI_VERSION}"
+          test "$(railway --version)" = "railway ${RAILWAY_CLI_VERSION}"
+          railway_link_dir="$RUNNER_TEMP/hx-railway-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test ! -e "$railway_link_dir"
+          mkdir "$railway_link_dir"
+          (
+            cd "$railway_link_dir"
+            railway link --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENVIRONMENT" \
+              --service "$RAILWAY_WEB_SERVICE" --json >/dev/null
+          )
+          echo "HX_RAILWAY_LINK_DIR=$railway_link_dir" >> "$GITHUB_ENV"
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      - name: Prove both runtime roles exclude migrator and build-identity variables
+        run: |
+          set -euo pipefail
+          web_variables="$(railway variable list --project "$RAILWAY_PROJECT_ID" \
+            --environment "$RAILWAY_ENVIRONMENT" --service "$RAILWAY_WEB_SERVICE" --json)"
+          worker_variables="$(railway variable list --project "$RAILWAY_PROJECT_ID" \
+            --environment "$RAILWAY_ENVIRONMENT" --service "$RAILWAY_WORKER_SERVICE" --json)"
+          jq -e 'has("DATABASE_URL") and (has("MIGRATION_DATABASE_URL") | not) and
+            (has("HX_BUILD_REVISION") | not) and (has("HX_BUILD_SOURCE_CLEAN") | not) and
+            (has("HX_BUILD_TIMESTAMP") | not) and ((.SERVICE_ROLE // "") != "worker")' \
+            <<<"$web_variables" >/dev/null
+          jq -e 'has("DATABASE_URL") and (has("MIGRATION_DATABASE_URL") | not) and
+            (has("HX_BUILD_REVISION") | not) and (has("HX_BUILD_SOURCE_CLEAN") | not) and
+            (has("HX_BUILD_TIMESTAMP") | not) and .SERVICE_ROLE == "worker"' \
+            <<<"$worker_variables" >/dev/null
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      - name: Upload and capture the exact web deployment
+        id: web
+        run: |
+          set -euo pipefail
+          list_deployments() {
+            (cd "$HX_RAILWAY_LINK_DIR" && railway deployment list \
+              --service "$RAILWAY_WEB_SERVICE" --environment "$RAILWAY_ENVIRONMENT" \
+              --limit 100 --json)
+          }
+
+          test "$(sha256sum "$HX_SOURCE_ARCHIVE" | awk '{print $1}')" = "$HX_SOURCE_ARCHIVE_SHA256"
+          test "$(sha256sum "$HX_WEB_CONTEXT/.hx-release-provenance.json" | awk '{print $1}')" = "$HX_RELEASE_PROVENANCE_SHA256"
+          message="hx-release:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:web:${GITHUB_SHA}:${HX_RELEASE_PROVENANCE_SHA256}"
+
+          git fetch --no-tags origin main
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse origin/main)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1)"
+          upload_receipt="$(railway up "$HX_WEB_CONTEXT" --path-as-root --detach --json \
+            --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENVIRONMENT" \
+            --service "$RAILWAY_WEB_SERVICE" --message "$message")"
+          deployment_id="$(jq -r '.deploymentId // ""' <<<"$upload_receipt")"
+          [[ "$deployment_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]
+
+          observed='{}'
+          for attempt in $(seq 1 60); do
+            deployments="$(list_deployments)"
+            matches="$(jq -c --arg id "$deployment_id" '[.[] | select(.id == $id)]' \
+              <<<"$deployments")"
+            match_count="$(jq 'length' <<<"$matches")"
+            test "$match_count" -le 1
+            if [ "$match_count" -eq 1 ]; then
+              observed="$(jq -c '.[0]' <<<"$matches")"
+              status="$(jq -r '.status // "missing"' <<<"$observed")"
+              if [ "$status" = "SUCCESS" ]; then break; fi
+              case "$status" in FAILED|CRASHED|REMOVED|SKIPPED) exit 1 ;; esac
+            fi
+            sleep 10
+          done
+          test -n "$deployment_id"
+          test "$(jq -r '.id // ""' <<<"$observed")" = "$deployment_id"
+          test "$(jq -r '.status // "missing"' <<<"$observed")" = "SUCCESS"
+          test "$(jq -r '.meta.cliMessage // ""' <<<"$observed")" = "$message"
+          jq -e --arg sha "$GITHUB_SHA" '((.meta.commitHash // $sha) == $sha)' \
+            <<<"$observed" >/dev/null
+          image_digest="$(jq -r '.meta.imageDigest // ""' <<<"$observed")"
+          [[ "$image_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+
+          service_status="$(cd "$HX_RAILWAY_LINK_DIR" && railway service list --json | \
+            jq -c --arg service "$RAILWAY_WEB_SERVICE" \
+              '[.[] | select(.id == $service)] | if length == 1 then .[0] else null end')"
+          jq -e --arg id "$deployment_id" \
+            '.deploymentId == $id and .status == "SUCCESS" and .replicas.running >= 1' \
+            <<<"$service_status" >/dev/null
+          {
+            echo "deployment_id=$deployment_id"
+            echo "image_digest=$image_digest"
+          } >> "$GITHUB_OUTPUT"
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      - name: Require exact public identity and persistent payment freeze
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
             payload="$(curl -fsS --connect-timeout 5 --max-time 15 "$PRODUCTION_URL/health" || true)"
-            if jq -e --arg sha "$GITHUB_SHA" '.status == "healthy" and .build.revision == $sha and .build.clean_source == true and .build.service == "hustlexp-engine"' <<<"$payload" >/dev/null; then
+            if jq -e --arg sha "$GITHUB_SHA" --arg source_tree "$HX_SOURCE_TREE" \
+              --arg source_archive "$HX_SOURCE_ARCHIVE_SHA256" \
+              --arg migration "$HX_MIGRATION_ARTIFACT_SHA256" \
+              --arg provenance "$HX_RELEASE_PROVENANCE_SHA256" \
+              '.status == "healthy" and .build.revision == $sha and
+               .build.clean_source == true and .build.service == "hustlexp-engine" and
+               .build.source == "release-provenance" and .build.source_tree == $source_tree and
+               .build.source_archive_sha256 == $source_archive and
+               .build.migration_artifact_sha256 == $migration and
+               .build.provenance_sha256 == $provenance and
+               .paymentCreation.mode == "frozen" and
+               .paymentCreation.acceptsNewCustomerMoney == false' \
+              <<<"$payload" >/dev/null 2>&1; then
               exit 0
             fi
             sleep 10
           done
-          echo "Production health never reported the dispatched revision"
           exit 1
-      - name: Require successful worker deployment
-        run: railway service status --service "$RAILWAY_WORKER_SERVICE" --environment "$RAILWAY_ENVIRONMENT" --json | jq -e '.status == "SUCCESS" and .replicas.running >= 1'
+      - name: Upload and capture the exact worker deployment
+        id: worker
+        run: |
+          set -euo pipefail
+          list_deployments() {
+            (cd "$HX_RAILWAY_LINK_DIR" && railway deployment list \
+              --service "$RAILWAY_WORKER_SERVICE" --environment "$RAILWAY_ENVIRONMENT" \
+              --limit 100 --json)
+          }
+
+          test "$(sha256sum "$HX_SOURCE_ARCHIVE" | awk '{print $1}')" = "$HX_SOURCE_ARCHIVE_SHA256"
+          test "$(sha256sum "$HX_WORKER_CONTEXT/.hx-release-provenance.json" | awk '{print $1}')" = "$HX_RELEASE_PROVENANCE_SHA256"
+          message="hx-release:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:worker:${GITHUB_SHA}:${HX_RELEASE_PROVENANCE_SHA256}"
+
+          git fetch --no-tags origin main
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse origin/main)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1)"
+          upload_receipt="$(railway up "$HX_WORKER_CONTEXT" --path-as-root --detach --json \
+            --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENVIRONMENT" \
+            --service "$RAILWAY_WORKER_SERVICE" --message "$message")"
+          deployment_id="$(jq -r '.deploymentId // ""' <<<"$upload_receipt")"
+          [[ "$deployment_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]
+
+          observed='{}'
+          for attempt in $(seq 1 60); do
+            deployments="$(list_deployments)"
+            matches="$(jq -c --arg id "$deployment_id" '[.[] | select(.id == $id)]' \
+              <<<"$deployments")"
+            match_count="$(jq 'length' <<<"$matches")"
+            test "$match_count" -le 1
+            if [ "$match_count" -eq 1 ]; then
+              observed="$(jq -c '.[0]' <<<"$matches")"
+              status="$(jq -r '.status // "missing"' <<<"$observed")"
+              if [ "$status" = "SUCCESS" ]; then break; fi
+              case "$status" in FAILED|CRASHED|REMOVED|SKIPPED) exit 1 ;; esac
+            fi
+            sleep 10
+          done
+          test -n "$deployment_id"
+          test "$(jq -r '.id // ""' <<<"$observed")" = "$deployment_id"
+          test "$(jq -r '.status // "missing"' <<<"$observed")" = "SUCCESS"
+          test "$(jq -r '.meta.cliMessage // ""' <<<"$observed")" = "$message"
+          jq -e --arg sha "$GITHUB_SHA" '((.meta.commitHash // $sha) == $sha)' \
+            <<<"$observed" >/dev/null
+          image_digest="$(jq -r '.meta.imageDigest // ""' <<<"$observed")"
+          [[ "$image_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          test "$image_digest" = "${{ steps.web.outputs.image_digest }}"
+
+          service_status="$(cd "$HX_RAILWAY_LINK_DIR" && railway service list --json | \
+            jq -c --arg service "$RAILWAY_WORKER_SERVICE" \
+              '[.[] | select(.id == $service)] | if length == 1 then .[0] else null end')"
+          jq -e --arg id "$deployment_id" \
+            '.deploymentId == $id and .status == "SUCCESS" and .replicas.running >= 1' \
+            <<<"$service_status" >/dev/null
+          {
+            echo "deployment_id=$deployment_id"
+            echo "image_digest=$image_digest"
+          } >> "$GITHUB_OUTPUT"
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      - name: Re-prove isolation and attest both exact deployments
+        run: |
+          set -euo pipefail
+          web_variables="$(railway variable list --project "$RAILWAY_PROJECT_ID" \
+            --environment "$RAILWAY_ENVIRONMENT" --service "$RAILWAY_WEB_SERVICE" --json)"
+          worker_variables="$(railway variable list --project "$RAILWAY_PROJECT_ID" \
+            --environment "$RAILWAY_ENVIRONMENT" --service "$RAILWAY_WORKER_SERVICE" --json)"
+          for variables in "$web_variables" "$worker_variables"; do
+            jq -e 'has("DATABASE_URL") and (has("MIGRATION_DATABASE_URL") | not) and
+              (has("HX_BUILD_REVISION") | not) and (has("HX_BUILD_SOURCE_CLEAN") | not) and
+              (has("HX_BUILD_TIMESTAMP") | not)' <<<"$variables" >/dev/null
+          done
+
+          attestation="$RUNNER_TEMP/hx-release-attestation.json"
+          jq -nS --arg revision "$GITHUB_SHA" --arg source_tree "$HX_SOURCE_TREE" \
+            --arg source_archive_sha256 "$HX_SOURCE_ARCHIVE_SHA256" \
+            --arg migration_artifact_sha256 "$HX_MIGRATION_ARTIFACT_SHA256" \
+            --arg provenance_sha256 "$HX_RELEASE_PROVENANCE_SHA256" \
+            --arg web_service "$RAILWAY_WEB_SERVICE" \
+            --arg web_deployment "${{ steps.web.outputs.deployment_id }}" \
+            --arg web_image "${{ steps.web.outputs.image_digest }}" \
+            --arg worker_service "$RAILWAY_WORKER_SERVICE" \
+            --arg worker_deployment "${{ steps.worker.outputs.deployment_id }}" \
+            --arg worker_image "${{ steps.worker.outputs.image_digest }}" \
+            '{schema_version: 1, revision: $revision, source_tree: $source_tree,
+              source_archive_sha256: $source_archive_sha256,
+              migration_artifact_sha256: $migration_artifact_sha256,
+              provenance_sha256: $provenance_sha256,
+              web: {service_id: $web_service, deployment_id: $web_deployment,
+                image_digest: $web_image},
+              worker: {service_id: $worker_service, deployment_id: $worker_deployment,
+                image_digest: $worker_image}}' > "$attestation"
+          attestation_sha256="$(sha256sum "$attestation" | awk '{print $1}')"
+          {
+            echo '## Exact production release attestation'
+            echo
+            echo "Attestation SHA-256: \`$attestation_sha256\`"
+            echo
+            echo '```json'
+            cat "$attestation"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}

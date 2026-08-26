@@ -20,6 +20,7 @@
 import { randomUUID } from 'crypto';
 import { db } from '../db.js';
 import { enqueueJob, signJobPayload, type QueueName } from './queues.js';
+import { outboxTransportJobId } from './OutboxIdentity.js';
 import { getClient as getRedisClient } from '../cache/redis.js';
 import { workerLogger } from '../logger.js';
 import { config } from '../config.js';
@@ -28,6 +29,11 @@ const log = workerLogger.child({ worker: 'outbox' });
 // Maximum delivery attempts before an outbox event is permanently failed.
 // Single source of truth — used by both processOutboxEvents and markOutboxEventFailed.
 const MAX_OUTBOX_ATTEMPTS = 5;
+// A process can die after the database claim commits but before queue.add().
+// Reclaim only after this lease expires; BullMQ's deterministic jobId makes the
+// resulting at-least-once enqueue safe while avoiding a permanent `enqueued`
+// tombstone.
+const OUTBOX_CLAIM_LEASE = "INTERVAL '2 minutes'";
 
 // Financial event types that require HMAC payload signing
 // Exported for test assertion (membership is financial-critical).
@@ -107,11 +113,18 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
     //
     // The CAS WHERE clause remains as a belt-and-suspenders guard for workers
     // that crashed mid-flight between SELECT and UPDATE on a prior cycle.
-    const claimedEvents = await db.transaction(async (txQuery) => {
+    const claimBatch = await db.transaction(async (txQuery) => {
       const selectResult = await txQuery<OutboxEvent>(
         `SELECT * FROM outbox_events
-         WHERE status = 'pending'
-           AND available_at <= NOW()
+         WHERE (
+           (status = 'pending' AND available_at <= NOW())
+           OR (
+             status = 'enqueued'
+             AND processed_at IS NULL
+             AND enqueued_at IS NOT NULL
+             AND enqueued_at <= NOW() - ${OUTBOX_CLAIM_LEASE}
+           )
+         )
          ORDER BY created_at ASC
          LIMIT $1
          FOR UPDATE SKIP LOCKED`,
@@ -119,35 +132,110 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
       );
 
       const claimed: OutboxEvent[] = [];
+      const exhausted: Array<{ event: OutboxEvent; error: string }> = [];
       for (const event of selectResult.rows) {
+        if (event.attempts >= MAX_OUTBOX_ATTEMPTS) {
+          const errorMessage = 'Outbox claim lease expired after maximum attempts';
+          const acknowledgement = await txQuery<OutboxAcknowledgement>(
+            `UPDATE outbox_events
+             SET status = 'failed',
+                 error_message = COALESCE(error_message, $3),
+                 updated_at = NOW()
+             WHERE id = $1
+               AND attempts >= $2
+               AND (
+                 (status = 'pending' AND available_at <= NOW())
+                 OR (
+                   status = 'enqueued'
+                   AND processed_at IS NULL
+                   AND enqueued_at IS NOT NULL
+                   AND enqueued_at <= NOW() - ${OUTBOX_CLAIM_LEASE}
+                 )
+               )
+             RETURNING idempotency_key,status,attempts`,
+            [event.id, MAX_OUTBOX_ATTEMPTS, errorMessage],
+          );
+          const row = acknowledgement.rows[0];
+          if (
+            acknowledgement.rows.length !== 1
+            || row.idempotency_key !== event.idempotency_key
+            || row.status !== 'failed'
+            || Number(row.attempts) !== event.attempts
+          ) {
+            throw new Error(`OUTBOX_ACK_MISSING: exhausted claim ${event.id} was not failed exactly`);
+          }
+          exhausted.push({ event, error: errorMessage });
+          continue;
+        }
         const updateResult = await txQuery(
           `UPDATE outbox_events
            SET status = 'enqueued',
                enqueued_at = NOW(),
-               attempts = attempts + 1
+               attempts = attempts + 1,
+               error_message = NULL,
+               updated_at = NOW()
            WHERE id = $1
-             AND status = 'pending'`, // CAS guard (belt-and-suspenders)
-          [event.id]
+             AND attempts < $2
+             AND (
+               (status = 'pending' AND available_at <= NOW())
+               OR (
+                 status = 'enqueued'
+                 AND processed_at IS NULL
+                 AND enqueued_at IS NOT NULL
+                 AND enqueued_at <= NOW() - ${OUTBOX_CLAIM_LEASE}
+               )
+             )`, // CAS guard for both first delivery and expired claims
+          [event.id, MAX_OUTBOX_ATTEMPTS]
         );
         if (updateResult.rowCount > 0) {
-          claimed.push(event);
+          // Keep the exact claim generation locally. A stale worker from an
+          // earlier lease must never be able to reset a newer claim or a
+          // consumer-completed row after an ambiguous enqueue failure.
+          claimed.push({ ...event, attempts: event.attempts + 1 });
         } else {
           log.warn({ eventId: event.id }, 'Outbox event already processed by another worker, skipping');
         }
       }
-      return claimed;
+      return { claimed, exhausted };
     });
 
-    for (const event of claimedEvents) {
+    for (const exhaustion of claimBatch.exhausted) {
+      failed++;
+      errors.push({ eventId: exhaustion.event.id, error: exhaustion.error });
+      log.error(
+        {
+          eventId: exhaustion.event.id,
+          eventType: exhaustion.event.event_type,
+          attempts: exhaustion.event.attempts,
+        },
+        'Outbox event exhausted its claim-recovery budget — requires ops intervention',
+      );
+    }
+
+    for (const event of claimBatch.claimed) {
       try {
-        // Sign financial job payloads to prevent Redis injection (Attack 12)
-        let jobPayload: Record<string, unknown> = event.payload;
+        const transportJobId = outboxTransportJobId(event.idempotency_key);
+        // Every consumer needs the durable database identity because the
+        // BullMQ transport ID is intentionally a one-way hash. Financial
+        // consumers additionally authenticate this field with HMAC before use.
+        const boundPayload = {
+          ...event.payload,
+          _outbox_key: event.idempotency_key,
+        };
+        let jobPayload: Record<string, unknown> = boundPayload;
         if (FINANCIAL_EVENT_TYPES.has(event.event_type)) {
-          const signature = signJobPayload(event.payload);
-          jobPayload = { ...event.payload, _sig: signature };
+          // Bind the deterministic durable outbox identity into the signed
+          // financial envelope. Consumers can now reject a valid payload
+          // replayed under a forged BullMQ job ID without synthesizing keys or
+          // excluding legitimate custom producer identities.
+          const signature = signJobPayload(boundPayload);
+          jobPayload = { ...boundPayload, _sig: signature };
         }
 
-        // Enqueue job with idempotency key (outside the transaction — no DB lock held)
+        // Durable outbox keys intentionally contain contract separators (`:`),
+        // which BullMQ rejects in custom job IDs. Keep the durable key signed in
+        // `_outbox_key`, but use its full SHA-256 transport mapping for queue
+        // deduplication and audit persistence.
         const job = await enqueueJob(
           event.queue_name,
           event.event_type,
@@ -157,7 +245,7 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
             event_version: event.event_version,
             payload: jobPayload,
           },
-          { jobId: event.idempotency_key } // Use idempotency key as job ID (prevents duplicates)
+          { jobId: transportJobId }
         );
 
         // Persist the BullMQ job ID now that we have it (row already 'enqueued').
@@ -170,7 +258,7 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
             `UPDATE outbox_events
              SET bullmq_job_id = $1
              WHERE id = $2`,
-            [job.id || event.idempotency_key, event.id]
+            [job.id || transportJobId, event.id]
           );
         } catch (err) {
           log.warn({ err, eventId: event.id }, '[outbox-worker] Failed to record bullmq_job_id — event processing continues');
@@ -178,31 +266,70 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
 
         processed++;
       } catch (error) {
-        failed++;
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        errors.push({ eventId: event.id, error: errorMessage });
 
-        // The transaction already incremented attempts and set status='enqueued'.
-        // queue.add() failed, so roll back the status: if still below the max,
-        // reset to 'pending' so the next poll will retry; otherwise mark 'failed'.
-        // Note: `event.attempts` reflects the value at SELECT time (before the +1
-        // the transaction applied), so after the transaction attempts = event.attempts + 1.
-        await db.query(
+        // Reset only the exact claim generation owned by this process. The
+        // enqueue failure can be ambiguous: the deterministic BullMQ job may
+        // already exist and its consumer may have marked the row processed.
+        // In that race, status/attempt fencing preserves the processed ACK.
+        const recovered = await db.query<OutboxAcknowledgement>(
           `UPDATE outbox_events
            SET status = CASE WHEN attempts < $1 THEN 'pending' ELSE 'failed' END,
-               error_message = $2
-           WHERE id = $3`,
-          [MAX_OUTBOX_ATTEMPTS, errorMessage, event.id]
+               error_message = $2,
+               updated_at = NOW()
+           WHERE id = $3
+             AND status = 'enqueued'
+             AND attempts = $4
+           RETURNING idempotency_key,status,attempts`,
+          [MAX_OUTBOX_ATTEMPTS, errorMessage, event.id, event.attempts]
         );
-
-        if (event.attempts + 1 >= MAX_OUTBOX_ATTEMPTS) {
+        const recovery = recovered.rows[0];
+        if (
+          recovered.rows.length === 1
+          && recovery.idempotency_key === event.idempotency_key
+          && Number(recovery.attempts) === event.attempts
+          && recovery.status === (event.attempts < MAX_OUTBOX_ATTEMPTS ? 'pending' : 'failed')
+        ) {
+          failed++;
+          errors.push({ eventId: event.id, error: errorMessage });
+        } else {
+          const authoritative = await db.query<OutboxAcknowledgement & { error_message: string | null }>(
+            `SELECT idempotency_key,status,attempts,error_message
+               FROM outbox_events
+              WHERE id = $1`,
+            [event.id],
+          );
+          const row = authoritative.rows[0];
+          if (
+            authoritative.rows.length === 1
+            && row.idempotency_key === event.idempotency_key
+            && row.status === 'processed'
+          ) {
+            processed++;
+            log.info(
+              { eventId: event.id, eventType: event.event_type, attempts: row.attempts },
+              'Outbox consumer acknowledgement won the ambiguous enqueue-failure race',
+            );
+            continue;
+          }
+          failed++;
+          const claimError = `OUTBOX_CLAIM_LOST: ${event.id} enqueue failed without an exact recoverable claim`;
+          errors.push({ eventId: event.id, error: claimError });
           log.error(
-            { eventId: event.id, eventType: event.event_type, attempts: event.attempts + 1 },
+            { eventId: event.id, eventType: event.event_type, attempts: event.attempts },
+            claimError,
+          );
+          continue;
+        }
+
+        if (event.attempts >= MAX_OUTBOX_ATTEMPTS) {
+          log.error(
+            { eventId: event.id, eventType: event.event_type, attempts: event.attempts },
             'Outbox event permanently failed after max attempts — requires ops intervention'
           );
         } else {
           log.warn(
-            { eventId: event.id, eventType: event.event_type, attempts: event.attempts + 1 },
+            { eventId: event.id, eventType: event.event_type, attempts: event.attempts },
             'Outbox event queuing failed, will retry'
           );
         }
@@ -212,23 +339,137 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
     return { processed, failed, errors };
   } catch (error) {
     log.error({ err: error }, 'Outbox worker fatal error');
-    return { processed, failed, errors };
+    throw error;
   }
 }
 
 /**
  * Mark outbox event as processed (called by job processor after successful execution)
  */
+export interface OutboxAcknowledgement {
+  idempotency_key: string;
+  status: 'pending' | 'processed' | 'failed';
+  attempts: number;
+}
+
+export interface MarkOutboxFailureOptions {
+  /** BullMQ exhausted its own retry budget; do not create a second retry loop. */
+  terminal?: boolean;
+  /** Reject an unsigned/injected job unless the outbox row was already claimed. */
+  requireClaimed?: boolean;
+}
+
 export async function markOutboxEventProcessed(
   idempotencyKey: string
-): Promise<void> {
-  await db.query(
+): Promise<OutboxAcknowledgement> {
+  const result = await db.query<OutboxAcknowledgement>(
     `UPDATE outbox_events
      SET status = 'processed',
-         processed_at = NOW()
-     WHERE idempotency_key = $1`,
+         processed_at = COALESCE(processed_at, NOW()),
+         error_message = NULL,
+         updated_at = NOW()
+     WHERE idempotency_key = $1
+     RETURNING idempotency_key,status,attempts`,
     [idempotencyKey]
   );
+  const acknowledgement = result.rows[0];
+  if (
+    result.rows.length !== 1
+    || acknowledgement.idempotency_key !== idempotencyKey
+    || acknowledgement.status !== 'processed'
+    || !Number.isInteger(Number(acknowledgement.attempts))
+  ) {
+    throw new Error(`OUTBOX_ACK_MISSING: processed acknowledgement ${idempotencyKey} is not exact`);
+  }
+  return { ...acknowledgement, attempts: Number(acknowledgement.attempts) };
+}
+
+interface StripeEventOutboxRow {
+  idempotency_key: string;
+  status: 'pending' | 'enqueued' | 'processing' | 'processed' | 'failed';
+  attempts: number;
+  event_type: string;
+  aggregate_type: string;
+  aggregate_id: string;
+  queue_name: string;
+}
+
+export interface StripeEventOutboxAcknowledgement {
+  signed: OutboxAcknowledgement;
+  acknowledgedKeys: string[];
+}
+
+/**
+ * Acknowledge one exact signed Stripe-event delivery and every durable sibling
+ * for the same immutable provider event (the canonical ingress row plus any
+ * hard-crash recovery rows).
+ *
+ * The signed row must already be claimed by the outbox worker. Locking and
+ * validating it before the sibling update prevents a forged/pending key from
+ * acknowledging unrelated work, while sibling convergence prevents a
+ * successful recovery job from leaving the abandoned canonical row to exhaust
+ * its delivery budget falsely.
+ */
+export async function markStripeEventOutboxesProcessed(input: {
+  idempotencyKey: string;
+  stripeEventId: string;
+}): Promise<StripeEventOutboxAcknowledgement> {
+  return db.transaction(async (query) => {
+    const authority = await query<StripeEventOutboxRow>(
+      `SELECT idempotency_key,status,attempts,event_type,aggregate_type,aggregate_id,queue_name
+         FROM outbox_events
+        WHERE idempotency_key=$1
+        FOR UPDATE`,
+      [input.idempotencyKey],
+    );
+    const signed = authority.rows[0];
+    if (
+      authority.rows.length !== 1
+      || signed.idempotency_key !== input.idempotencyKey
+      || signed.event_type !== 'stripe.event_received'
+      || signed.aggregate_type !== 'stripe_event'
+      || signed.aggregate_id !== input.stripeEventId
+      || signed.queue_name !== 'critical_payments'
+      || !['enqueued', 'processing', 'processed'].includes(signed.status)
+      || !Number.isInteger(Number(signed.attempts))
+    ) {
+      throw new Error(
+        `OUTBOX_ACK_MISSING: Stripe event acknowledgement authority ${input.idempotencyKey} is not exact`,
+      );
+    }
+
+    const acknowledged = await query<OutboxAcknowledgement>(
+      `UPDATE outbox_events
+          SET status='processed',
+              processed_at=COALESCE(processed_at,NOW()),
+              error_message=NULL,
+              updated_at=NOW()
+        WHERE event_type='stripe.event_received'
+          AND aggregate_type='stripe_event'
+          AND aggregate_id=$1
+          AND queue_name='critical_payments'
+          AND status IN ('pending','enqueued','processing','processed','failed')
+        RETURNING idempotency_key,status,attempts`,
+      [input.stripeEventId],
+    );
+    const exactSignedAck = acknowledged.rows.find(
+      (row) => row.idempotency_key === input.idempotencyKey,
+    );
+    if (
+      !exactSignedAck
+      || exactSignedAck.status !== 'processed'
+      || !Number.isInteger(Number(exactSignedAck.attempts))
+      || acknowledged.rows.some((row) => row.status !== 'processed')
+    ) {
+      throw new Error(
+        `OUTBOX_ACK_MISSING: Stripe event acknowledgement ${input.idempotencyKey} did not converge`,
+      );
+    }
+    return {
+      signed: { ...exactSignedAck, attempts: Number(exactSignedAck.attempts) },
+      acknowledgedKeys: acknowledged.rows.map((row) => row.idempotency_key).sort(),
+    };
+  });
 }
 
 /**
@@ -245,16 +486,64 @@ export async function markOutboxEventProcessed(
  */
 export async function markOutboxEventFailed(
   idempotencyKey: string,
-  errorMessage: string
-): Promise<void> {
-  await db.query(
+  errorMessage: string,
+  options: MarkOutboxFailureOptions = {},
+): Promise<OutboxAcknowledgement> {
+  if (options.terminal) {
+    const terminalResult = await db.query<OutboxAcknowledgement>(
+      `UPDATE outbox_events
+       SET status = CASE WHEN status = 'processed' THEN 'processed' ELSE 'failed' END,
+           error_message = CASE WHEN status = 'processed' THEN error_message ELSE $1 END,
+           updated_at = CASE WHEN status = 'processed' THEN updated_at ELSE NOW() END
+       WHERE idempotency_key = $2
+         AND (
+           $3::boolean = FALSE
+           OR status IN ('enqueued','processing','failed','processed')
+         )
+       RETURNING idempotency_key,status,attempts`,
+      [errorMessage, idempotencyKey, options.requireClaimed === true],
+    );
+    const acknowledgement = terminalResult.rows[0];
+    const attempts = Number(acknowledgement?.attempts);
+    if (
+      terminalResult.rows.length !== 1
+      || acknowledgement.idempotency_key !== idempotencyKey
+      || !Number.isInteger(attempts)
+      || !['failed', 'processed'].includes(acknowledgement.status)
+    ) {
+      throw new Error(`OUTBOX_ACK_MISSING: terminal failure acknowledgement ${idempotencyKey} is not exact`);
+    }
+    return { ...acknowledgement, attempts };
+  }
+
+  const result = await db.query<OutboxAcknowledgement>(
     `UPDATE outbox_events
-     SET status = CASE WHEN attempts < $3 THEN 'pending' ELSE 'failed' END,
-         error_message = $1,
-         updated_at = NOW()
-     WHERE idempotency_key = $2`,
+     SET status = CASE
+           WHEN status = 'processed' THEN 'processed'
+           WHEN attempts < $3 THEN 'pending'
+           ELSE 'failed'
+         END,
+         error_message = CASE WHEN status = 'processed' THEN error_message ELSE $1 END,
+         updated_at = CASE WHEN status = 'processed' THEN updated_at ELSE NOW() END
+     WHERE idempotency_key = $2
+     RETURNING idempotency_key,status,attempts`,
     [errorMessage, idempotencyKey, MAX_OUTBOX_ATTEMPTS]
   );
+  const acknowledgement = result.rows[0];
+  const attempts = Number(acknowledgement?.attempts);
+  const expectedFailureStatus = attempts < MAX_OUTBOX_ATTEMPTS ? 'pending' : 'failed';
+  if (
+    result.rows.length !== 1
+    || acknowledgement.idempotency_key !== idempotencyKey
+    || !Number.isInteger(attempts)
+    || (
+      acknowledgement.status !== 'processed'
+      && acknowledgement.status !== expectedFailureStatus
+    )
+  ) {
+    throw new Error(`OUTBOX_ACK_MISSING: failure acknowledgement ${idempotencyKey} is not exact`);
+  }
+  return { ...acknowledgement, attempts };
 }
 
 export interface OutboxWorkerHandles {

@@ -141,6 +141,25 @@ function setupTransaction() {
   });
 }
 
+function stripeRelease(escrowId: string) {
+  return {
+    escrowId,
+    stripeTransferId: 'tr_test_gdpr',
+    stripeTransferWitness: {
+      provider: 'STRIPE' as const,
+      transferId: 'tr_test_gdpr',
+      amountCents: 4150,
+      currency: 'usd',
+      destinationAccountId: 'acct_test',
+      reversed: false,
+      amountReversedCents: 0,
+      escrowId,
+      taskId: 'task-race',
+      payoutRecipientUserId: 'worker-1',
+    },
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   payoutDestination.mockImplementation(async (query,binding) => {
@@ -354,7 +373,7 @@ describe('Attack 7: Deletion timing — task completes, XP queued, deletion race
       // logEscrowEvent
       .mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
-    const result = await EscrowService.release({ escrowId, stripeTransferId: 'tr_test_gdpr' });
+    const result = await EscrowService.release(stripeRelease(escrowId));
 
     expect(result.success).toBe(true);
     expect(XPService.awardXP).toHaveBeenCalledWith(

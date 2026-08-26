@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const reconcileDuePartialRefundEffects = vi.hoisted(() => vi.fn());
+const markOutboxEventProcessed = vi.hoisted(() => vi.fn());
+
 vi.mock('../../src/db', () => ({ db: { query: vi.fn() } }));
 vi.mock('../../src/logger', () => ({
   workerLogger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) },
@@ -25,6 +28,15 @@ vi.mock('../../src/services/BusinessNotificationDigestService', () => ({
 vi.mock('../../src/services/MediaUploadFinalizationService', () => ({
   expireMediaUploadReceipts: vi.fn(),
 }));
+vi.mock('../../src/services/EscrowPartialRefundReconciliationService', () => ({
+  reconcileDuePartialRefundEffects,
+}));
+vi.mock('../../src/jobs/outbox-worker', () => ({
+  markOutboxEventProcessed,
+}));
+vi.mock('../../src/lib/outbox-helpers.js', () => ({
+  writeToOutbox: vi.fn(),
+}));
 
 import type { Job } from 'bullmq';
 import { processMaintenanceJob } from '../../src/jobs/maintenance-worker';
@@ -44,7 +56,11 @@ const recoverNotificationDelivery = vi.mocked(NotificationDeliveryRecoveryServic
 const createBusinessDigests = vi.mocked(BusinessNotificationDigestService.createPreviousWeekDigests);
 const expireMediaUploads = vi.mocked(expireMediaUploadReceipts);
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  reconcileDuePartialRefundEffects.mockResolvedValue({ reconciled: [], failed: [] });
+  markOutboxEventProcessed.mockResolvedValue(undefined);
+});
 
 describe('dispatch expiry maintenance worker', () => {
   it('runs a bounded batch', async () => {
@@ -118,6 +134,55 @@ describe('notification delivery maintenance worker', () => {
       name: 'notification.recover_due', data: { limit: 10_000 },
     } as Job);
     expect(recoverNotificationDelivery).toHaveBeenCalledWith(100);
+  });
+});
+
+describe('partial-refund post-terminal maintenance worker', () => {
+  it('runs a bounded permanent sweep and acknowledges only converged exact outbox keys', async () => {
+    reconcileDuePartialRefundEffects.mockResolvedValueOnce({
+      reconciled: [
+        { escrowId: 'escrow-1', outboxKey: 'escrow.partial_refund_requested:escrow-1:1' },
+        { escrowId: 'escrow-2', outboxKey: null },
+      ],
+      failed: [],
+    });
+
+    await processMaintenanceJob({
+      name: 'partial-refund.reconcile_due', data: { limit: 10_000 },
+    } as Job);
+
+    expect(reconcileDuePartialRefundEffects).toHaveBeenCalledWith(100);
+    expect(markOutboxEventProcessed).toHaveBeenCalledOnce();
+    expect(markOutboxEventProcessed).toHaveBeenCalledWith(
+      'escrow.partial_refund_requested:escrow-1:1',
+    );
+  });
+
+  it('throws without acknowledgement when any candidate did not converge', async () => {
+    reconcileDuePartialRefundEffects.mockResolvedValueOnce({
+      reconciled: [],
+      failed: [{ escrowId: 'escrow-1', error: 'insurance unavailable' }],
+    });
+
+    await expect(processMaintenanceJob({
+      name: 'partial-refund.reconcile_due', data: { limit: 50 },
+    } as Job)).rejects.toThrow('1 effect failure');
+    expect(markOutboxEventProcessed).not.toHaveBeenCalled();
+  });
+
+  it('throws when acknowledgement fails so the next scheduled run retries it', async () => {
+    reconcileDuePartialRefundEffects.mockResolvedValueOnce({
+      reconciled: [{
+        escrowId: 'escrow-1',
+        outboxKey: 'escrow.partial_refund_requested:escrow-1:1',
+      }],
+      failed: [],
+    });
+    markOutboxEventProcessed.mockRejectedValueOnce(new Error('outbox unavailable'));
+
+    await expect(processMaintenanceJob({
+      name: 'partial-refund.reconcile_due', data: { limit: 50 },
+    } as Job)).rejects.toThrow('1 outbox acknowledgement failure');
   });
 });
 

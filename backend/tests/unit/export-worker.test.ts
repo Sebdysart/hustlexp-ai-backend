@@ -82,6 +82,7 @@ import { db } from '../../src/db.js';
 import { r2 } from '../../src/storage/r2.js';
 import { writeToOutbox } from '../../src/lib/outbox-helpers.js';
 import { markOutboxEventProcessed, markOutboxEventFailed } from '../../src/jobs/outbox-worker.js';
+import { outboxTransportJobId } from '../../src/jobs/OutboxIdentity.js';
 import { processExportJob } from '../../src/jobs/export-worker.js';
 import type { Job } from 'bullmq';
 
@@ -95,9 +96,11 @@ const mockMarkFailed = vi.mocked(markOutboxEventFailed);
 // Helpers
 // ────────────────────────────────────────────────────────────────────────────
 
+const EXPORT_OUTBOX_KEY = 'export.requested:export-1:1';
+
 function makeJob(overrides: Record<string, unknown> = {}): Job<any> {
   return {
-    id: 'bullmq-job-001',
+    id: outboxTransportJobId(EXPORT_OUTBOX_KEY),
     data: {
       aggregate_type: 'export',
       aggregate_id: 'export-1',
@@ -106,6 +109,7 @@ function makeJob(overrides: Record<string, unknown> = {}): Job<any> {
         exportId: 'export-1',
         userId: 'user-1',
         format: 'json',
+        _outbox_key: EXPORT_OUTBOX_KEY,
         ...overrides,
       },
     },
@@ -165,6 +169,17 @@ describe('processExportJob', () => {
     vi.resetAllMocks();
     mockDb.transaction = mockTransaction;
     mockR2.generateExportKey.mockReturnValue('exports/user-1/export-1/data.json');
+  });
+
+  it('rejects a forged BullMQ transport ID before any export or database effect', async () => {
+    const forged = makeJob();
+    Object.assign(forged, { id: outboxTransportJobId('export.requested:other:1') });
+
+    await expect(processExportJob(forged)).rejects.toThrow('OUTBOX_IDENTITY_MISMATCH');
+    expect(mockDb.transaction).not.toHaveBeenCalled();
+    expect(mockR2.uploadFile).not.toHaveBeenCalled();
+    expect(mockMarkProcessed).not.toHaveBeenCalled();
+    expect(mockMarkFailed).not.toHaveBeenCalled();
   });
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -263,7 +278,7 @@ describe('processExportJob', () => {
 
       await processExportJob(makeJob());
 
-      expect(mockMarkProcessed).toHaveBeenCalledWith('bullmq-job-001');
+      expect(mockMarkProcessed).toHaveBeenCalledWith(EXPORT_OUTBOX_KEY);
       expect(mockR2.uploadFile).not.toHaveBeenCalled();
       expect(mockWriteToOutbox).not.toHaveBeenCalled();
     });
@@ -347,7 +362,7 @@ describe('processExportJob', () => {
       expect(mockWriteToOutbox).toHaveBeenCalledWith(
         expect.objectContaining({ eventType: 'export.ready' })
       );
-      expect(mockMarkProcessed).toHaveBeenCalledWith('bullmq-job-001');
+      expect(mockMarkProcessed).toHaveBeenCalledWith(EXPORT_OUTBOX_KEY);
 
       // Final DB update must set status='ready'
       const finalUpdateCall = mockDb.query.mock.calls.find(
@@ -440,7 +455,7 @@ describe('processExportJob', () => {
         ([sql]) => (sql as string).includes("status = 'failed'")
       );
       expect(failedUpdateCall).toBeDefined();
-      expect(mockMarkFailed).toHaveBeenCalledWith('bullmq-job-001', 'R2 upload failed');
+      expect(mockMarkFailed).toHaveBeenCalledWith(EXPORT_OUTBOX_KEY, 'R2 upload failed');
     });
 
     it('gracefully handles DB failure during status=failed update (does not swallow original error)', async () => {

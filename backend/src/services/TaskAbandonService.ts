@@ -100,25 +100,63 @@ workerAbandon: async (taskId: string, workerId: string, reason?: string): Promis
         // if the payment worker fails to process the refund in time.
         // escrow-action-worker requires state=LOCKED_DISPUTE to process
         // escrow.refund_requested events (see escrow-action-worker.ts:208).
-        const escrowLock = await query<{ id: string }>(
+        const escrowLock = await query<{ id: string; version: number }>(
           `UPDATE escrows
            SET state = 'LOCKED_DISPUTE',
                version = version + 1,
                updated_at = NOW()
            WHERE task_id = $1 AND state = 'FUNDED'
-           RETURNING id`,
+           RETURNING id,version`,
           [taskId]
         );
 
         if ((escrowLock.rowCount ?? 0) > 0) {
-          const escrowId = escrowLock.rows[0].id;
+          const lockedEscrow = escrowLock.rows[0];
+          const escrowId = lockedEscrow.id;
+          const authorityMetadata = {
+            event_type: 'worker_abandon_refund_authority_v1',
+            task_id: taskId,
+            worker_id: workerId,
+            reason: reason ?? null,
+            canonical_state: 'LOCKED_DISPUTE',
+            canonical_version: lockedEscrow.version,
+          };
+          const authorityKey = `worker-abandon-refund-authority-v1:${escrowId}:${taskId}:${lockedEscrow.version}`;
+          const authority = await query<{ metadata: unknown }>(
+            `WITH attempted AS (
+               INSERT INTO escrow_events
+                 (escrow_id,from_state,to_state,actor_id,actor_type,metadata,idempotency_key)
+               VALUES ($1,'FUNDED','LOCKED_DISPUTE',$2,'user',$3::jsonb,$4)
+               ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+               RETURNING metadata
+             )
+             SELECT metadata FROM attempted
+             UNION ALL
+             SELECT metadata FROM escrow_events
+              WHERE escrow_id=$1
+                AND from_state='FUNDED' AND to_state='LOCKED_DISPUTE'
+                AND actor_id=$2 AND actor_type='user'
+                AND metadata::jsonb=$3::jsonb
+                AND idempotency_key=$4
+                AND NOT EXISTS (SELECT 1 FROM attempted)`,
+            [escrowId, workerId, JSON.stringify(authorityMetadata), authorityKey],
+          );
+          if (authority.rows.length !== 1) {
+            throw new Error(
+              `Worker-abandon refund authority conflicts for escrow ${escrowId}`,
+            );
+          }
           await writeToOutbox(
             {
               eventType: 'escrow.refund_requested',
               aggregateType: 'escrow',
               aggregateId: escrowId,
-              eventVersion: 1,
-              payload: { escrowId, reason: 'worker_abandoned', taskId, workerId },
+              eventVersion: lockedEscrow.version,
+              payload: {
+                escrow_id: escrowId,
+                task_id: taskId,
+                reason: 'worker_abandoned',
+              },
               queueName: 'critical_payments',
               idempotencyKey: `escrow.refund_on_worker_abandon:${escrowId}:${taskId}`,
             },

@@ -18,6 +18,7 @@ import { db } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { stripeBreaker } from '../middleware/circuit-breaker.js';
 import { stripeLogger } from '../logger.js';
+import { newPaymentCreationFailure } from './NewPaymentCreationGuard.js';
 
 // ============================================================================
 // INITIALIZATION
@@ -180,6 +181,9 @@ async function getOrCreateConnectAccount(
   email: string,
   fullName: string
 ): Promise<ServiceResult<{ accountId: string; isNew: boolean }>> {
+  const frozen = newPaymentCreationFailure('processor_account');
+  if (frozen) return frozen;
+
   // Check if user already has a connect account
   const userResult = await db.query<{ stripe_connect_id: string | null }>(
     'SELECT stripe_connect_id FROM users WHERE id = $1',
@@ -346,6 +350,9 @@ export const StripeConnectService = {
     returnUrl: string;
     collectTaxInfo?: boolean;
   }): Promise<ServiceResult<OnboardingLinkResult>> => {
+    const frozen = newPaymentCreationFailure('processor_account');
+    if (frozen) return frozen;
+
     const { userId, email, fullName, refreshUrl, returnUrl, collectTaxInfo = true } = params;
 
     if (!stripe) {
@@ -504,6 +511,9 @@ export const StripeConnectService = {
     weeklyAnchor?: string;
     monthlyAnchor?: number;
   }): Promise<ServiceResult<PayoutSettings>> => {
+    const frozen = newPaymentCreationFailure('processor_account');
+    if (frozen) return frozen;
+
     const { userId, schedule, interval, weeklyAnchor, monthlyAnchor } = params;
 
     const accountId = await getConnectAccountId(userId);

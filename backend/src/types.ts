@@ -162,7 +162,7 @@ export interface Escrow {
   stripe_refund_id?: string;
   payout_provider?: 'STRIPE' | 'LOCAL_CERTIFICATION_TEST' | 'MANUAL_RECONCILIATION';
   provider_transfer_id?: string;
-  provider_transfer_status?: 'submitted' | 'processing' | 'paid' | 'manual_reconciliation';
+  provider_transfer_status?: 'submitted' | 'processing' | 'paid' | 'reversed' | 'manual_reconciliation';
   provider_transfer_paid_at?: Date;
   poster_id?: string;
   worker_id?: string;

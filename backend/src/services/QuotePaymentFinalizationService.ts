@@ -7,6 +7,7 @@ import {
   type MapQuoteToTaskParamsInput,
 } from './QuoteTaskParamsMapper.js';
 import { StripeQuotePaymentProvider } from './payment/StripeQuotePaymentProvider.js';
+import { newPaymentCreationFailure } from './NewPaymentCreationGuard.js';
 
 interface FinalizePaidQuoteInput {
   quoteId: string;
@@ -31,12 +32,6 @@ interface QuoteRow {
   status: string;
   environment: string | null;
   is_test: boolean;
-
-  business_organization_id: string | null;
-  business_location_id: string | null;
-  provider_service_profile_id: string | null;
-  claimed_by_user_id: string | null;
-  business_fulfiller_organization_id: string | null;
 }
 
 interface QuoteVersionRow {
@@ -54,6 +49,7 @@ interface QuoteVersionRow {
 interface DraftRow {
   id: string;
   lead_id: string | null;
+  poster_user_id: string | null;
   category: string;
   title: string | null;
   scope_summary: string | null;
@@ -64,7 +60,7 @@ interface DraftRow {
 
 interface LeadRow {
   id: string;
-  email: string;
+  user_id: string | null;
 }
 
 interface QuotePaymentRow {
@@ -76,10 +72,7 @@ interface QuotePaymentRow {
   status: 'PENDING' | 'SUCCEEDED' | 'FAILED' | 'REFUNDED';
 }
 
-function fail<T>(
-  code: string,
-  message: string,
-): ServiceResult<T> {
+function fail<T>(code: string, message: string): ServiceResult<T> {
   return {
     success: false,
     error: { code, message },
@@ -87,9 +80,43 @@ function fail<T>(
 }
 
 export async function finalizePaidQuote(
-  input: FinalizePaidQuoteInput,
+  input: FinalizePaidQuoteInput
 ): Promise<ServiceResult<FinalizePaidQuoteResult>> {
   try {
+    const replay = await db.query<{ task_id: string; escrow_id: string }>(
+      `
+      SELECT qp.task_id, e.id AS escrow_id
+      FROM quote_payments qp
+      JOIN tasks t ON t.id = qp.task_id
+      JOIN escrows e ON e.task_id = qp.task_id
+      WHERE qp.quote_id = $1
+        AND qp.quote_version_id = $2
+        AND qp.provider_payment_id = $3
+        AND qp.status = 'SUCCEEDED'
+        AND qp.task_id IS NOT NULL
+        AND t.poster_id = $4
+      ORDER BY e.created_at DESC
+      LIMIT 1
+      `,
+      [input.quoteId, input.quoteVersionId, input.paymentIntentId, input.posterId]
+    );
+    if (replay.rows[0]) {
+      return {
+        success: true,
+        data: {
+          taskId: replay.rows[0].task_id,
+          escrowId: replay.rows[0].escrow_id,
+          quoteId: input.quoteId,
+          quoteVersionId: input.quoteVersionId,
+          paymentIntentId: input.paymentIntentId,
+          replayed: true,
+        },
+      };
+    }
+
+    const frozen = newPaymentCreationFailure('quote_materialization');
+    if (frozen) return frozen;
+
     /*
      * Step 1:
      * Validate the quote/payment outside the DB transaction.
@@ -99,16 +126,16 @@ export async function finalizePaidQuote(
     const quoteContext = await db.query<{
       quote_id: string;
       quote_version_id: string;
-      poster_email: string;
-      lead_email: string;
+      draft_poster_id: string | null;
+      lead_user_id: string | null;
       total_cents: number;
     }>(
       `
       SELECT
         q.id AS quote_id,
         qv.id AS quote_version_id,
-        u.email AS poster_email,
-        l.email AS lead_email,
+        d.poster_user_id AS draft_poster_id,
+        l.user_id AS lead_user_id,
         qv.total_cents
       FROM quotes q
       JOIN quote_versions qv
@@ -118,45 +145,41 @@ export async function finalizePaidQuote(
         ON d.id = q.task_draft_id
       JOIN leads l
         ON l.id = d.lead_id
-      JOIN users u
-        ON u.id = $3
       WHERE q.id = $1
         AND qv.id = $2
       LIMIT 1
       `,
-      [input.quoteId, input.quoteVersionId, input.posterId],
+      [input.quoteId, input.quoteVersionId]
     );
 
     const context = quoteContext.rows[0];
 
     if (!context) {
-      return fail(
-        'QUOTE_NOT_FOUND',
-        'Quote or quote version was not found.',
-      );
+      return fail('QUOTE_NOT_FOUND', 'Quote or quote version was not found.');
     }
 
     if (
-      context.poster_email.trim().toLowerCase()
-      !== context.lead_email.trim().toLowerCase()
+      !context.draft_poster_id
+      || !context.lead_user_id
+      || context.draft_poster_id !== context.lead_user_id
+      || context.draft_poster_id !== input.posterId
     ) {
       return fail(
         'QUOTE_POSTER_MISMATCH',
-        'This quote does not belong to the authenticated poster.',
+        'This quote does not belong to the authenticated poster.'
       );
     }
 
     /*
      * Verify that the payment actually belongs to this quote.
      */
-    const verified =
-      await StripeQuotePaymentProvider.verifySucceededPayment({
-        paymentIntentId: input.paymentIntentId,
-        quoteId: input.quoteId,
-        quoteVersionId: input.quoteVersionId,
-        posterId: input.posterId,
-        amountCents: Number(context.total_cents),
-      });
+    const verified = await StripeQuotePaymentProvider.verifySucceededPayment({
+      paymentIntentId: input.paymentIntentId,
+      quoteId: input.quoteId,
+      quoteVersionId: input.quoteVersionId,
+      posterId: input.posterId,
+      amountCents: Number(context.total_cents),
+    });
 
     if (!verified.success) {
       return {
@@ -173,43 +196,28 @@ export async function finalizePaidQuote(
       const quoteResult = await query<QuoteRow>(
         `
         SELECT
-  	id,
-  	task_draft_id,
-  	active_version_id,
-  	status,
-  	environment,
-  	is_test,
-  	business_organization_id,
-  	business_location_id,
-  	provider_service_profile_id,
-  	claimed_by_user_id
-	FROM quotes
-	WHERE id = $1
-	FOR UPDATE
+          id,
+          task_draft_id,
+          active_version_id,
+          status,
+          environment,
+          is_test
+        FROM quotes
+        WHERE id = $1
+        FOR UPDATE
         `,
-        [input.quoteId],
+        [input.quoteId]
       );
 
-	const quote = quoteResult.rows[0];
+      const quote = quoteResult.rows[0];
 
-	if (!quote) {
-	  throw new Error('QUOTE_NOT_FOUND');
-	}
+      if (!quote) {
+        throw new Error('QUOTE_NOT_FOUND');
+      }
 
-	const hasBusinessClaim = Boolean(quote.business_organization_id);
-
-	if (hasBusinessClaim) {
-	  if (
-	    !quote.business_location_id ||
-	    !quote.provider_service_profile_id
-	  ) {
-	    throw new Error('BUSINESS_CLAIM_BINDING_INCOMPLETE');
-	  }
-	}
-
-	if (quote.active_version_id !== input.quoteVersionId) {
-	  throw new Error('QUOTE_VERSION_NOT_ACTIVE');
-	}
+      if (quote.active_version_id !== input.quoteVersionId) {
+        throw new Error('QUOTE_VERSION_NOT_ACTIVE');
+      }
 
       const versionResult = await query<QuoteVersionRow>(
         `
@@ -228,7 +236,7 @@ export async function finalizePaidQuote(
           AND quote_id = $2
         FOR UPDATE
         `,
-        [input.quoteVersionId, input.quoteId],
+        [input.quoteVersionId, input.quoteId]
       );
 
       const version = versionResult.rows[0];
@@ -256,10 +264,23 @@ export async function finalizePaidQuote(
           AND quote_version_id = $2
         FOR UPDATE
         `,
-        [input.quoteId, input.quoteVersionId],
+        [input.quoteId, input.quoteVersionId]
       );
 
       const existingPayment = paymentResult.rows[0];
+
+      if (existingPayment) {
+        const recovery = await query<{ operation_state: string }>(
+          `SELECT operation_state
+           FROM quote_payment_recovery_operations
+           WHERE quote_payment_id = $1
+           LIMIT 1`,
+          [existingPayment.id],
+        );
+        if (recovery.rows[0]) {
+          throw new Error('QUOTE_PAYMENT_RECOVERY_ACTIVE');
+        }
+      }
 
       if (existingPayment?.status === 'SUCCEEDED' && existingPayment.task_id) {
         const escrowResult = await query<{ id: string }>(
@@ -270,7 +291,7 @@ export async function finalizePaidQuote(
           ORDER BY created_at DESC
           LIMIT 1
           `,
-          [existingPayment.task_id],
+          [existingPayment.task_id]
         );
 
         const escrow = escrowResult.rows[0];
@@ -286,10 +307,7 @@ export async function finalizePaidQuote(
         };
       }
 
-      if (
-        existingPayment
-        && existingPayment.provider_payment_id !== input.paymentIntentId
-      ) {
+      if (existingPayment && existingPayment.provider_payment_id !== input.paymentIntentId) {
         throw new Error('QUOTE_PAYMENT_IDEMPOTENCY_CONFLICT');
       }
 
@@ -305,6 +323,7 @@ export async function finalizePaidQuote(
         SELECT
           id,
           lead_id,
+          poster_user_id,
           category,
           title,
           scope_summary,
@@ -315,7 +334,7 @@ export async function finalizePaidQuote(
         WHERE id = $1
         FOR UPDATE
         `,
-        [quote.task_draft_id],
+        [quote.task_draft_id]
       );
 
       const draft = draftResult.rows[0];
@@ -330,12 +349,13 @@ export async function finalizePaidQuote(
 
       const leadResult = await query<LeadRow>(
         `
-        SELECT id, email
+        SELECT id, user_id
         FROM leads
         WHERE id = $1
         LIMIT 1
+        FOR UPDATE
         `,
-        [draft.lead_id],
+        [draft.lead_id]
       );
 
       const lead = leadResult.rows[0];
@@ -344,25 +364,11 @@ export async function finalizePaidQuote(
         throw new Error('LEAD_NOT_FOUND');
       }
 
-      const posterResult = await query<{ email: string }>(
-        `
-        SELECT email
-        FROM users
-        WHERE id = $1
-        LIMIT 1
-        `,
-        [input.posterId],
-      );
-
-      const poster = posterResult.rows[0];
-
-      if (!poster) {
-        throw new Error('POSTER_NOT_FOUND');
-      }
-
       if (
-        poster.email.trim().toLowerCase()
-        !== lead.email.trim().toLowerCase()
+        !draft.poster_user_id
+        || !lead.user_id
+        || draft.poster_user_id !== lead.user_id
+        || draft.poster_user_id !== input.posterId
       ) {
         throw new Error('QUOTE_POSTER_MISMATCH');
       }
@@ -388,43 +394,23 @@ export async function finalizePaidQuote(
           amount_cents = EXCLUDED.amount_cents,
           updated_at = NOW()
         `,
-        [
-          input.quoteId,
-          input.quoteVersionId,
-          input.paymentIntentId,
-          version.total_cents,
-        ],
+        [input.quoteId, input.quoteVersionId, input.paymentIntentId, version.total_cents]
       );
 
       const taskParamsInput: MapQuoteToTaskParamsInput = {
         posterId: input.posterId,
         draft,
         quoteVersion: version,
-        automationClassification:
-          quote.environment === 'TEST'
-            ? 'CONTROLLED_TEST'
-            : 'PRODUCTION',
+        automationClassification: quote.environment === 'TEST' ? 'CONTROLLED_TEST' : 'PRODUCTION',
         clientIdempotencyKey: `quote-finalize:${input.quoteId}:v${input.quoteVersionId}`,
-        businessOrganizationId: quote.business_organization_id,
-        businessLocationId: quote.business_location_id,
-        providerServiceProfileId: quote.provider_service_profile_id,
-        claimedByUserId: quote.claimed_by_user_id,  
-        businessFulfillerOrganizationId: quote.business_organization_id ?? undefined,       
       };
 
-      const taskParams =
-        mapQuoteToCreateTaskParams(taskParamsInput);
+      const taskParams = mapQuoteToCreateTaskParams(taskParamsInput);
 
-      const taskResult =
-        await TaskCreateService.createInTransaction(
-          query,
-          taskParams,
-        );
+      const taskResult = await TaskCreateService.createInTransaction(query, taskParams);
 
       if (!taskResult.success) {
-        throw new Error(
-          `TASK_CREATE_FAILED:${taskResult.error.code}:${taskResult.error.message}`,
-        );
+        throw new Error(`TASK_CREATE_FAILED:${taskResult.error.code}:${taskResult.error.message}`);
       }
 
       const taskId = taskResult.data.id;
@@ -432,29 +418,23 @@ export async function finalizePaidQuote(
       /*
        * TaskCreateService already created the pending escrow.
        */
-      const escrowResult = await query<{
-        id: string;
-        state: string;
-        amount: number;
-      }>(
+      const escrowResult = await query<{ id: string }>(
         `
-        SELECT
-          id,
-          state,
-          amount
+        SELECT id
         FROM escrows
         WHERE task_id = $1
+          AND state = 'PENDING'
         ORDER BY created_at DESC
         LIMIT 1
         FOR UPDATE
         `,
-        [taskId],
+        [taskId]
       );
 
       const escrow = escrowResult.rows[0];
 
       if (!escrow) {
-        throw new Error('ESCROW_NOT_CREATED');
+        throw new Error('PENDING_ESCROW_NOT_CREATED');
       }
 
       /*
@@ -470,107 +450,33 @@ export async function finalizePaidQuote(
           AND quote_version_id = $3
           AND provider_payment_id = $4
         `,
-        [
-          taskId,
-          input.quoteId,
-          input.quoteVersionId,
-          input.paymentIntentId,
-        ],
+        [taskId, input.quoteId, input.quoteVersionId, input.paymentIntentId]
       );
 
       return {
         taskId,
         escrowId: escrow.id,
-        replayed: taskResult.replayed === true,
+        replayed: false,
       };
     });
 
     /*
-    * Step 3:
-    * Fund the escrow.
-    *
-    * The task-create transaction may be replayed after a partial finalization.
-    * In that case the escrow may already be FUNDED. Resume safely instead of
-    * trying to fund it a second time.
-    */
-    const escrowState = await db.query<{ state: string }>(
-      `
-      SELECT state
-      FROM escrows
-      WHERE id = $1
-      FOR UPDATE
-      `,
-      [materialized.escrowId],
-    );
+     * Step 3:
+     * Fund the escrow.
+     *
+     * EscrowService.fund() owns its own transaction. It is idempotent and
+     * will safely convert the PENDING escrow created above to FUNDED.
+     */
+    const funded = await EscrowService.fund({
+      escrowId: materialized.escrowId,
+      stripePaymentIntentId: input.paymentIntentId,
+    });
 
-    const currentEscrowState = escrowState.rows[0]?.state;
-
-    if (!currentEscrowState) {
+    if (!funded.success) {
       return {
         success: false,
-        error: {
-          code: 'ESCROW_NOT_FOUND',
-          message: 'The task escrow could not be found during payment finalization.',
-        },
+        error: funded.error,
       };
-    }
-
-    if (currentEscrowState === 'PENDING') {
-      const funded = await EscrowService.fund({
-        escrowId: materialized.escrowId,
-        stripePaymentIntentId: input.paymentIntentId,
-      });
-
-      if (!funded.success) {
-        return {
-          success: false,
-          error: funded.error,
-        };
-      }
-    } else if (currentEscrowState !== 'FUNDED') {
-      return {
-        success: false,
-        error: {
-          code: 'ESCROW_INVALID_STATE',
-          message: `Cannot finalize payment with escrow in state '${currentEscrowState}'.`,
-        },
-      };
-    }
-    // Business quote payment is the Business's commitment to perform.
-    // Once the customer has funded the escrow, move the Business task into execution.
-    const accepted = await db.query<{ id: string }>(
-      `
-      UPDATE tasks
-      SET
-        state = 'ACCEPTED',
-        progress_state = 'ACCEPTED',
-        progress_updated_at = NOW(),
-        progress_by = NULL,
-        accepted_at = COALESCE(accepted_at, NOW()),
-        updated_at = NOW()
-      WHERE id = $1
-        AND state = 'OPEN'
-        AND business_fulfiller_organization_id IS NOT NULL
-        AND worker_id IS NULL
-        AND orchestration_mode = 'OPS_MANUAL'
-      RETURNING id
-      `,
-      [materialized.taskId],
-    );
-
-    if ((accepted.rowCount ?? 0) !== 1) {
-      const currentTask = await db.query<{ state: string }>(
-        `
-        SELECT state
-        FROM tasks
-        WHERE id = $1
-        `,
-        [materialized.taskId],
-      );
-
-      if (currentTask.rows[0]?.state !== 'ACCEPTED') {
-        throw new Error('BUSINESS_TASK_ACCEPT_FAILED');
-      }
     }
 
     /*
@@ -588,12 +494,7 @@ export async function finalizePaidQuote(
         AND provider_payment_id = $3
         AND task_id = $4
       `,
-      [
-        input.quoteId,
-        input.quoteVersionId,
-        input.paymentIntentId,
-        materialized.taskId,
-      ],
+      [input.quoteId, input.quoteVersionId, input.paymentIntentId, materialized.taskId]
     );
 
     await db.query(
@@ -606,7 +507,7 @@ export async function finalizePaidQuote(
         AND quote_id = $2
         AND status = 'draft'
       `,
-      [input.quoteVersionId, input.quoteId],
+      [input.quoteVersionId, input.quoteId]
     );
 
     await db.query(
@@ -618,7 +519,7 @@ export async function finalizePaidQuote(
       WHERE id = $1
         AND status IN ('quote_ready', 'quote_send_ready')
       `,
-      [input.quoteId],
+      [input.quoteId]
     );
 
     return {
@@ -636,38 +537,16 @@ export async function finalizePaidQuote(
     const message = err instanceof Error ? err.message : String(err);
 
     const errors: Record<string, [string, string]> = {
-      QUOTE_NOT_FOUND: [
-        'QUOTE_NOT_FOUND',
-        'Quote not found.',
-      ],
+      QUOTE_NOT_FOUND: ['QUOTE_NOT_FOUND', 'Quote not found.'],
       QUOTE_VERSION_NOT_ACTIVE: [
         'QUOTE_VERSION_NOT_ACTIVE',
         'The requested quote version is not active.',
       ],
-      QUOTE_VERSION_NOT_FOUND: [
-        'QUOTE_VERSION_NOT_FOUND',
-        'Quote version not found.',
-      ],
-      QUOTE_EXPIRED: [
-        'QUOTE_EXPIRED',
-        'This quote has expired.',
-      ],
-      TASK_DRAFT_NOT_FOUND: [
-        'TASK_DRAFT_NOT_FOUND',
-        'Task draft not found.',
-      ],
-      TASK_DRAFT_LEAD_MISSING: [
-        'TASK_DRAFT_LEAD_MISSING',
-        'Task draft is not linked to a lead.',
-      ],
-      LEAD_NOT_FOUND: [
-        'LEAD_NOT_FOUND',
-        'Lead not found.',
-      ],
-      POSTER_NOT_FOUND: [
-        'POSTER_NOT_FOUND',
-        'Poster not found.',
-      ],
+      QUOTE_VERSION_NOT_FOUND: ['QUOTE_VERSION_NOT_FOUND', 'Quote version not found.'],
+      QUOTE_EXPIRED: ['QUOTE_EXPIRED', 'This quote has expired.'],
+      TASK_DRAFT_NOT_FOUND: ['TASK_DRAFT_NOT_FOUND', 'Task draft not found.'],
+      TASK_DRAFT_LEAD_MISSING: ['TASK_DRAFT_LEAD_MISSING', 'Task draft is not linked to a lead.'],
+      LEAD_NOT_FOUND: ['LEAD_NOT_FOUND', 'Lead not found.'],
       QUOTE_POSTER_MISMATCH: [
         'QUOTE_POSTER_MISMATCH',
         'This quote does not belong to the authenticated poster.',
@@ -684,9 +563,9 @@ export async function finalizePaidQuote(
         'QUOTE_PAYMENT_IDEMPOTENCY_CONFLICT',
         'This quote is already bound to a different payment.',
       ],
-      BUSINESS_CLAIM_BINDING_INCOMPLETE: [
-  	'BUSINESS_CLAIM_BINDING_INCOMPLETE',
-  	'Business quote is missing its organization, location, or service profile binding.',
+      QUOTE_PAYMENT_RECOVERY_ACTIVE: [
+        'QUOTE_PAYMENT_RECOVERY_ACTIVE',
+        'This quote payment is owned by the recovery and reconciliation lane.',
       ],
     };
 
@@ -699,15 +578,9 @@ export async function finalizePaidQuote(
     if (message.startsWith('TASK_CREATE_FAILED:')) {
       const [, code, ...rest] = message.split(':');
 
-      return fail(
-        code || 'TASK_CREATE_FAILED',
-        rest.join(':') || 'Task creation failed.',
-      );
+      return fail(code || 'TASK_CREATE_FAILED', rest.join(':') || 'Task creation failed.');
     }
 
-    return fail(
-      'QUOTE_FINALIZATION_FAILED',
-      'Unable to finalize the paid quote.',
-    );
+    return fail('QUOTE_FINALIZATION_FAILED', 'Unable to finalize the paid quote.');
   }
 }

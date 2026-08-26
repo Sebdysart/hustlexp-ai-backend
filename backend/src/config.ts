@@ -10,6 +10,7 @@ export const config = {
   // Database (standard PostgreSQL; Railway in production)
   database: {
     url: process.env.DATABASE_URL || '',
+    migrationUrl: process.env.MIGRATION_DATABASE_URL || '',
     pgbouncer: process.env.DB_PGBOUNCER === 'true',
   },
 
@@ -86,16 +87,6 @@ export const config = {
       secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY || '',
       bucketName: process.env.R2_BUCKET_NAME || process.env.BUCKET_NAME || 'hustlexp-storage',
       region: process.env.R2_REGION || process.env.AWS_DEFAULT_REGION || 'auto',
-    },
-  },
-  
-  backblaze: {
-    b2: {
-      endpoint: process.env.B2_ENDPOINT || '',
-      region: process.env.B2_REGION || '',
-      keyId: process.env.B2_KEY_ID || '',
-      applicationKey: process.env.B2_APPLICATION_KEY || '',
-      bucketName: process.env.B2_BUCKET_NAME || '',
     },
   },
 
@@ -225,6 +216,81 @@ export const config = {
   },
 };
 
+type DatabaseConnectionIdentity = {
+  connection: string;
+  role: string | null;
+};
+
+function databaseConnectionIdentity(value: string): DatabaseConnectionIdentity | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = new URL(trimmed);
+    const rawProtocol = parsed.protocol.toLowerCase();
+    const protocol = rawProtocol === 'postgres:' ? 'postgresql:' : rawProtocol;
+    const hostname = parsed.hostname.toLowerCase();
+    const port = parsed.port || (protocol === 'postgresql:' ? '5432' : '');
+    const pathname = parsed.pathname.replace(/\/+$/, '') || '/';
+    const role = parsed.username ? decodeURIComponent(parsed.username) : null;
+    const query = [...parsed.searchParams.entries()]
+      .filter(([key]) => key.toLowerCase() !== 'password')
+      .sort(([leftKey, leftValue], [rightKey, rightValue]) =>
+        leftKey.localeCompare(rightKey) || leftValue.localeCompare(rightValue)
+      )
+      .map(([key, entryValue]) => `${key}=${entryValue}`)
+      .join('&');
+    return {
+      connection: `${protocol}//${role ?? ''}@${hostname}:${port}${pathname}${query ? `?${query}` : ''}`,
+      role,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Validate the runtime/migrator privilege boundary without returning or logging
+ * either connection string or authenticated role name.
+ */
+export function databasePrivilegeSeparationErrors(
+  runtimeDatabaseUrl: string,
+  migrationDatabaseUrl: string,
+  options: { requireMigrationUrl?: boolean } = {}
+): string[] {
+  const errors: string[] = [];
+  const runtimeUrl = runtimeDatabaseUrl.trim();
+  const migrationUrl = migrationDatabaseUrl.trim();
+  if (!runtimeUrl) errors.push('DATABASE_URL is required');
+  if (options.requireMigrationUrl && !migrationUrl) {
+    errors.push('MIGRATION_DATABASE_URL is required for migration execution');
+  }
+  if (!runtimeUrl || !migrationUrl) return errors;
+
+  const runtime = databaseConnectionIdentity(runtimeUrl);
+  const migrator = databaseConnectionIdentity(migrationUrl);
+  if (
+    runtimeUrl === migrationUrl
+    || (runtime && migrator && runtime.connection === migrator.connection)
+  ) {
+    errors.push('Runtime and migration database connections must be distinct');
+  }
+  if (runtime?.role && migrator?.role && runtime.role === migrator.role) {
+    errors.push('Runtime and migration database roles must be distinct');
+  }
+  return [...new Set(errors)];
+}
+
+/** Migration-only validation. Runtime boot intentionally does not require this URL. */
+export function validateMigrationConfig(
+  runtimeDatabaseUrl: string = process.env.DATABASE_URL ?? '',
+  migrationDatabaseUrl: string = process.env.MIGRATION_DATABASE_URL ?? ''
+): { valid: boolean; errors: string[] } {
+  const errors = databasePrivilegeSeparationErrors(runtimeDatabaseUrl, migrationDatabaseUrl, {
+    requireMigrationUrl: true,
+  });
+  return { valid: errors.length === 0, errors };
+}
+
 function firebaseConfigurationErrors(): string[] {
   const errors: string[] = [];
   if (!config.firebase.projectId) errors.push('FIREBASE_PROJECT_ID is required');
@@ -258,6 +324,11 @@ function paymentCreationModeErrors(): string[] {
   const mode = process.env.HX_PAYMENT_CREATION_MODE?.trim().toLowerCase();
   if (mode && mode !== 'enabled' && mode !== 'frozen') {
     return ['HX_PAYMENT_CREATION_MODE must be either enabled or frozen'];
+  }
+  if (mode === 'enabled') {
+    return [
+      'HX_PAYMENT_CREATION_MODE=enabled is forbidden while underwriting decisions remain unresolved',
+    ];
   }
   return [];
 }
@@ -360,8 +431,12 @@ function productionConfigurationErrors(): string[] {
   const queueErrors = process.env.QUEUE_HMAC_SECRET
     ? []
     : ['QUEUE_HMAC_SECRET is required in production (HMAC signing for financial BullMQ jobs)'];
+  const migrationCredentialErrors = config.database.migrationUrl
+    ? ['MIGRATION_DATABASE_URL must not be visible to runtime processes']
+    : [];
   return [
     ...queueErrors,
+    ...migrationCredentialErrors,
     ...firebaseConfigurationErrors(),
     ...stripeConfigurationErrors(),
     ...redisConfigurationErrors(),
@@ -372,7 +447,10 @@ function productionConfigurationErrors(): string[] {
 
 /** Validate required configuration and fail closed in production. */
 export function validateConfig(): { valid: boolean; errors: string[]; warnings: string[] } {
-  const errors = config.database.url ? [] : ['DATABASE_URL is required'];
+  const errors = databasePrivilegeSeparationErrors(
+    config.database.url,
+    config.database.migrationUrl
+  );
   const warnings: string[] = [];
   if (config.app.isProduction) {
     errors.push(...productionConfigurationErrors());

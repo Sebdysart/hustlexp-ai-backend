@@ -88,14 +88,26 @@ async function transitionToDispute(
   escrowId: string,
   row: DisputeLockRow | null,
 ): Promise<ServiceResult<Escrow>> {
+  // The canonical DisputeService owns the RELEASED -> LOCKED_DISPUTE lane
+  // because it atomically preserves the original provider-transfer identity.
+  // This legacy entrypoint must not erase that witness and create a refund path
+  // that can reach Stripe without first reversing the worker payout.
+  if (row?.state === 'RELEASED') {
+    return {
+      success: false,
+      error: {
+        code: ErrorCodes.INVALID_STATE,
+        message: 'Released escrow disputes require the canonical dispute command',
+      },
+    };
+  }
   const result = await query<Escrow>(
     `UPDATE escrows
         SET state = 'LOCKED_DISPUTE',
-            stripe_transfer_id = CASE WHEN state = 'RELEASED' THEN NULL ELSE stripe_transfer_id END,
             version = version + 1,
             updated_at = NOW()
       WHERE id = $1
-        AND state IN ('FUNDED', 'RELEASED')
+        AND state = 'FUNDED'
         AND version = $2
       RETURNING *`,
     [escrowId, row?.version],
@@ -110,7 +122,7 @@ async function transitionToDispute(
     success: false,
     error: {
       code: ErrorCodes.INVALID_STATE,
-      message: `Cannot lock escrow: current state is ${existing.data.state}, expected FUNDED or RELEASED`,
+      message: `Cannot lock escrow: current state is ${existing.data.state}, expected FUNDED`,
     },
   };
 }

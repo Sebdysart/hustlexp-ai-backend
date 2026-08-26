@@ -355,6 +355,6 @@ The final standard is one canonical business model, one governed transaction lif
 
 ## 14. Current execution
 
-The source-dated next action, active-node acceptance contract, migration lock, PR disposition, unresolved evidence targets, and operative-control alignment status live in the [Current Backend Checkpoint](HUSTLEXP_CURRENT_BACKEND_CHECKPOINT.md). A stale checkpoint blocks execution that depends on it; it does not defer publication or adoption of this stable mission contract. Publication of this contract does not by itself align `AGENTS.md`, `CLAUDE.md`, or `.greptile/rules.md`; full team alignment requires a separately authorized, independently accepted exact control candidate.
+The source-dated next action, active-node acceptance contract, migration lock, PR disposition, unresolved evidence targets, and operative-control alignment status live in the [Current Backend Checkpoint](HUSTLEXP_CURRENT_BACKEND_CHECKPOINT.md). A stale checkpoint blocks execution that depends on it; it does not defer publication or adoption of this stable mission contract. PR #275's publication of this contract did not by itself align `AGENTS.md`, `CLAUDE.md`, or `.greptile/rules.md`. The current D1/CI work includes replacement controls, but they become team-operative only when their exact final bytes receive independent review, fresh Governor acceptance, protected checks, and protected merge.
 
 Production remains `NO-GO` until every Gate 5 condition is independently certified and explicitly authorized.

@@ -40,6 +40,7 @@ LICENSE
 # Scripts (dev only); retain the production provenance generator.
 scripts/*
 !scripts/write-build-identity.mjs
+!scripts/start-runtime.sh
 
 # Migrations (run separately, not in container)
 migrations

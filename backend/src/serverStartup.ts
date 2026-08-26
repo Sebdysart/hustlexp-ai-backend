@@ -1,7 +1,11 @@
 import { config, validateConfig } from './config.js';
 import { db } from './db.js';
 import { logger } from './logger.js';
-import { runStartupMigrations } from './serverStartupMigrations.js';
+import {
+  verifyRuntimeSchema,
+  type RuntimeSchemaVerification,
+} from './serverStartupMigrations.js';
+import { assertTaskLocationCryptoConfigured } from './services/TaskLocationCrypto.js';
 
 const endpoints = {
   health: ['/health', '/health/detailed', '/health/readiness', '/health/liveness'],
@@ -19,8 +23,9 @@ const endpoints = {
   ],
 };
 
-export async function startServer(): Promise<void> {
+export async function startServer(): Promise<RuntimeSchemaVerification> {
   validateConfig();
+  if (config.app.isProduction) assertTaskLocationCryptoConfigured();
   const startLog = logger.child({ module: 'startup' });
   startLog.info('═══════════════════════════════════════════════════════════');
   startLog.info('  HustleXP Backend v1.0.0 — CONSTITUTIONAL AUTHORITY');
@@ -37,12 +42,21 @@ export async function startServer(): Promise<void> {
     await db.query('SELECT 1 as ping');
     startLog.info('Database connected');
   } catch (error) {
-    startLog.error({ err: error }, 'Database connection failed');
+    const code = (error as { code?: unknown } | null)?.code;
+    startLog.error({ code: typeof code === 'string' ? code : undefined }, 'Database connection failed');
+    process.exit(1);
+    throw new Error('Runtime database connection failed');
   }
-  await runStartupMigrations(startLog);
-  startLog.info({
-    environment: config.app.env,
-    port: config.app.port,
-    endpoints,
-  }, `HustleXP server listening on http://localhost:${config.app.port}`);
+  try {
+    const databaseAdmission = await verifyRuntimeSchema(startLog);
+    startLog.info({
+      environment: config.app.env,
+      port: config.app.port,
+      endpoints,
+    }, 'Runtime admission passed; server socket may now bind');
+    return databaseAdmission;
+  } catch {
+    process.exit(1);
+    throw new Error('Runtime database schema admission failed');
+  }
 }

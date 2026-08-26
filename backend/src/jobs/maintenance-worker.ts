@@ -11,6 +11,7 @@
 import { db } from '../db.js';
 import type { Job } from 'bullmq';
 import { workerLogger } from '../logger.js';
+import { writeToOutbox } from '../lib/outbox-helpers.js';
 const log = workerLogger.child({ worker: 'maintenance' });
 
 // ============================================================================
@@ -19,6 +20,7 @@ const log = workerLogger.child({ worker: 'maintenance' });
 
 interface RecoveryStuckStripeEventsPayload {
   timeoutMinutes?: number; // Default: 10 minutes
+  limit?: number;
 }
 
 interface DispatchExpiryPayload {
@@ -37,37 +39,71 @@ interface DispatchExpiryPayload {
  * - processed_at IS NULL (not finalized)
  * - claimed_at < NOW() - interval (stuck for > timeout)
  * 
- * Resets them to unclaimed state so they can be retried.
+ * Persists a canonical dispatcher job in the financial outbox while leaving
+ * the stale claim intact. The outbox worker signs the payload before queueing;
+ * the inbox worker atomically rotates the expired lease. Keeping the row
+ * claimed makes it a durable retry source if this process dies before the
+ * outbox insert commits.
  */
 export async function recoverStuckStripeEvents(job: Job<RecoveryStuckStripeEventsPayload>): Promise<void> {
   // Clamp timeoutMinutes to [1, 1440] — negative or zero values would cause the INTERVAL
   // expression to recover events that haven't actually timed out (or recover all of them),
   // and values above 1440 (24 h) are nonsensical for a maintenance window.
   const timeoutMinutes = Math.max(1, Math.min(1440, Number(job.data?.timeoutMinutes) || 10));
-  
-  // Use parameterized query for safety (INTERVAL requires string concatenation, but timeout is validated as number)
+  const limit = Math.max(1, Math.min(100, Number(job.data?.limit) || 100));
+
   const result = await db.query<{
     stripe_event_id: string;
+    type: string;
     claimed_at: Date;
   }>(
-    `UPDATE stripe_events
-     SET claimed_at = NULL,
-         result = NULL,
-         error_message = 'Recovered from stuck processing (worker crash)'
-     WHERE result = 'processing'
+    `SELECT stripe_event_id,type,claimed_at
+     FROM stripe_events
+     WHERE result='processing'
        AND processed_at IS NULL
        AND claimed_at < NOW() - INTERVAL '1 minute' * $1
-     RETURNING stripe_event_id, claimed_at`,
-    [timeoutMinutes]
+     ORDER BY claimed_at ASC
+     LIMIT $2`,
+    [timeoutMinutes, limit],
   );
-  
-  if (result.rowCount > 0) {
-    log.info({ recoveredCount: result.rowCount, timeoutMinutes }, 'Recovered stuck stripe events');
-    result.rows.forEach(row => {
-      log.info({ stripeEventId: row.stripe_event_id, stuckSince: row.claimed_at }, 'Recovered stuck stripe event');
-    });
-  } else {
+
+  if (result.rowCount === 0) {
     log.info({ timeoutMinutes }, 'No stuck stripe events found');
+    return;
+  }
+
+  const failures: Array<{ stripeEventId: string; message: string }> = [];
+  let requeued = 0;
+  for (const row of result.rows) {
+    const payload = { stripeEventId: row.stripe_event_id, type: row.type };
+    const claimedAt = row.claimed_at instanceof Date
+      ? row.claimed_at.getTime()
+      : new Date(row.claimed_at).getTime();
+    try {
+      await writeToOutbox({
+        eventType: 'stripe.event_received',
+        aggregateType: 'stripe_event',
+        aggregateId: row.stripe_event_id,
+        eventVersion: 1,
+        idempotencyKey: `stripe.event_received.recovery:${row.stripe_event_id}:${claimedAt}`,
+        payload,
+        queueName: 'critical_payments',
+      });
+      requeued += 1;
+      log.info(
+        { stripeEventId: row.stripe_event_id, stuckSince: row.claimed_at },
+        'Re-enqueued stale Stripe inbox claim',
+      );
+    } catch (error) {
+      failures.push({
+        stripeEventId: row.stripe_event_id,
+        message: error instanceof Error ? error.message : 'Unknown queue error',
+      });
+    }
+  }
+  log.info({ requeued, failed: failures.length, timeoutMinutes }, 'Stripe inbox crash recovery sweep completed');
+  if (failures.length > 0) {
+    throw new Error(`STRIPE_EVENT_RECOVERY_REQUEUE_FAILED: ${JSON.stringify(failures)}`);
   }
 }
 
@@ -191,6 +227,36 @@ async function recoverNotificationDelivery(job: Job): Promise<void> {
   log.info(result, 'Notification delivery recovery batch completed');
 }
 
+async function reconcilePartialRefundEffectsDue(job: Job): Promise<void> {
+  const { reconcileDuePartialRefundEffects } = await import(
+    '../services/EscrowPartialRefundReconciliationService.js'
+  );
+  const { markOutboxEventProcessed } = await import('./outbox-worker.js');
+  const result = await reconcileDuePartialRefundEffects(boundedJobLimit(job, 50));
+  const acknowledgementFailures: Array<{ escrowId: string; error: string }> = [];
+  for (const item of result.reconciled) {
+    if (!item.outboxKey) continue;
+    try {
+      await markOutboxEventProcessed(item.outboxKey);
+    } catch (error) {
+      acknowledgementFailures.push({
+        escrowId: item.escrowId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  log.info({
+    reconciled: result.reconciled.length,
+    failed: result.failed.length,
+    acknowledgementFailures: acknowledgementFailures.length,
+  }, 'Partial-refund post-terminal reconciliation sweep completed');
+  if (result.failed.length > 0 || acknowledgementFailures.length > 0) {
+    throw new Error(
+      `Partial-refund reconciliation sweep left ${result.failed.length} effect failure(s) and ${acknowledgementFailures.length} outbox acknowledgement failure(s)`,
+    );
+  }
+}
+
 async function releaseFocusDeferredNotifications(job: Job): Promise<void> {
   const { NotificationDeliveryRecoveryService } = await import('../services/NotificationDeliveryRecoveryService.js');
   const result = await NotificationDeliveryRecoveryService.releaseFocusDeferred(boundedJobLimit(job, 100));
@@ -225,6 +291,7 @@ const MAINTENANCE_HANDLERS: Record<string, MaintenanceHandler> = {
   'recurring.advance_reservations': advanceRecurringReservations,
   'completion.complete_due': completeUnattendedDue,
   'notification.recover_due': recoverNotificationDelivery,
+  'partial-refund.reconcile_due': reconcilePartialRefundEffectsDue,
   'notification.release_focus_deferred': releaseFocusDeferredNotifications,
   'notification.business_weekly_digest': createBusinessWeeklyDigests,
   'tax.annual_filing_requested': processAnnualTaxFiling,

@@ -8,6 +8,7 @@ const PAYMENT_LIFECYCLE_EVENT_TYPES = new Set([
   'payment_intent.payment_failed',
   'transfer.created',
   'transfer.failed',
+  'transfer.reversed',
   'charge.refunded',
 ]);
 

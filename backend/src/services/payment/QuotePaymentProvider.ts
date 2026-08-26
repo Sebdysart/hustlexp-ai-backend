@@ -17,6 +17,21 @@ export interface VerifyQuotePaymentInput {
   amountCents: number;
 }
 
+export type QuotePaymentRecoveryReason =
+  | 'UNDERWRITING_CONTAINMENT'
+  | 'POSTER_REQUESTED_CANCELLATION';
+
+export interface RecoverQuotePaymentInput extends VerifyQuotePaymentInput {
+  recoveryKey: string;
+  reasonCode: QuotePaymentRecoveryReason;
+}
+
+export interface RecoverQuotePaymentResult {
+  disposition: 'VOIDED' | 'REFUNDED';
+  providerStatus: string;
+  providerOperationId: string;
+}
+
 export interface QuotePaymentProvider {
   createPaymentIntent(
     input: CreateQuotePaymentInput,
@@ -29,4 +44,8 @@ export interface QuotePaymentProvider {
   verifySucceededPayment(
     input: VerifyQuotePaymentInput,
   ): Promise<ServiceResult<void>>;
+
+  recoverOrphanPayment(
+    input: RecoverQuotePaymentInput,
+  ): Promise<ServiceResult<RecoverQuotePaymentResult>>;
 }

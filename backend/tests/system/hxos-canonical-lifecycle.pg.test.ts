@@ -1,9 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7.js';
 import type { Job } from 'bullmq';
 import { db } from '../../src/db.js';
 import { processPaymentJob } from '../../src/jobs/payment-worker.js';
 import { signJobPayload } from '../../src/jobs/queues.js';
+import { outboxTransportJobId } from '../../src/jobs/OutboxIdentity.js';
 import { AutomationLifecycleReadService } from '../../src/services/AutomationLifecycleReadService.js';
 import { ControlledTestDurationEvidenceService } from '../../src/services/ControlledTestDurationEvidenceService.js';
 import { ControlledTestLiquidityService } from '../../src/services/ControlledTestLiquidityService.js';
@@ -189,13 +191,15 @@ function iso(value: Date | string | null): string | null {
 }
 
 function paymentJob(stripeEventId: string, eventType: string): Job {
+  const outboxKey = `stripe.event_received:${stripeEventId}`;
   const payload = {
     stripeEventId,
     eventType,
     eventCreated: new Date().toISOString(),
+    _outbox_key: outboxKey,
   };
   return {
-    id: `e2e:${stripeEventId}`,
+    id: outboxTransportJobId(outboxKey),
     data: {
       payload: {
         ...payload,
@@ -214,6 +218,18 @@ async function insertStripeEvent(
     `INSERT INTO stripe_events(stripe_event_id,type,created,payload_json)
      VALUES ($1,$2,NOW(),$3::jsonb)`,
     [stripeEventId, eventType, JSON.stringify({ data: { object } })],
+  );
+  await db.query(
+    `INSERT INTO outbox_events (
+       event_type,aggregate_type,aggregate_id,event_version,idempotency_key,
+       payload,queue_name,status,enqueued_at
+     ) VALUES ('stripe.event_received','stripe_event',$1,1,$2,$3::jsonb,
+               'critical_payments','enqueued',NOW())`,
+    [
+      stripeEventId,
+      `stripe.event_received:${stripeEventId}`,
+      JSON.stringify({ stripeEventId, type: eventType }),
+    ],
   );
 }
 
@@ -234,12 +250,14 @@ describePg('HX/OS canonical PostgreSQL lifecycle', () => {
   const workerPhone = `+1${(BigInt(phoneDigits) + 1n).toString().padStart(10, '0').slice(-10)}`;
 
   beforeAll(async () => {
+    enableControlledStripePaymentTestCohortV7();
     assertDisposableDatabase(databaseUrl);
     await db.query('SELECT 1');
   });
 
   afterAll(async () => {
     if (enabled) await db.close();
+    vi.unstubAllEnvs();
   });
 
   it('proves intent through bank payout with replay, concurrency, and failure evidence', async () => {
@@ -571,7 +589,7 @@ describePg('HX/OS canonical PostgreSQL lifecycle', () => {
     const reconciliation = successData(await EscrowReleaseReconciliationService.reconcile({
       escrowId,
       expectedStripeTransferId: transferId,
-      fromState: 'E2E_REPLAY',
+      fromState: 'FUNDED',
     }), 'release reconciliation');
     expect(reconciliation).toMatchObject({
       taskId,
@@ -584,7 +602,7 @@ describePg('HX/OS canonical PostgreSQL lifecycle', () => {
     successData(await EscrowReleaseReconciliationService.reconcile({
       escrowId,
       expectedStripeTransferId: transferId,
-      fromState: 'E2E_SECOND_REPLAY',
+      fromState: 'FUNDED',
     }), 'release reconciliation replay');
 
     const accounting = await db.query<{

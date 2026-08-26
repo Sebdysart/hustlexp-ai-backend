@@ -8,7 +8,7 @@ Production effects authorized by this repository documentation: `NONE`
 
 [The Team Goal and Execution Contract](docs/HUSTLEXP_TEAM_ALIGNMENT.md) is the stable engineering target. [The Current Backend Checkpoint](docs/HUSTLEXP_CURRENT_BACKEND_CHECKPOINT.md) contains source-dated implementation and external-state facts. The default-branch copy of the target becomes team-operative only at an exact commit accepted by an independent Reviewer; working-copy edits never change adopted policy. [AGENTS.md](AGENTS.md) controls repository workflow; canonical Governor state and accepted evidence control program authority.
 
-Documentation publication and backend implementation use separate candidates. Do not place runtime changes in a documentation branch. The reserved implementation branch is `codex/task-first-fake-fse-postgres-authority-rebuild`; do not create or populate it until persistent targets are closed and a fresh revision lock authorizes its exact base, tree, paths, and migration identity.
+PR #275 published its documentation tree unchanged at merge commit `5a8675b37473d626efbf4bff8635797ba29db7af`, but it did not receive the requested `whitehorse1016` approval and it did not make the backend healthy. The separate D1/CI recovery work is rooted at `main` commit `73c44eee22fa79c2957583217e69aa972291776f` on `codex/d1-ci-incident-recovery`. Its working tree is not publication evidence: it must be frozen, independently reviewed, freshly admitted by the Governor, signed, pushed, and accepted through protection.
 
 This repository is the target owner of HustleXP's canonical marketplace lifecycle. Existing code includes legacy task, escrow, Stripe, admin, and Supabase-bridge behavior that is being contained and converged; repository presence is not proof that a path is authorized, deployed, or safe.
 
@@ -21,10 +21,12 @@ This repository is the target owner of HustleXP's canonical marketplace lifecycl
 - processor eligibility and HustleXP task eligibility are separate;
 - Financial Security Event, capture, settlement, platform funding, provider payout, and reconciliation are separate rails;
 - browsers cannot hold shared administrative authority or mutate canonical records directly;
-- target policy requires all 20 unresolved processor-dependent capabilities to fail closed; current global enforcement is not proven and legacy positive processor/payout lanes remain blockers;
-- production authority for new customer-money creation is `NO-GO`; remote `main` still accepts `HX_PAYMENT_CREATION_MODE=enabled`, so structural containment is not proven until an exact repaired candidate passes negative-effect tests.
+- target policy requires all 20 unresolved processor-dependent capabilities to fail closed; no unresolved decision can be enabled by configuration;
+- the local D1/CI candidate structurally freezes new production processor creation while preserving negative/recovery lanes, but it receives no implementation credit until the exact final tree passes the full protected matrix and PostgreSQL harness;
+- queue transport identity is distinct from durable outbox authority, refund creation is bound to one immutable escrow-scoped provider claim, and Operations writes remain fail-closed pending the later authenticated command-plane convergence;
+- production authority for new customer-money creation and production launch remain `NO-GO`.
 
-The active Governor node is `TASK_FIRST_FAKE_FSE_POSTGRES_AUTHORITY_REBUILD`. Migration choice remains locked while persistent PostgreSQL targets are not fully closed. Ledger identity is the exact migration name, never a numeric alias: `20260824_task_first_fake_fse_vertical` has only a prospective, unauthorized clean-baseline append ordinal of 112; `20260825_task_first_fake_fse_postgres_authority_repair` has no assigned source ordinal pending legacy-chain reconstruction. Do not select either path or make backend runtime changes from documentation alone.
+The active Governor node is `D1_CI_INCIDENT_RECOVERY_20260825`. The last accepted local control HEAD is `1e0887d4e6ab8dfa4006734faf7090b46985e25b`; the current implementation tree has moved beyond its accepted path manifest. Publication is therefore blocked until a fresh, independently accepted Governor-maintainer revision binds the exact final tree. Normal backend sessions must not modify or self-accept the Governor.
 
 ## Target runtime boundary
 
@@ -88,10 +90,11 @@ Verification commands:
 
 ```bash
 npm run typecheck
-npm run lint
-npm test
+npm run lint -- --max-warnings 0
+npm test -- --maxWorkers=1
 npm run verify:architecture
 npm run compile
+npm audit --omit=dev --audit-level=high
 git diff --check
 ```
 
@@ -103,7 +106,7 @@ Test counts and coverage are revision-specific. Report the command, exact SHA, e
 
 Railway is the only maintained target backend platform, but this document does not authorize a deploy. A production action requires fresh root-specific authority, exact source/build identity, protected approval, and the current Governor/evidence gates.
 
-Railway currently auto-deploys `main`. Merging even documentation is therefore a Level 3 production-consequential action until that integration is detached or placed behind the accepted release transaction. Active Railway metadata identifies source `ab4a76…`, while public `/health` reports stale revision `140ce19…`; neither the health response nor `HX_PAYMENT_CREATION_MODE=frozen` proves truthful artifact identity or structural containment.
+Railway currently auto-deploys `main`. Merging is therefore production-consequential until that integration is disabled or placed behind the accepted release transaction. The latest read-only observation binds the web source to `main` `73c44eee22fa79c2957583217e69aa972291776f`, while public `/health` still reports revision `140ce19f4f77926249b1e7c0e5d2aac29bd4c9ef`; the worker has no source binding. None of those observations proves truthful web/worker/image/database convergence or structural containment.
 
 Never infer authority from an environment variable, a green check, a historical receipt, a provider test-mode success, or code presence. Preserve refund, void, recovery, webhook, and reconciliation lanes while positive production creation remains frozen.
 

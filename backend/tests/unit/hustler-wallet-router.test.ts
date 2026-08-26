@@ -1,4 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  enableControlledStripePaymentTestCohortV7,
+  HOSTILE_PAYMENT_CREATION_ENVIRONMENTS_V7,
+  stubPaymentCreationEnvironmentV7,
+} from '../helpers/payment-underwriting-v7';
 
 vi.mock('../../src/db', () => ({ db: { query: vi.fn() } }));
 vi.mock('../../src/auth/firebase', () => ({ firebaseAuth: { verifyIdToken: vi.fn() } }));
@@ -43,7 +48,14 @@ function makeUnauthenticatedCaller() {
 }
 
 describe('Hustler wallet router', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    enableControlledStripePaymentTestCohortV7();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
 
   it('returns only the authenticated Hustler wallet', async () => {
     const wallet = {
@@ -65,6 +77,21 @@ describe('Hustler wallet router', () => {
     await expect(makeCaller().reviewCashOut({ amountCents: 5000 })).resolves.toEqual(review);
     expect(reviewCashOut).toHaveBeenCalledWith('user-abc-123', 5000);
   });
+
+  it.each(HOSTILE_PAYMENT_CREATION_ENVIRONMENTS_V7)(
+    'rejects $name before the cash-out service',
+    async ({ env }) => {
+      stubPaymentCreationEnvironmentV7(env);
+      await expect(makeCaller().requestCashOut({
+        amountCents: 5000,
+        idempotencyKey: 'cashout-frozen-1',
+      })).rejects.toMatchObject({
+        code: 'PRECONDITION_FAILED',
+        cause: { applicationCode: 'PAYMENT_CREATION_FROZEN' },
+      });
+      expect(requestCashOut).not.toHaveBeenCalled();
+    },
+  );
 
   it('requires explicit idempotent confirmation and maps eligibility failures', async () => {
     requestCashOut.mockResolvedValueOnce({

@@ -23,10 +23,7 @@ vi.mock('../../src/logger', () => ({
 
 import { webOpsRouter } from '../../src/routers/web/ops';
 
-const SERVICE_KEY = 'engine-ops-admin-key!!'; // 22 chars
 const DRAFT_ID = '11111111-1111-4111-8111-111111111111';
-const QUOTE_ID = '22222222-2222-4222-8222-222222222222';
-const VERSION_ID = '33333333-3333-4333-8333-333333333333';
 const USER_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 
 function opsCaller() {
@@ -60,22 +57,19 @@ beforeEach(() => {
   mocks.transaction.mockReset();
   mocks.listTasks.mockReset();
   mocks.getLiquidity.mockReset();
-  process.env.ENGINE_OPS_ADMIN_KEY = SERVICE_KEY;
-  process.env.OPS_ADMIN_KEY = SERVICE_KEY;
 });
 
-describe('webOps service-key auth (listEngineTasks)', () => {
-  it('accepts a timing-safe ENGINE_OPS_ADMIN_KEY of sufficient length', async () => {
+describe('webOps named-session auth (listEngineTasks)', () => {
+  it('accepts a named operator with can_manage_operations', async () => {
+    grantOpsCapability();
     mocks.listTasks.mockResolvedValueOnce({ success: true, data: { tasks: [], nextCursor: null } });
-    await expect(publicCaller().listEngineTasks({ adminKey: SERVICE_KEY, limit: 25 }))
+    await expect(opsCaller().listEngineTasks({ limit: 25 }))
       .resolves.toEqual({ ok: true, tasks: [], nextCursor: null });
   });
 
-  it('rejects short or mismatched service keys before reading lifecycle state', async () => {
-    await expect(publicCaller().listEngineTasks({ adminKey: 'short', limit: 20 }))
-      .rejects.toMatchObject({ code: 'FORBIDDEN' });
-    await expect(publicCaller().listEngineTasks({ adminKey: 'x'.repeat(22), limit: 20 }))
-      .rejects.toMatchObject({ code: 'FORBIDDEN' });
+  it('rejects an anonymous caller before reading lifecycle state', async () => {
+    await expect(publicCaller().listEngineTasks({ limit: 20 }))
+      .rejects.toMatchObject({ code: 'UNAUTHORIZED' });
     expect(mocks.listTasks).not.toHaveBeenCalled();
   });
 });
@@ -120,45 +114,49 @@ describe('webOps operationsAdminProcedure gates', () => {
     expect(String(mocks.query.mock.calls.at(-1)?.[0])).not.toMatch(/\bemail\b/);
   });
 
-  it('creates quotes atomically and rejects already-linked drafts', async () => {
+  it('freezes quote creation before any database or engine effect', async () => {
     grantOpsCapability();
-    mocks.transaction.mockImplementationOnce(async (fn: (q: typeof mocks.query) => Promise<unknown>) => {
-      const tx = vi.fn()
-        .mockResolvedValueOnce({ rows: [{ id: DRAFT_ID, title: 'Move', quote_id: QUOTE_ID, status: 'quote_ready' }], rowCount: 1 });
-      return fn(tx as any);
-    });
     await expect(opsCaller().createQuote({
       task_draft_id: DRAFT_ID,
       customer_description: 'Haul junk',
       subtotal_cents: 4000,
-    })).rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('already_linked') });
+    })).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: 'HX_OPS_MUTATION_FROZEN:create_quote',
+    });
+    expect(mocks.transaction).not.toHaveBeenCalled();
+    expect(mocks.query).toHaveBeenCalledTimes(1);
   });
 
-  it('creates a quote inside a transaction when eligible', async () => {
+  it('freezes quote send-ready before any database or engine effect', async () => {
     grantOpsCapability();
-    mocks.transaction.mockImplementationOnce(async (fn: (q: typeof mocks.query) => Promise<unknown>) => {
-      const tx = vi.fn()
-        .mockResolvedValueOnce({ rows: [{ id: DRAFT_ID, title: 'Move', quote_id: null, status: 'contact_captured' }], rowCount: 1 })
-        .mockResolvedValueOnce({ rows: [{ id: QUOTE_ID }], rowCount: 1 })
-        .mockResolvedValueOnce({ rows: [{ id: VERSION_ID }], rowCount: 1 })
-        .mockResolvedValueOnce({ rows: [], rowCount: 1 })
-        .mockResolvedValueOnce({ rows: [], rowCount: 1 });
-      return fn(tx as any);
-    });
-    mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 1 }); // audit
-    await expect(opsCaller().createQuote({
-      task_draft_id: DRAFT_ID,
-      customer_description: 'Haul junk',
-      subtotal_cents: 4000,
-      service_fee_cents: 500,
-    })).resolves.toMatchObject({
-      ok: true,
-      quote_id: QUOTE_ID,
-      version_id: VERSION_ID,
-      total_cents: 4500,
-      status: 'quote_ready',
-    });
-    expect(mocks.transaction).toHaveBeenCalledTimes(1);
+    await expect(opsCaller().markQuoteSendReady({ task_draft_id: DRAFT_ID }))
+      .rejects.toMatchObject({
+        code: 'PRECONDITION_FAILED',
+        message: 'HX_OPS_MUTATION_FROZEN:mark_quote_send_ready',
+      });
+    expect(mocks.transaction).not.toHaveBeenCalled();
+    expect(mocks.query).toHaveBeenCalledTimes(1);
+  });
+
+  it('freezes feature flags and business claim links before effects', async () => {
+    grantOpsCapability();
+    await expect(opsCaller().updateFlag({ key: 'money_enabled', enabled: true }))
+      .rejects.toMatchObject({
+        code: 'PRECONDITION_FAILED',
+        message: 'HX_OPS_MUTATION_FROZEN:update_feature_flag',
+      });
+    expect(mocks.query).toHaveBeenCalledTimes(1);
+
+    vi.clearAllMocks();
+    grantOpsCapability();
+    await expect(opsCaller().createBusinessClaimLink({ task_draft_id: DRAFT_ID }))
+      .rejects.toMatchObject({
+        code: 'PRECONDITION_FAILED',
+        message: 'HX_OPS_MUTATION_FROZEN:create_business_claim_link',
+      });
+    expect(mocks.query).toHaveBeenCalledTimes(1);
+    expect(mocks.transaction).not.toHaveBeenCalled();
   });
 
   it('returns liquidity snapshot for ops admins', async () => {

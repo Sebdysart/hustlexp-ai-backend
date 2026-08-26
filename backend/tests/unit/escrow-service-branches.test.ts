@@ -47,6 +47,7 @@ vi.mock('../../src/config', () => ({
 vi.mock('../../src/logger', () => ({
   escrowLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
   stripeLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
+  taskLogger: { child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn() }) },
   logger: { child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn() }) },
 }));
 
@@ -65,11 +66,16 @@ vi.mock('../../src/services/XPTaxService', () => ({
 vi.mock('../../src/services/XPService', () => ({
   XPService: {
     awardXP: vi.fn().mockResolvedValue(undefined),
+    clawbackXP: vi.fn().mockResolvedValue(undefined),
   },
 }));
 
 vi.mock('../../src/services/RevenueService', () => ({
   RevenueService: { logEvent: vi.fn().mockResolvedValue({ success: true, data: { id: 'rev-1' } }) },
+}));
+
+vi.mock('../../src/services/TaskService', () => ({
+  TaskService: { advanceProgress: vi.fn().mockResolvedValue({ success: true, data: {} }) },
 }));
 
 vi.mock('../../src/services/SelfInsurancePoolService.js', () => ({
@@ -78,8 +84,18 @@ vi.mock('../../src/services/SelfInsurancePoolService.js', () => ({
 
 vi.mock('../../src/services/StripeService', () => ({
   StripeService: {
-    createRefund: vi.fn().mockResolvedValue({ success: true, data: { refundId: 're_test', amount: 5000, status: 'succeeded' } }),
-    createTransfer: vi.fn().mockResolvedValue({ success: true, data: { transferId: 'tr_test', amount: 3000 } }),
+    createRefund: vi.fn(async (input: { amount: number; paymentIntentId: string }) => ({
+      success: true,
+      data: {
+        refundId: 're_test', amount: input.amount, status: 'succeeded', currency: 'usd',
+        paymentIntentId: input.paymentIntentId, chargeId: 'ch_test',
+      },
+    })),
+    createTransfer: vi.fn(async (input: { amount: number }) => ({
+      success: true,
+      data: { transferId: 'tr_test', amount: input.amount },
+    })),
+    readTransferWitness: vi.fn(),
   },
 }));
 
@@ -93,7 +109,9 @@ vi.mock('../../src/services/TaskPayoutDestinationService.js', () => ({
 
 import { db, isInvariantViolation } from '../../src/db';
 import { EscrowService } from '../../src/services/EscrowService';
+import { StripeService } from '../../src/services/StripeService';
 import { XPService } from '../../src/services/XPService';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7.js';
 
 const mockQuery       = vi.mocked(db.query);
 const mockIsInvariant = vi.mocked(isInvariantViolation);
@@ -121,8 +139,15 @@ function makeEscrow(overrides: Record<string, unknown> = {}) {
     task_id: 'task-1',
     amount: 5000,
     state: 'FUNDED',
+    version: 0,
+    platform_fee_cents: null,
     stripe_payment_intent_id: 'pi_test',
     stripe_transfer_id: null,
+    stripe_refund_id: null,
+    payout_provider: null,
+    provider_transfer_id: null,
+    provider_transfer_status: null,
+    provider_transfer_paid_at: null,
     funded_at: new Date(),
     released_at: null,
     refunded_at: null,
@@ -130,6 +155,35 @@ function makeEscrow(overrides: Record<string, unknown> = {}) {
     poster_id: 'poster-1',
     worker_id: 'worker-1',
     ...overrides,
+  };
+}
+
+function exactRefundBinding(overrides: Record<string, unknown> = {}) {
+  return makeEscrow({
+    id: 'esc-1', task_id: 'task-1', version: 1, state: 'FUNDED', amount: 5000,
+    platform_fee_cents: null, stripe_payment_intent_id: 'pi_test',
+    stripe_refund_id: null, stripe_transfer_id: null, payout_provider: null,
+    provider_transfer_id: null, provider_transfer_status: null,
+    provider_transfer_paid_at: null,
+    ...overrides,
+  });
+}
+
+function exactSucceededRefundMetadata() {
+  return {
+    event_type: 'exact_succeeded_refund_witness_v1', escrow_id: 'esc-1',
+    task_id: 'task-1', canonical_state: 'FUNDED', payment_intent_id: 'pi_test',
+    refund_id: 're_test', charge_id: 'ch_test', amount_cents: 5000,
+    currency: 'usd', status: 'succeeded',
+  };
+}
+
+function refundProviderClaimRow(escrowId: string, version: number) {
+  return {
+    claim_idempotency_key: `refund-provider-create-claim-v1:${escrowId}:${version}`,
+    provider_idempotency_key: `hx-refund-claim-v1:${escrowId}:${version}`,
+    provider_replay_deadline: new Date('2030-01-01T00:00:00.000Z'),
+    exact: true,
   };
 }
 
@@ -142,12 +196,192 @@ function makeWorkerKyc(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function installExactPartialRefundFixture() {
+  const escrowRow = makeEscrow({
+    state: 'LOCKED_DISPUTE',
+    version: 1,
+    task_id: 'task-1',
+    amount: 5000,
+    platform_fee_cents: null,
+    stripe_payment_intent_id: 'pi_test',
+    stripe_transfer_id: null,
+    stripe_refund_id: null,
+    refund_amount: null,
+    release_amount: null,
+  });
+  const taskRow = {
+    worker_id: 'worker-1',
+    payout_recipient_user_id: null,
+    provider_organization_id: null,
+    provider_assignment_id: null,
+    poster_id: 'poster-1',
+  };
+  const updated = makeEscrow({
+    ...escrowRow,
+    version: 2,
+    state: 'REFUND_PARTIAL',
+    stripe_transfer_id: 'tr_test',
+    stripe_refund_id: 're_test',
+    refund_amount: 1500,
+    release_amount: 3500,
+  });
+  let claimMetadata: Record<string, unknown> | null = null;
+  let refundCheckpointMetadata: Record<string, unknown> | null = null;
+  let transferClaimMetadata: Record<string, unknown> | null = null;
+  let transferCheckpointMetadata: Record<string, unknown> | null = null;
+  let terminalTransitionMetadata: Record<string, unknown> | null = null;
+  let terminalized = false;
+  let insuranceReads = 0;
+  let taskProgressReads = 0;
+  let revenueReads = 0;
+
+  mockQuery.mockImplementation(async (sqlInput: unknown, paramsInput?: unknown[]) => {
+    const sql = String(sqlInput);
+    const params = paramsInput ?? [];
+    if (sql.includes('SELECT state') && sql.includes('FROM escrows WHERE id=$1')) {
+      return {
+        rows: [{
+          state: terminalized ? 'REFUND_PARTIAL' : 'LOCKED_DISPUTE',
+          provider_transfer_status: null,
+        }],
+        rowCount: 1,
+      } as never;
+    }
+    if (sql.includes('FROM escrows') && sql.includes('FOR UPDATE')) {
+      return { rows: [terminalized ? updated : escrowRow], rowCount: 1 } as never;
+    }
+    if (sql.includes('FROM tasks') && (sql.includes('worker_id') || sql.includes('t.worker_id'))) {
+      return { rows: [taskRow], rowCount: 1 } as never;
+    }
+    if (sql.includes('SELECT payouts_enabled,stripe_connect_id,stripe_connect_status')) {
+      return {
+        rows: [{ payouts_enabled: true, stripe_connect_id: 'acct_test' }],
+        rowCount: 1,
+      } as never;
+    }
+    if (sql.includes('INSERT INTO escrow_events') && sql.includes('RETURNING metadata')) {
+      const serialized = params.find((value) => typeof value === 'string' && value.startsWith('{'));
+      const metadata = JSON.parse(String(serialized)) as Record<string, unknown>;
+      if (metadata.event_type === 'partial_refund_provider_claim_v2') claimMetadata = metadata;
+      if (metadata.event_type === 'partial_refund_provider_checkpoint_v3') {
+        refundCheckpointMetadata = metadata;
+      }
+      if (metadata.event_type === 'partial_refund_transfer_claim_v1') {
+        transferClaimMetadata = metadata;
+      }
+      if (metadata.event_type === 'partial_refund_transfer_checkpoint_v1') {
+        transferCheckpointMetadata = metadata;
+      }
+      if (metadata.event_type === 'partial_refund_terminal_transition_v1') {
+        terminalTransitionMetadata = metadata;
+      }
+      return { rows: [{ metadata }], rowCount: 1 } as never;
+    }
+    if (sql.includes('SELECT idempotency_key,metadata') && sql.includes('idempotency_key=ANY')) {
+      const rows = [
+        ['partial-refund-provider-claim:esc-1', claimMetadata],
+        ['partial-refund-provider-checkpoint:esc-1', refundCheckpointMetadata],
+        ['partial-refund-transfer-claim:esc-1', transferClaimMetadata],
+        ['partial-refund-transfer-checkpoint:esc-1', transferCheckpointMetadata],
+      ].filter((entry): entry is [string, Record<string, unknown>] => entry[1] !== null)
+        .map(([idempotency_key, metadata]) => ({ idempotency_key, metadata }));
+      return { rows, rowCount: rows.length } as never;
+    }
+    if (sql.includes('SELECT metadata FROM escrow_events')) {
+      const key = String(params[1] ?? '');
+      if (key === 'partial-refund-provider-claim:esc-1' && claimMetadata) {
+        return { rows: [{ metadata: claimMetadata }], rowCount: 1 } as never;
+      }
+      if (key === 'partial-refund-provider-checkpoint:esc-1' && refundCheckpointMetadata) {
+        return { rows: [{ metadata: refundCheckpointMetadata }], rowCount: 1 } as never;
+      }
+      if (key === 'partial-refund-transfer-checkpoint:esc-1' && transferCheckpointMetadata) {
+        return { rows: [{ metadata: transferCheckpointMetadata }], rowCount: 1 } as never;
+      }
+      if (key === 'partial-refund-terminal-transition:esc-1:2' && terminalTransitionMetadata) {
+        return { rows: [{ metadata: terminalTransitionMetadata }], rowCount: 1 } as never;
+      }
+      return { rows: [], rowCount: 0 } as never;
+    }
+    if (sql.includes("SET state='REFUND_PARTIAL'")) {
+      terminalized = true;
+      return { rows: [updated], rowCount: 1 } as never;
+    }
+    if (sql.includes('FROM insurance_contributions')) {
+      insuranceReads += 1;
+      return insuranceReads === 1
+        ? { rows: [], rowCount: 0 } as never
+        : { rows: [{ id: 'insurance-1', contribution_cents: 70, contribution_percentage: 2 }], rowCount: 1 } as never;
+    }
+    if (sql.includes('SELECT progress_state FROM tasks')) {
+      taskProgressReads += 1;
+      return {
+        rows: [{ progress_state: taskProgressReads === 1 ? 'COMPLETED' : 'CLOSED' }],
+        rowCount: 1,
+      } as never;
+    }
+    if (sql.includes('FROM revenue_ledger')) {
+      revenueReads += 1;
+      return revenueReads === 1
+        ? { rows: [], rowCount: 0 } as never
+        : { rows: [{
+            id: 'revenue-1', event_type: 'platform_fee', user_id: 'poster-1',
+            task_id: 'task-1', amount_cents: 525, currency: 'usd',
+            gross_amount_cents: 3500, platform_fee_cents: 525,
+            net_amount_cents: 2905, fee_basis_points: 1500,
+            escrow_id: 'esc-1', stripe_transfer_id: 'tr_test',
+            metadata: { event: 'escrow_partial_refund' },
+          }], rowCount: 1 } as never;
+    }
+    if (sql.includes('FROM xp_ledger')) {
+      return { rows: [], rowCount: 0 } as never;
+    }
+    if (sql.includes('INSERT INTO escrow_events')) {
+      return { rows: [], rowCount: 1 } as never;
+    }
+    return { rows: [], rowCount: 0 } as never;
+  });
+
+  vi.mocked(StripeService.readTransferWitness).mockImplementation(async (transferId: string) => {
+    if (!claimMetadata) throw new Error('partial-refund claim must precede transfer evidence');
+    return {
+      success: true,
+      data: {
+        provider: 'STRIPE' as const,
+        transferId,
+        amountCents: Number(claimMetadata.worker_settlement_net_cents),
+        currency: 'usd',
+        destinationAccountId: 'acct_test',
+        reversed: false,
+        amountReversedCents: 0,
+        escrowId: 'esc-1',
+        taskId: 'task-1',
+        payoutRecipientUserId: 'worker-1',
+      },
+    };
+  });
+}
+
+function releaseParams(escrowId:string,transferId:string) {
+  return {
+    escrowId,
+    stripeTransferId:transferId,
+    stripeTransferWitness:{
+      provider:'STRIPE' as const,transferId,amountCents:4150,currency:'usd',
+      destinationAccountId:'acct_test_123',reversed:false,amountReversedCents:0,
+      escrowId,taskId:'task-1',payoutRecipientUserId:'worker-1',
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // beforeEach
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
+  enableControlledStripePaymentTestCohortV7();
   vi.clearAllMocks();
+  mockQuery.mockReset();
   mockIsInvariant.mockReturnValue(false);
   vi.mocked(XPService.awardXP).mockResolvedValue(undefined);
   // Make db.transaction call through so queries inside the transaction use the mockQuery queue
@@ -198,7 +432,7 @@ describe('EscrowService.release — escrow not found', () => {
     // 1st query: SELECT escrow by id → empty
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
-    const result = await EscrowService.release({ escrowId: 'nonexistent-esc', stripeTransferId: 'tr_test_branch' });
+    const result = await EscrowService.release(releaseParams('nonexistent-esc','tr_test_branch'));
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('NOT_FOUND');
@@ -222,7 +456,7 @@ describe('EscrowService.release — no worker assigned', () => {
       rowCount: 1,
     } as never);
 
-    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_branch' });
+    const result = await EscrowService.release(releaseParams('esc-1','tr_test_branch'));
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('INVALID_STATE');
@@ -237,7 +471,7 @@ describe('EscrowService.release — no worker assigned', () => {
     // task select → empty
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
-    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_branch' });
+    const result = await EscrowService.release(releaseParams('esc-1','tr_test_branch'));
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('INVALID_STATE');
@@ -260,7 +494,7 @@ describe('EscrowService.release — KYC gate', () => {
     // 3: worker KYC → not found
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
-    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_branch' });
+    const result = await EscrowService.release(releaseParams('esc-1','tr_test_branch'));
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('INVALID_STATE');
@@ -273,7 +507,7 @@ describe('EscrowService.release — KYC gate', () => {
       .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1', price: 5000 }], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [makeWorkerKyc({ stripe_connect_id: null })], rowCount: 1 } as never);
 
-    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_branch' });
+    const result = await EscrowService.release(releaseParams('esc-1','tr_test_branch'));
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('INVALID_STATE');
@@ -286,7 +520,7 @@ describe('EscrowService.release — KYC gate', () => {
       .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1', price: 5000 }], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [makeWorkerKyc({ payouts_enabled: false, stripe_connect_status: 'pending' })], rowCount: 1 } as never);
 
-    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_branch' });
+    const result = await EscrowService.release(releaseParams('esc-1','tr_test_branch'));
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('INVALID_STATE');
@@ -317,7 +551,7 @@ describe('EscrowService.release — UPDATE rowCount=0 branches', () => {
         rowCount: 1,
       } as never);
 
-    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_branch' });
+    const result = await EscrowService.release(releaseParams('esc-1','tr_test_branch'));
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('HX002'); // ErrorCodes.ESCROW_TERMINAL
@@ -333,7 +567,7 @@ describe('EscrowService.release — UPDATE rowCount=0 branches', () => {
         rowCount: 1,
       } as never);
 
-    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_branch' });
+    const result = await EscrowService.release(releaseParams('esc-1','tr_test_branch'));
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('INVALID_STATE');
@@ -361,7 +595,7 @@ describe('EscrowService.release — XP error handling', () => {
       new Error('XP-TAX-BLOCK: offline payment tax unpaid')
     );
 
-    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_branch' });
+    const result = await EscrowService.release(releaseParams('esc-1','tr_test_branch'));
 
     // Escrow release itself still succeeds — XP block is non-fatal
     expect(result.success).toBe(true);
@@ -373,7 +607,7 @@ describe('EscrowService.release — XP error handling', () => {
       new Error('Unexpected XP DB error')
     );
 
-    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_branch' });
+    const result = await EscrowService.release(releaseParams('esc-1','tr_test_branch'));
 
     expect(result.success).toBe(true);
   });
@@ -383,18 +617,19 @@ describe('EscrowService.release — XP error handling', () => {
 // refund — rowCount=0 branches
 // ===========================================================================
 
-describe('EscrowService.refund — rowCount=0 branches', () => {
-  it('returns getById error when getById fails after UPDATE rowCount=0', async () => {
-    // Two pre-check queries before UPDATE
+describe('EscrowService.refund — T2 convergence branches', () => {
+  it('rolls back the exact claim resolution when the terminal UPDATE misses', async () => {
     mockQuery
-      .mockResolvedValueOnce({ rows: [{ task_id: 'task-1' }], rowCount: 1 } as never) // pre-check: task_id
-      .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never) // pre-check: worker_id
-      // F-05: T2 SELECT FOR UPDATE NOWAIT re-read (returns FUNDED — allowed, proceed to UPDATE)
-      .mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 1, state: 'FUNDED' }], rowCount: 1 } as never)
-      // UPDATE returns rowCount=0
+      .mockResolvedValueOnce({ rows: [exactRefundBinding()], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ id: 'task-1', version: 2, worker_id: null, state: 'OPEN' }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [refundProviderClaimRow('esc-1', 1)], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ allowed: true }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ metadata: exactSucceededRefundMetadata() }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [exactRefundBinding()], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ id: 'task-1', version: 2, worker_id: null, state: 'OPEN' }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ exact: true }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ set_config: 'esc-1' }], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
-    // getById fallback → also fails (DB_ERROR)
-    mockQuery.mockRejectedValueOnce(new Error('db error') as never);
 
     const result = await EscrowService.refund({ escrowId: 'esc-1' });
 
@@ -403,19 +638,17 @@ describe('EscrowService.refund — rowCount=0 branches', () => {
   });
 
   it('returns ESCROW_TERMINAL when getById returns a terminal-state escrow', async () => {
-    // Two pre-check queries before UPDATE
     mockQuery
-      .mockResolvedValueOnce({ rows: [{ task_id: 'task-1' }], rowCount: 1 } as never) // pre-check: task_id
-      .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never) // pre-check: worker_id
-      // F-05: T2 SELECT FOR UPDATE NOWAIT re-read (returns FUNDED — allowed, proceed to UPDATE)
-      .mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 1, state: 'FUNDED' }], rowCount: 1 } as never)
-      // UPDATE rowCount=0
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
-      // getById → REFUNDED (terminal)
+      .mockResolvedValueOnce({ rows: [exactRefundBinding()], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ id: 'task-1', version: 2, worker_id: null, state: 'OPEN' }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [refundProviderClaimRow('esc-1', 1)], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ allowed: true }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ metadata: exactSucceededRefundMetadata() }], rowCount: 1 } as never)
       .mockResolvedValueOnce({
-        rows: [makeEscrow({ state: 'REFUNDED' })],
-        rowCount: 1,
-      } as never);
+        rows: [exactRefundBinding({ state: 'RELEASED' })], rowCount: 1,
+      } as never)
+      .mockResolvedValueOnce({ rows: [{ id: 'task-1', version: 2, worker_id: null, state: 'OPEN' }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ exact: true }], rowCount: 1 } as never); // durable recovery event
 
     const result = await EscrowService.refund({ escrowId: 'esc-1' });
 
@@ -425,12 +658,16 @@ describe('EscrowService.refund — rowCount=0 branches', () => {
 
   it('returns INVALID_STATE when getById returns escrow in PENDING state', async () => {
     mockQuery
-      .mockResolvedValueOnce({ rows: [{ task_id: 'task-1' }], rowCount: 1 } as never) // pre-check: task_id
-      .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never) // pre-check: worker_id
-      // F-05: T2 SELECT FOR UPDATE NOWAIT re-read (returns FUNDED — allowed, proceed to UPDATE)
-      .mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 1, state: 'FUNDED' }], rowCount: 1 } as never)
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // UPDATE rowCount=0
-      .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'PENDING' })], rowCount: 1 } as never); // getById fallback
+      .mockResolvedValueOnce({ rows: [exactRefundBinding()], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ id: 'task-1', version: 2, worker_id: null, state: 'OPEN' }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [refundProviderClaimRow('esc-1', 1)], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ allowed: true }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ metadata: exactSucceededRefundMetadata() }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({
+        rows: [exactRefundBinding({ state: 'PENDING', version: 2 })], rowCount: 1,
+      } as never)
+      .mockResolvedValueOnce({ rows: [{ id: 'task-1', version: 2, worker_id: null, state: 'OPEN' }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ exact: true }], rowCount: 1 } as never); // durable recovery event
 
     const result = await EscrowService.refund({ escrowId: 'esc-1' });
 
@@ -505,6 +742,10 @@ describe('EscrowService.partialRefund', () => {
       rows: [makeEscrow({ state: 'FUNDED', version: 1, task_id: 'task-1', amount: 5000, stripe_payment_intent_id: 'pi_test' })],
       rowCount: 1,
     } as never);
+    mockQuery.mockResolvedValueOnce({
+      rows: [makeEscrow({ state: 'FUNDED', version: 1, task_id: 'task-1', amount: 5000, stripe_payment_intent_id: 'pi_test' })],
+      rowCount: 1,
+    } as never);
 
     const result = await EscrowService.partialRefund({
       escrowId: 'esc-1',
@@ -518,6 +759,7 @@ describe('EscrowService.partialRefund', () => {
   });
 
   it('fails closed before Stripe when a canonical quote split would be partially disputed', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ state: 'LOCKED_DISPUTE' }], rowCount: 1 } as never);
     mockQuery.mockResolvedValueOnce({
       rows: [makeEscrow({
         state: 'LOCKED_DISPUTE',
@@ -541,24 +783,7 @@ describe('EscrowService.partialRefund', () => {
   });
 
   it('succeeds when escrow is LOCKED_DISPUTE and percentages sum to 100', async () => {
-    const updated = makeEscrow({ state: 'REFUND_PARTIAL' });
-    mockQuery
-      // 1st: SELECT version, state, task_id, amount, stripe_payment_intent_id FOR UPDATE
-      .mockResolvedValueOnce({
-        rows: [makeEscrow({ state: 'LOCKED_DISPUTE', version: 1, task_id: 'task-1', amount: 5000, stripe_payment_intent_id: 'pi_test' })],
-        rowCount: 1,
-      } as never)
-      // 2nd: SELECT worker_id FROM tasks (inside transaction)
-      .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1' }], rowCount: 1 } as never)
-      // 3rd: SELECT stripe_connect_id FROM users (inside transaction)
-      .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never)
-      // 4th: F-05: SELECT id, version, state FOR UPDATE NOWAIT (T2 re-read)
-      .mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 1, state: 'LOCKED_DISPUTE' }], rowCount: 1 } as never)
-      // 5th: UPDATE succeeds
-      .mockResolvedValueOnce({ rows: [updated], rowCount: 1 } as never)
-      // 6th: logEscrowEvent INSERT
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
-    // Post-commit: StripeService.createTransfer + createRefund are mocked via vi.mock above.
+    installExactPartialRefundFixture();
 
     const result = await EscrowService.partialRefund({
       escrowId: 'esc-1',
@@ -568,5 +793,14 @@ describe('EscrowService.partialRefund', () => {
 
     expect(result.success).toBe(true);
     expect(result.data?.state).toBe('REFUND_PARTIAL');
+    expect(vi.mocked(StripeService.createRefund)).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentIntentId: 'pi_test', amount: 1500 }),
+    );
+    expect(vi.mocked(StripeService.createTransfer)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        escrowId: 'esc-1', taskId: 'task-1', workerId: 'worker-1',
+        workerStripeAccountId: 'acct_test', amount: 2905,
+      }),
+    );
   });
 });

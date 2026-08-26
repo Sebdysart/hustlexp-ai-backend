@@ -2,9 +2,13 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { db } from '../db.js';
 import { posterProcedure, router } from '../trpc.js';
-import { paymentCreationErrorCause } from '../services/NewPaymentCreationGuard.js';
+import {
+  newPaymentCreationFailure,
+  paymentCreationErrorCause,
+} from '../services/NewPaymentCreationGuard.js';
 import { StripeQuotePaymentProvider } from '../services/payment/StripeQuotePaymentProvider.js';
 import { finalizePaidQuote } from '../services/QuotePaymentFinalizationService.js';
+import { recoverOrphanQuotePayment } from '../services/QuotePaymentRecoveryService.js';
 import { StripeService } from "../services/StripeService.js"
 
 export const quotePaymentRouter = router({
@@ -16,6 +20,15 @@ export const quotePaymentRouter = router({
       }).strict(),
     )
     .mutation(async ({ ctx, input }) => {
+      const frozen = newPaymentCreationFailure('quote_payment');
+      if (frozen) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: frozen.error.message,
+          cause: paymentCreationErrorCause(frozen.error.code),
+        });
+      }
+
       const result = await db.query<{
         quote_id: string;
         task_draft_id: string;
@@ -25,8 +38,8 @@ export const quotePaymentRouter = router({
         quote_is_test: boolean;
         total_cents: number;
         expires_at: Date;
-        poster_email: string;
-        lead_email: string;
+        draft_poster_id: string | null;
+        lead_user_id: string | null;
       }>(
         `
         SELECT
@@ -38,8 +51,8 @@ export const quotePaymentRouter = router({
           q.is_test AS quote_is_test,
           qv.total_cents,
           qv.expires_at,
-          u.email AS poster_email,
-          l.email AS lead_email
+          d.poster_user_id AS draft_poster_id,
+          l.user_id AS lead_user_id
         FROM quotes q
         JOIN quote_versions qv
           ON qv.id = q.active_version_id
@@ -48,13 +61,11 @@ export const quotePaymentRouter = router({
           ON d.id = q.task_draft_id
         JOIN leads l
           ON l.id = d.lead_id
-        JOIN users u
-          ON u.id = $3
         WHERE q.id = $1
           AND q.active_version_id = $2
         LIMIT 1
         `,
-        [input.quoteId, input.quoteVersionId, ctx.user.id],
+        [input.quoteId, input.quoteVersionId],
       );
 
       const quote = result.rows[0];
@@ -67,8 +78,10 @@ export const quotePaymentRouter = router({
       }
 
       if (
-        quote.poster_email.trim().toLowerCase()
-        !== quote.lead_email.trim().toLowerCase()
+        !quote.draft_poster_id
+        || !quote.lead_user_id
+        || quote.draft_poster_id !== quote.lead_user_id
+        || quote.draft_poster_id !== ctx.user.id
       ) {
         throw new TRPCError({
           code: 'FORBIDDEN',
@@ -214,6 +227,32 @@ export const quotePaymentRouter = router({
         });
       }
 
+      return result.data;
+    }),
+  recoverOrphanPayment: posterProcedure
+    .input(
+      z.object({
+        quoteId: z.string().uuid(),
+        quoteVersionId: z.string().uuid(),
+        paymentIntentId: z.string().min(10).max(255),
+      }).strict(),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const result = await recoverOrphanQuotePayment({
+        ...input,
+        posterId: ctx.user.id,
+        reasonCode: 'POSTER_REQUESTED_CANCELLATION',
+      });
+      if (!result.success) {
+        throw new TRPCError({
+          code: result.error.code === 'QUOTE_PAYMENT_NOT_FOUND'
+            ? 'NOT_FOUND'
+            : result.error.code.includes('MISMATCH')
+              ? 'FORBIDDEN'
+              : 'PRECONDITION_FAILED',
+          message: result.error.message,
+        });
+      }
       return result.data;
     }),
   confirmTestPayment: posterProcedure

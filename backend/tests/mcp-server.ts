@@ -12,7 +12,7 @@
  * Environment: DATABASE_URL (optional, for tests that need DB)
  */
 
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -20,7 +20,7 @@ import * as z from 'zod/v4';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 // ============================================================================
 // CONFIGURATION
@@ -28,6 +28,15 @@ const execAsync = promisify(exec);
 
 const PROJECT_ROOT = path.resolve(__dirname, '../..');
 const VITEST_CONFIG = path.join(PROJECT_ROOT, 'vitest.config.ts');
+const VITEST_ENTRYPOINT = path.join(PROJECT_ROOT, 'node_modules', 'vitest', 'vitest.mjs');
+const TEST_ROOT = path.join(PROJECT_ROOT, 'backend', 'tests');
+const MAX_TEST_FILTER_LENGTH = 256;
+const MAX_TEST_NAME_LENGTH = 200;
+
+type VitestSelection =
+  | { kind: 'all' }
+  | { kind: 'filter'; filter: string; testName?: string }
+  | { kind: 'file'; filePath: string };
 
 // ============================================================================
 // MCP SERVER SETUP
@@ -114,7 +123,7 @@ function parseVitestOutput(output: string): {
     const durationMatch = output.match(/Duration\s+([\d.]+)s/);
     
     return {
-      passed: !failedMatch && (passedMatch || totalMatch),
+      passed: !failedMatch && Boolean(passedMatch || totalMatch),
       totalTests: totalMatch ? parseInt(totalMatch[1], 10) : 0,
       passedTests: passedMatch ? parseInt(passedMatch[1], 10) : 0,
       failedTests: failedMatch ? parseInt(failedMatch[1], 10) : 0,
@@ -133,15 +142,87 @@ function parseVitestOutput(output: string): {
   }
 }
 
+function validateTestFilter(filter: string): string {
+  if (
+    filter.length === 0
+    || filter.length > MAX_TEST_FILTER_LENGTH
+    || filter.startsWith('-')
+    || path.isAbsolute(filter)
+    || filter.split('/').includes('..')
+    || !/^[A-Za-z0-9_./*?{},@!()+-]+$/u.test(filter)
+  ) {
+    throw new Error('Test filter contains unsupported characters or path segments.');
+  }
+
+  return filter;
+}
+
+function escapeRegexLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+function validateTestName(testName: string): string {
+  if (
+    testName.length === 0
+    || testName.length > MAX_TEST_NAME_LENGTH
+    || !/^[A-Za-z0-9 _./:,()'"@+?-]+$/u.test(testName)
+  ) {
+    throw new Error('Test name contains unsupported characters.');
+  }
+
+  return escapeRegexLiteral(testName);
+}
+
+function isWithinTestRoot(candidatePath: string): boolean {
+  const relativePath = path.relative(TEST_ROOT, candidatePath);
+  return relativePath !== '..'
+    && !relativePath.startsWith(`..${path.sep}`)
+    && !path.isAbsolute(relativePath);
+}
+
+function resolveTestFile(filePath: string): string | null {
+  const candidatePath = path.resolve(PROJECT_ROOT, filePath);
+  if (!isWithinTestRoot(candidatePath) || !candidatePath.endsWith('.test.ts')) {
+    throw new Error('Test file must be a .test.ts file inside backend/tests.');
+  }
+  if (!fs.existsSync(candidatePath)) return null;
+
+  const realPath = fs.realpathSync(candidatePath);
+  if (!isWithinTestRoot(realPath) || !realPath.endsWith('.test.ts')) {
+    throw new Error('Test file must resolve inside backend/tests.');
+  }
+  return realPath;
+}
+
+function vitestArguments(selection: VitestSelection): string[] {
+  const args = [VITEST_ENTRYPOINT, 'run', '--config', VITEST_CONFIG];
+
+  if (selection.kind === 'filter') {
+    args.push(validateTestFilter(selection.filter));
+    if (selection.testName !== undefined) {
+      args.push('--testNamePattern', validateTestName(selection.testName));
+    }
+  } else if (selection.kind === 'file') {
+    const resolvedPath = resolveTestFile(selection.filePath);
+    if (!resolvedPath) throw new Error('Test file not found.');
+    args.push(resolvedPath);
+  }
+
+  args.push('--reporter=verbose');
+  return args;
+}
+
 /**
- * Execute Vitest with given arguments
+ * Execute Vitest without a shell. User-controlled values are accepted only in
+ * the closed filter and literal test-name positions above.
  */
-async function runVitest(args: string[]): Promise<string> {
-  const command = `npx vitest run ${args.join(' ')}`;
+async function runVitest(selection: VitestSelection): Promise<string> {
+  const args = vitestArguments(selection);
   
   try {
-    const { stdout, stderr } = await execAsync(command, {
+    const { stdout, stderr } = await execFileAsync(process.execPath, args, {
       cwd: PROJECT_ROOT,
+      shell: false,
       env: {
         ...process.env,
         NODE_ENV: 'test',
@@ -172,7 +253,7 @@ server.registerTool('test.run_all', {
 }, async (_args, _extra) => {
   try {
     console.error('🔍 Running all tests...');
-    const output = await runVitest(['--reporter=verbose']);
+    const output = await runVitest({ kind: 'all' });
     const results = parseVitestOutput(output);
     
     return {
@@ -208,21 +289,19 @@ server.registerTool('test.run_pattern', {
   title: 'Run Tests Matching Pattern',
   description: 'Executes tests matching a file or test name pattern. Use glob patterns like "**/inv*.test.ts" or test names.',
   inputSchema: z.object({
-    pattern: z.string().describe('Glob pattern for test files (e.g., "**/inv*.test.ts") or test name pattern'),
-    testNamePattern: z.string().optional().describe('Optional: Test name pattern (regex)'),
+    pattern: z.string().describe('Restricted file filter (for example, "**/inv*.test.ts")'),
+    testNamePattern: z.string().optional().describe('Optional literal test-name fragment'),
   }),
 }, async (args, _extra) => {
   try {
     const { pattern, testNamePattern } = args;
-    console.error(`🔍 Running tests matching pattern: ${pattern}`);
-    
-    const vitestArgs = [pattern];
-    if (testNamePattern) {
-      vitestArgs.push('-t', testNamePattern);
-    }
-    vitestArgs.push('--reporter=verbose');
-    
-    const output = await runVitest(vitestArgs);
+    console.error('🔍 Running tests matching the requested filter...');
+
+    const output = await runVitest({
+      kind: 'filter',
+      filter: pattern,
+      testName: testNamePattern,
+    });
     const results = parseVitestOutput(output);
     
     return {
@@ -263,10 +342,10 @@ server.registerTool('test.run_invariants', {
 }, async (_args, _extra) => {
   try {
     console.error('🔍 Running invariant tests (kill tests)...');
-    const output = await runVitest([
-      'backend/tests/invariants/',
-      '--reporter=verbose',
-    ]);
+    const output = await runVitest({
+      kind: 'filter',
+      filter: 'backend/tests/invariants/',
+    });
     const results = parseVitestOutput(output);
     
     return {
@@ -308,14 +387,10 @@ server.registerTool('test.run_file', {
 }, async (args, _extra) => {
   try {
     const { filePath } = args;
-    console.error(`🔍 Running test file: ${filePath}`);
-    
-    // Resolve path relative to project root
-    const resolvedPath = path.isAbsolute(filePath) 
-      ? filePath 
-      : path.join(PROJECT_ROOT, filePath);
-    
-    if (!fs.existsSync(resolvedPath)) {
+    console.error('🔍 Running the requested test file...');
+
+    const resolvedPath = resolveTestFile(filePath);
+    if (!resolvedPath) {
       return {
         content: [
           {
@@ -330,10 +405,7 @@ server.registerTool('test.run_file', {
       };
     }
     
-    const output = await runVitest([
-      resolvedPath,
-      '--reporter=verbose',
-    ]);
+    const output = await runVitest({ kind: 'file', filePath: resolvedPath });
     const results = parseVitestOutput(output);
     
     return {

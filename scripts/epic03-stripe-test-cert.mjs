@@ -53,13 +53,6 @@ function loadEnvFile(path) {
 
 loadEnvFile(envLocal);
 
-function maskKey(key) {
-  if (!key) return 'unset';
-  if (key.startsWith('sk_test_')) return `sk_test_…${key.slice(-4)}`;
-  if (key.startsWith('sk_live_')) return 'sk_live_***';
-  return 'unknown_prefix';
-}
-
 async function stripe(path, { method = 'GET', form, idempotencyKey } = {}) {
   const key = process.env.STRIPE_SECRET_KEY || '';
   const headers = {
@@ -124,7 +117,7 @@ async function main() {
     process.exit(2);
   }
   if (!key.startsWith('sk_test_')) {
-    console.error(`Refusing non-test key (${maskKey(key)}). Need sk_test_.`);
+    console.error('Refusing non-test Stripe credential. EPIC-03 cert requires Test mode.');
     process.exit(2);
   }
 
@@ -132,7 +125,7 @@ async function main() {
   const stamp = new Date().toISOString();
   const tag = `epic03_${stamp.replace(/[:.]/g, '').slice(0, 15)}`;
 
-  console.log(`EPIC-03 test cert starting (${stamp}) key=${maskKey(key)}`);
+  console.log(`EPIC-03 test cert starting (${stamp}) in Stripe Test mode`);
 
   // Case 7 first — never skip freeze proof
   const freeze = await probeProdFreeze();
@@ -406,7 +399,6 @@ async function main() {
     kind: 'epic03_stripe_test_mode_receipts',
     as_of: stamp,
     key_mode: 'sk_test',
-    key_fingerprint: maskKey(key),
     production_unfreeze: false,
     summary: { proven, failed, open_or_partial: open, total: cases.length },
     cases: cases.sort((a, b) => a.case - b.case),
@@ -427,7 +419,7 @@ async function main() {
   process.exit(0);
 }
 
-main().catch((err) => {
-  console.error(err);
+main().catch(() => {
+  console.error('EPIC-03 test cert failed before completion.');
   process.exit(1);
 });

@@ -10,6 +10,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { EscrowService } from '../../src/services/EscrowService';
 import { TaskService } from '../../src/services/TaskService';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7.js';
 
 const payoutDestination = vi.hoisted(() => vi.fn());
 
@@ -77,6 +78,20 @@ vi.mock('../../src/services/RevenueService', () => ({
   RevenueService: { logEvent: vi.fn().mockResolvedValue({ success: true, data: { id: 'rev-1' } }) },
 }));
 
+vi.mock('../../src/services/StripeService', () => ({
+  StripeService: {
+    createRefund: vi.fn().mockResolvedValue({
+      success: true,
+      data: {
+        refundId: 're_money_path', amount: 5000, status: 'succeeded', currency: 'usd',
+        paymentIntentId: 'pi_money_path', chargeId: 'ch_money_path',
+      },
+    }),
+    readRefundWitness: vi.fn(),
+    createTransferReversal: vi.fn(),
+  },
+}));
+
 vi.mock('../../src/services/TaskPayoutDestinationService.js', () => ({
   loadCurrentTaskPayoutDestination: payoutDestination,
 }));
@@ -84,6 +99,7 @@ vi.mock('../../src/services/TaskPayoutDestinationService.js', () => ({
 const { db, isInvariantViolation } = await import('../../src/db');
 
 beforeEach(() => {
+  enableControlledStripePaymentTestCohortV7();
   payoutDestination.mockImplementation(async (query,binding) => {
     const result=await query('SELECT payouts_enabled,stripe_connect_id,stripe_connect_status FROM users WHERE id=$1',[binding.payoutRecipientUserId]);
     const row=result.rows[0];
@@ -92,6 +108,26 @@ beforeEach(() => {
       : { ready:false,stripeConnectId:null,reason:'PAYOUT_ACCOUNT_NOT_READY' };
   });
 });
+
+function releaseParams(transferId:string) {
+  return {
+    escrowId:'escrow-1',stripeTransferId:transferId,
+    stripeTransferWitness:{
+      provider:'STRIPE' as const,transferId,amountCents:3900,currency:'usd',
+      destinationAccountId:'acct_test123',reversed:false,amountReversedCents:0,
+      escrowId:'escrow-1',taskId:'task-1',payoutRecipientUserId:'worker-1',
+    },
+  };
+}
+
+function refundProviderClaimRow(escrowId: string, version: number) {
+  return {
+    claim_idempotency_key: `refund-provider-create-claim-v1:${escrowId}:${version}`,
+    provider_idempotency_key: `hx-refund-claim-v1:${escrowId}:${version}`,
+    provider_replay_deadline: new Date('2030-01-01T00:00:00.000Z'),
+    exact: true,
+  };
+}
 
 // ============================================================================
 // ESCROW LIFECYCLE TESTS
@@ -171,7 +207,7 @@ describe('Money Path: Escrow Lifecycle', () => {
       db.query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
       db.query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
 
-      const result = await EscrowService.release({ escrowId: 'escrow-1', stripeTransferId: 'tr_test_happy' });
+      const result = await EscrowService.release(releaseParams('tr_test_happy'));
       expect(result.success).toBe(true);
       expect(result.data?.state).toBe('RELEASED');
     });
@@ -203,7 +239,7 @@ describe('Money Path: Escrow Lifecycle', () => {
         rows: [{ id: 'escrow-1', task_id: 'task-1', amount: 5000, state: 'RELEASED' }],
       });
 
-      const result = await EscrowService.release({ escrowId: 'escrow-1', stripeTransferId: 'tr_test_double' });
+      const result = await EscrowService.release(releaseParams('tr_test_double'));
       expect(result.success).toBe(false);
     });
 
@@ -278,21 +314,51 @@ describe('Money Path: Escrow Lifecycle', () => {
       db.query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
       db.query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
 
-      const result = await EscrowService.release({ escrowId: 'escrow-1', stripeTransferId: 'tr_test_dispute_win' });
+      const result = await EscrowService.release(releaseParams('tr_test_dispute_win'));
       expect(result.success).toBe(true);
       expect(result.data?.state).toBe('RELEASED');
     });
 
     it('should allow FUNDED → REFUNDED via refund() (poster cancels before dispute)', async () => {
-      // FIX 3: refund() pre-fetches task_id + worker_id before the UPDATE
-      db.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ task_id: 'task-1' }] }); // SELECT task_id
-      db.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ worker_id: null }] });   // SELECT worker_id (null = no clawback)
-      db.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'escrow-1', version: 0, state: 'FUNDED' }] }); // F-05: T2 FOR UPDATE NOWAIT
+      const refundBinding = {
+        task_id: 'task-1', version: 0, state: 'FUNDED', amount: 5000,
+        platform_fee_cents: null, stripe_payment_intent_id: 'pi_money_path',
+        stripe_refund_id: null, stripe_transfer_id: null, payout_provider: null,
+        provider_transfer_id: null, provider_transfer_status: null,
+        provider_transfer_paid_at: null,
+      };
+      const refundWitness = {
+        event_type: 'exact_succeeded_refund_witness_v1', escrow_id: 'escrow-1',
+        task_id: 'task-1', canonical_state: 'FUNDED', payment_intent_id: 'pi_money_path',
+        refund_id: 're_money_path', charge_id: 'ch_money_path', amount_cents: 5000,
+        currency: 'usd', status: 'succeeded',
+      };
+      db.query.mockResolvedValueOnce({ rowCount: 1, rows: [refundBinding] }); // T1 escrow lock
+      const refundTask = { id: 'task-1', version: 2, worker_id: null, state: 'OPEN' };
+      db.query.mockResolvedValueOnce({ rowCount: 1, rows: [refundTask] });
       db.query.mockResolvedValueOnce({
         rowCount: 1,
-        rows: [{ id: 'escrow-1', task_id: 'task-1', amount: 5000, state: 'REFUNDED', refunded_at: new Date() }],
+        rows: [refundProviderClaimRow('escrow-1', 0)],
+      }); // T1 immutable provider-call claim
+      db.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ allowed: true }] });
+      db.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ metadata: refundWitness }] });
+      db.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [{ id: 'escrow-1', ...refundBinding }],
+      }); // T2 exact lock
+      db.query.mockResolvedValueOnce({ rowCount: 1, rows: [refundTask] });
+      db.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ exact: true }] });
+      db.query.mockResolvedValueOnce({ rowCount: 1, rows: [{ set_config: 'escrow-1' }] });
+      db.query.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [{
+          id: 'escrow-1', ...refundBinding, state: 'REFUNDED',
+          stripe_refund_id: 're_money_path', refunded_at: new Date(),
+          refund_transition_event_exact: true,
+          event_key: 'escrow-refunded-transition-v1:escrow-1:1',
+          event_metadata: {},
+        }],
       }); // UPDATE
-      db.query.mockResolvedValueOnce({ rowCount: 1, rows: [] }); // logEscrowEvent INSERT
 
       const result = await EscrowService.refund({ escrowId: 'escrow-1' });
       expect(result.success).toBe(true);

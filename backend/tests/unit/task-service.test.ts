@@ -1568,9 +1568,7 @@ describe('TaskService.cancel', () => {
     expect(result.success).toBe(true);
   });
 
-  it('FIX-2: emits escrow.refund_requested outbox event when a FUNDED escrow exists on cancellation', async () => {
-    // writeToOutbox is mocked at module level — it does NOT call db.query internally.
-    // So we only need 3 mockQuery entries: FOR UPDATE, UPDATE tasks, SELECT escrows.
+  it('records exact reconciliation evidence instead of poisoning the refund queue on funded cancellation', async () => {
     const { writeToOutbox } = await import('../../src/lib/outbox-helpers');
     const mockWriteToOutbox = vi.mocked(writeToOutbox);
     mockWriteToOutbox.mockClear();
@@ -1579,23 +1577,29 @@ describe('TaskService.cancel', () => {
     mockQuery
       .mockResolvedValueOnce({ rows: [makeTask({ state: 'OPEN' })], rowCount: 1 } as never)          // SELECT FOR UPDATE
       .mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never)                            // UPDATE tasks → CANCELLED
-      .mockResolvedValueOnce({ rows: [{ id: 'escrow-99', state: 'FUNDED' }], rowCount: 1 } as never); // SELECT escrows → FUNDED
+      .mockResolvedValueOnce({ rows: [{ id: 'escrow-99', state: 'FUNDED' }], rowCount: 1 } as never) // SELECT escrows → FUNDED
+      .mockResolvedValueOnce({ rows: [{ metadata: {} }], rowCount: 1 } as never);                    // exact evidence readback
 
     const result = await TaskService.cancel('task-1');
 
     expect(result.success).toBe(true);
-    // writeToOutbox should have been called with the escrow refund event (intercepted by mock)
-    expect(mockWriteToOutbox).toHaveBeenCalledOnce();
-    const [outboxInput] = mockWriteToOutbox.mock.calls[0];
-    expect(outboxInput.eventType).toBe('escrow.refund_requested');
-    expect(outboxInput.aggregateId).toBe('escrow-99');
-    expect(outboxInput.queueName).toBe('critical_payments');
-    expect(outboxInput.payload).toMatchObject({
-      escrowId: 'escrow-99',
+    expect(mockWriteToOutbox).not.toHaveBeenCalled();
+    const evidenceCall = mockQuery.mock.calls.find(([, params]) =>
+      String(params?.[2] ?? '').startsWith('task-close-refund-reconciliation-required-v1:'));
+    expect(JSON.parse(String(evidenceCall?.[1]?.[1]))).toEqual({
+      event_type: 'task_close_refund_reconciliation_required_v1',
+      task_id: 'task-1',
       reason: 'task_cancelled',
-      taskId: 'task-1',
+      requested_action: 'FULL_REFUND',
+      worker_percent: null,
+      producer_disabled: true,
+      reconciliation_required: true,
+      required_consumer_state: 'LOCKED_DISPUTE',
+      required_payload_contract: 'snake_case_v1',
     });
-    expect(outboxInput.idempotencyKey).toBe('escrow.refund_on_cancel:escrow-99:task-1');
+    expect(evidenceCall?.[1]?.[2]).toBe(
+      'task-close-refund-reconciliation-required-v1:escrow-99:task-1:task_cancelled',
+    );
   });
 
   it('FIX-2: does NOT emit outbox event when no funded escrow exists', async () => {
@@ -1615,7 +1619,7 @@ describe('TaskService.cancel', () => {
     expect(mockWriteToOutbox).not.toHaveBeenCalled();
   });
 
-  it('C3 FIX: emits full refund (not partial) when windowHours=0 on ACCEPTED task with late_cancel_pct set', async () => {
+  it('records a full-refund reconciliation block when windowHours=0', async () => {
     // BUG C3: windowHours >= 0 was always true, triggering partial refund even when no window was configured.
     // With the fix (windowHours > 0), windowHours=0 correctly skips to full refund.
     const { writeToOutbox } = await import('../../src/lib/outbox-helpers');
@@ -1630,19 +1634,21 @@ describe('TaskService.cancel', () => {
         rowCount: 1,
       } as never)                                                                                      // SELECT FOR UPDATE
       .mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never)                             // UPDATE tasks → CANCELLED
-      .mockResolvedValueOnce({ rows: [{ id: 'escrow-c3', state: 'FUNDED' }], rowCount: 1 } as never); // SELECT escrows → FUNDED
+      .mockResolvedValueOnce({ rows: [{ id: 'escrow-c3', state: 'FUNDED' }], rowCount: 1 } as never) // SELECT escrows → FUNDED
+      .mockResolvedValueOnce({ rows: [{ metadata: {} }], rowCount: 1 } as never);                     // evidence
 
     const result = await TaskService.cancel('task-1');
 
     expect(result.success).toBe(true);
-    // windowHours=0 means no cancellation window was configured — must issue full refund
-    expect(mockWriteToOutbox).toHaveBeenCalledOnce();
-    const [outboxInput] = mockWriteToOutbox.mock.calls[0];
-    expect(outboxInput.eventType).toBe('escrow.refund_requested');
-    expect(outboxInput.payload).toMatchObject({ reason: 'task_cancelled' });
+    expect(mockWriteToOutbox).not.toHaveBeenCalled();
+    const evidenceCall = mockQuery.mock.calls.find(([, params]) =>
+      String(params?.[2] ?? '').startsWith('task-close-refund-reconciliation-required-v1:'));
+    expect(JSON.parse(String(evidenceCall?.[1]?.[1]))).toMatchObject({
+      reason: 'task_cancelled', requested_action: 'FULL_REFUND', worker_percent: null,
+    });
   });
 
-  it('C3 FIX: emits partial refund when cancellation window has expired (windowHours > 0, elapsed > window)', async () => {
+  it('records the requested partial split when the cancellation window has expired', async () => {
     const { writeToOutbox } = await import('../../src/lib/outbox-helpers');
     const mockWriteToOutbox = vi.mocked(writeToOutbox);
     mockWriteToOutbox.mockClear();
@@ -1656,22 +1662,21 @@ describe('TaskService.cancel', () => {
         rowCount: 1,
       } as never)
       .mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never)
-      .mockResolvedValueOnce({ rows: [{ id: 'escrow-late', state: 'FUNDED' }], rowCount: 1 } as never);
+      .mockResolvedValueOnce({ rows: [{ id: 'escrow-late', state: 'FUNDED' }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ metadata: {} }], rowCount: 1 } as never);
 
     const result = await TaskService.cancel('task-1');
 
     expect(result.success).toBe(true);
-    expect(mockWriteToOutbox).toHaveBeenCalledOnce();
-    const [outboxInput] = mockWriteToOutbox.mock.calls[0];
-    expect(outboxInput.eventType).toBe('escrow.partial_refund_requested');
-    expect(outboxInput.payload).toMatchObject({
-      escrowId: 'escrow-late',
-      reason: 'task_cancelled_late',
-      workerPercent: 50,
+    expect(mockWriteToOutbox).not.toHaveBeenCalled();
+    const evidenceCall = mockQuery.mock.calls.find(([, params]) =>
+      String(params?.[2] ?? '').startsWith('task-close-refund-reconciliation-required-v1:'));
+    expect(JSON.parse(String(evidenceCall?.[1]?.[1]))).toMatchObject({
+      reason: 'task_cancelled_late', requested_action: 'PARTIAL_REFUND', worker_percent: 50,
     });
   });
 
-  it('C3 FIX: emits full refund when still within cancellation window (windowHours > 0, elapsed < window)', async () => {
+  it('records a full-refund block when still within the cancellation window', async () => {
     const { writeToOutbox } = await import('../../src/lib/outbox-helpers');
     const mockWriteToOutbox = vi.mocked(writeToOutbox);
     mockWriteToOutbox.mockClear();
@@ -1685,15 +1690,37 @@ describe('TaskService.cancel', () => {
         rowCount: 1,
       } as never)
       .mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never)
-      .mockResolvedValueOnce({ rows: [{ id: 'escrow-early', state: 'FUNDED' }], rowCount: 1 } as never);
+      .mockResolvedValueOnce({ rows: [{ id: 'escrow-early', state: 'FUNDED' }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ metadata: {} }], rowCount: 1 } as never);
 
     const result = await TaskService.cancel('task-1');
 
     expect(result.success).toBe(true);
-    expect(mockWriteToOutbox).toHaveBeenCalledOnce();
-    const [outboxInput] = mockWriteToOutbox.mock.calls[0];
-    expect(outboxInput.eventType).toBe('escrow.refund_requested');
-    expect(outboxInput.payload).toMatchObject({ reason: 'task_cancelled' });
+    expect(mockWriteToOutbox).not.toHaveBeenCalled();
+    const evidenceCall = mockQuery.mock.calls.find(([, params]) =>
+      String(params?.[2] ?? '').startsWith('task-close-refund-reconciliation-required-v1:'));
+    expect(JSON.parse(String(evidenceCall?.[1]?.[1]))).toMatchObject({
+      reason: 'task_cancelled', requested_action: 'FULL_REFUND', worker_percent: null,
+    });
+  });
+
+  it('aborts cancellation when exact reconciliation evidence cannot be persisted', async () => {
+    const { writeToOutbox } = await import('../../src/lib/outbox-helpers');
+    const mockWriteToOutbox = vi.mocked(writeToOutbox);
+    mockWriteToOutbox.mockClear();
+    mockQuery
+      .mockResolvedValueOnce({ rows: [makeTask({ state: 'OPEN' })], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [makeTask({ state: 'CANCELLED' })], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [{ id: 'escrow-conflict' }], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+    const result = await TaskService.cancel('task-1');
+
+    expect(result).toMatchObject({
+      success: false,
+      error: { code: 'REFUND_RECONCILIATION_REQUIRED' },
+    });
+    expect(mockWriteToOutbox).not.toHaveBeenCalled();
   });
 
   it('returns TASK_TERMINAL when task is already in a terminal state', async () => {
@@ -1724,7 +1751,8 @@ describe('TaskService.cancel', () => {
 //   1. SELECT state … FOR UPDATE  (lock + read pre-expire state)
 //   2. UPDATE … RETURNING *        (expire the task)
 //   3. SELECT id FROM escrows …    (executed when state was MATCHING or OPEN)
-//   writeToOutbox is called atomically for MATCHING/OPEN tasks with a funded escrow.
+//   an exact reconciliation-required event is recorded atomically for
+//   MATCHING/OPEN tasks with a funded escrow; no incompatible payment job is emitted.
 // CCC-02 FIX: OPEN tasks can also have funded escrows; the escrow query now runs
 //   for both MATCHING and OPEN pre-expire states.
 describe('TaskService.expire', () => {
@@ -1743,8 +1771,7 @@ describe('TaskService.expire', () => {
     expect(result.data?.state).toBe('EXPIRED');
   });
 
-  // CCC-02: OPEN tasks with a funded escrow must also emit a refund outbox event on expiry
-  it('CCC-02: expires an OPEN task with funded escrow and emits refund outbox event', async () => {
+  it('expires an OPEN task with a funded escrow and records reconciliation evidence', async () => {
     const { writeToOutbox } = await import('../../src/lib/outbox-helpers');
     const mockWriteToOutbox = vi.mocked(writeToOutbox);
     mockWriteToOutbox.mockClear();
@@ -1757,19 +1784,20 @@ describe('TaskService.expire', () => {
     mockQuery.mockResolvedValueOnce({ rows: [expired], rowCount: 1 } as never);
     // 3. SELECT escrow → funded escrow found
     mockQuery.mockResolvedValueOnce({ rows: [{ id: 'escrow-open-1' }], rowCount: 1 } as never);
+    // 4. exact evidence insert/readback
+    mockQuery.mockResolvedValueOnce({ rows: [{ metadata: {} }], rowCount: 1 } as never);
 
     const result = await TaskService.expire('task-1');
 
     expect(result.success).toBe(true);
     expect(result.data?.state).toBe('EXPIRED');
-    expect(mockWriteToOutbox).toHaveBeenCalledOnce();
-    expect(mockWriteToOutbox).toHaveBeenCalledWith(
-      expect.objectContaining({
-        eventType: 'escrow.refund_requested',
-        payload: expect.objectContaining({ reason: 'task_expired', taskId: 'task-1' }),
-      }),
-      expect.any(Function)
-    );
+    expect(mockWriteToOutbox).not.toHaveBeenCalled();
+    const evidenceCall = mockQuery.mock.calls.find(([, params]) =>
+      String(params?.[2] ?? '').startsWith('task-close-refund-reconciliation-required-v1:'));
+    expect(JSON.parse(String(evidenceCall?.[1]?.[1]))).toMatchObject({
+      task_id: 'task-1', reason: 'task_expired', requested_action: 'FULL_REFUND',
+      producer_disabled: true, reconciliation_required: true,
+    });
   });
 
   it('CCC-02: expires an OPEN task with NO funded escrow without emitting outbox event', async () => {
@@ -1792,7 +1820,7 @@ describe('TaskService.expire', () => {
     expect(mockWriteToOutbox).not.toHaveBeenCalled();
   });
 
-  it('expires a MATCHING task and emits escrow refund outbox event', async () => {
+  it('expires a MATCHING task and records refund-reconciliation evidence', async () => {
     const { writeToOutbox } = await import('../../src/lib/outbox-helpers');
     const mockWriteToOutbox = vi.mocked(writeToOutbox);
     mockWriteToOutbox.mockClear();
@@ -1805,19 +1833,19 @@ describe('TaskService.expire', () => {
     mockQuery.mockResolvedValueOnce({ rows: [expired], rowCount: 1 } as never);
     // 3. SELECT escrow → funded escrow found
     mockQuery.mockResolvedValueOnce({ rows: [{ id: 'escrow-1' }], rowCount: 1 } as never);
+    // 4. exact evidence insert/readback
+    mockQuery.mockResolvedValueOnce({ rows: [{ metadata: {} }], rowCount: 1 } as never);
 
     const result = await TaskService.expire('task-1');
 
     expect(result.success).toBe(true);
     expect(result.data?.state).toBe('EXPIRED');
-    expect(mockWriteToOutbox).toHaveBeenCalledOnce();
-    expect(mockWriteToOutbox).toHaveBeenCalledWith(
-      expect.objectContaining({
-        eventType: 'escrow.refund_requested',
-        payload: expect.objectContaining({ reason: 'task_expired', taskId: 'task-1' }),
-      }),
-      expect.any(Function)
-    );
+    expect(mockWriteToOutbox).not.toHaveBeenCalled();
+    const evidenceCall = mockQuery.mock.calls.find(([, params]) =>
+      String(params?.[2] ?? '').startsWith('task-close-refund-reconciliation-required-v1:'));
+    expect(JSON.parse(String(evidenceCall?.[1]?.[1]))).toMatchObject({
+      task_id: 'task-1', reason: 'task_expired', requested_action: 'FULL_REFUND',
+    });
   });
 
   it('expires a MATCHING task with no funded escrow without emitting outbox event', async () => {

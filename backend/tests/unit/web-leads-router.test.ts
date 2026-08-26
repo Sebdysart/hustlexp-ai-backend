@@ -54,7 +54,6 @@ beforeEach(() => {
   mocks.query.mockReset();
   delete process.env.TURNSTILE_SECRET_KEY;
   process.env.NODE_ENV = 'test';
-  process.env.OPS_ADMIN_KEY = 'ops-key';
 });
 
 afterEach(() => vi.unstubAllGlobals());
@@ -129,38 +128,11 @@ describe('web survey ingress', () => {
   });
 });
 
-describe('web lead admin compatibility reads', () => {
-  it('filters and counts leads with bounded pagination', async () => {
-    mocks.query.mockResolvedValueOnce({ rows: [{ id: 'lead-1' }], rowCount: 1 })
-      .mockResolvedValueOnce({ rows: [{ total: '1' }], rowCount: 1 });
-    await expect(caller().listLeads({
-      adminKey: 'ops-key', status: 'new', leadType: 'poster', limit: 10, offset: 5,
-    })).resolves.toEqual({ ok: true, leads: [{ id: 'lead-1' }], total: 1 });
-    expect(mocks.query.mock.calls[0][1]).toEqual(['new', 'poster', 10, 5]);
-  });
-
-  it('updates only explicitly supplied lead fields', async () => {
-    mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-    await expect(caller().updateLead({
-      adminKey: 'ops-key', id: SUBMISSION_ID, status: 'qualified', notes: 'ready', assigned_to: 'automation',
-    })).resolves.toEqual({ ok: true });
-    expect(String(mocks.query.mock.calls[0][0])).toContain('status_changed_at = now()');
-    expect(mocks.query.mock.calls[0][1]).toEqual(['qualified', 'ready', 'automation', SUBMISSION_ID]);
-  });
-
-  it('returns numeric survey health stats', async () => {
-    mocks.query.mockResolvedValueOnce({
-      rows: [{ native_1h: '1', native_24h: '2', native_7d: '3', queue_depth: '4' }], rowCount: 1,
-    });
-    await expect(caller().getSurveyStats({ adminKey: 'ops-key' })).resolves.toMatchObject({
-      native_1h: 1, native_24h: 2, native_7d: 3, queue_depth: 4,
-    });
-  });
-
-  it('rejects invalid admin keys on every admin path', async () => {
-    await expect(caller().listLeads({ adminKey: 'wrong' })).rejects.toMatchObject({ code: 'FORBIDDEN' });
-    await expect(caller().updateLead({ adminKey: 'wrong', id: SUBMISSION_ID }))
-      .rejects.toMatchObject({ code: 'FORBIDDEN' });
-    await expect(caller().getSurveyStats({ adminKey: 'wrong' })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+describe('web lead administrative containment', () => {
+  it('exports only public acquisition procedures', () => {
+    expect(Object.keys(webLeadsRouter._def.procedures).sort()).toEqual([
+      'submitLead',
+      'submitSurvey',
+    ]);
   });
 });

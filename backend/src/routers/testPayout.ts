@@ -84,6 +84,4 @@ export const testPayoutRouter = router({
 
       return result.data;
     }),
-
 });
-

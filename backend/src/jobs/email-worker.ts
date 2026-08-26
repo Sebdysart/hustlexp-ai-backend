@@ -21,6 +21,7 @@ import { db } from '../db.js';
 import { config } from '../config.js';
 import sgMail from '@sendgrid/mail';
 import { markOutboxEventProcessed, markOutboxEventFailed } from './outbox-worker.js';
+import { requireOutboxDurableKey } from './OutboxIdentity.js';
 import { workerLogger } from '../logger.js';
 import type { Job } from 'bullmq';
 import { sendgridBreaker } from '../middleware/circuit-breaker.js';
@@ -58,6 +59,7 @@ interface EmailJobData {
     toEmail: string;
     template: string;
     params: Record<string, unknown>;
+    _outbox_key: string;
   };
 }
 
@@ -188,7 +190,7 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
   // Extract data from job payload (structured as outbox event)
   const { emailId, toEmail, template, params } = job.data.payload;
   let userId = job.data.payload.userId;
-  const idempotencyKey = job.id || `email:${emailId}`;
+  const idempotencyKey = requireOutboxDurableKey(job.id, job.data.payload._outbox_key);
   const notificationId = typeof params?.notificationId === 'string' ? params.notificationId : null;
   
   try {

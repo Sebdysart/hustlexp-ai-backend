@@ -33,6 +33,7 @@ vi.mock('../../src/db', () => {
 vi.mock('../../src/logger', () => ({
   escrowLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
   stripeLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
+  taskLogger: { child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn() }) },
   logger: { child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn() }) },
 }));
 
@@ -59,6 +60,10 @@ vi.mock('../../src/services/RevenueService', () => ({
   RevenueService: { logEvent: vi.fn().mockResolvedValue({ success: true, data: { id: 'rev-1' } }) },
 }));
 
+vi.mock('../../src/services/TaskService', () => ({
+  TaskService: { advanceProgress: vi.fn().mockResolvedValue({ success: true, data: {} }) },
+}));
+
 vi.mock('../../src/services/TaskPayoutDestinationService.js', () => ({
   loadCurrentTaskPayoutDestination: payoutDestination,
 }));
@@ -67,6 +72,7 @@ import { db } from '../../src/db';
 import { EscrowService } from '../../src/services/EscrowService';
 import { EarnedVerificationUnlockService } from '../../src/services/EarnedVerificationUnlockService';
 import { SelfInsurancePoolService } from '../../src/services/SelfInsurancePoolService.js';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7.js';
 
 const mockDb = vi.mocked(db);
 
@@ -87,6 +93,27 @@ function makeEscrow(overrides: Record<string, unknown> = {}) {
     refunded_at: null,
     created_at: new Date(),
     ...overrides,
+  };
+}
+
+function stripeRelease(escrowAmount: number) {
+  const platformFeeCents = Math.round(escrowAmount * 0.20);
+  const insuranceContributionCents = Math.round(escrowAmount * 0.02);
+  return {
+    escrowId: 'esc-1',
+    stripeTransferId: 'tr_test_atk',
+    stripeTransferWitness: {
+      provider: 'STRIPE' as const,
+      transferId: 'tr_test_atk',
+      amountCents: escrowAmount - platformFeeCents - insuranceContributionCents,
+      currency: 'usd',
+      destinationAccountId: 'acct_test',
+      reversed: false,
+      amountReversedCents: 0,
+      escrowId: 'esc-1',
+      taskId: 'task-1',
+      payoutRecipientUserId: 'worker-1',
+    },
   };
 }
 
@@ -130,6 +157,7 @@ function mockReleaseHappyPath(
 }
 
 beforeEach(() => {
+  enableControlledStripePaymentTestCohortV7();
   vi.clearAllMocks();
   // Several attack cases intentionally return before consuming the remainder
   // of a queued happy-path response sequence. clearAllMocks() only clears call
@@ -148,58 +176,30 @@ beforeEach(() => {
 // ATTACK GROUP 1: PLATFORM FEE BYPASS
 // ===========================================================================
 
-describe('ATTACK 1: Fee calculation base (escrow.amount vs task.price)', () => {
+describe('ATTACK 1: Canonical release amount binding (escrow.amount vs task.price)', () => {
   /**
    * SCENARIO: escrow.amount=$6000 (e.g. tip bumped before release, or surge),
    *            task.price=$4000.
    *
-   * EXPECTED BEHAVIOUR: fee should be on escrow.amount (the actual charged amount).
-   * ACTUAL:  EscrowService.release() line 339: `const grossPayoutCents = escrow.amount`
-   *          then line 386: `const platformFeeCents = Math.round(grossPayoutCents * (platformFeePercent / 100))`
-   *
-   * The fee is correctly calculated on escrow.amount, the canonical charged
-   * amount. createPaymentIntent now requires exact equality across caller,
-   * task, and pending escrow, and confirmFunding independently compares the
-   * Stripe PI with escrow.amount. This test injects a corrupt legacy row to
-   * demonstrate why those boundary checks must never regress.
-   *
-   * VERDICT: SAFE at the public funding boundary; legacy data corruption still
-   * warrants a reconciliation check before release.
+   * The locked escrow and task must name one canonical amount. A processor
+   * transfer cannot convert a corrupt legacy mismatch into RELEASED economics;
+   * the record must enter reconciliation instead.
    */
-  it('fee is calculated on canonical escrow.amount even for a corrupt legacy mismatch', async () => {
+  it('rejects a corrupt legacy amount mismatch before release effects', async () => {
     // escrow funded at $40, but task.price is $60
     const escrowAmount = 4000;
     const taskPrice = 6000;
 
     mockReleaseHappyPath(escrowAmount, taskPrice);
 
-    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_atk' });
-    expect(result.success).toBe(true);
-
-    // Legacy fallback margin is 20% of escrow.amount ($40) = $8, NOT 20% of task.price ($60) = $12
-    const expectedFeeOnEscrow = Math.round(4000 * 0.20); // 800 cents
-    const expectedFeeOnTaskPrice = Math.round(6000 * 0.20); // 1200 cents
-
-    // recordEarnings receives finalPayout = escrowAmount - platformFee - 2% insurance on gross
-    // net = 4000 - 800 = 3200; insurance = Math.round(4000*0.02) = 80; final = 3200 - 80 = 3120
-    expect(EarnedVerificationUnlockService.recordEarnings).toHaveBeenCalledWith(
-      'worker-1',
-      'task-1',
-      'esc-1',
-      3120, // F54-2: insurance = 2% of gross 4000 = 80; resolvedNet = 3200 - 80 = 3120
-    );
-
-    // Confirm fee was NOT deducted on task.price basis
-    expect(EarnedVerificationUnlockService.recordEarnings).not.toHaveBeenCalledWith(
-      'worker-1',
-      'task-1',
-      'esc-1',
-      taskPrice - expectedFeeOnTaskPrice, // 5100 — this would be wrong anyway
-    );
-
-    // The release service trusts escrow.amount. The router and confirmFunding
-    // now prevent a poster from creating this mismatch through the API.
-    expect(expectedFeeOnEscrow).toBeLessThan(expectedFeeOnTaskPrice);
+    const result = await EscrowService.release(stripeRelease(escrowAmount));
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.code).toBe('INVALID_STATE');
+      expect(result.error.message).toMatch(/transfer witness does not match/i);
+    }
+    expect(EarnedVerificationUnlockService.recordEarnings).not.toHaveBeenCalled();
+    expect(SelfInsurancePoolService.recordContribution).not.toHaveBeenCalled();
   });
 });
 
@@ -272,7 +272,7 @@ describe('ATTACK 4: Concurrent release + dispute (TOCTOU race)', () => {
   it('rejects ordinary release from LOCKED_DISPUTE while no resolved worker-favor decision exists', async () => {
     mockReleaseHappyPath(5000, 5000, 'LOCKED_DISPUTE', true, true, false);
 
-    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_atk' });
+    const result = await EscrowService.release(stripeRelease(5000));
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error.code).toBe('INVALID_STATE');
@@ -331,7 +331,7 @@ describe('ATTACK 5: Escrow in PENDING state — task acceptance guard', () => {
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // UPDATE fails — PENDING not in valid states
       .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'PENDING' })], rowCount: 1 } as never); // getById
 
-    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_atk' });
+    const result = await EscrowService.release(stripeRelease(5000));
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error.message).toContain('PENDING');
@@ -404,7 +404,7 @@ describe('ATTACK 7: Release with no Stripe Connect account', () => {
       .mockResolvedValueOnce({ rows: [kycRow], rowCount: 1 } as never);
     // NOTE: no 4th mock — the UPDATE should never be called
 
-    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_atk' });
+    const result = await EscrowService.release(stripeRelease(5000));
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error.message).toContain('PAYOUT_ACCOUNT_NOT_READY');
@@ -425,7 +425,7 @@ describe('ATTACK 7: Release with no Stripe Connect account', () => {
       .mockResolvedValueOnce({ rows: [taskRow], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [kycRow], rowCount: 1 } as never);
 
-    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_atk' });
+    const result = await EscrowService.release(stripeRelease(5000));
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error.message).toContain('PAYOUT_ACCOUNT_NOT_READY');
@@ -477,7 +477,7 @@ describe('ATTACK 8: Partial payout math — pennies lost or gained', () => {
     // Also verify recordEarnings receives the correct net amount
     mockReleaseHappyPath(500, 500);
 
-    await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_atk' });
+    await EscrowService.release(stripeRelease(500));
 
     const grossPayoutCents = 500;
     const platformFeePercent = 20;
@@ -508,7 +508,7 @@ describe('ATTACK 8: Partial payout math — pennies lost or gained', () => {
      * VERDICT: FIXED (F54-2) — insurance is now on gross, matching the spec.
      */
     mockReleaseHappyPath(10000, 10000);
-    await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_atk' });
+    await EscrowService.release(stripeRelease(10000));
 
     const expectedInsurance = Math.round(10000 * 0.02); // 200 cents ($2.00) — 2% of gross
     expect(SelfInsurancePoolService.recordContribution).toHaveBeenCalledWith(
@@ -564,19 +564,21 @@ describe('ATTACK 10: Double refund', () => {
    *
    * VERDICT: SAFE — double refund blocked by terminal state check.
    */
-  it('second refund() call returns ESCROW_TERMINAL', async () => {
-    // FIX 3 + F-05: T1 pre-checks, then T2 FOR UPDATE NOWAIT re-read (FUNDED), UPDATE misses, getById sees REFUNDED
-    mockDb.query
-      .mockResolvedValueOnce({ rows: [{ task_id: 'task-1' }], rowCount: 1 } as never) // T1: SELECT task_id
-      .mockResolvedValueOnce({ rows: [{ worker_id: null }], rowCount: 1 } as never)   // T1: SELECT worker_id
-      .mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 1, state: 'FUNDED' }], rowCount: 1 } as never) // F-05: T2 FOR UPDATE NOWAIT
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // T2: UPDATE miss (already REFUNDED)
-      .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'REFUNDED' })], rowCount: 1 } as never); // getById fallback
+  it('second refund() call is rejected at terminal-state preflight', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{
+        ...makeEscrow({ state: 'REFUNDED' }), version: 2, platform_fee_cents: null,
+        stripe_payment_intent_id: 'pi_refunded', stripe_refund_id: 're_existing',
+        payout_provider: null, provider_transfer_id: null,
+        provider_transfer_status: null, provider_transfer_paid_at: null,
+      }],
+      rowCount: 1,
+    } as never);
 
     const result = await EscrowService.refund({ escrowId: 'esc-1' });
     expect(result.success).toBe(false);
     if (!result.success) {
-      expect(result.error.code).toBe('HX002'); // ESCROW_TERMINAL
+      expect(result.error.code).toBe('INVALID_STATE');
     }
     // VERDICT: SAFE — no double refund possible.
   });
@@ -642,7 +644,7 @@ describe('ATTACK 12: Pool contribution path', () => {
    */
   it('pool contribution is 2% of gross (task price), called on every release — F54-2', async () => {
     mockReleaseHappyPath(10000, 10000);
-    await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_atk' });
+    await EscrowService.release(stripeRelease(10000));
 
     expect(SelfInsurancePoolService.recordContribution).toHaveBeenCalledTimes(1);
     expect(SelfInsurancePoolService.recordContribution).toHaveBeenCalledWith(
@@ -655,7 +657,7 @@ describe('ATTACK 12: Pool contribution path', () => {
 
   it('pool contribution is also called when releasing from LOCKED_DISPUTE (dispute worker-win)', async () => {
     mockReleaseHappyPath(10000, 10000, 'LOCKED_DISPUTE');
-    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_atk' });
+    const result = await EscrowService.release(stripeRelease(10000));
 
     expect(result.success).toBe(true);
     expect(SelfInsurancePoolService.recordContribution).toHaveBeenCalledTimes(1);
@@ -793,7 +795,7 @@ describe('ATTACK 16: Double release via terminal state check', () => {
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)            // UPDATE — 0 rows
       .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'RELEASED' })], rowCount: 1 } as never); // getById
 
-    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_atk' });
+    const result = await EscrowService.release(stripeRelease(5000));
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error.code).toBe('HX002'); // ESCROW_TERMINAL
@@ -823,7 +825,7 @@ describe('ATTACK 17: XP formula uses gross payout (not net) — XP over-award', 
   it('XP award uses grossPayoutCents (not net) — XP overcounted relative to worker earnings', async () => {
     mockReleaseHappyPath(10000, 10000);
     const { XPService } = await import('../../src/services/XPService');
-    await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_atk' });
+    await EscrowService.release(stripeRelease(10000));
 
     // XP = gross / 10 = 10000 / 10 = 1000
     expect(XPService.awardXP).toHaveBeenCalledWith(

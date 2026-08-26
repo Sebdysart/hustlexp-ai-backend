@@ -1,62 +1,79 @@
 # CI/CD
 
-Status: `CURRENT_IMPLEMENTATION_REFERENCE / NOT_DEPLOYMENT_AUTHORITY`
+Status: `CURRENT_IMPLEMENTATION_REFERENCE / RELEASE_BLOCKED`
 
 Production launch: `NO-GO`
 
-Read [the Team Goal and Execution Contract](HUSTLEXP_TEAM_ALIGNMENT.md). A workflow definition or green run proves only the named check on the exact SHA; it does not authorize merge, deployment, provider configuration, or production effects.
+Read [the team goal](HUSTLEXP_TEAM_ALIGNMENT.md) and source-dated [current checkpoint](HUSTLEXP_CURRENT_BACKEND_CHECKPOINT.md). A workflow definition proves intended controls; a successful run proves only its named assertions on its exact SHA. Neither grants Governor admission, merge, deployment, processor, or production authority.
 
-Railway is the only maintained deployment target for this repository. The intended service configuration is [`railway.json`](../railway.json), and the production image is defined by [`Dockerfile`](../Dockerfile). The manual GitHub workflow is not the only effective deployment path: Railway Git integration currently auto-deploys `main` to production.
+## Required workflows
 
-## Workflows
-
-| Workflow | Trigger | Purpose |
+| Workflow/job | Trigger | Exact responsibility |
 |---|---|---|
-| CI | Push and pull request | Typecheck, lint, tests, production dependency audit, compile |
-| Deploy | Manual production dispatch | Re-verify the selected revision, deploy the web and worker Railway services, then verify exact build identity and health |
-| Railway Git integration | Push or merge to `main` | Current out-of-band path that automatically deploys Railway production; blocking defect until detached or placed behind equivalent protected approval |
-| Security | Pull requests and weekly schedule | CodeQL, dependency review, and supplemental dependency scans |
+| `CI — Lint, Typecheck, Test` | Pull request to `main` and configured pushes | Node 22 typecheck, zero-warning backend lint, full Vitest, readiness/legal contract tests, production dependency audit, and gated build |
+| `Build Validation` | After typecheck, lint, and tests | Compile; fresh/upgrade/replay/recovery migrations on PostgreSQL 17.7; PR276 prefix/drift/preservation/role/containment harness; production image build; migrator-credential exclusion; exact migration-artifact identity |
+| `Security` / `audit` | Pull requests, `main`, and weekly schedule | Pinned Actions, workflow contract, and high/critical production dependency audit |
+| `Security` / `codeql` | Pull requests, `main`, and weekly schedule | JavaScript/TypeScript CodeQL analysis |
+| `Security` / `dependency-review` | Pull requests only | Dependency diff review on the exact PR head |
+| `Security` / `snyk` | Explicit repository-variable opt-in only | Supplemental scan; a skipped job receives no green credit |
+| `Release exact admitted engine revision` | Manual dispatch on protected `main` | Re-admit the exact merge, apply checksummed migrations with one-shot credentials, upload separate web/worker sources, and attest both deployments and public identity |
+| Railway Git integration | Push or merge to `main` | Current out-of-band production web deployment path; release-blocking until disabled or contained by an accepted transaction |
 
-The deploy workflow checks out the exact dispatched commit before deployment. It targets the GitHub `production` environment, but the live environment does not currently provide an independent deployment-approval gate. Separately, Railway deployment `8e8e3864-5348-4f91-ae33-c614425f2362` in project `authentic-compassion`, environment `production`, service `hustlexp-ai-backend-staging`, was created nine seconds after `main` commit `ab4a76cbc8ea32c663c36982eafe94b20d2dc879` and is metadata-bound to that source. This proves automatic production deployment outside the manual workflow.
+The authoritative workflow files are [CI](../.github/workflows/ci.yml), [Security](../.github/workflows/security.yml), and [Deploy](../.github/workflows/deploy.yml). Actions are pinned by full commit SHA. Do not relax assertions or invent success for an unavailable/skipped job.
 
-The public runtime cannot currently prove its artifact identity. At `2026-08-25T20:08:08Z`, `/health` returned HTTP 200 but reported revision `140ce19f4f77926249b1e7c0e5d2aac29bd4c9ef` and a `2026-07-23` build, while Railway metadata identifies deployed source `ab4a76…`. Stale `HX_BUILD_REVISION`, `HX_BUILD_TIMESTAMP`, and `HX_BUILD_SOURCE_CLEAN` variables must be removed from release identity authority.
+## Protected repository boundary
 
-## Verified repository-control boundary
+GitHub API verification at the checkpoint observation window confirmed active ruleset `20840525` with no bypass actors. It requires signatures, linear history, a pull request, one independent approval, post-final-push approval, resolved threads, strict up-to-date checks, CodeQL high-or-higher enforcement, and these contexts:
 
-At the 2026-08-25 read-only audit, the API confirmed active configuration in repository ruleset `20840525` for signed commits, linear history, one independent approval, last-push approval, resolved review threads, eight strict required checks, CodeQL, and no bypass actors on the backend default branch. This is `API-CONFIRMED ACTIVE CONFIGURATION / BEHAVIORAL REHEARSAL NOT_PROVEN`: the rule-suite query returned no evaluated suites, and no controlled direct-push or unapproved-merge rejection was attempted. The legacy branch-protection endpoint returning `404` does not negate the ruleset configuration, but the configuration must not be represented as observed rejection behavior.
+1. `TypeScript — zero errors`
+2. `Lint — zero warnings (backend/src/)`
+3. `Security audit — no high/critical production vulnerabilities`
+4. `Tests — zero failures`
+5. `Build Validation`
+6. `audit`
+7. `dependency-review`
+8. `codeql`
 
-Independent review root `01c0433009c62160f86fb295927490a1f1c10a5d1c11dec1c86c8ac5cebbe5a5` (`SHA-256(SHA256SUMS)`) concluded `ACTIVE_REPOSITORY_CONTAINMENT_NOT_HEALTHY_ENTERPRISE_ENFORCEMENT`. The repository remained owned by personal user `Sebdysart`; `HustleXP-LLC` had Enterprise entitlement but no organization ruleset, MFA requirement, SAML identity provider, web commit signoff, or control over the backend. Full Enterprise-account topology remained `BLOCKED_SCOPE` because the authenticated session lacked `read:enterprise` or `admin:enterprise`. Re-audit through the API before crediting any mutable control.
+The `production` environment disallows administrator bypass, accepts protected branches only, requires reviewer `whitehorse1016`, and prevents self-review. The repository remains personally owned by `Sebdysart`; organization Enterprise entitlement is not repository control until ownership/policy topology is explicitly changed and re-audited.
 
-Required checks do not replace Governor admission, exact evidence, independent review, or production authority. Snyk is optional supplemental evidence and must never be reported green when skipped.
+## Exact release admission
 
-## Active deployment-control defects
+The manual release workflow fails closed unless all of the following hold:
 
-The 2026-08-25 read-only API audit found:
+1. The dispatched SHA is a clean checkout equal to current protected `main`.
+2. Required checks from the expected GitHub Actions app succeeded.
+3. Exactly one merged first-party PR owns the merge SHA, and its final head tree equals the merge tree.
+4. `whitehorse1016` approved the exact final PR head.
+5. `dependency-review` succeeded on that PR head.
+6. A successful `Governor admission` status is published by the expected identity and points to a content-addressed control commit/evidence digest.
+7. Compiled build identity and the registered migration-artifact digest match the exact source.
+8. The protected environment approval is current after revalidating `main`.
+9. Migrations run once with `PRODUCTION_MIGRATION_DATABASE_URL`; long-lived web and worker services do not receive that credential or mutable build-identity variables.
+10. Railway CLI `4.66.0` uploads distinct content-addressed web and worker contexts and returns exact deployment identifiers.
+11. Public `/health`, web deployment, worker deployment, source tree, migration digest, and release provenance all match the admitted SHA.
 
-- `production.can_admins_bypass = true`;
-- the only required reviewer is `Sebdysart`;
-- `prevent_self_review = false`;
-- the environment accepts all deployment branches;
-- repository and organization Actions policy allow all actions, SHA pinning is not required, and the default workflow permission is read-only;
-- `.github/workflows/deploy.yml` verifies typecheck, build identity, and compilation, but does not run lint, tests, dependency/security gates, Governor preflight, or an exact protected-`main` membership check before deployment;
-- Railway Git integration auto-deploys `main`, so any merge—including documentation-only content—is a Level 3 production action until the integration is detached or protected by the accepted release transaction;
-- active Railway source identity `ab4a76…` contradicts public `/health` revision `140ce19…`;
-- remote `main` `ab4a76cbc8ea32c663c36982eafe94b20d2dc879` is unsigned; its CI run `32569865606` failed lint and 63 tests while build validation was skipped;
-- that run contained 63 failed tests across 24 files with 7,690 passing tests, four lint errors and nine warnings; dependency review was skipped while typecheck and production dependency audit passed;
-- Dependabot alerts and security updates are disabled;
-- PR 274 head `714e111efa7ae8615313b79338f4a65f71f1df41` has all eight required contexts green, but its ten commits are unsigned and merge remains blocked for review;
-- seven CodeQL alerts and six secret-scanning alerts remain open; Dependabot alerts are disabled.
+Workflow code cannot repair a Railway deployment that starts before these checks. The Git auto-deploy path must be disabled or equivalently contained under fresh Governor/deployment authority before merge.
 
-These are independent `NO-GO` defects. A successful workflow dispatch, environment approval, health response, or CodeQL check cannot be represented as a complete release or security review.
+## Current failures
 
-## Required GitHub secrets
+- Remote `main` is unsigned and CI run `32904480883` is red: lint and tests failed, Build Validation skipped, while TypeScript and production audit passed.
+- PR #275 is already merged unchanged but has no `whitehorse1016` approval; it receives no independent-review precedent.
+- Railway web source is `73c44eee22fa79c2957583217e69aa972291776f`, worker source is unbound, and `/health` reports stale revision `140ce19f4f77926249b1e7c0e5d2aac29bd4c9ef`.
+- Seven CodeQL alerts and six secret-scanning alerts remain open; the exposed credentials lack accepted rotation/revocation receipts.
+- Dependabot alerts and security updates are disabled.
+- The local D1/CI tree is uncommitted, unpublished, outside the last accepted Governor manifest, not independently reviewed, and has not passed the full/PostgreSQL matrix.
 
-| Secret | Purpose |
+Each defect independently preserves `NO-GO`.
+
+## Required secrets and credential separation
+
+| Secret | Scope |
 |---|---|
-| `RAILWAY_TOKEN` | Token used by the manual GitHub deployment workflow; it does not control or contain Railway Git auto-deployment |
-| `TEST_DATABASE_URL` | Optional PostgreSQL database for CI integration tests |
-| `TEST_UPSTASH_REDIS_REST_URL` | Optional Redis REST endpoint for CI |
-| `TEST_UPSTASH_REDIS_REST_TOKEN` | Optional Redis REST token for CI |
-| `SNYK_TOKEN` | Optional supplemental Snyk scan |
+| `TEST_DATABASE_URL` | Optional test-only integration database; absence can cause visible test skips and never earns PostgreSQL credit |
+| `TEST_UPSTASH_REDIS_REST_URL`, `TEST_UPSTASH_REDIS_REST_TOKEN` | Optional test-only Redis REST integration |
+| `RAILWAY_TOKEN` | Protected release job only; does not contain Railway Git auto-deploy |
+| `PRODUCTION_DATABASE_URL` | Protected one-shot release job runtime connection |
+| `PRODUCTION_MIGRATION_DATABASE_URL` | Protected one-shot migrator credential; forbidden from long-lived Railway web/worker variables and images |
+| `SNYK_TOKEN` | Optional supplemental scanner only |
 
-Runtime secrets, including `DATABASE_URL`, are configured in Railway rather than GitHub Actions. See [ENV.md](ENV.md).
+Runtime/provider secrets are configured through their authorized secret stores. Never copy secret values into logs, documentation, evidence, source, browser storage, or GitHub issue/PR text. See [ENV.md](ENV.md).

@@ -6,32 +6,66 @@ const ROOT = process.cwd();
 const read = (file: string) => readFileSync(path.join(ROOT, file), 'utf8');
 
 describe('engine automation production container contract', () => {
-  it('packages the required migration and enters through the fail-closed start command', () => {
+  it('packages the migration manifest and enters through the credential-scrubbing PID 1 wrapper', () => {
     const dockerfile = read('Dockerfile');
     expect(dockerfile).toContain(
-      'COPY --from=builder /app/backend/database/migrations/20260710_engine_automation_contracts.sql ./backend/database/migrations/20260710_engine_automation_contracts.sql',
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
     );
     expect(dockerfile).toContain(
-      'COPY --from=builder /app/backend/database/migrations/011-proof-alignment.sql ./backend/database/migrations/011-proof-alignment.sql',
+      'COPY --from=builder /app/scripts/start-runtime.sh ./scripts/start-runtime.sh'
     );
-    expect(dockerfile).toContain(
-      'COPY --from=builder /app/backend/database/migrations/expertise_supply_control.sql ./backend/database/migrations/expertise_supply_control.sql',
-    );
-    expect(dockerfile).toContain('CMD ["npm", "start"]');
-    expect(dockerfile).toContain('20260721_ai_observability_contract.sql');
+    expect(dockerfile).toContain('chmod 0555 /app/scripts/start-runtime.sh');
+    expect(dockerfile).toContain('CMD ["/app/scripts/start-runtime.sh"]');
+
+    const wrapper = read('scripts/start-runtime.sh');
+    expect(wrapper).toContain('unset MIGRATION_DATABASE_URL');
+    expect(wrapper).toContain('exec node dist/backend/src/jobs/workers.js');
+    expect(wrapper).toContain('exec node dist/backend/src/server.js');
+
+    const dockerignore = read('.dockerignore');
+    expect(dockerignore).toContain('!scripts/start-runtime.sh');
   });
 
-  it('applies the migration before both web and worker runtimes', () => {
+  it('runs migrations only in the protected release boundary and keeps runtimes read-only', () => {
     const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
-    expect(pkg.scripts.start).toMatch(/engine-automation-migration/);
+    expect(pkg.scripts['db:migrate:engine']).toMatch(/engine-automation-migration/);
+    expect(pkg.scripts.start).not.toMatch(/engine-automation-migration/);
+    expect(pkg.scripts['start:workers']).not.toMatch(/engine-automation-migration/);
+    expect(pkg.scripts.start).toContain('unset MIGRATION_DATABASE_URL');
+    expect(pkg.scripts['start:workers']).toContain('unset MIGRATION_DATABASE_URL');
     expect(pkg.scripts.start).toContain('SERVICE_ROLE');
-    expect(pkg.scripts.start).toContain('node dist/backend/src/jobs/workers.js');
-    expect(pkg.scripts.start).toContain('node dist/backend/src/server.js');
-    expect(pkg.scripts['start:workers']).toMatch(/engine-automation-migration.+&& node dist\/backend\/src\/jobs\/workers\.js/);
+    expect(pkg.scripts.start).toContain('exec node dist/backend/src/jobs/workers.js');
+    expect(pkg.scripts.start).toContain('exec node dist/backend/src/server.js');
+    expect(pkg.scripts['start:workers']).toContain(
+      'exec node dist/backend/src/jobs/workers.js'
+    );
 
     const procfile = read('Procfile');
     expect(procfile).toContain('web: npm start');
     expect(procfile).toContain('worker: npm run start:workers');
+    expect(procfile).not.toMatch(/^release:/m);
+
+    const railway = JSON.parse(read('railway.json')) as {
+      deploy: { preDeployCommand?: string[] };
+    };
+    expect(railway.deploy.preDeployCommand).toBeUndefined();
+
+    const release = read('.github/workflows/deploy.yml');
+    expect(release).toContain('environment: production');
+    expect(release).toContain('secrets.PRODUCTION_DATABASE_URL');
+    expect(release).toContain('secrets.PRODUCTION_MIGRATION_DATABASE_URL');
+    expect(release).toContain('has("MIGRATION_DATABASE_URL") | not');
+    expect(release).toContain('Governor admission');
+  });
+
+  it('probes the exact built image for runtime migrator-credential isolation', () => {
+    const ci = read('.github/workflows/ci.yml');
+    expect(ci).toContain(
+      'Verify runtime image and process tree exclude the migrator credential'
+    );
+    expect(ci).toContain("grep -q '^MIGRATION_DATABASE_URL='");
+    expect(ci).toContain('--env MIGRATION_DATABASE_URL=hx-ci-migrator-sentinel');
+    expect(ci).toContain("test -z \"$\{MIGRATION_DATABASE_URL+x\}\"");
   });
 
   it('keeps the API as the default role and requires real health from both runtimes', () => {
@@ -40,7 +74,7 @@ describe('engine automation production container contract', () => {
     expect(dockerfile).not.toContain("process.env.SERVICE_ROLE==='worker'){process.exit(0)");
 
     const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
-    expect(pkg.scripts.start).toContain('else node dist/backend/src/server.js');
+    expect(pkg.scripts.start).toContain('else exec node dist/backend/src/server.js');
 
     const railway = JSON.parse(read('railway.json')) as {
       deploy: Record<string, unknown>;
@@ -72,8 +106,12 @@ describe('engine automation production container contract', () => {
 
   it('packages the pending PaymentIntent cancellation repair', () => {
     const dockerfile = read('Dockerfile');
-    const migration = read('backend/database/migrations/20260712_dispatch_expiry_pending_payment_cancel.sql');
-    expect(dockerfile).toContain('20260712_dispatch_expiry_pending_payment_cancel.sql');
+    const migration = read(
+      'backend/database/migrations/20260712_dispatch_expiry_pending_payment_cancel.sql'
+    );
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
+    );
     expect(migration).toContain('ADD COLUMN IF NOT EXISTS payment_intent_canceled_at');
     expect(migration).toContain("'financial_action', 'cancel_pending_payment_intent'");
     expect(migration).toContain("'dispatch-expiry-cancel:' || t.id::text");
@@ -81,8 +119,12 @@ describe('engine automation production container contract', () => {
 
   it('packages the no-provider-payment expiry reconciliation', () => {
     const dockerfile = read('Dockerfile');
-    const migration = read('backend/database/migrations/20260712_dispatch_expiry_no_payment_reconcile.sql');
-    expect(dockerfile).toContain('20260712_dispatch_expiry_no_payment_reconcile.sql');
+    const migration = read(
+      'backend/database/migrations/20260712_dispatch_expiry_no_payment_reconcile.sql'
+    );
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
+    );
     expect(migration).toContain("refund_state = 'NOT_REQUIRED'");
     expect(migration).toContain("refund_blocker = 'BLOCKED_PENDING_ESCROW_CANCELLATION'");
     expect(migration).toContain('stripe_payment_intent_id IS NULL');
@@ -91,8 +133,12 @@ describe('engine automation production container contract', () => {
 
   it('packages the canonical performance-index alignment', () => {
     const dockerfile = read('Dockerfile');
-    const migration = read('backend/database/migrations/20260713_performance_indexes_alignment.sql');
-    expect(dockerfile).toContain('20260713_performance_indexes_alignment.sql');
+    const migration = read(
+      'backend/database/migrations/20260713_performance_indexes_alignment.sql'
+    );
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
+    );
     expect(migration).toContain('ON xp_ledger(user_id, awarded_at DESC)');
     expect(migration).not.toContain('ON xp_ledger(user_id, created_at DESC)');
     expect(migration).toContain('ON notifications(user_id, read_at) WHERE read_at IS NULL');
@@ -102,7 +148,9 @@ describe('engine automation production container contract', () => {
   it('packages the append-only fail-closed revenue audit rail', () => {
     const dockerfile = read('Dockerfile');
     const migration = read('backend/database/migrations/20260718_revenue_audit_rail.sql');
-    expect(dockerfile).toContain('20260718_revenue_audit_rail.sql');
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
+    );
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS revenue_ledger');
     expect(migration).toContain('stripe_event_id TEXT UNIQUE');
     expect(migration).toContain('CREATE TRIGGER revenue_ledger_no_update');
@@ -113,7 +161,9 @@ describe('engine automation production container contract', () => {
   it('packages chargeback freezes and append-only card-dispute history', () => {
     const dockerfile = read('Dockerfile');
     const migration = read('backend/database/migrations/chargeback_lifecycle.sql');
-    expect(dockerfile).toContain('chargeback_lifecycle.sql');
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
+    );
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS payment_disputes');
     expect(migration).toContain('ADD COLUMN IF NOT EXISTS payouts_locked');
     expect(migration).toContain('CREATE TRIGGER escrow_payout_freeze_guard');
@@ -123,7 +173,9 @@ describe('engine automation production container contract', () => {
   it('packages the canonical quote-economics contract', () => {
     const dockerfile = read('Dockerfile');
     const migration = read('backend/database/migrations/20260718_quote_economics_contract.sql');
-    expect(dockerfile).toContain('20260718_quote_economics_contract.sql');
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
+    );
     expect(migration).toContain('ADD COLUMN IF NOT EXISTS hustler_payout_cents INTEGER');
     expect(migration).toContain('ADD COLUMN IF NOT EXISTS platform_margin_cents INTEGER');
     expect(migration).toContain('ADD COLUMN IF NOT EXISTS platform_fee_cents INTEGER');
@@ -131,7 +183,9 @@ describe('engine automation production container contract', () => {
   });
 
   it('persists gross, insurance, and net worker economics before acceptance', () => {
-    const migration = read('backend/database/migrations/20260719_lifecycle_service_foundations.sql');
+    const migration = read(
+      'backend/database/migrations/20260719_lifecycle_service_foundations.sql'
+    );
     expect(migration).toContain('ADD COLUMN IF NOT EXISTS insurance_adjustment_cents INTEGER');
     expect(migration).toContain('ADD COLUMN IF NOT EXISTS net_payout_cents INTEGER');
   });
@@ -140,8 +194,12 @@ describe('engine automation production container contract', () => {
     const dockerfile = read('Dockerfile');
     const scope = read('backend/database/migrations/20260718_task_scope_versions.sql');
     const location = read('backend/database/migrations/20260718_task_location_encryption.sql');
-    expect(dockerfile).toContain('20260718_task_scope_versions.sql');
-    expect(dockerfile).toContain('20260718_task_location_encryption.sql');
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
+    );
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
+    );
     expect(scope).toContain('CREATE TABLE IF NOT EXISTS task_scope_versions');
     expect(scope).toContain('DEFERRABLE INITIALLY DEFERRED');
     expect(location).toContain('location_ciphertext TEXT');
@@ -151,7 +209,9 @@ describe('engine automation production container contract', () => {
   it('packages retry-safe proof submission witnesses', () => {
     const dockerfile = read('Dockerfile');
     const migration = read('backend/database/migrations/20260718_proof_submission_atomicity.sql');
-    expect(dockerfile).toContain('20260718_proof_submission_atomicity.sql');
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
+    );
     expect(migration).toContain('client_submission_id TEXT');
     expect(migration).toContain('submission_hash CHAR(64)');
     expect(migration).toContain('proofs_task_client_submission_uniq');
@@ -161,8 +221,12 @@ describe('engine automation production container contract', () => {
     const dockerfile = read('Dockerfile');
     const cases = read('backend/database/migrations/20260718_task_safety_incident_cases.sql');
     const delivery = read('backend/database/migrations/20260718_task_safety_delivery_contract.sql');
-    expect(dockerfile).toContain('20260718_task_safety_incident_cases.sql');
-    expect(dockerfile).toContain('20260718_task_safety_delivery_contract.sql');
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
+    );
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
+    );
     expect(cases).toContain('CREATE TABLE IF NOT EXISTS task_safety_incidents');
     expect(cases).toContain('task_safety_events_no_update');
     expect(delivery).toContain('request_hash CHAR(64)');
@@ -173,7 +237,9 @@ describe('engine automation production container contract', () => {
   it('packages durable timed safety check-ins and overdue escalation evidence', () => {
     const dockerfile = read('Dockerfile');
     const migration = read('backend/database/migrations/20260718_task_safety_checkins.sql');
-    expect(dockerfile).toContain('20260718_task_safety_checkins.sql');
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
+    );
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS task_safety_checkins');
     expect(migration).toContain('task_safety_checkins_one_active');
     expect(migration).toContain('task_safety_incidents_source_checkin_uniq');
@@ -184,8 +250,12 @@ describe('engine automation production container contract', () => {
 
   it('packages encrypted expiring safety location evidence and append-only access logs', () => {
     const dockerfile = read('Dockerfile');
-    const migration = read('backend/database/migrations/20260718_task_safety_location_encryption.sql');
-    expect(dockerfile).toContain('20260718_task_safety_location_encryption.sql');
+    const migration = read(
+      'backend/database/migrations/20260718_task_safety_location_encryption.sql'
+    );
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
+    );
     expect(migration).toContain('location_ciphertext TEXT');
     expect(migration).toContain('task_safety_location_evidence_ck');
     expect(migration).toContain('location_legacy_unverified = TRUE');
@@ -196,8 +266,12 @@ describe('engine automation production container contract', () => {
 
   it('packages the fail-closed zone-category liquidity authority', () => {
     const dockerfile = read('Dockerfile');
-    const migration = read('backend/database/migrations/20260718_zone_category_liquidity_cells.sql');
-    expect(dockerfile).toContain('20260718_zone_category_liquidity_cells.sql');
+    const migration = read(
+      'backend/database/migrations/20260718_zone_category_liquidity_cells.sql'
+    );
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
+    );
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS zone_category_cells');
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS zone_category_cell_events');
     expect(migration).toContain('zone_category_cell_events_immutable');
@@ -208,8 +282,12 @@ describe('engine automation production container contract', () => {
 
   it('packages the worker offer-decision and appeal evidence contract', () => {
     const dockerfile = read('Dockerfile');
-    const migration = read('backend/database/migrations/20260718_worker_offer_decision_contract.sql');
-    expect(dockerfile).toContain('20260718_worker_offer_decision_contract.sql');
+    const migration = read(
+      'backend/database/migrations/20260718_worker_offer_decision_contract.sql'
+    );
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
+    );
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS worker_offer_decisions');
     expect(migration).toContain('paid_promotion_affects_rank = FALSE');
     expect(migration).toContain('passing_has_rank_penalty = FALSE');
@@ -219,8 +297,12 @@ describe('engine automation production container contract', () => {
 
   it('packages worker screening rights with consent and adverse-action database gates', () => {
     const dockerfile = read('Dockerfile');
-    const migration = read('backend/database/migrations/20260718_worker_screening_rights_contract.sql');
-    expect(dockerfile).toContain('20260718_worker_screening_rights_contract.sql');
+    const migration = read(
+      'backend/database/migrations/20260718_worker_screening_rights_contract.sql'
+    );
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
+    );
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS background_checks');
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS worker_screening_consents');
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS worker_screening_disputes');
@@ -232,14 +314,20 @@ describe('engine automation production container contract', () => {
     expect(legacyResultRepair).toBeGreaterThanOrEqual(0);
     expect(legacyResultRepair).toBeLessThan(legacyResultBackfill);
     expect(migration).toContain('HXWS2: a new screening check requires explicit consent');
-    expect(migration).toContain('HXWS5: final adverse action requires delivered report, rights notice, and elapsed review window');
+    expect(migration).toContain(
+      'HXWS5: final adverse action requires delivered report, rights notice, and elapsed review window'
+    );
     expect(migration).toContain('HXWS6: final adverse action is blocked while a dispute is open');
   });
 
   it('packages lifecycle service foundations required by fresh deployments', () => {
     const dockerfile = read('Dockerfile');
-    const migration = read('backend/database/migrations/20260719_lifecycle_service_foundations.sql');
-    expect(dockerfile).toContain('20260719_lifecycle_service_foundations.sql');
+    const migration = read(
+      'backend/database/migrations/20260719_lifecycle_service_foundations.sql'
+    );
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
+    );
     expect(migration).toContain('ADD COLUMN IF NOT EXISTS is_minor');
     expect(migration).toContain('ADD COLUMN IF NOT EXISTS payouts_enabled');
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS license_verifications');
@@ -274,7 +362,9 @@ describe('engine automation production container contract', () => {
   it('packages the immutable fail-closed region policy contract', () => {
     const dockerfile = read('Dockerfile');
     const migration = read('backend/database/migrations/20260718_region_policy_contract.sql');
-    expect(dockerfile).toContain('20260718_region_policy_contract.sql');
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
+    );
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS region_policies');
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS region_policy_events');
     expect(migration).toContain('production_enabled BOOLEAN NOT NULL DEFAULT FALSE');
@@ -284,8 +374,12 @@ describe('engine automation production container contract', () => {
 
   it('packages transaction-linked structured review and rebook retention gates', () => {
     const dockerfile = read('Dockerfile');
-    const migration = read('backend/database/migrations/20260718_completion_retention_contract.sql');
-    expect(dockerfile).toContain('20260718_completion_retention_contract.sql');
+    const migration = read(
+      'backend/database/migrations/20260718_completion_retention_contract.sql'
+    );
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
+    );
     expect(migration).toContain('structured_feedback JSONB');
     expect(migration).toContain('CREATE TRIGGER task_retention_binding_gate');
     expect(migration).toContain('HXRT5: rebook cannot clone an assignment');
@@ -295,7 +389,9 @@ describe('engine automation production container contract', () => {
   it('packages public clarification and Poster-approved repricing gates', () => {
     const dockerfile = read('Dockerfile');
     const migration = read('backend/database/migrations/20260718_task_public_clarifications.sql');
-    expect(dockerfile).toContain('20260718_task_public_clarifications.sql');
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
+    );
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS task_public_questions');
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS task_clarification_revisions');
     expect(migration).toContain('task_clarification_accept_gate');
@@ -304,8 +400,12 @@ describe('engine automation production container contract', () => {
 
   it('packages category-specific marketplace reputation without blending local recommendations', () => {
     const dockerfile = read('Dockerfile');
-    const migration = read('backend/database/migrations/20260718_marketplace_reputation_contract.sql');
-    expect(dockerfile).toContain('20260718_marketplace_reputation_contract.sql');
+    const migration = read(
+      'backend/database/migrations/20260718_marketplace_reputation_contract.sql'
+    );
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
+    );
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS local_provider_recommendations');
     expect(migration).toContain('CREATE OR REPLACE VIEW provider_reputation_public');
     expect(migration).toContain('FALSE AS blended_into_verified_score');
@@ -315,7 +415,9 @@ describe('engine automation production container contract', () => {
   it('packages the versioned fail-closed recurring work contract', () => {
     const dockerfile = read('Dockerfile');
     const migration = read('backend/database/migrations/20260718_recurring_work_contract.sql');
-    expect(dockerfile).toContain('20260718_recurring_work_contract.sql');
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
+    );
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS recurring_task_template_revisions');
     expect(migration).toContain('enforce_recurring_occurrence_generation_gate');
     expect(migration).toContain('recover_recurring_template');

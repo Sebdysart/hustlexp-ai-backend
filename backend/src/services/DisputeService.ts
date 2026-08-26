@@ -299,41 +299,72 @@ export const DisputeService = {
           throw Object.assign(new Error(`Dispute can only be filed when escrow is FUNDED or RELEASED (current: ${escrow.state})`), { code: ErrorCodes.INVALID_STATE });
         }
 
-        // Lock escrow: FUNDED or RELEASED → LOCKED_DISPUTE (versioned)
-        // BUG FIX (HIGH - Part A): When the escrow is RELEASED a Stripe transfer has
-        // already been sent to the worker. We clear stripe_transfer_id so that the
-        // escrow-action-worker's handleReleaseRequest idempotency guard (which checks
-        // for a non-null stripe_transfer_id) does NOT fire and skip payment if the
-        // dispute is later resolved in the worker's favour. The original transfer ID
-        // is preserved in an escrow_events row below so the refund path can reverse it
-        // if the poster wins.
+        // RELEASED disputes require a narrow transaction-local authority plus an
+        // immutable actor-attributed command and an exact system origin witness.
+        // Preserve stripe_transfer_id: a worker-favour resolution must restore the
+        // already-paid release, never manufacture a second payout.
+        if (escrow.state === 'RELEASED') {
+          if (!escrow.stripe_transfer_id) {
+            throw Object.assign(
+              new Error('Released escrow is missing its canonical provider-transfer identity'),
+              { code: ErrorCodes.INVALID_STATE },
+            );
+          }
+          const authorityKey = `released-dispute-authority-v1:${escrowId}:${escrow.version}`;
+          await query(
+            `INSERT INTO escrow_events
+               (escrow_id, from_state, to_state, actor_id, actor_type, metadata, idempotency_key)
+             VALUES ($1, 'RELEASED', 'LOCKED_DISPUTE', $2, 'user', $3::jsonb, $4)`,
+            [
+              escrowId,
+              initiatedBy,
+              JSON.stringify({
+                event_type: 'released_dispute_authority_v1',
+                task_id: taskId,
+                initiated_by: initiatedBy,
+                poster_id: posterId,
+                worker_id: workerId,
+                original_transfer_id: escrow.stripe_transfer_id,
+                escrow_version: escrow.version,
+              }),
+              authorityKey,
+            ],
+          );
+          await query(
+            `INSERT INTO escrow_events
+               (escrow_id, from_state, to_state, actor_id, actor_type, metadata, idempotency_key)
+             VALUES ($1, 'RELEASED', 'LOCKED_DISPUTE', NULL, 'system', $2::jsonb, $3)`,
+            [
+              escrowId,
+              JSON.stringify({
+                event_type: 'dispute_locked_after_release',
+                task_id: taskId,
+                initiated_by: initiatedBy,
+                original_transfer_id: escrow.stripe_transfer_id,
+                escrow_version: escrow.version,
+              }),
+              `released-dispute-origin-v1:${escrowId}:${escrow.version}`,
+            ],
+          );
+          await query(
+            `SELECT set_config('hustlexp.released_dispute_authority', $1, true)`,
+            [escrowId],
+          );
+        }
+
+        // Lock escrow: FUNDED or RELEASED → LOCKED_DISPUTE (versioned).
         const escrowUpdate = await query<Escrow>(
           `UPDATE escrows
            SET state = 'LOCKED_DISPUTE',
-               stripe_transfer_id = NULL,
                version = version + 1
-           WHERE id = $1 AND state IN ('FUNDED', 'RELEASED')
+           WHERE id = $1 AND state = $2 AND version = $3
+             AND stripe_transfer_id IS NOT DISTINCT FROM $4
            RETURNING *`,
-          [escrowId]
+          [escrowId, escrow.state, escrow.version, escrow.stripe_transfer_id]
         );
 
         if (escrowUpdate.rowCount === 0) {
           throw new Error('Failed to lock escrow (may have been locked by another process)');
-        }
-
-        // BUG FIX (HIGH - Part B): If the escrow was RELEASED, persist the original
-        // transfer ID into escrow_events so handleRefundRequest can reverse it if the
-        // poster wins the dispute. We use escrow_events (which has a JSONB metadata
-        // column) because the disputes table has no metadata column.
-        if (escrow.stripe_transfer_id) {
-          await query(
-            `INSERT INTO escrow_events (escrow_id, from_state, to_state, actor_id, actor_type, metadata)
-             VALUES ($1, 'RELEASED', 'LOCKED_DISPUTE', NULL, 'system', $2)`,
-            [escrowId, JSON.stringify({
-              event_type: 'dispute_locked_after_release',
-              original_transfer_id: escrow.stripe_transfer_id,
-            })]
-          );
         }
 
         // Create dispute (version=1)
@@ -613,6 +644,22 @@ export const DisputeService = {
             throw new Error(`SPLIT amounts (${refundAmount} + ${releaseAmount} = ${refundAmount + releaseAmount}) must sum to escrow amount (${escrow.amount})`);
           }
         }
+
+        // Close the economic authority carried by the resolved dispute. Full
+        // outcomes are never represented by optional caller amounts: REFUND
+        // authorizes exactly the whole escrow to the poster and RELEASE
+        // authorizes exactly the whole escrow to the provider. Consumers can
+        // therefore reject narrative or partial payloads before provider I/O.
+        const canonicalRefundAmount = outcomeEscrowAction === 'REFUND'
+          ? escrow.amount
+          : outcomeEscrowAction === 'RELEASE'
+            ? 0
+            : refundAmount!;
+        const canonicalReleaseAmount = outcomeEscrowAction === 'RELEASE'
+          ? escrow.amount
+          : outcomeEscrowAction === 'REFUND'
+            ? 0
+            : releaseAmount!;
         
         // Update dispute with version check
         const newVersion = dispute.version + 1;
@@ -638,8 +685,8 @@ export const DisputeService = {
             outcomeEscrowAction,
             workerPenalty,
             posterPenalty,
-            refundAmount ?? null,
-            releaseAmount ?? null,
+            canonicalRefundAmount,
+            canonicalReleaseAmount,
             newVersion,
             disputeId,
             dispute.version,
@@ -772,8 +819,8 @@ export const DisputeService = {
             dispute_id: dispute.id,
             reason: 'dispute_resolution',
             outcome_escrow_action: outcomeEscrowAction,
-            refund_amount: refundAmount,
-            release_amount: releaseAmount,
+            refund_amount: canonicalRefundAmount,
+            release_amount: canonicalReleaseAmount,
           },
           queueName: 'critical_payments',
         }, query);

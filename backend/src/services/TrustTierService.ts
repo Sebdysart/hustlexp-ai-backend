@@ -18,11 +18,65 @@ import { AlphaInstrumentation } from './AlphaInstrumentation.js';
 import { invalidateAuthCacheForUser } from '../auth-cache.js';
 import { revokeUserSessions } from '../auth/middleware.js';
 import { forceDisconnectUser } from '../realtime/connection-registry.js';
-import { writeToOutbox } from '../lib/outbox-helpers.js';
 import { randomUUID } from 'node:crypto';
 import { issueDeactivationAppealRight } from './WorkerStandingDecisionService.js';
 
 const log = logger.child({ service: 'TrustTierService' });
+
+async function persistBanRefundReconciliation(input: {
+  escrowId: string;
+  taskId: string;
+  userId: string;
+  banRole: 'WORKER' | 'POSTER';
+  reason: 'worker_banned' | 'poster_banned';
+  canonicalState: 'FUNDED' | 'LOCKED_DISPUTE';
+  requestedAction: 'FULL_REFUND' | 'MANUAL_ADJUDICATION';
+}): Promise<void> {
+  const metadata = {
+    event_type: 'ban_refund_reconciliation_required_v1',
+    task_id: input.taskId,
+    banned_user_id: input.userId,
+    ban_role: input.banRole,
+    reason: input.reason,
+    canonical_state: input.canonicalState,
+    requested_action: input.requestedAction,
+    producer_disabled: true,
+    reconciliation_required: true,
+    required_consumer_state: 'LOCKED_DISPUTE',
+    required_payload_contract: 'snake_case_v1',
+  };
+  const idempotencyKey = [
+    'ban-refund-reconciliation-required-v1',
+    input.escrowId,
+    input.taskId,
+    input.userId,
+    input.reason,
+  ].join(':');
+  const evidence = await db.query<{ metadata: unknown }>(
+    `WITH attempted AS (
+       INSERT INTO escrow_events
+         (escrow_id,from_state,to_state,actor_id,actor_type,metadata,idempotency_key)
+       VALUES ($1,$2,$2,NULL,'system',$3::jsonb,$4)
+       ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+       RETURNING metadata
+     )
+     SELECT metadata FROM attempted
+     UNION ALL
+     SELECT metadata FROM escrow_events
+      WHERE escrow_id=$1
+        AND from_state=$2 AND to_state=$2
+        AND actor_id IS NULL AND actor_type='system'
+        AND metadata::jsonb=$3::jsonb
+        AND idempotency_key=$4
+        AND NOT EXISTS (SELECT 1 FROM attempted)`,
+    [input.escrowId, input.canonicalState, JSON.stringify(metadata), idempotencyKey],
+  );
+  if (evidence.rows.length !== 1) {
+    throw new Error(
+      `Ban refund reconciliation evidence conflicts for escrow ${input.escrowId}`,
+    );
+  }
+}
 
 // ============================================================================
 // TRUST TIER ENUM (Authoritative)
@@ -555,8 +609,9 @@ export const TrustTierService = {
       // fire-and-forget
     }
 
-    // Emit escrow refund outbox events for any funded escrows on active tasks
-    // before cancelling them, so escrows are not stranded on ban.
+    // The legacy refund producers used camelCase payloads against a strict
+    // snake_case/LOCKED_DISPUTE consumer and could only poison the financial
+    // queue. Preserve exact same-state reconciliation evidence instead.
     // MATCHING, ACCEPTED, IN_PROGRESS, PROOF_SUBMITTED are all states where a
     // worker has an active assignment. DISPUTED tasks have LOCKED_DISPUTE escrows
     // handled separately and are intentionally excluded here.
@@ -570,14 +625,14 @@ export const TrustTierService = {
         [task.id]
       );
       if (escrow.rows[0]) {
-        await writeToOutbox({
-          eventType: 'escrow.refund_requested',
-          aggregateType: 'escrow',
-          aggregateId: escrow.rows[0].id,
-          eventVersion: 1,
-          payload: { escrowId: escrow.rows[0].id, reason: 'worker_banned', taskId: task.id },
-          queueName: 'critical_payments',
-          idempotencyKey: `ban_refund:${task.id}`,
+        await persistBanRefundReconciliation({
+          escrowId:escrow.rows[0].id,
+          taskId:task.id,
+          userId,
+          banRole:'WORKER',
+          reason:'worker_banned',
+          canonicalState:'FUNDED',
+          requestedAction:'FULL_REFUND',
         });
       }
     }
@@ -603,18 +658,19 @@ export const TrustTierService = {
         [userId]
       );
       for (const row of posterEscrows.rows) {
-        await writeToOutbox({
-          eventType: 'escrow.refund_requested',
-          aggregateType: 'escrow',
-          aggregateId: row.escrow_id,
-          eventVersion: 1,
-          payload: { escrowId: row.escrow_id, reason: 'poster_banned', taskId: row.task_id },
-          queueName: 'critical_payments',
-          idempotencyKey: `ban_poster_refund:${row.task_id}`,
-        }).catch(err => log.error({ err, escrowId: row.escrow_id, taskId: row.task_id, userId }, '[TrustTierService] banUser: failed to enqueue poster escrow refund'));
+        await persistBanRefundReconciliation({
+          escrowId:row.escrow_id,
+          taskId:row.task_id,
+          userId,
+          banRole:'POSTER',
+          reason:'poster_banned',
+          canonicalState:'FUNDED',
+          requestedAction:'FULL_REFUND',
+        });
       }
     } catch (err) {
       log.error({ err, userId }, '[TrustTierService] banUser: failed to query poster funded escrows');
+      throw err;
     }
 
     // Bucket B: poster's active tasks (ACCEPTED/IN_PROGRESS/PROOF_SUBMITTED) — a worker
@@ -630,23 +686,29 @@ export const TrustTierService = {
         [userId]
       );
       for (const row of activePosterEscrows.rows) {
-        await db.query(
-          `UPDATE escrows SET state = 'LOCKED_DISPUTE', updated_at = NOW()
-           WHERE id = $1 AND state = 'FUNDED'`,
+        const locked = await db.query<{ version:number }>(
+          `UPDATE escrows
+              SET state='LOCKED_DISPUTE',version=version+1,updated_at=NOW()
+            WHERE id=$1 AND state='FUNDED'
+            RETURNING version`,
           [row.escrow_id]
-        ).catch(err => log.error({ err, escrowId: row.escrow_id, userId }, '[TrustTierService] banUser: failed to lock active poster escrow'));
-        await writeToOutbox({
-          eventType: 'escrow.locked_on_ban',
-          aggregateType: 'escrow',
-          aggregateId: row.escrow_id,
-          eventVersion: 1,
-          payload: { escrowId: row.escrow_id, reason: 'poster_banned', taskId: row.task_id, bannedUserId: userId },
-          queueName: 'critical_payments',
-          idempotencyKey: `ban_poster_lock:${row.task_id}`,
-        }).catch(err => log.error({ err, escrowId: row.escrow_id, taskId: row.task_id, userId }, '[TrustTierService] banUser: failed to enqueue active poster escrow lock event'));
+        );
+        if (locked.rowCount !== 1) {
+          throw new Error(`Active poster escrow ${row.escrow_id} changed before ban lock`);
+        }
+        await persistBanRefundReconciliation({
+          escrowId:row.escrow_id,
+          taskId:row.task_id,
+          userId,
+          banRole:'POSTER',
+          reason:'poster_banned',
+          canonicalState:'LOCKED_DISPUTE',
+          requestedAction:'MANUAL_ADJUDICATION',
+        });
       }
     } catch (err) {
       log.error({ err, userId }, '[TrustTierService] banUser: failed to query active poster funded escrows');
+      throw err;
     }
 
     // Cancel poster's OPEN/MATCHING/ACCEPTED/IN_PROGRESS/PROOF_SUBMITTED tasks (best-effort).

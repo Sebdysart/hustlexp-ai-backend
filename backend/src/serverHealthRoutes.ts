@@ -7,6 +7,20 @@ import { logger } from './logger.js';
 import { publicIpRateLimitMiddleware, rateLimitMiddleware } from './middleware/security.js';
 import type { HustleApp } from './serverTypes.js';
 import { newPaymentCreationHealth } from './services/NewPaymentCreationGuard.js';
+import { taskLocationCryptoStatus } from './services/TaskLocationCrypto.js';
+import type { RuntimeSchemaVerification } from './serverStartupMigrations.js';
+
+type DatabaseAdmissionReader = () => RuntimeSchemaVerification | null;
+
+function runtimeIdentity(role: 'web') {
+  return { environment: config.app.env, role } as const;
+}
+
+function locationCryptoHealth() {
+  return config.app.isProduction
+    ? taskLocationCryptoStatus()
+    : { configured: false as const };
+}
 
 function secretMatches(provided: string | null, expected: string): boolean {
   const rawProvided = Buffer.from(provided || '', 'utf8');
@@ -65,7 +79,7 @@ async function circuitBreakerStates() {
   };
 }
 
-async function detailedHealth(context: Context) {
+async function detailedHealth(context: Context, databaseAdmission: DatabaseAdmissionReader) {
   const internalApiKey = process.env.INTERNAL_API_KEY;
   if (!internalApiKey) {
     logger.warn('INTERNAL_API_KEY is not configured — /health/detailed is disabled');
@@ -96,6 +110,9 @@ async function detailedHealth(context: Context) {
       },
       circuitBreakers: await circuitBreakerStates(),
       paymentCreation: newPaymentCreationHealth(),
+      runtime: runtimeIdentity('web'),
+      databaseAdmission: databaseAdmission(),
+      taskLocationCrypto: locationCryptoHealth(),
       uptime: process.uptime(),
       memory: process.memoryUsage(),
     },
@@ -103,21 +120,29 @@ async function detailedHealth(context: Context) {
   );
 }
 
-export function registerHealthRoutes(app: HustleApp): void {
+export function registerHealthRoutes(
+  app: HustleApp,
+  databaseAdmission: DatabaseAdmissionReader = () => null,
+): void {
   app.use('/health*', publicIpRateLimitMiddleware());
   app.get('/health', async (context) => {
     try {
       await db.query('SELECT 1');
       const trustedBuild = isTrustedBuildIdentity(buildIdentity);
       const production = config.app.env === 'production';
+      const admittedDatabase = databaseAdmission();
+      const healthy = !production || (trustedBuild && admittedDatabase !== null);
       return context.json(
         {
-          status: production && !trustedBuild ? 'unhealthy' : 'healthy',
+          status: healthy ? 'healthy' : 'unhealthy',
           timestamp: new Date().toISOString(),
           build: buildIdentity,
+          runtime: runtimeIdentity('web'),
+          databaseAdmission: admittedDatabase,
+          taskLocationCrypto: locationCryptoHealth(),
           paymentCreation: newPaymentCreationHealth(),
         },
-        production && !trustedBuild ? 503 : 200
+        healthy ? 200 : 503
       );
     } catch {
       return context.json(
@@ -125,6 +150,9 @@ export function registerHealthRoutes(app: HustleApp): void {
           status: 'unhealthy',
           timestamp: new Date().toISOString(),
           build: buildIdentity,
+          runtime: runtimeIdentity('web'),
+          databaseAdmission: databaseAdmission(),
+          taskLocationCrypto: locationCryptoHealth(),
           paymentCreation: newPaymentCreationHealth(),
         },
         503
@@ -135,16 +163,23 @@ export function registerHealthRoutes(app: HustleApp): void {
     try {
       await db.query('SELECT 1');
       const trustedBuild = isTrustedBuildIdentity(buildIdentity);
-      const ready = config.app.env !== 'production' || trustedBuild;
+      const admittedDatabase = databaseAdmission();
+      const ready = config.app.env !== 'production' || (trustedBuild && admittedDatabase !== null);
       return context.json({
         ready,
         build: buildIdentity,
+        runtime: runtimeIdentity('web'),
+        databaseAdmission: admittedDatabase,
+        taskLocationCrypto: locationCryptoHealth(),
         paymentCreation: newPaymentCreationHealth(),
       }, ready ? 200 : 503);
     } catch {
       return context.json({
         ready: false,
         build: buildIdentity,
+        runtime: runtimeIdentity('web'),
+        databaseAdmission: databaseAdmission(),
+        taskLocationCrypto: locationCryptoHealth(),
         paymentCreation: newPaymentCreationHealth(),
       }, 503);
     }
@@ -154,8 +189,13 @@ export function registerHealthRoutes(app: HustleApp): void {
       alive: true,
       uptime: process.uptime(),
       build: buildIdentity,
+      runtime: runtimeIdentity('web'),
+      databaseAdmission: databaseAdmission(),
+      taskLocationCrypto: locationCryptoHealth(),
       paymentCreation: newPaymentCreationHealth(),
     })
   );
-  app.get('/health/detailed', rateLimitMiddleware('auth'), detailedHealth);
+  app.get('/health/detailed', rateLimitMiddleware('auth'), (context) => (
+    detailedHealth(context, databaseAdmission)
+  ));
 }

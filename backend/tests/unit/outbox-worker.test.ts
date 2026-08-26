@@ -54,7 +54,13 @@ vi.mock('../../src/logger.js', () => {
 // ────────────────────────────────────────────────────────────────────────────
 
 import { db } from '../../src/db.js';
-import { processOutboxEvents } from '../../src/jobs/outbox-worker.js';
+import {
+  markOutboxEventFailed,
+  markOutboxEventProcessed,
+  markStripeEventOutboxesProcessed,
+  processOutboxEvents,
+} from '../../src/jobs/outbox-worker.js';
+import { outboxTransportJobId } from '../../src/jobs/OutboxIdentity.js';
 
 const mockDb = vi.mocked(db);
 
@@ -109,6 +115,13 @@ function makeEvent(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function recoveryAck(event: ReturnType<typeof makeEvent>, status: 'pending' | 'failed', attempts: number) {
+  return {
+    rows: [{ idempotency_key: event.idempotency_key, status, attempts }],
+    rowCount: 1,
+  } as any;
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Tests
 // ────────────────────────────────────────────────────────────────────────────
@@ -133,7 +146,7 @@ describe('processOutboxEvents', () => {
       // queue.add() succeeds
       mockQueueAdd.mockResolvedValueOnce({ id: 'bullmq-job-001' });
       // db.query() outside the transaction: persist bullmq_job_id
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce(recoveryAck(event, 'pending', 1));
 
       const result = await processOutboxEvents(10);
 
@@ -199,8 +212,11 @@ describe('processOutboxEvents', () => {
 
       expect(capturedSql).toContain('FOR UPDATE');
       expect(capturedSql).toContain('SKIP LOCKED');
-      expect(capturedSql).toContain("WHERE status = 'pending'");
+      expect(capturedSql).toContain("status = 'pending'");
       expect(capturedSql).toContain('available_at <= NOW()');
+      expect(capturedSql).toContain("status = 'enqueued'");
+      expect(capturedSql).toContain("enqueued_at <= NOW() - INTERVAL '2 minutes'");
+      expect(capturedSql).toContain('processed_at IS NULL');
       expect(capturedSql).toContain('ORDER BY created_at ASC');
       expect(capturedSql).toContain('LIMIT $1');
     });
@@ -223,12 +239,95 @@ describe('processOutboxEvents', () => {
       });
 
       mockQueueAdd.mockResolvedValueOnce({ id: 'job-x' });
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce(recoveryAck(event, 'pending', 4));
 
       await processOutboxEvents(10);
 
       expect(capturedCasSql).toContain("status = 'enqueued'");
-      expect(capturedCasSql).toContain("AND status = 'pending'");
+      expect(capturedCasSql).toContain("status = 'pending'");
+      expect(capturedCasSql).toContain("status = 'enqueued'");
+      expect(capturedCasSql).toContain("enqueued_at <= NOW() - INTERVAL '2 minutes'");
+      expect(capturedCasSql).toContain('AND attempts < $2');
+    });
+
+    it('reclaims a stale enqueued lease after a crash before queue.add', async () => {
+      const staleClaim = makeEvent({
+        status: 'enqueued',
+        attempts: 1,
+        enqueued_at: new Date('2026-08-25T19:00:00.000Z'),
+        processed_at: null,
+      });
+      let capturedCasSql = '';
+      mockTransaction.mockImplementationOnce(async (fn: (txQuery: unknown) => Promise<unknown>) => {
+        let callIndex = 0;
+        const txQuery = vi.fn().mockImplementation((sql: string) => {
+          callIndex++;
+          if (callIndex === 1) {
+            return Promise.resolve({ rows: [staleClaim], rowCount: 1 });
+          }
+          capturedCasSql = sql;
+          return Promise.resolve({ rows: [], rowCount: 1 });
+        });
+        return fn(txQuery);
+      });
+      const transportJobId = outboxTransportJobId(staleClaim.idempotency_key);
+      mockQueueAdd.mockResolvedValueOnce({ id: transportJobId });
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+
+      const result = await processOutboxEvents(10);
+
+      expect(result).toMatchObject({ processed: 1, failed: 0, errors: [] });
+      expect(capturedCasSql).toContain("status = 'enqueued'");
+      expect(capturedCasSql).toContain("enqueued_at <= NOW() - INTERVAL '2 minutes'");
+      expect(mockQueueAdd).toHaveBeenCalledWith(
+        staleClaim.queue_name,
+        staleClaim.event_type,
+        expect.any(Object),
+        { jobId: transportJobId },
+      );
+    });
+
+    it('fails an expired claim at the retry ceiling instead of replaying provider work', async () => {
+      const exhausted = makeEvent({
+        status: 'enqueued',
+        attempts: 5,
+        enqueued_at: new Date('2026-08-25T19:00:00.000Z'),
+        processed_at: null,
+      });
+      let capturedFailureSql = '';
+      mockTransaction.mockImplementationOnce(async (fn: (txQuery: unknown) => Promise<unknown>) => {
+        let callIndex = 0;
+        const txQuery = vi.fn().mockImplementation((sql: string) => {
+          callIndex++;
+          if (callIndex === 1) {
+            return Promise.resolve({ rows: [exhausted], rowCount: 1 });
+          }
+          capturedFailureSql = sql;
+          return Promise.resolve({
+            rows: [{
+              idempotency_key: exhausted.idempotency_key,
+              status: 'failed',
+              attempts: exhausted.attempts,
+            }],
+            rowCount: 1,
+          });
+        });
+        return fn(txQuery);
+      });
+
+      const result = await processOutboxEvents(10);
+
+      expect(result).toEqual({
+        processed: 0,
+        failed: 1,
+        errors: [{
+          eventId: exhausted.id,
+          error: 'Outbox claim lease expired after maximum attempts',
+        }],
+      });
+      expect(capturedFailureSql).toContain("SET status = 'failed'");
+      expect(capturedFailureSql).toContain('AND attempts >= $2');
+      expect(mockQueueAdd).not.toHaveBeenCalled();
     });
   });
 
@@ -245,7 +344,7 @@ describe('processOutboxEvents', () => {
       // queue.add() fails
       mockQueueAdd.mockRejectedValueOnce(new Error('Redis connection refused'));
       // db.query() in catch block: reset status
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce(recoveryAck(event, 'pending', 1));
 
       const result = await processOutboxEvents(10);
 
@@ -276,7 +375,7 @@ describe('processOutboxEvents', () => {
 
       setupTransactionWithRows([event], 1);
       mockQueueAdd.mockRejectedValueOnce(new Error('Queue timeout'));
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce(recoveryAck(event, 'pending', 4));
 
       const result = await processOutboxEvents(10);
 
@@ -295,7 +394,7 @@ describe('processOutboxEvents', () => {
 
       setupTransactionWithRows([event], 1);
       mockQueueAdd.mockRejectedValueOnce(new Error('Redis down'));
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce(recoveryAck(event, 'failed', 5));
 
       const result = await processOutboxEvents(10);
 
@@ -339,13 +438,39 @@ describe('processOutboxEvents', () => {
 
       // Second event (fail): queue.add() fails → retry UPDATE
       mockQueueAdd.mockRejectedValueOnce(new Error('Queue unavailable'));
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any); // retry UPDATE
+      mockDb.query.mockResolvedValueOnce(recoveryAck(failEvent, 'pending', 3)); // retry UPDATE
 
       const result = await processOutboxEvents(10);
 
       expect(result.processed).toBe(1);
       expect(result.failed).toBe(1);
       expect(result.errors[0].eventId).toBe('event-fail');
+    });
+
+    it('never downgrades a processed ACK when it wins an ambiguous enqueue-failure race', async () => {
+      const event = makeEvent({ attempts: 1 });
+      setupTransactionWithRows([event], 1);
+      mockQueueAdd.mockRejectedValueOnce(new Error('ambiguous Redis timeout'));
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as any)
+        .mockResolvedValueOnce({
+          rows: [{
+            idempotency_key: event.idempotency_key,
+            status: 'processed',
+            attempts: 2,
+            error_message: null,
+          }],
+          rowCount: 1,
+        } as any);
+
+      const result = await processOutboxEvents(10);
+
+      expect(result).toEqual({ processed: 1, failed: 0, errors: [] });
+      const [recoverySql,recoveryParams] = mockDb.query.mock.calls[0];
+      expect(recoverySql).toContain("AND status = 'enqueued'");
+      expect(recoverySql).toContain('AND attempts = $4');
+      expect(recoveryParams).toEqual([5,'ambiguous Redis timeout',event.id,2]);
+      expect(String(mockDb.query.mock.calls[1][0])).toContain('SELECT idempotency_key,status,attempts');
     });
   });
 
@@ -369,7 +494,7 @@ describe('processOutboxEvents', () => {
 
       setupTransactionWithRows([event], 1);
       mockQueueAdd.mockRejectedValueOnce('string error');
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce(recoveryAck(event, 'pending', 1));
 
       const result = await processOutboxEvents(10);
 
@@ -377,14 +502,11 @@ describe('processOutboxEvents', () => {
       expect(result.errors[0].error).toBe('Unknown error');
     });
 
-    it('handles fatal SELECT error gracefully (outer catch)', async () => {
+    it('surfaces a fatal SELECT error to the poll-level failure boundary', async () => {
       // db.transaction() itself throws (e.g. connection failure)
       mockTransaction.mockRejectedValueOnce(new Error('DB unavailable'));
 
-      const result = await processOutboxEvents(10);
-
-      expect(result.processed).toBe(0);
-      expect(result.failed).toBe(0);
+      await expect(processOutboxEvents(10)).rejects.toThrow('DB unavailable');
     });
 
     it('signs financial event payloads with HMAC', async () => {
@@ -400,9 +522,251 @@ describe('processOutboxEvents', () => {
 
       await processOutboxEvents(10);
 
-      // The payload passed to queue.add should contain the _sig field
+      const transportJobId = outboxTransportJobId(financialEvent.idempotency_key);
+      expect(transportJobId).toMatch(/^hxoutbox-[a-f0-9]{64}$/u);
+      expect(transportJobId).not.toContain(':');
+      expect(mockQueueAdd).toHaveBeenCalledWith(
+        financialEvent.queue_name,
+        financialEvent.event_type,
+        expect.any(Object),
+        { jobId: transportJobId },
+      );
+      // The queue payload retains the durable key inside the signed envelope;
+      // ACKs never attempt to reverse the transport hash.
       const jobData = mockQueueAdd.mock.calls[0][2];
+      expect(jobData.payload).toHaveProperty('_outbox_key', financialEvent.idempotency_key);
       expect(jobData.payload).toHaveProperty('_sig', 'mock-signature');
     });
+  });
+});
+
+describe('authoritative outbox acknowledgements', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockDb.transaction = mockTransaction;
+  });
+
+  it('returns only an exact processed acknowledgement', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ idempotency_key: 'escrow.released:escrow-1', status: 'processed', attempts: 2 }],
+      rowCount: 1,
+    } as any);
+
+    await expect(markOutboxEventProcessed('escrow.released:escrow-1')).resolves.toEqual({
+      idempotency_key: 'escrow.released:escrow-1', status: 'processed', attempts: 2,
+    });
+    expect(String(mockDb.query.mock.calls[0][0])).toContain('RETURNING idempotency_key,status,attempts');
+  });
+
+  it('returns pending for a transient failure below the attempt ceiling', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ idempotency_key: 'escrow.released:escrow-1', status: 'pending', attempts: 4 }],
+      rowCount: 1,
+    } as any);
+
+    await expect(markOutboxEventFailed(
+      'escrow.released:escrow-1', 'transient database failure',
+    )).resolves.toMatchObject({ status: 'pending', attempts: 4 });
+  });
+
+  it('returns failed only when the authoritative attempt ceiling is exhausted', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ idempotency_key: 'escrow.released:escrow-1', status: 'failed', attempts: 5 }],
+      rowCount: 1,
+    } as any);
+
+    await expect(markOutboxEventFailed(
+      'escrow.released:escrow-1', 'immutable witness conflict',
+    )).resolves.toMatchObject({ status: 'failed', attempts: 5 });
+  });
+
+  it('never downgrades an authoritative processed row on a late duplicate failure', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ idempotency_key: 'escrow.released:escrow-1', status: 'processed', attempts: 5 }],
+      rowCount: 1,
+    } as any);
+
+    await expect(markOutboxEventFailed(
+      'escrow.released:escrow-1', 'late duplicate failed after another worker converged',
+    )).resolves.toMatchObject({ status: 'processed', attempts: 5 });
+    expect(String(mockDb.query.mock.calls[0][0])).toContain("WHEN status = 'processed' THEN 'processed'");
+  });
+
+  it('terminally fails only an already-claimed row after BullMQ exhausts retries', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ idempotency_key: 'escrow.released:escrow-1', status: 'failed', attempts: 1 }],
+      rowCount: 1,
+    } as any);
+
+    await expect(markOutboxEventFailed(
+      'escrow.released:escrow-1',
+      'BullMQ exhausted release reconciliation',
+      { terminal: true, requireClaimed: true },
+    )).resolves.toMatchObject({ status: 'failed', attempts: 1 });
+    const [sql, params] = mockDb.query.mock.calls[0];
+    expect(String(sql)).toContain("status IN ('enqueued','processing','failed','processed')");
+    expect(params).toEqual([
+      'BullMQ exhausted release reconciliation', 'escrow.released:escrow-1', true,
+    ]);
+  });
+
+  it('rejects terminal failure when no claimed authoritative row exists', async () => {
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+    await expect(markOutboxEventFailed(
+      'escrow.released:escrow-1',
+      'unsigned injected job',
+      { terminal: true, requireClaimed: true },
+    )).rejects.toThrow('OUTBOX_ACK_MISSING');
+  });
+
+  it('rejects a missing or contradictory acknowledgement row', async () => {
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+    await expect(markOutboxEventProcessed('escrow.released:missing'))
+      .rejects.toThrow('OUTBOX_ACK_MISSING');
+
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ idempotency_key: 'escrow.released:escrow-1', status: 'failed', attempts: 2 }],
+      rowCount: 1,
+    } as any);
+    await expect(markOutboxEventFailed('escrow.released:escrow-1', 'transient'))
+      .rejects.toThrow('OUTBOX_ACK_MISSING');
+  });
+});
+
+describe('Stripe event canonical and recovery outbox acknowledgements', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockDb.transaction = mockTransaction;
+  });
+
+  it.each([
+    'stripe.event_received:evt_ack',
+    'stripe.event_received.recovery:evt_ack:1787668800000',
+  ])('uses %s as exact signed authority and converges every sibling', async (signedKey) => {
+    const canonicalKey = 'stripe.event_received:evt_ack';
+    const recoveryKey = 'stripe.event_received.recovery:evt_ack:1787668800000';
+    let transactionQuery: ReturnType<typeof vi.fn> | undefined;
+    mockTransaction.mockImplementationOnce(async (fn: (query: unknown) => Promise<unknown>) => {
+      transactionQuery = vi.fn()
+        .mockResolvedValueOnce({
+          rows: [{
+            idempotency_key: signedKey,
+            status: 'enqueued',
+            attempts: 2,
+            event_type: 'stripe.event_received',
+            aggregate_type: 'stripe_event',
+            aggregate_id: 'evt_ack',
+            queue_name: 'critical_payments',
+          }],
+          rowCount: 1,
+        })
+        .mockResolvedValueOnce({
+          rows: [
+            { idempotency_key: recoveryKey, status: 'processed', attempts: 1 },
+            { idempotency_key: canonicalKey, status: 'processed', attempts: 2 },
+          ],
+          rowCount: 2,
+        });
+      return fn(transactionQuery);
+    });
+
+    await expect(markStripeEventOutboxesProcessed({
+      idempotencyKey: signedKey,
+      stripeEventId: 'evt_ack',
+    })).resolves.toEqual({
+      signed: {
+        idempotency_key: signedKey,
+        status: 'processed',
+        attempts: signedKey === canonicalKey ? 2 : 1,
+      },
+      acknowledgedKeys: [canonicalKey, recoveryKey].sort(),
+    });
+
+    expect(String(transactionQuery?.mock.calls[0]?.[0])).toContain('FOR UPDATE');
+    expect(transactionQuery?.mock.calls[0]?.[1]).toEqual([signedKey]);
+    expect(String(transactionQuery?.mock.calls[1]?.[0])).toContain(
+      "status IN ('pending','enqueued','processing','processed','failed')",
+    );
+    expect(transactionQuery?.mock.calls[1]?.[1]).toEqual(['evt_ack']);
+  });
+
+  it.each([
+    ['missing signed row', []],
+    ['pending unclaimed row', [{
+      idempotency_key: 'stripe.event_received:evt_ack',
+      status: 'pending',
+      attempts: 0,
+      event_type: 'stripe.event_received',
+      aggregate_type: 'stripe_event',
+      aggregate_id: 'evt_ack',
+      queue_name: 'critical_payments',
+    }]],
+    ['wrong aggregate binding', [{
+      idempotency_key: 'stripe.event_received:evt_ack',
+      status: 'enqueued',
+      attempts: 1,
+      event_type: 'stripe.event_received',
+      aggregate_type: 'stripe_event',
+      aggregate_id: 'evt_other',
+      queue_name: 'critical_payments',
+    }]],
+    ['wrong queue binding', [{
+      idempotency_key: 'stripe.event_received:evt_ack',
+      status: 'enqueued',
+      attempts: 1,
+      event_type: 'stripe.event_received',
+      aggregate_type: 'stripe_event',
+      aggregate_id: 'evt_ack',
+      queue_name: 'notifications',
+    }]],
+  ])('rejects %s without acknowledging siblings', async (_label, authorityRows) => {
+    let transactionQuery: ReturnType<typeof vi.fn> | undefined;
+    mockTransaction.mockImplementationOnce(async (fn: (query: unknown) => Promise<unknown>) => {
+      transactionQuery = vi.fn().mockResolvedValueOnce({
+        rows: authorityRows,
+        rowCount: authorityRows.length,
+      });
+      return fn(transactionQuery);
+    });
+
+    await expect(markStripeEventOutboxesProcessed({
+      idempotencyKey: 'stripe.event_received:evt_ack',
+      stripeEventId: 'evt_ack',
+    })).rejects.toThrow('OUTBOX_ACK_MISSING');
+
+    expect(transactionQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an update result that omits the exact signed delivery row', async () => {
+    mockTransaction.mockImplementationOnce(async (fn: (query: unknown) => Promise<unknown>) => {
+      const transactionQuery = vi.fn()
+        .mockResolvedValueOnce({
+          rows: [{
+            idempotency_key: 'stripe.event_received:evt_ack',
+            status: 'enqueued',
+            attempts: 1,
+            event_type: 'stripe.event_received',
+            aggregate_type: 'stripe_event',
+            aggregate_id: 'evt_ack',
+            queue_name: 'critical_payments',
+          }],
+          rowCount: 1,
+        })
+        .mockResolvedValueOnce({
+          rows: [{
+            idempotency_key: 'stripe.event_received.recovery:evt_ack:1787668800000',
+            status: 'processed',
+            attempts: 1,
+          }],
+          rowCount: 1,
+        });
+      return fn(transactionQuery);
+    });
+
+    await expect(markStripeEventOutboxesProcessed({
+      idempotencyKey: 'stripe.event_received:evt_ack',
+      stripeEventId: 'evt_ack',
+    })).rejects.toThrow('did not converge');
   });
 });

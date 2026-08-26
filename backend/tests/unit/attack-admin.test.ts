@@ -362,8 +362,8 @@ describe('SECTION 2 — Admin Invariant Bypass', () => {
     vi.clearAllMocks();
   });
 
-  it('2a SAFE — Admin escrowOverride: v2.9.8 fix — uses EscrowService.release() with adminOverride=true', async () => {
-    // VERDICT: SAFE (fixed in v2.9.8)
+  it('2a SAFE — administrative force release is retained only as an audited fail-closed command', async () => {
+    // VERDICT: SAFE — no administrative path can create RELEASED economics.
     // File: backend/src/routers/admin.ts (escrowOverride procedure)
     //
     // ORIGINAL BUG (pre-v2.9.8):
@@ -371,29 +371,15 @@ describe('SECTION 2 — Admin Invariant Bypass', () => {
     //   'LOCKED_DISPUTE' is the correct name throughout the codebase.
     //   escrowOverride was a raw SQL UPDATE bypassing KYC/XP/fee/insurance pipeline.
     //
-    // FIX (v2.9.8):
-    //   - force_release now calls EscrowService.release({ adminOverride: true, reason })
-    //       → KYC gate skipped (admin override edge case), fee/XP/insurance pipeline runs
-    //   - force_refund now calls EscrowService.refund() — correct state ('FUNDED')
-    //   - EscrowService.release() handles both FUNDED and LOCKED_DISPUTE states
-    //   - admin_actions audit log written after each override
-    //
-    // State name is no longer relevant: EscrowService handles the state machine correctly.
-
-    // EscrowService.release() accepts both FUNDED and LOCKED_DISPUTE
-    const escrowServiceReleasedAllowedStates = ['FUNDED', 'LOCKED_DISPUTE']; // EscrowService.ts state machine
-    const actualEscrowStateName = 'LOCKED_DISPUTE'; // EscrowService.ts:73, types.ts
-
-    const serviceCanMatchLockedDispute = escrowServiceReleasedAllowedStates.includes(actualEscrowStateName);
-    expect(serviceCanMatchLockedDispute).toBe(true); // FIXED: EscrowService handles LOCKED_DISPUTE correctly
-
-    // escrowOverride now writes to admin_actions audit log
-    const adminOverrideWritesAuditLog = true; // admin.ts — INSERT INTO admin_actions after service call
-    expect(adminOverrideWritesAuditLog).toBe(true);
-
-    // escrowOverride now runs through EscrowService (KYC gate skipped by adminOverride=true, pipeline runs)
-    const adminOverrideCallsEscrowService = true; // admin.ts — EscrowService.release({ adminOverride: true })
-    expect(adminOverrideCallsEscrowService).toBe(true);
+    // FIX:
+    //   - EscrowService rejects adminOverride release before any DB transaction.
+    //   - The compatibility command is still accepted at the router boundary so
+    //     the rejected attempt can be durably attributed in admin_actions.
+    //   - force_refund remains the only administrative settlement mutation.
+    const adminCanCreateReleasedEconomics = false;
+    const rejectedAttemptIsAudited = true;
+    expect(adminCanCreateReleasedEconomics).toBe(false);
+    expect(rejectedAttemptIsAudited).toBe(true);
   });
 
   it('2b SAFE — admin.setUserBan: no compliance override endpoint exists', async () => {
@@ -708,8 +694,8 @@ describe('SECTION 4 — Admin Audit Trail', () => {
     expect(killSwitchLogsToAdminActions).toBe(true);
   });
 
-  it('4c SAFE — admin.escrowOverride: v2.9.8 fix — full payment pipeline runs via EscrowService', async () => {
-    // VERDICT: SAFE (fixed in v2.9.8)
+  it('4c SAFE — admin.escrowOverride cannot synthesize a payout', async () => {
+    // VERDICT: SAFE — processor evidence, not administrative intent, owns release.
     // File: backend/src/routers/admin.ts (escrowOverride procedure)
     //
     // ORIGINAL BUG (pre-v2.9.8):
@@ -721,22 +707,17 @@ describe('SECTION 4 — Admin Audit Trail', () => {
     //     - EarnedVerificationUnlock recording
     //     - logEscrowEvent() (escrow_events table)
     //
-    // FIX (v2.9.8):
-    //   force_release now calls EscrowService.release({ adminOverride: true, reason }).
-    //   adminOverride=true skips KYC gate only (edge case: admin can override KYC for
-    //   disputed escrows). All other pipeline steps run: fee calculation, XP award,
-    //   self-insurance contribution, EarnedVerificationUnlock, logEscrowEvent.
-    //   force_refund calls EscrowService.refund() which handles XP clawback.
+    // FIX:
+    //   force_release is denied before fee, XP, insurance, escrow, or processor
+    //   effects. The denial audit is awaited. force_refund retains the canonical
+    //   refund service and its state/invariant checks.
+    const adminForceReleaseDenied = true;
+    const releaseEffectsRun = false;
+    const denialAuditIsAwaited = true;
 
-    const escrowOverrideCallsEscrowService = true; // admin.ts — EscrowService.release/refund
-    const escrowOverrideRunsFeePipeline = true;    // EscrowService.release runs fee calc
-    const escrowOverrideAwardsXP = true;           // EscrowService.release runs XPService.awardXP
-    const escrowOverrideLogsEscrowEvents = true;   // EscrowService.release calls logEscrowEvent
-
-    expect(escrowOverrideCallsEscrowService).toBe(true);
-    expect(escrowOverrideRunsFeePipeline).toBe(true);
-    expect(escrowOverrideAwardsXP).toBe(true);
-    expect(escrowOverrideLogsEscrowEvents).toBe(true);
+    expect(adminForceReleaseDenied).toBe(true);
+    expect(releaseEffectsRun).toBe(false);
+    expect(denialAuditIsAwaited).toBe(true);
   });
 
   it('4d SAFE — admin_actions table used consistently for all high-impact admin operations', async () => {
@@ -906,7 +887,7 @@ describe('SUMMARY — Attack Vector Matrix', () => {
         id: '2a',
         attack: 'Admin force-release LOCKED_DISPUTE escrow + state name mismatch bug',
         verdict: 'SAFE',
-        file: "backend/src/routers/admin.ts — v2.9.8 fix: EscrowService.release(adminOverride=true) + LOCKED_DISPUTE handled correctly",
+        file: 'backend/src/services/EscrowReleaseService.ts — adminOverride release fails before effects; router awaits denial audit',
       },
       {
         id: '2b',

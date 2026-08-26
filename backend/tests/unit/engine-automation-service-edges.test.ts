@@ -88,11 +88,13 @@ import { TaskAbandonService } from '../../src/services/TaskAbandonService';
 import { TaskCloseService } from '../../src/services/TaskCloseService';
 import { TaskCreateService } from '../../src/services/TaskCreateService';
 import { TaskLocationService, deriveRoughArea } from '../../src/services/TaskLocationService';
+import { FinancialJobPayloadSchema } from '../../src/jobs/EscrowActionTypes';
 
 const query = mocks.query;
 const TASK_ID = '11111111-1111-4111-8111-111111111111';
 const POSTER_ID = '22222222-2222-4222-8222-222222222222';
 const WORKER_ID = '33333333-3333-4333-8333-333333333333';
+const ESCROW_ID = '44444444-4444-4444-8444-444444444444';
 
 function rows(value: unknown[] = [], rowCount = value.length) {
   return { rows: value, rowCount } as never;
@@ -856,14 +858,45 @@ describe('remaining task service fail-closed edges', () => {
     query.mockResolvedValueOnce(rows([{ state: 'ACCEPTED', worker_id: WORKER_ID, poster_id: POSTER_ID }]))
       .mockResolvedValueOnce(rows([{ id: TASK_ID, state: 'CANCELLED' }]))
       .mockRejectedValueOnce(new Error('task_events absent'))
-      .mockResolvedValueOnce(rows([{ id: 'esc-1' }]));
+      .mockResolvedValueOnce(rows([{ id: ESCROW_ID, version: 4 }]))
+      .mockResolvedValueOnce(rows([{ metadata: {} }]));
     mocks.writeToOutbox.mockResolvedValueOnce({ id: 'outbox-1' });
     await expect(TaskAbandonService.workerAbandon(TASK_ID, WORKER_ID, 'schedule conflict'))
       .resolves.toMatchObject({ success: true, data: { state: 'CANCELLED' } });
     expect(mocks.writeToOutbox).toHaveBeenCalledWith(
-      expect.objectContaining({ eventType: 'escrow.refund_requested', aggregateId: 'esc-1' }),
+      expect.objectContaining({
+        eventType: 'escrow.refund_requested',
+        aggregateId: ESCROW_ID,
+        eventVersion: 4,
+        payload: {
+          escrow_id: ESCROW_ID,
+          task_id: TASK_ID,
+          reason: 'worker_abandoned',
+        },
+      }),
       query,
     );
+    const producer = mocks.writeToOutbox.mock.calls.at(-1)?.[0];
+    const producerPayload = producer?.payload;
+    // The domain producer owns the canonical financial fields and durable
+    // idempotency identity. The outbox dispatcher binds that identity into
+    // `_outbox_key` before signing the queue envelope.
+    expect(FinancialJobPayloadSchema.safeParse({
+      ...producerPayload,
+      _outbox_key: producer?.idempotencyKey,
+      _sig: 'a'.repeat(64),
+    }).success).toBe(true);
+    expect(producerPayload).not.toHaveProperty('escrowId');
+    expect(producerPayload).not.toHaveProperty('taskId');
+    const authorityCall = query.mock.calls.find(([, params]) =>
+      String(params?.[3] ?? '').startsWith('worker-abandon-refund-authority-v1:'));
+    expect(JSON.parse(String(authorityCall?.[1]?.[2]))).toMatchObject({
+      event_type: 'worker_abandon_refund_authority_v1',
+      task_id: TASK_ID,
+      worker_id: WORKER_ID,
+      canonical_state: 'LOCKED_DISPUTE',
+      canonical_version: 4,
+    });
   });
 
   it('maps worker-abandon database failures', async () => {

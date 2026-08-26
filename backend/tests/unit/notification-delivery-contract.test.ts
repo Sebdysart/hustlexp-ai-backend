@@ -58,14 +58,14 @@ describe('HX/OS notification delivery database contract', () => {
     );
     expect(RUNNER).toContain("fileName: '20260720_notification_delivery_contract.sql'");
     expect(DOCKERFILE).toContain(
-      '/app/backend/database/migrations/20260720_notification_delivery_contract.sql'
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
     );
     expect(RUNNER).toMatch(
       /NOTIFICATION_DELIVERY_CONTRACT_REPAIR_MIGRATION\s*=\s*'20260720_notification_delivery_contract_repair'/
     );
     expect(RUNNER).toContain("fileName: '20260720_notification_delivery_contract_repair.sql'");
     expect(DOCKERFILE).toContain(
-      '/app/backend/database/migrations/20260720_notification_delivery_contract_repair.sql'
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
     );
     expect(REPAIR).toMatch(/alter table public\.email_outbox[\s\S]*updated_at/i);
     expect(REPAIR).toMatch(/create index if not exists idx_sms_outbox_status/i);
@@ -75,7 +75,7 @@ describe('HX/OS notification delivery database contract', () => {
     );
     expect(RUNNER).toContain("fileName: '20260720_notification_focus_suppression.sql'");
     expect(DOCKERFILE).toContain(
-      '/app/backend/database/migrations/20260720_notification_focus_suppression.sql'
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
     );
     for (const token of [
       'focus_task_id',

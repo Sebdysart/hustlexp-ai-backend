@@ -335,22 +335,34 @@ describe('DisputeService', () => {
         } as never)
         // 2. escrow FOR UPDATE → RELEASED (completed tasks typically have released escrow)
         .mockResolvedValueOnce({
-          rows: [{ id: 'escrow-1', state: 'RELEASED', amount: 5000, stripe_transfer_id: null, version: 1 }],
+          rows: [{
+            id: 'escrow-1', state: 'RELEASED', amount: 5000,
+            stripe_transfer_id: 'tr_released', version: 1,
+          }],
           rowCount: 1,
         } as never)
-        // 3. escrow UPDATE → LOCKED_DISPUTE
+        // 3. immutable actor-attributed released-dispute authority
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+        // 4. immutable system release-origin witness
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+        // 5. exact transaction-local database authority
+        .mockResolvedValueOnce({ rows: [{ set_config: 'escrow-1' }], rowCount: 1 } as never)
+        // 6. escrow UPDATE → LOCKED_DISPUTE, preserving the transfer identity
         .mockResolvedValueOnce({
-          rows: [{ id: 'escrow-1', state: 'LOCKED_DISPUTE', version: 2 }],
+          rows: [{
+            id: 'escrow-1', state: 'LOCKED_DISPUTE', version: 2,
+            stripe_transfer_id: 'tr_released',
+          }],
           rowCount: 1,
         } as never)
-        // 4. dispute INSERT
+        // 7. dispute INSERT
         .mockResolvedValueOnce({
           rows: [{ id: 'disp-1', state: 'OPEN', version: 1 }],
           rowCount: 1,
         } as never)
-        // 5. outbox INSERT (dispute.created)
+        // 8. outbox INSERT (dispute.created)
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
-        // 6. T61-1: UPDATE tasks SET state='DISPUTED' WHERE state='COMPLETED'
+        // 9. T61-1: UPDATE tasks SET state='DISPUTED' WHERE state='COMPLETED'
         .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
       const result = await DisputeService.create({
@@ -371,6 +383,27 @@ describe('DisputeService', () => {
         (sql) => sql.includes('UPDATE tasks') && sql.includes('DISPUTED') && sql.includes("state = 'COMPLETED'")
       );
       expect(completedToDisputed).toBeDefined();
+      const authorityInsert = mockDb.query.mock.calls.find(([sql, params]) =>
+        String(sql).includes("actor_type, metadata, idempotency_key")
+        && String((params as unknown[] | undefined)?.[2]).includes('released_dispute_authority_v1'));
+      const originInsert = mockDb.query.mock.calls.find(([sql, params]) =>
+        String(sql).includes("actor_type, metadata, idempotency_key")
+        && String((params as unknown[] | undefined)?.[1]).includes('dispute_locked_after_release'));
+      expect(authorityInsert?.[1]).toEqual([
+        'escrow-1', 'poster-1', expect.stringContaining('"original_transfer_id":"tr_released"'),
+        'released-dispute-authority-v1:escrow-1:1',
+      ]);
+      expect(originInsert?.[1]).toEqual([
+        'escrow-1', expect.stringContaining('"original_transfer_id":"tr_released"'),
+        'released-dispute-origin-v1:escrow-1:1',
+      ]);
+      expect(allSqls).toEqual(expect.arrayContaining([
+        expect.stringContaining("set_config('hustlexp.released_dispute_authority'"),
+      ]));
+      const escrowUpdate = mockDb.query.mock.calls.find(([sql]) =>
+        String(sql).includes("SET state = 'LOCKED_DISPUTE'"));
+      expect(String(escrowUpdate?.[0])).not.toContain('stripe_transfer_id = NULL');
+      expect(escrowUpdate?.[1]).toEqual(['escrow-1', 'RELEASED', 1, 'tr_released']);
     });
 
     it('T61-1: does NOT emit a COMPLETED→DISPUTED update for PROOF_SUBMITTED tasks (guard is state-specific)', async () => {

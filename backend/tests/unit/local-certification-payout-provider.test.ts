@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { query, transaction } = vi.hoisted(() => {
+const { identityQuery, query, transaction } = vi.hoisted(() => {
+  const identityQuery = vi.fn();
   const query = vi.fn();
   const transaction = vi.fn(async (callback: (q: typeof query) => unknown) => callback(query));
-  return { query, transaction };
+  return { identityQuery, query, transaction };
 });
 
 vi.mock('../../src/db', () => ({
-  db: { query: vi.fn(), transaction },
+  db: { query: identityQuery, transaction },
 }));
 
 import {
@@ -22,7 +23,14 @@ const enabled = {
   HXOS_ALLOW_LOCAL_TEST_PAYOUT: 'true',
   ENGINE_API_MODE: 'test',
   STRIPE_MODE: 'test',
+  STRIPE_SECRET_KEY: 'sk_test_local_certification_payout',
+  HX_PAYMENT_CREATION_MODE: 'enabled',
   HXOS_LOCAL_TEST_PAYOUT_SECRET: 'p'.repeat(64),
+  DATABASE_URL: 'postgresql://hx_test_payout@127.0.0.1:5432/hx_payout_test',
+  HXOS_LOCAL_TEST_DATABASE_ATTESTATION:
+    'DISPOSABLE_LOOPBACK_RESTRICTED_PAYMENT_TEST_DATABASE_V1',
+  HXOS_LOCAL_TEST_DATABASE_NAME: 'hx_payout_test',
+  HXOS_LOCAL_TEST_DATABASE_ROLE: 'hx_test_payout',
 };
 
 const original = { ...process.env };
@@ -30,6 +38,10 @@ const original = { ...process.env };
 beforeEach(() => {
   vi.clearAllMocks();
   Object.assign(process.env, enabled);
+  identityQuery.mockResolvedValue({
+    rows: [{ database_name: 'hx_payout_test', database_user: 'hx_test_payout' }],
+    rowCount: 1,
+  });
 });
 
 afterEach(() => {
@@ -41,13 +53,65 @@ describe('LocalCertificationPayoutProvider', () => {
     expect(localCertificationPayoutEnabled(enabled)).toBe(true);
     for (const override of [
       { NODE_ENV: 'production' },
+      { NODE_ENV: 'development' },
       { HXOS_ALLOW_LOCAL_TEST_PAYOUT: 'false' },
       { ENGINE_API_MODE: 'live' },
       { STRIPE_MODE: 'live' },
+      { STRIPE_SECRET_KEY: 'sk_live_forbidden' },
+      { HX_PAYMENT_CREATION_MODE: 'frozen' },
       { HXOS_LOCAL_TEST_PAYOUT_SECRET: 'short' },
+      { DATABASE_URL: 'postgresql://hx_test_payout@prod.internal:5432/hx_payout_test' },
+      { DATABASE_URL: 'postgresql://hx_test_payout@127.0.0.1:5432/hustlexp' },
+      { HXOS_LOCAL_TEST_DATABASE_NAME: 'wrong_test' },
+      { HXOS_LOCAL_TEST_DATABASE_ROLE: '' },
     ]) {
       expect(localCertificationPayoutEnabled({ ...enabled, ...override })).toBe(false);
     }
+  });
+
+  it('fails before every database effect while payout creation is frozen', async () => {
+    process.env.HX_PAYMENT_CREATION_MODE = 'frozen';
+
+    const destination = await LocalCertificationPayoutProvider.activateDestination('worker-1', 'worker-1');
+    const transfer = await LocalCertificationPayoutProvider.createPaidTransfer({
+      taskId: 'task-1',
+      escrowId: 'escrow-1',
+      workerId: 'worker-1',
+      idempotencyKey: 'settle-task-1',
+    });
+
+    expect(destination).toMatchObject({
+      success: false,
+      error: { code: 'PAYMENT_CREATION_FROZEN' },
+    });
+    expect(transfer).toMatchObject({
+      success: false,
+      error: { code: 'PAYMENT_CREATION_FROZEN' },
+    });
+    expect(identityQuery).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it('fails before mutation when the connected database identity is not disposable', async () => {
+    identityQuery.mockResolvedValueOnce({
+      rows: [{ database_name: 'production', database_user: 'app_owner' }],
+      rowCount: 1,
+    });
+
+    const result = await LocalCertificationPayoutProvider.createPaidTransfer({
+      taskId: 'task-1',
+      escrowId: 'escrow-1',
+      workerId: 'worker-1',
+      idempotencyKey: 'settle-task-1',
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      error: { code: 'LOCAL_TEST_STORAGE_IDENTITY_MISMATCH' },
+    });
+    expect(transaction).not.toHaveBeenCalled();
+    expect(query).not.toHaveBeenCalled();
   });
 
   it('uses provider-specific identities that cannot be mistaken for Stripe', () => {

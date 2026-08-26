@@ -18,14 +18,22 @@ vi.mock('../../src/jobs/stripe-event-worker.js', () => ({ processStripeEventJob 
 
 import { db } from '../../src/db';
 import { processStripeEventDispatchJob } from '../../src/jobs/stripe-event-dispatcher';
+import { outboxTransportJobId } from '../../src/jobs/OutboxIdentity.js';
 
 const mockDb = vi.mocked(db);
 
 function makeJob(type?: string): Job {
+  const outboxKey = 'stripe.event_received:evt_dispatch';
   return {
+    id: outboxTransportJobId(outboxKey),
     data: {
       aggregate_id: 'evt_dispatch',
-      payload: { stripeEventId: 'evt_dispatch', type, _sig: 'signed' },
+      payload: {
+        stripeEventId: 'evt_dispatch',
+        type,
+        _outbox_key: outboxKey,
+        _sig: 'signed',
+      },
     },
   } as Job;
 }
@@ -54,6 +62,7 @@ describe('Stripe event dispatcher', () => {
     'payment_intent.payment_failed',
     'transfer.created',
     'transfer.failed',
+    'transfer.reversed',
     'charge.refunded',
   ])('routes %s to the authoritative payment lifecycle worker', async (type) => {
     const job = makeJob(type);
@@ -61,6 +70,36 @@ describe('Stripe event dispatcher', () => {
     expect(processPaymentJob).toHaveBeenCalledWith(job);
     expect(processPayoutEventJob).not.toHaveBeenCalled();
     expect(processStripeEventJob).not.toHaveBeenCalled();
+  });
+
+  it('preserves an exact valid financial signature while routing transfer.reversed', async () => {
+    const { signJobPayload, verifyJobSignature } = await vi.importActual<
+      typeof import('../../src/jobs/queues')
+    >('../../src/jobs/queues');
+    const outboxKey = 'stripe.event_received:evt_dispatch';
+    const payload = {
+      stripeEventId: 'evt_dispatch',
+      type: 'transfer.reversed',
+      _outbox_key: outboxKey,
+    };
+    const signature = signJobPayload(payload);
+    const job = {
+      id: outboxTransportJobId(outboxKey),
+      data: {
+        aggregate_id: 'evt_dispatch',
+        payload: { ...payload, _sig: signature },
+      },
+    } as Job;
+
+    await processStripeEventDispatchJob(job);
+
+    expect(processPaymentJob).toHaveBeenCalledWith(job);
+    const forwarded = (vi.mocked(processPaymentJob).mock.calls[0]?.[0].data as {
+      payload: Record<string, unknown>;
+    }).payload;
+    const { _sig, ...unsigned } = forwarded;
+    expect(verifyJobSignature(unsigned, String(_sig))).toBe(true);
+    expect(unsigned).toEqual(payload);
   });
 
   it('keeps payment_intent.succeeded on the single entitlement and escrow-funding worker', async () => {

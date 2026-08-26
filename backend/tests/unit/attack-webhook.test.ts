@@ -11,7 +11,8 @@
  * the actual handling behaviour, and is labelled VERDICT: EXPLOIT / GAP / SAFE.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 // ---------------------------------------------------------------------------
 // Module mocks — must precede all imports
@@ -39,9 +40,18 @@ vi.mock('../../src/config', () => ({
 // db.transaction immediately invokes the callback with the same mockDbQuery so that
 // all mockResolvedValueOnce calls work in a single ordered queue regardless of
 // whether the code path uses db.query or db.transaction.
-const { mockDbQuery, mockCreateNotification } = vi.hoisted(() => ({
+const {
+  mockDbQuery,
+  mockCreateNotification,
+  mockReadTransferWitness,
+  mockReconcileRelease,
+  markStripeEventOutboxesProcessed,
+} = vi.hoisted(() => ({
   mockDbQuery: vi.fn(),
   mockCreateNotification: vi.fn(),
+  mockReadTransferWitness: vi.fn(),
+  mockReconcileRelease: vi.fn(),
+  markStripeEventOutboxesProcessed: vi.fn(),
 }));
 
 vi.mock('../../src/db', () => ({
@@ -65,6 +75,8 @@ vi.mock('../../src/lib/outbox-helpers', () => ({
   writeToOutbox: vi.fn().mockResolvedValue({ id: 'outbox-1', idempotencyKey: 'k1' }),
 }));
 
+vi.mock('../../src/jobs/outbox-worker.js', () => ({ markStripeEventOutboxesProcessed }));
+
 vi.mock('../../src/services/TaskService', () => ({
   TaskService: {
     advanceProgress: vi.fn().mockResolvedValue({ success: true }),
@@ -74,6 +86,18 @@ vi.mock('../../src/services/TaskService', () => ({
 vi.mock('../../src/services/RevenueService', () => ({
   RevenueService: {
     logEvent: vi.fn().mockResolvedValue({ success: true, data: { id: 'rev-1' } }),
+  },
+}));
+
+vi.mock('../../src/services/StripeService', () => ({
+  StripeService: {
+    readTransferWitness: mockReadTransferWitness,
+  },
+}));
+
+vi.mock('../../src/services/EscrowReleaseReconciliationService', () => ({
+  EscrowReleaseReconciliationService: {
+    reconcile: mockReconcileRelease,
   },
 }));
 
@@ -145,6 +169,7 @@ import { processStripeEventJob } from '../../src/jobs/stripe-event-worker';
 import { stripeEventDestination } from '../../src/jobs/stripe-event-dispatcher';
 import { processPayoutEventJob } from '../../src/jobs/payout-event-worker';
 import { processPaymentJob } from '../../src/jobs/payment-worker';
+import { outboxTransportJobId } from '../../src/jobs/OutboxIdentity.js';
 import { RevenueService } from '../../src/services/RevenueService';
 
 const mockDb = vi.mocked(db);
@@ -169,30 +194,48 @@ function makeStripeEvent(overrides: Partial<{
 
 // Minimal BullMQ Job stub — injects signed payload wrapper required by the HMAC guard
 function makeJob(data: object) {
-  const dataWithPayload = { payload: { _sig: 'test-sig' }, ...(data as Record<string, unknown>) };
-  return { data: dataWithPayload, id: 'job-1', opts: {} } as Parameters<typeof processStripeEventJob>[0];
+  const fields = data as Record<string, unknown>;
+  const stripeEventId = String(fields.stripeEventId);
+  const outboxKey = `stripe.event_received:${stripeEventId}`;
+  const dataWithPayload = {
+    ...fields,
+    payload: {
+      stripeEventId,
+      type: fields.type,
+      _outbox_key: outboxKey,
+      _sig: 'test-sig',
+    },
+  };
+  return {
+    data: dataWithPayload,
+    id: outboxTransportJobId(outboxKey),
+    opts: {},
+  } as Parameters<typeof processStripeEventJob>[0];
 }
 
 function makePayoutJob(stripeEventId: string, type: string) {
+  const outboxKey = `stripe.event_received:${stripeEventId}`;
   return {
-    data: { payload: { stripeEventId, type, _sig: 'test-sig' } },
-    id: 'payout-job-1',
+    data: { payload: { stripeEventId, type, _outbox_key: outboxKey, _sig: 'test-sig' } },
+    id: outboxTransportJobId(outboxKey),
     opts: {},
   } as Parameters<typeof processPayoutEventJob>[0];
 }
 
 // Build payment-worker job payload (wraps data in { payload: ... })
 function makePaymentJob(stripeEventId: string, eventType: string, eventObject: Record<string, unknown>) {
+  const outboxKey = `stripe.event_received:${stripeEventId}`;
   return {
     data: {
       payload: {
         stripeEventId,
         eventType,
         eventCreated: new Date().toISOString(),
+        _outbox_key: outboxKey,
         _sig: 'test-sig',
       },
     },
-    id: 'payment-job-1',
+    id: outboxTransportJobId(outboxKey),
     opts: {},
   } as Parameters<typeof processPaymentJob>[0];
 }
@@ -201,6 +244,7 @@ beforeEach(() => {
   // resetAllMocks clears both call history AND the mockResolvedValueOnce queue,
   // preventing queue pollution between tests in the same describe block.
   vi.resetAllMocks();
+  enableControlledStripePaymentTestCohortV7();
   mockCreateNotification.mockResolvedValue({ success: true });
   // Restore the Stripe constructor mock after reset so processWebhook tests work.
   // The Stripe mock module returns a class — mockConstructEvent is used per-test.
@@ -212,6 +256,26 @@ beforeEach(() => {
     (fn: (trx: typeof mockDb.query) => Promise<unknown>) => fn(mockDb.query)
   );
   mockWalletPayoutSync.mockResolvedValue({ matched: true, workerId: 'worker-payout-1' });
+  markStripeEventOutboxesProcessed.mockImplementation(async ({ idempotencyKey }) => ({
+    signed: { idempotency_key: idempotencyKey, status: 'processed', attempts: 1 },
+    acknowledgedKeys: [idempotencyKey],
+  }));
+  mockReconcileRelease.mockResolvedValue({
+    success: true,
+    data: {
+      escrowId: 'escrow-released-001',
+      taskId: 'task-1',
+      workerId: 'worker-1',
+      grossAmountCents: 5000,
+      platformFeeCents: 750,
+      insuranceContributionCents: 100,
+      netPayoutCents: 4150,
+    },
+  });
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 // ===========================================================================
@@ -296,7 +360,15 @@ describe('REPLAY ATTACK 2 — transfer.created replayed', () => {
               object: {
                 id: transferId,
                 amount: 4150,
-                metadata: { escrow_id: escrowId },
+                currency: 'usd',
+                destination: 'acct_worker_1',
+                reversed: false,
+                amount_reversed: 0,
+                metadata: {
+                  escrow_id: escrowId,
+                  task_id: 'task-1',
+                  payout_recipient_user_id: 'worker-1',
+                },
               },
             },
           },
@@ -312,10 +384,63 @@ describe('REPLAY ATTACK 2 — transfer.created replayed', () => {
         }],
         rowCount: 1,
       })
-      // Revenue idempotency guard → existing platform-fee witness
-      .mockResolvedValueOnce({ rows: [{ id: 'rev-existing' }], rowCount: 1 })
+      // Exact immutable origin of the already-terminal release.
+      .mockResolvedValueOnce({ rows: [{ from_state: 'FUNDED' }], rowCount: 1 })
+      // Canonical task and destination bindings must match the provider witness.
+      .mockResolvedValueOnce({
+        rows: [{ worker_id: 'worker-1', payout_recipient_user_id: null }],
+        rowCount: 1,
+      })
+      .mockResolvedValueOnce({
+        rows: [{
+          stripe_connect_id: 'acct_worker_1',
+          payouts_enabled: true,
+          account_status: 'ACTIVE',
+          binding_current: true,
+        }],
+        rowCount: 1,
+      })
+      // Re-read the exact terminal escrow, task, and payout destination immediately
+      // before reconciliation; none may drift from the current provider witness.
+      .mockResolvedValueOnce({
+        rows: [{
+          id: escrowId, task_id: 'task-1', state: 'RELEASED', version: 2,
+          amount: 5000, platform_fee_cents: 750, stripe_transfer_id: transferId,
+          provider_transfer_status: 'submitted',
+        }],
+        rowCount: 1,
+      })
+      .mockResolvedValueOnce({
+        rows: [{ worker_id: 'worker-1', payout_recipient_user_id: null }],
+        rowCount: 1,
+      })
+      .mockResolvedValueOnce({
+        rows: [{
+          stripe_connect_id: 'acct_worker_1',
+          payouts_enabled: true,
+          account_status: 'ACTIVE',
+          binding_current: true,
+        }],
+        rowCount: 1,
+      })
       // Final event success
       .mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    mockReadTransferWitness.mockResolvedValue({
+      success: true,
+      data: {
+        provider: 'STRIPE',
+        transferId,
+        amountCents: 4150,
+        currency: 'usd',
+        destinationAccountId: 'acct_worker_1',
+        reversed: false,
+        amountReversedCents: 0,
+        escrowId,
+        taskId: 'task-1',
+        payoutRecipientUserId: 'worker-1',
+      },
+    });
 
     const job = makePaymentJob(stripeEventId, 'transfer.created', {});
     // Should not throw — exact replay converges gracefully
@@ -354,7 +479,22 @@ describe('REPLAY ATTACK 3 — charge.refunded replayed', () => {
               object: {
                 id: 'ch_test_001',
                 metadata: { escrow_id: escrowId },
-                refunds: { data: [{ id: refundId }] },
+                payment_intent: 'pi_refunded_001',
+                currency: 'usd',
+                amount: 5000,
+                amount_refunded: 5000,
+                refunded: true,
+                refunds: {
+                  has_more: false,
+                  data: [{
+                    id: refundId,
+                    status: 'succeeded',
+                    currency: 'usd',
+                    amount: 5000,
+                    charge: 'ch_test_001',
+                    payment_intent: 'pi_refunded_001',
+                  }],
+                },
               },
             },
           },
@@ -363,10 +503,32 @@ describe('REPLAY ATTACK 3 — charge.refunded replayed', () => {
       })
       // SELECT escrow FOR UPDATE → already REFUNDED
       .mockResolvedValueOnce({
-        rows: [{ id: escrowId, task_id: 'task-1', state: 'REFUNDED', version: 2, stripe_refund_id: refundId }],
+        rows: [{
+          id: escrowId,
+          task_id: 'task-1',
+          state: 'REFUNDED',
+          version: 2,
+          amount: 5000,
+          platform_fee_cents: 750,
+          stripe_refund_id: refundId,
+          stripe_transfer_id: null,
+          stripe_payment_intent_id: 'pi_refunded_001',
+          provider_transfer_status: null,
+        }],
         rowCount: 1,
       })
-      // UPDATE stripe_events SET result='skipped'
+      // Canonical task binding for the terminal replay.
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 'task-1',
+          state: 'CANCELLED',
+          progress_state: 'CLOSED',
+          worker_id: null,
+          payout_recipient_user_id: null,
+        }],
+        rowCount: 1,
+      })
+      // Missing worker/released-dispute authority is retained by one exact fenced terminal update.
       .mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
     const job = makePaymentJob(stripeEventId, 'charge.refunded', {});
@@ -439,7 +601,9 @@ describe('REPLAY ATTACK 4 — invoice.paid replayed (subscription credits)', () 
     const stripeEventId = 'evt_invoice_paid_replay';
 
     // Claim returns 0 rows → already processed (S-1 atomic claim guard)
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    mockDb.query
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      .mockResolvedValueOnce({ rows: [{ processed_at: new Date() }], rowCount: 1 });
 
     const job = makeJob({ stripeEventId, type: 'invoice.paid' });
     await processStripeEventJob(job);
@@ -498,7 +662,16 @@ describe('WRONG ORDER 5 — transfer.created before payment_intent.succeeded', (
             data: {
               object: {
                 id: transferId,
-                metadata: { escrow_id: escrowId },
+                amount: 4150,
+                currency: 'usd',
+                destination: 'acct_worker_1',
+                reversed: false,
+                amount_reversed: 0,
+                metadata: {
+                  escrow_id: escrowId,
+                  task_id: 'task-1',
+                  payout_recipient_user_id: 'worker-1',
+                },
               },
             },
           },
@@ -512,6 +685,22 @@ describe('WRONG ORDER 5 — transfer.created before payment_intent.succeeded', (
       })
       // UPDATE stripe_events SET result='failed'
       .mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    mockReadTransferWitness.mockResolvedValue({
+      success: true,
+      data: {
+        provider: 'STRIPE',
+        transferId,
+        amountCents: 4150,
+        currency: 'usd',
+        destinationAccountId: 'acct_worker_1',
+        reversed: false,
+        amountReversedCents: 0,
+        escrowId,
+        taskId: 'task-1',
+        payoutRecipientUserId: 'worker-1',
+      },
+    });
 
     const job = makePaymentJob(stripeEventId, 'transfer.created', {});
     // Handler throws so BullMQ can retry
@@ -544,7 +733,21 @@ describe('WRONG ORDER 6 — charge.refunded before charge.succeeded (escrow not 
                 id: 'ch_no_escrow',
                 metadata: {}, // no escrow_id in metadata
                 payment_intent: 'pi_no_escrow',
-                refunds: { data: [{ id: refundId }] },
+                currency: 'usd',
+                amount: 5000,
+                amount_refunded: 5000,
+                refunded: true,
+                refunds: {
+                  has_more: false,
+                  data: [{
+                    id: refundId,
+                    status: 'succeeded',
+                    currency: 'usd',
+                    amount: 5000,
+                    charge: 'ch_no_escrow',
+                    payment_intent: 'pi_no_escrow',
+                  }],
+                },
               },
             },
           },
@@ -586,7 +789,8 @@ describe('WRONG ORDER 7 — dispute.created on already-RELEASED escrow', () => {
 
     // stripe-event-worker atomic claim
     mockDb.query
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 }); // claim fails (already processed)
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // claim fails (already processed)
+      .mockResolvedValueOnce({ rows: [{ processed_at: new Date() }], rowCount: 1 });
 
     const job = makeJob({ stripeEventId, type: 'charge.dispute.created' });
     // If already processed, returns early — ChargebackService not called twice
@@ -804,7 +1008,7 @@ describe('GAP 12 — account.updated for Connect KYC: HANDLED', () => {
 });
 
 describe('COVERAGE 13 — transfer and refund lifecycle events are recovered', () => {
-  it.each(['transfer.created', 'transfer.failed', 'charge.refunded'])('routes %s to the payment lifecycle worker', (type) => {
+  it.each(['transfer.created', 'transfer.failed', 'transfer.reversed', 'charge.refunded'])('routes %s to the payment lifecycle worker', (type) => {
     expect(stripeEventDestination(type)).toBe('payment');
   });
 });

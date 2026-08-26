@@ -15,6 +15,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 // ============================================================================
 // ALL vi.mock CALLS MUST BE BEFORE ANY IMPORTS
@@ -137,6 +138,7 @@ beforeEach(() => {
   // bleed across tests when a previous test fails before consuming all its
   // queued mockResolvedValueOnce / mockRejectedValueOnce responses.
   vi.resetAllMocks();
+  enableControlledStripePaymentTestCohortV7();
   // Re-apply default implementations that were wiped by resetAllMocks.
   vi.mocked(isInvariantViolation).mockReturnValue(false);
   // isEligible is the default for feed tests — all tasks eligible unless overridden.
@@ -149,6 +151,10 @@ beforeEach(() => {
     success: true,
     data: { observationId: '11111111-1111-4111-8111-111111111111' },
   });
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 // ============================================================================
@@ -545,6 +551,23 @@ describe('AnalyticsService.getEventCounts', () => {
 });
 
 describe('AnalyticsService.trackABTest', () => {
+  it('uses cryptographically generated UUID fallbacks when client identifiers are absent', async () => {
+    mockGDPR.getConsentStatus.mockResolvedValue({ success: true, data: [] });
+    mockDb.query.mockResolvedValue({ rows: [makeAnalyticsEvent()], rowCount: 1 });
+
+    const result = await AnalyticsService.trackABTest('user-1', 'onboarding_v2', 'A');
+
+    expect(result.success).toBe(true);
+    const queryParams = mockDb.query.mock.calls[0]?.[1] as unknown[];
+    expect(queryParams[3]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+    );
+    expect(queryParams[4]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+    );
+    expect(queryParams[3] === queryParams[4]).toBe(false);
+  });
+
   it('tracks AB test assignment successfully', async () => {
     mockGDPR.getConsentStatus.mockResolvedValue({ success: true, data: [] });
     const event = makeAnalyticsEvent();
@@ -1265,6 +1288,7 @@ describe('XPTaxService.payTax', () => {
   it('returns XP_TAX_PAYMENT_UNAVAILABLE when Stripe is not configured (FIX 4)', async () => {
     // FIX 4: payTax hard-blocks when Stripe is not configured (no dev-mode bypass)
     vi.mocked(mockStripe.isConfigured).mockReturnValueOnce(false);
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
     const result = await XPTaxService.payTax('user-1', 'pi_test_123');
 

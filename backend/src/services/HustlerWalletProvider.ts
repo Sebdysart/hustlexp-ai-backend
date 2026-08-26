@@ -1,5 +1,6 @@
 import Stripe from 'stripe';
 import { config } from '../config.js';
+import { newPaymentCreationFailure } from './NewPaymentCreationGuard.js';
 import type {
   MaskedPayoutDestination,
   ProviderBankPayout,
@@ -133,6 +134,12 @@ export function createStripeWalletProvider(client?: Stripe | null): WalletProvid
     },
 
     async createStandardPayout(input): Promise<WalletProviderPayoutResult> {
+      const frozen = newPaymentCreationFailure('cash_out_payout');
+      if (frozen) {
+        throw Object.assign(new Error(frozen.error.message), {
+          code: frozen.error.code,
+        });
+      }
       if (!stripe) throw new Error('STRIPE_NOT_CONFIGURED');
       const payout = await stripe.payouts.create({
         amount: input.amountCents,

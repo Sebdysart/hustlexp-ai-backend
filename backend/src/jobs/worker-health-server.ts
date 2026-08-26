@@ -4,6 +4,8 @@ import {
   isTrustedBuildIdentity,
   type BuildIdentity,
 } from '../buildIdentity.js';
+import type { RuntimeSchemaVerification } from '../serverStartupMigrations.js';
+import type { TaskLocationCryptoStatus } from '../services/TaskLocationCrypto.js';
 
 export type WorkerHealthState = 'starting' | 'ready' | 'shutting_down';
 
@@ -20,6 +22,9 @@ interface WorkerHealthServerOptions {
   production?: boolean;
   identity?: BuildIdentity;
   trustedIdentity?: (identity: BuildIdentity) => boolean;
+  databaseAdmission?: RuntimeSchemaVerification;
+  runtimeEnvironment?: string;
+  taskLocationCrypto?: TaskLocationCryptoStatus;
 }
 
 function resolvePort(value: string | undefined): number {
@@ -49,6 +54,9 @@ export async function startWorkerHealthServer(
   const identity = options.identity ?? runtimeBuildIdentity;
   const production = options.production ?? process.env.NODE_ENV === 'production';
   const trustedIdentity = options.trustedIdentity ?? isTrustedBuildIdentity;
+  const databaseAdmission = options.databaseAdmission ?? null;
+  const runtimeEnvironment = options.runtimeEnvironment ?? process.env.NODE_ENV ?? 'development';
+  const taskLocationCrypto = options.taskLocationCrypto ?? null;
   let state: WorkerHealthState = 'starting';
 
   const server = createServer((request, response) => {
@@ -71,7 +79,9 @@ export async function startWorkerHealthServer(
     }
 
     const trustedBuild = !production || trustedIdentity(identity);
-    const ready = state === 'ready' && trustedBuild;
+    const admittedDatabase = !production || databaseAdmission !== null;
+    const admittedLocationCrypto = !production || taskLocationCrypto !== null;
+    const ready = state === 'ready' && trustedBuild && admittedDatabase && admittedLocationCrypto;
     response.writeHead(ready ? 200 : 503);
     response.end(JSON.stringify({
       status: ready ? 'healthy' : 'unhealthy',
@@ -79,6 +89,9 @@ export async function startWorkerHealthServer(
       state,
       ready,
       build: identity,
+      runtime: { environment: runtimeEnvironment, role: 'worker' },
+      databaseAdmission,
+      taskLocationCrypto,
     }));
   });
 

@@ -14,6 +14,7 @@ import { db } from '../db.js';
 import type { QueryFn } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { logger } from '../logger.js';
+import { newPaymentCreationFailure } from './NewPaymentCreationGuard.js';
 import { StripeService } from './StripeService.js';
 
 const log = logger.child({ service: 'SelfInsurancePoolService' });
@@ -346,6 +347,9 @@ export const SelfInsurancePoolService = {
    * F-19: Stripe transfer uses Idempotency-Key header based on claimId.
    */
   payClaim: async (claimId: string): Promise<ServiceResult<{ already_paid?: boolean; claim?: InsuranceClaim }>> => {
+    const frozen = newPaymentCreationFailure('settlement_transfer');
+    if (frozen) return frozen;
+
     try {
       // Get claim details (outside transaction — read-only pre-check)
       const claimResult = await db.query<InsuranceClaim>(

@@ -14,8 +14,7 @@ export interface ReleaseTaskRow {
   worker_id: string | null;
   payout_recipient_user_id: string | null;
   provider_organization_id: string | null;
-  business_fulfiller_organization_id: string | null;
-  orchestration_mode: string | null;
+  provider_assignment_id: string | null;
   price: number;
   payment_method: string | null;
   poster_id: string | null;
@@ -24,14 +23,33 @@ export interface ReleaseTaskRow {
   platform_margin_cents: number | null;
 }
 
+/**
+ * A normalized, read-only observation of the current processor transfer.
+ *
+ * The caller must obtain this from Stripe immediately before invoking the
+ * canonical release transaction.  The transaction re-binds every field to
+ * the locked escrow, task, recipient, and payout destination before it writes
+ * RELEASED.  Webhook payloads and stored transfer IDs are not witnesses.
+ */
+export interface StripeTransferWitness {
+  provider: 'STRIPE';
+  transferId: string;
+  amountCents: number;
+  currency: string;
+  destinationAccountId: string | null;
+  reversed: boolean;
+  amountReversedCents: number;
+  escrowId: string | null;
+  taskId: string | null;
+  payoutRecipientUserId: string | null;
+}
+
 export type ReleasePayoutProvider =
   | 'STRIPE'
-  | 'LOCAL_CERTIFICATION_TEST'
-  | 'MANUAL_RECONCILIATION';
+  | 'LOCAL_CERTIFICATION_TEST';
 
 export interface ReleasePost {
-  workerId: string | null;
-  businessFulfillerOrganizationId: string | null;
+  workerId: string;
   payoutRecipientUserId: string;
   serviceBusinessProvider: boolean;
   grossPayoutCents: number;

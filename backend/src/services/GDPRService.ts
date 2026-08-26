@@ -21,6 +21,7 @@ import { ErrorCodes } from '../types.js';
 import { NotificationService } from './NotificationService.js';
 import { EscrowService } from './EscrowService.js';
 import { TaskService } from './TaskService.js';
+import { PendingPaymentCancellationService } from './PendingPaymentCancellationService.js';
 import { logger } from '../logger.js';
 import { config } from '../config.js';
 import { invalidateAuthCacheForUser } from '../auth-cache.js';
@@ -88,6 +89,88 @@ export function _resetGDPRRateLimitMapForTesting(): void {
 }
 
 const log = logger.child({ service: 'GDPRService' });
+
+const GDPR_DISPUTE_DELETION_BLOCK_EVENT = 'gdpr_dispute_deletion_block_v1';
+const GDPR_DISPUTE_DELETION_BLOCK_REASON = 'GDPR_DELETION_HAS_NO_SETTLEMENT_AUTHORITY';
+
+interface GDPRDisputedEscrow {
+  id: string;
+  task_id: string;
+  state: string;
+  version: number | string;
+  amount: number | string;
+  stripe_payment_intent_id: string | null;
+  stripe_transfer_id: string | null;
+  stripe_refund_id: string | null;
+  refund_amount: number | string | null;
+  release_amount: number | string | null;
+}
+
+async function recordGDPRDisputeDeletionBlock(input: {
+  requestId: string;
+  relationshipOrigin: 'poster' | 'worker';
+  escrow: GDPRDisputedEscrow;
+}): Promise<void> {
+  const version = Number(input.escrow.version);
+  const amountCents = Number(input.escrow.amount);
+  if (
+    input.escrow.state !== 'LOCKED_DISPUTE'
+    || !Number.isInteger(version)
+    || version < 0
+    || !Number.isInteger(amountCents)
+    || amountCents <= 0
+  ) {
+    throw new Error(`Cannot record an inexact GDPR dispute block for escrow ${input.escrow.id}`);
+  }
+  const metadata = {
+    event_type: GDPR_DISPUTE_DELETION_BLOCK_EVENT,
+    reason_code: GDPR_DISPUTE_DELETION_BLOCK_REASON,
+    reconciliation_required: true,
+    gdpr_request_id: input.requestId,
+    relationship_origin: input.relationshipOrigin,
+    escrow_id: input.escrow.id,
+    escrow_version: version,
+    task_id: input.escrow.task_id,
+    canonical_state: input.escrow.state,
+    amount_cents: amountCents,
+    stripe_payment_intent_id: input.escrow.stripe_payment_intent_id,
+    stripe_transfer_id: input.escrow.stripe_transfer_id,
+    stripe_refund_id: input.escrow.stripe_refund_id,
+    refund_amount_cents: input.escrow.refund_amount == null
+      ? null
+      : Number(input.escrow.refund_amount),
+    release_amount_cents: input.escrow.release_amount == null
+      ? null
+      : Number(input.escrow.release_amount),
+  };
+  const idempotencyKey = [
+    GDPR_DISPUTE_DELETION_BLOCK_EVENT,
+    input.requestId,
+    input.relationshipOrigin,
+    input.escrow.id,
+    version,
+  ].join(':');
+  const recorded = await db.query<{ metadata: unknown }>(
+    `WITH inserted AS (
+       INSERT INTO escrow_events
+         (escrow_id,from_state,to_state,actor_id,actor_type,metadata,idempotency_key)
+       VALUES ($1,$4,$4,NULL,'system',$2::jsonb,$3)
+       ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+       RETURNING metadata
+     )
+     SELECT metadata FROM inserted
+     UNION ALL
+     SELECT metadata FROM escrow_events
+      WHERE escrow_id=$1 AND from_state=$4 AND to_state=$4
+        AND actor_id IS NULL AND actor_type='system'
+        AND idempotency_key=$3 AND metadata::jsonb=$2::jsonb
+     LIMIT 1`,
+    [input.escrow.id, JSON.stringify(metadata), idempotencyKey, input.escrow.state],
+  );
+  if ((recorded.rowCount ?? recorded.rows.length) !== 1) {
+    throw new Error(`GDPR dispute block conflicts for escrow ${input.escrow.id}`);
+  }
+}
 
 // ============================================================================
 // TYPES
@@ -749,7 +832,7 @@ export const GDPRService = {
       );
       const firebaseUid = fbRow.rows[0]?.firebase_uid ?? undefined;
 
-      const deletionResult = await deleteAndAnonymizeUserData(userId);
+      const deletionResult = await deleteAndAnonymizeUserData(userId, requestId);
 
       if (!deletionResult.success) {
         // Mark request as failed
@@ -1161,7 +1244,10 @@ export async function collectUserDataForExport(userId: string): Promise<Record<s
  * 
  * This should be called by a background job processor after grace period.
  */
-async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult<{ deletedAt: Date }>> {
+async function deleteAndAnonymizeUserData(
+  userId: string,
+  requestId: string,
+): Promise<ServiceResult<{ deletedAt: Date }>> {
   try {
     // D53-1 FIX: Use randomUUID() for the anonymizedId instead of a deterministic
     // ID derived from the real userId. The old approach embedded the last 12 hex
@@ -1224,68 +1310,52 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
           },
         };
       }
-      // Refund any FUNDED or PENDING escrow attached to this task.
-      // PENDING escrows have a PaymentIntent created but not yet confirmed by
-      // Stripe — cancel the PI first so money never moves, then refund the
-      // escrow record. If Stripe later confirms the PI, the cancellation
-      // prevents a stranded charge.
-      // Also handle LOCKED_DISPUTE escrows where the poster is the deleted
-      // user — return the full amount to the poster (100%) since the worker
-      // cannot be paid to a deleted account's task.
-      const escrowResult = await db.query<{ id: string; state: string; stripe_payment_intent_id: string | null }>(
-        `SELECT id, state, stripe_payment_intent_id FROM escrows WHERE task_id = $1 AND state IN ('FUNDED', 'PENDING', 'LOCKED_DISPUTE')`,
+      // Refund any FUNDED escrow attached to this task. PENDING escrows use the
+      // dedicated cancellation command; a processor void is not a refund and
+      // must never fall through to the FUNDED-only refund rail.
+      // A GDPR erasure request has no authority to resolve a dispute or choose
+      // its economic split. A disputed escrow is recorded as a reconciliation
+      // block and erasure fails closed without moving money.
+      const escrowResult = await db.query<GDPRDisputedEscrow>(
+        `SELECT id,task_id,state,version,amount,stripe_payment_intent_id,
+                stripe_transfer_id,stripe_refund_id,refund_amount,release_amount
+           FROM escrows
+          WHERE task_id = $1 AND state IN ('FUNDED', 'PENDING', 'LOCKED_DISPUTE')`,
         [row.id]
       );
       for (const escrow of escrowResult.rows) {
-        if (escrow.state === 'PENDING' && escrow.stripe_payment_intent_id) {
-          if (!stripe) {
-            return {
-              success: false,
-              error: {
-                code: 'ACTIVE_ESCROW_RESOLUTION_FAILED',
-                message: `Cannot erase account until pending payment ${escrow.id} is cancelled.`,
-              },
-            };
-          }
+        if (escrow.state === 'PENDING') {
           try {
-            // AUDIT FIX M3: via stripeBreaker — GDPR deletion must not hold
-            // open calls against a failing Stripe.
-            await stripeBreaker.execute(() => stripe!.paymentIntents.cancel(escrow.stripe_payment_intent_id!));
-          } catch {
+            await PendingPaymentCancellationService.execute({
+              escrowId: escrow.id,
+              taskId: escrow.task_id,
+              reason: 'gdpr_poster_deletion',
+            });
+            continue;
+          } catch (cancelErr) {
+            const errMsg = cancelErr instanceof Error ? cancelErr.message : String(cancelErr);
             return {
               success: false,
               error: {
                 code: 'ACTIVE_ESCROW_RESOLUTION_FAILED',
-                message: `Cannot erase account until pending payment ${escrow.id} is cancelled.`,
+                message: `Cannot erase account until pending payment ${escrow.id} is cancelled: ${errMsg}`,
               },
             };
           }
         }
         if (escrow.state === 'LOCKED_DISPUTE') {
-          // Poster is being deleted — return full amount to poster account
-          // (100% poster, 0% worker) since the poster's task is being cleaned up.
-          try {
-            const refundResult = await EscrowService.partialRefund({ escrowId: escrow.id, workerPercent: 0, posterPercent: 100 });
-            if (!refundResult.success) {
-              const errMsg = refundResult.error?.message ?? '';
-              return {
-                success: false,
-                error: {
-                  code: 'ACTIVE_ESCROW_RESOLUTION_FAILED',
-                  message: `Cannot erase account until disputed escrow ${escrow.id} is resolved: ${errMsg || 'settlement failed'}`,
-                },
-              };
-            }
-          } catch (refundErr) {
-            const errMsg = refundErr instanceof Error ? refundErr.message : String(refundErr);
-            return {
-              success: false,
-              error: {
-                code: 'ACTIVE_ESCROW_RESOLUTION_FAILED',
-                message: `Cannot erase account until disputed escrow ${escrow.id} is resolved: ${errMsg}`,
-              },
-            };
-          }
+          await recordGDPRDisputeDeletionBlock({
+            requestId,
+            relationshipOrigin: 'poster',
+            escrow,
+          });
+          return {
+            success: false,
+            error: {
+              code: 'ACTIVE_ESCROW_RESOLUTION_FAILED',
+              message: `Cannot erase account while disputed escrow ${escrow.id} requires an authorized settlement decision.`,
+            },
+          };
         } else {
           try {
             const refundResult = await EscrowService.refund({ escrowId: escrow.id });
@@ -1314,13 +1384,15 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
     }
 
     // -------------------------------------------------------------------------
-    // FIX 1: Refund all FUNDED or LOCKED_DISPUTE escrows where this user is the
-    // worker. Must run BEFORE nulling worker_id so EscrowService can still
-    // locate the worker. FUNDED escrows are refunded via EscrowService.refund().
-    // LOCKED_DISPUTE escrows are returned 100% to the poster via partialRefund().
+    // FIX 1: Refund all FUNDED escrows where this user is the worker. A
+    // LOCKED_DISPUTE escrow is immutable here: GDPR deletion is not dispute
+    // authority and may only emit a reconciliation block.
     // -------------------------------------------------------------------------
-    const workerEscrowsResult = await db.query<{ id: string; state: string }>(
-      `SELECT e.id, e.state FROM escrows e
+    const workerEscrowsResult = await db.query<GDPRDisputedEscrow>(
+      `SELECT e.id,e.task_id,e.state,e.version,e.amount,
+              e.stripe_payment_intent_id,e.stripe_transfer_id,e.stripe_refund_id,
+              e.refund_amount,e.release_amount
+         FROM escrows e
        JOIN tasks t ON t.id = e.task_id
        WHERE t.worker_id = $1 AND e.state IN ('FUNDED', 'LOCKED_DISPUTE')`,
       [userId]
@@ -1350,29 +1422,18 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
           };
         }
       } else if (row.state === 'LOCKED_DISPUTE') {
-        // Return full amount to poster (0% to deleted worker)
-        try {
-          const refundResult = await EscrowService.partialRefund({ escrowId: row.id, workerPercent: 0, posterPercent: 100 });
-          if (!refundResult.success) {
-            const errMsg = refundResult.error?.message ?? '';
-            return {
-              success: false,
-              error: {
-                code: 'ACTIVE_ESCROW_RESOLUTION_FAILED',
-                message: `Cannot erase account until worker dispute ${row.id} is resolved: ${errMsg || 'settlement failed'}`,
-              },
-            };
-          }
-        } catch (refundErr) {
-          const errMsg = refundErr instanceof Error ? refundErr.message : String(refundErr);
-          return {
-            success: false,
-            error: {
-              code: 'ACTIVE_ESCROW_RESOLUTION_FAILED',
-              message: `Cannot erase account until worker dispute ${row.id} is resolved: ${errMsg}`,
-            },
-          };
-        }
+        await recordGDPRDisputeDeletionBlock({
+          requestId,
+          relationshipOrigin: 'worker',
+          escrow: row,
+        });
+        return {
+          success: false,
+          error: {
+            code: 'ACTIVE_ESCROW_RESOLUTION_FAILED',
+            message: `Cannot erase account while worker dispute ${row.id} requires an authorized settlement decision.`,
+          },
+        };
       }
     }
 
@@ -1875,13 +1936,12 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       await query('DELETE FROM exports WHERE user_id = $1', [userId]);
 
       // FIX: Anonymize admin_actions — keep rows for financial audit trail, but
-      // clear the free-text reason field and mark metadata with gdpr_deleted so
-      // it's clear the subject has been deleted. Do NOT delete rows (audit trail).
-      // D61-1: The correct column is target_user_id (not target_id).
+      // clear the free-text action/result details while retaining immutable
+      // actor, target, action, outcome, and timestamp identity.
       await query(
         `UPDATE admin_actions
-         SET metadata = metadata || '{"gdpr_deleted": true}'::jsonb,
-             reason = '[deleted]'
+         SET action_details = '{"gdpr_deleted": true}'::jsonb,
+             result_details = '{"gdpr_deleted": true}'::jsonb
          WHERE target_user_id = $1`,
         [userId]
       );

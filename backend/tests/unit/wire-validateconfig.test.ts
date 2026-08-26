@@ -20,6 +20,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Hoisted spy so vi.mock('../../src/config') and the tests share one reference.
 const validateConfigSpy = vi.hoisted(() => vi.fn());
+const verifyRuntimeSchemaSpy = vi.hoisted(() => vi.fn().mockResolvedValue({
+  migrationCount: 116,
+  schemaVersion: '1.0.0',
+  invariantTriggerCount: 1,
+  acceptanceTriggerCount: 1,
+  pinnedFunctionCount: 1,
+  frozenTableCount: 1,
+  databaseIdentitySha256: '1'.repeat(64),
+  migrationLedgerSha256: '2'.repeat(64),
+  migrationArtifactSha256: '3'.repeat(64),
+}));
+const registerWorkersSpy = vi.hoisted(() => vi.fn());
+const registerScheduledJobsSpy = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const workerHealthHandle = vi.hoisted(() => ({
   markReady: vi.fn(),
   markShuttingDown: vi.fn(),
@@ -43,12 +56,23 @@ vi.mock('../../src/jobs/queues', () => {
 });
 
 vi.mock('../../src/jobs/outbox-worker', () => ({ startOutboxWorker: vi.fn() }));
+vi.mock('../../src/jobs/worker-registration', () => ({
+  registerWorkers: registerWorkersSpy,
+}));
+vi.mock('../../src/jobs/worker-schedules', () => ({
+  registerScheduledJobs: registerScheduledJobsSpy,
+}));
+vi.mock('../../src/jobs/engine-automation-migration', () => ({
+  runEngineAutomationMigration: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock('../../src/jobs/worker-health-server', () => ({
   startWorkerHealthServer: startWorkerHealthServerSpy,
 }));
 vi.mock('../../src/jobs/export-worker', () => ({ processExportJob: vi.fn() }));
 vi.mock('../../src/jobs/email-worker', () => ({ processEmailJob: vi.fn() }));
-vi.mock('../../src/jobs/biometric-analyzer-worker', () => ({ processBiometricAnalysisJob: vi.fn() }));
+vi.mock('../../src/jobs/biometric-analyzer-worker', () => ({
+  processBiometricAnalysisJob: vi.fn(),
+}));
 vi.mock('../../src/jobs/expertise-recalc-worker', () => ({ processExpertiseRecalcJob: vi.fn() }));
 vi.mock('../../src/jobs/xp-tax-reminder-worker', () => ({ processXPTaxReminderJob: vi.fn() }));
 
@@ -71,6 +95,9 @@ vi.mock('../../src/logger', () => ({
 }));
 
 vi.mock('../../src/db', () => ({ db: { query: vi.fn() } }));
+vi.mock('../../src/serverStartupMigrations', () => ({
+  verifyRuntimeSchema: verifyRuntimeSchemaSpy,
+}));
 
 // Crucially: this mock DOES export validateConfig (as a spy). The fix must ensure
 // startWorkers() never touches it, while bootWorkerProcess() does.
@@ -100,14 +127,27 @@ describe('validateConfig boot wiring (supersedes #232)', () => {
     // This is the #232 regression guard: a direct startWorkers() call must never
     // reach validateConfig, so a config mock lacking the export can't break it.
     expect(validateConfigSpy).not.toHaveBeenCalled();
+    expect(verifyRuntimeSchemaSpy).not.toHaveBeenCalled();
   });
 
-  it('bootWorkerProcess() invokes validateConfig before starting workers', async () => {
+  it('bootWorkerProcess() validates config, verifies runtime schema, then starts workers', async () => {
     const { bootWorkerProcess } = await import('../../src/jobs/workers');
     await bootWorkerProcess();
     expect(validateConfigSpy).toHaveBeenCalledTimes(1);
+    expect(verifyRuntimeSchemaSpy).toHaveBeenCalledTimes(1);
+    expect(registerWorkersSpy).toHaveBeenCalledTimes(1);
     expect(startWorkerHealthServerSpy).toHaveBeenCalledTimes(1);
+    expect(startWorkerHealthServerSpy).toHaveBeenCalledWith({
+      databaseAdmission: await verifyRuntimeSchemaSpy.mock.results[0]?.value,
+      taskLocationCrypto: undefined,
+    });
     expect(workerHealthHandle.markReady).toHaveBeenCalledTimes(1);
+
+    const configOrder = validateConfigSpy.mock.invocationCallOrder[0];
+    const schemaOrder = verifyRuntimeSchemaSpy.mock.invocationCallOrder[0];
+    const workersOrder = registerWorkersSpy.mock.invocationCallOrder[0];
+    expect(configOrder).toBeLessThan(schemaOrder);
+    expect(schemaOrder).toBeLessThan(workersOrder);
   });
 
   it('bootWorkerProcess() surfaces a validateConfig failure (fail-fast)', async () => {
@@ -116,6 +156,18 @@ describe('validateConfig boot wiring (supersedes #232)', () => {
     });
     const { bootWorkerProcess } = await import('../../src/jobs/workers');
     await expect(bootWorkerProcess()).rejects.toThrow('FATAL config');
+    expect(verifyRuntimeSchemaSpy).not.toHaveBeenCalled();
+    expect(registerWorkersSpy).not.toHaveBeenCalled();
+    expect(startWorkerHealthServerSpy).not.toHaveBeenCalled();
+  });
+
+  it('bootWorkerProcess() fails closed when runtime schema verification fails', async () => {
+    verifyRuntimeSchemaSpy.mockRejectedValueOnce(new Error('FATAL schema'));
+    const { bootWorkerProcess } = await import('../../src/jobs/workers');
+    await expect(bootWorkerProcess()).rejects.toThrow('FATAL schema');
+    expect(validateConfigSpy).toHaveBeenCalledTimes(1);
+    expect(verifyRuntimeSchemaSpy).toHaveBeenCalledTimes(1);
+    expect(registerWorkersSpy).not.toHaveBeenCalled();
     expect(startWorkerHealthServerSpy).not.toHaveBeenCalled();
   });
 });

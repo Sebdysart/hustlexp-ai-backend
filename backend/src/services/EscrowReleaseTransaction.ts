@@ -1,7 +1,6 @@
 import type { QueryFn } from '../db.js';
 import { config } from '../config.js';
 import { clampFeePercent, computeFeeBreakdown, feeBasisPoints } from '../lib/money.js';
-import { escrowLogger } from '../logger.js';
 import type { Escrow, ServiceResult } from '../types.js';
 import { ErrorCodes } from '../types.js';
 import { LocalCertificationPayoutProvider } from './LocalCertificationPayoutProvider.js';
@@ -11,6 +10,7 @@ import type {
   ReleaseEscrowRow,
   ReleasePayoutProvider,
   ReleasePost,
+  StripeTransferWitness,
   ReleaseTaskRow,
   ReleaseTransactionResult,
 } from './EscrowReleaseTypes.js';
@@ -51,40 +51,30 @@ async function authorizeDispute(
 
 async function loadTask(query: QueryFn, taskId: string): Promise<ReleaseTaskRow | null> {
   const result = await query<ReleaseTaskRow>(
-        `SELECT worker_id,
-            payout_recipient_user_id,
-            provider_organization_id,
-            business_fulfiller_organization_id,
-            orchestration_mode,
-            price,
-            payment_method,
-            poster_id,
-            automation_classification,
-            hustler_payout_cents,
-            platform_margin_cents
-    FROM tasks
-    WHERE id=$1`,
+    `SELECT worker_id,payout_recipient_user_id,provider_organization_id,
+            provider_assignment_id,price,
+            payment_method,poster_id,automation_classification,hustler_payout_cents,
+            platform_margin_cents FROM tasks WHERE id=$1 FOR UPDATE`,
     [taskId],
   );
   return result.rows[0] ?? null;
 }
 
-function payoutProvider(params: ReleaseEscrowParams, escrow: ReleaseEscrowRow): {
+function payoutProvider(params: ReleaseEscrowParams): {
   provider: ReleasePayoutProvider;
   transferId: string | null;
   stripeTransferId: string | null;
   status: string;
 } {
-  const stripeTransferId = params.stripeTransferId ?? escrow.stripe_transfer_id;
-  const provider = params.localTestTransferId
+  const stripeTransferId = params.stripeTransferId ?? null;
+  const provider: ReleasePayoutProvider = params.localTestTransferId
     ? 'LOCAL_CERTIFICATION_TEST'
-    : stripeTransferId ? 'STRIPE' : 'MANUAL_RECONCILIATION';
+    : 'STRIPE';
   return {
     provider,
     transferId: params.localTestTransferId ?? stripeTransferId ?? null,
     stripeTransferId: stripeTransferId ?? null,
-    status: provider === 'LOCAL_CERTIFICATION_TEST'
-      ? 'paid' : provider === 'STRIPE' ? 'submitted' : 'manual_reconciliation',
+    status: provider === 'LOCAL_CERTIFICATION_TEST' ? 'paid' : 'submitted',
   };
 }
 
@@ -97,98 +87,106 @@ async function verifyLocalProvider(query: QueryFn, input: {
 }): Promise<ServiceResult<Escrow> | null> {
   const transferId = input.params.localTestTransferId;
   if (!transferId) return null;
-
+  if (input.escrow.stripe_transfer_id) {
+    return failed(ErrorCodes.INVALID_STATE, 'Local certification payout conflicts with stored Stripe transfer evidence');
+  }
   if (input.task.automation_classification !== 'CONTROLLED_TEST') {
-    return failed(
-      ErrorCodes.INVALID_STATE,
-      'Local certification payout cannot release a production-classified task',
-    );
+    return failed(ErrorCodes.INVALID_STATE, 'Local certification payout cannot release a production-classified task');
   }
-
-  if (
-    input.task.orchestration_mode === 'OPS_MANUAL'
-    && input.task.business_fulfiller_organization_id
-    && !input.task.worker_id
-  ) {
-    const verified =
-      await LocalCertificationPayoutProvider.verifyPaidBusinessTransfer(query, {
-        transferId,
-        taskId: input.escrow.task_id,
-        escrowId: input.escrow.id,
-        organizationId: input.task.business_fulfiller_organization_id,
-        payoutRecipientUserId: input.payoutRecipientUserId,
-        amountCents: input.netPayoutCents,
-      });
-
-    return verified
-      ? null
-      : failed(
-          ErrorCodes.INVALID_STATE,
-          'Business local certification payout is not provider-confirmed for the exact net amount',
-        );
-  }
-
-  if (!input.task.worker_id) {
-    return failed(
-      ErrorCodes.INVALID_STATE,
-      `Task ${input.escrow.task_id} has no recognized payout fulfiller`,
-    );
-  }
-
-  const verified =
-    await LocalCertificationPayoutProvider.verifyPaidTransfer(query, {
-      transferId,
-      taskId: input.escrow.task_id,
-      escrowId: input.escrow.id,
-      workerId: input.task.worker_id,
-      amountCents: input.netPayoutCents,
-    });
-
+  const verified = await LocalCertificationPayoutProvider.verifyPaidTransfer(query, {
+    transferId,
+    taskId: input.escrow.task_id,
+    escrowId: input.escrow.id,
+    workerId: input.payoutRecipientUserId,
+    amountCents: input.netPayoutCents,
+  });
   return verified
     ? null
-    : failed(
-        ErrorCodes.INVALID_STATE,
-        'Local certification payout is not provider-confirmed for the exact net amount',
-      );
+    : failed(ErrorCodes.INVALID_STATE, 'Local certification payout is not provider-confirmed for the exact net amount');
 }
 
-async function verifyStripeRecipient(
+function witnessMismatch(
+  witness: StripeTransferWitness,
+  input: {
+    transferId: string;
+    escrow: ReleaseEscrowRow;
+    task: ReleaseTaskRow;
+    payoutRecipientUserId: string;
+    netPayoutCents: number;
+    destinationAccountId: string;
+  },
+): boolean {
+  return witness.provider !== 'STRIPE'
+    || witness.transferId !== input.transferId
+    || !Number.isInteger(witness.amountCents)
+    || witness.amountCents !== input.netPayoutCents
+    || witness.currency !== 'usd'
+    || witness.destinationAccountId !== input.destinationAccountId
+    || witness.reversed
+    || !Number.isInteger(witness.amountReversedCents)
+    || witness.amountReversedCents !== 0
+    || witness.escrowId !== input.escrow.id
+    // Legacy transfers without task_id require a separately admitted cutover
+    // cohort and immutable admission witness. No such authority exists in D1,
+    // so exact task identity remains mandatory even when the transfer ID was
+    // already stored on the escrow.
+    || witness.taskId !== input.escrow.task_id
+    || witness.payoutRecipientUserId !== input.payoutRecipientUserId
+    || Number(input.task.price) !== input.escrow.amount
+    || (
+      input.escrow.stripe_transfer_id !== null
+      && input.escrow.stripe_transfer_id !== undefined
+      && input.escrow.stripe_transfer_id !== input.transferId
+    );
+}
+
+async function verifyStripeProvider(
   query: QueryFn,
-  input: { taskId:string;workerId:string;payoutRecipientUserId:string,kind: 'WORKER'},
+  input: {
+    params: ReleaseEscrowParams;
+    escrow: ReleaseEscrowRow;
+    task: ReleaseTaskRow;
+    workerId: string;
+    payoutRecipientUserId: string;
+    netPayoutCents: number;
+  },
 ): Promise<ServiceResult<Escrow> | null> {
-  const destination = await loadCurrentTaskPayoutDestination(query,input);
-  return destination.ready
-    ? null
-    : failed(
+  const transferId = input.params.stripeTransferId;
+  const witness = input.params.stripeTransferWitness;
+  if (!transferId || !witness) {
+    return failed(ErrorCodes.INVALID_STATE, 'Stripe release requires current exact provider evidence');
+  }
+  const destination = await loadCurrentTaskPayoutDestination(query,{
+    taskId:input.escrow.task_id,
+    workerId:input.workerId,
+    payoutRecipientUserId:input.payoutRecipientUserId,
+  });
+  if (!destination.ready || !destination.stripeConnectId) {
+    return failed(
+      ErrorCodes.INVALID_STATE,
+      `Payout destination is not current (${destination.reason}) — cannot release payout`,
+    );
+  }
+  return witnessMismatch(witness, {
+    transferId,
+    escrow:input.escrow,
+    task:input.task,
+    payoutRecipientUserId:input.payoutRecipientUserId,
+    netPayoutCents:input.netPayoutCents,
+    destinationAccountId:destination.stripeConnectId,
+  })
+    ? failed(
         ErrorCodes.INVALID_STATE,
-        `Payout destination is not current (${destination.reason}) — cannot release payout`,
-      );
-}
-
-async function adminManualPayoutRequired(
-  query: QueryFn,
-  input: { escrowId: string; workerId: string; payoutRecipientUserId: string; stripeTransferId: string | null },
-): Promise<boolean> {
-  const result = await query<{ stripe_connect_id: string | null }>(
-    `SELECT stripe_connect_id FROM users WHERE id=$1`,
-    [input.payoutRecipientUserId],
-  );
-  if (input.stripeTransferId) return false;
-  escrowLogger.error({
-    workerId: input.workerId,
-    payoutRecipientUserId: input.payoutRecipientUserId,
-    escrowId: input.escrowId,
-    adminOverride: true,
-    hasStripeAccount: Boolean(result.rows[0]?.stripe_connect_id),
-  }, 'CRITICAL: adminOverride release lacks provider transfer evidence — manual payout reconciliation required');
-  return true;
+        'Stripe transfer witness does not match the locked escrow, task, recipient, or payout destination',
+      )
+    : null;
 }
 
 async function validateProvider(query: QueryFn, input: {
   params: ReleaseEscrowParams;
   escrow: ReleaseEscrowRow;
   task: ReleaseTaskRow;
-  workerId: string | null;
+  workerId: string;
   payoutRecipientUserId: string;
   netPayoutCents: number;
   stripeTransferId: string | null;
@@ -196,30 +194,9 @@ async function validateProvider(query: QueryFn, input: {
   const localError = await verifyLocalProvider(query, input);
   if (localError) return { error: localError, manualRequired: false };
   if (input.params.localTestTransferId) return { error: null, manualRequired: false };
-  if (!input.workerId) {
-    return {
-      error: failed(
-        ErrorCodes.INVALID_STATE,
-        'Production Business payout provider is not configured',
-      ),
-      manualRequired: false,
-    };
-  }
-  if (!input.params.adminOverride) {
-    return { error: await verifyStripeRecipient(query, {
-      taskId:input.escrow.task_id,workerId:input.workerId,
-      payoutRecipientUserId:input.payoutRecipientUserId,
-      kind: 'WORKER',
-    }), manualRequired: false };
-  }
   return {
-    error: null,
-    manualRequired: await adminManualPayoutRequired(query, {
-      escrowId: input.escrow.id,
-      workerId: input.workerId,
-      payoutRecipientUserId: input.payoutRecipientUserId,
-      stripeTransferId: input.stripeTransferId,
-    }),
+    error: await verifyStripeProvider(query, input),
+    manualRequired: false,
   };
 }
 
@@ -259,58 +236,15 @@ export async function executeReleaseTransaction(
     return failed(ErrorCodes.INVALID_STATE, 'Cannot release dispute-locked escrow without a resolved worker-favor dispute');
   }
   const task = await loadTask(query, escrow.task_id);
-  if (!task) {
-    return failed(
-      ErrorCodes.NOT_FOUND,
-      `Task ${escrow.task_id} not found`,
-    );
-  }
-
-  const isManualBusiness =
-    task.orchestration_mode === 'OPS_MANUAL'
-    && Boolean(task.business_fulfiller_organization_id)
-    && !task.worker_id;
-
-  if (!task.worker_id && !isManualBusiness) {
-    return failed(
-      ErrorCodes.INVALID_STATE,
-      `Task ${escrow.task_id} has no recognized fulfiller`,
-    );
-  }
-
-  let payoutRecipientUserId: string;
-
-  if (isManualBusiness) {
-    const destination = await query<{ payout_recipient_user_id: string }>(
-      `SELECT payout_recipient_user_id
-      FROM hxos_local_test_business_payout_destinations
-      WHERE organization_id = $1
-        AND status = 'ACTIVE'
-        AND is_test IS TRUE`,
-      [task.business_fulfiller_organization_id],
-    );
-
-    if (destination.rows.length !== 1) {
-      return failed(
-        ErrorCodes.INVALID_STATE,
-        'Business payout destination is not uniquely resolved',
-      );
-    }
-
-    payoutRecipientUserId =
-      destination.rows[0].payout_recipient_user_id;
-  } else {
-    payoutRecipientUserId =
-      task.payout_recipient_user_id ?? task.worker_id!;
-  }
-
+  if (!task?.worker_id) return failed(ErrorCodes.INVALID_STATE, `Task ${escrow.task_id} has no assigned worker`);
   const workerId = task.worker_id;
+  const payoutRecipientUserId = task.payout_recipient_user_id ?? workerId;
   const breakdown = computeFeeBreakdown(
     escrow.amount,
     clampFeePercent(config.stripe.platformFeePercent),
     escrow.platform_fee_cents,
   );
-  const provider = payoutProvider(params, escrow);
+  const provider = payoutProvider(params);
   const validation = await validateProvider(query, {
     params,escrow,task,workerId,payoutRecipientUserId,
     netPayoutCents: breakdown.netPayoutCents,
@@ -321,7 +255,6 @@ export async function executeReleaseTransaction(
   if (!transitioned.success) return transitioned;
   const post: ReleasePost = {
     workerId,
-    businessFulfillerOrganizationId: task.business_fulfiller_organization_id,
     payoutRecipientUserId,
     serviceBusinessProvider: task.provider_organization_id != null,
     grossPayoutCents: escrow.amount,

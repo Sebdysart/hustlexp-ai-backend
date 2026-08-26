@@ -31,9 +31,11 @@ vi.mock('../../src/logger.js', () => {
 });
 
 import { processPushJob } from '../../src/jobs/push-worker.js';
+import { outboxTransportJobId } from '../../src/jobs/OutboxIdentity.js';
 
+const PUSH_OUTBOX_KEY = 'push.send_requested:task:user:notification:1';
 const job = {
-  id: 'push.send_requested:task:user:notification:1',
+  id: outboxTransportJobId(PUSH_OUTBOX_KEY),
   data: {
     aggregate_type: 'push',
     aggregate_id: 'notification-1',
@@ -44,9 +46,10 @@ const job = {
       title: 'Title',
       body: 'Body',
       data: { deepLink: '/tasks/task-1' },
+      _outbox_key: PUSH_OUTBOX_KEY,
     },
   },
-} as never;
+} as unknown as Parameters<typeof processPushJob>[0];
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -56,6 +59,19 @@ beforeEach(() => {
 });
 
 describe('push worker notification delivery contract', () => {
+  it('rejects a forged transport ID before authorization, claim, or FCM', async () => {
+    const forged = {
+      ...job,
+      id: outboxTransportJobId('push.send_requested:forged:1'),
+    } as Parameters<typeof processPushJob>[0];
+    await expect(processPushJob(forged)).rejects.toThrow('OUTBOX_IDENTITY_MISMATCH');
+    expect(mocks.authorize).not.toHaveBeenCalled();
+    expect(mocks.query).not.toHaveBeenCalled();
+    expect(mocks.send).not.toHaveBeenCalled();
+    expect(mocks.processed).not.toHaveBeenCalled();
+    expect(mocks.failed).not.toHaveBeenCalled();
+  });
+
   it('rechecks supersession before claiming or calling FCM', async () => {
     mocks.authorize.mockResolvedValue({ allowed: false, reason: 'superseded' });
     await processPushJob(job);
@@ -69,7 +85,7 @@ describe('push worker notification delivery contract', () => {
     await processPushJob(job);
     expect(mocks.send).toHaveBeenCalledTimes(1);
     expect(mocks.accepted).toHaveBeenCalledWith('notification-1', 'push', 'fcm', null);
-    expect(mocks.processed).toHaveBeenCalledWith(job.id);
+    expect(mocks.processed).toHaveBeenCalledWith(PUSH_OUTBOX_KEY);
   });
 
   it('suppresses a channel with no active device instead of retrying forever', async () => {
@@ -92,7 +108,7 @@ describe('push worker notification delivery contract', () => {
   it('returns a not-due job to the outbox without burning a provider attempt', async () => {
     mocks.authorize.mockResolvedValue({ allowed: false, reason: 'not_due' });
     await processPushJob(job);
-    expect(mocks.failed).toHaveBeenCalledWith(job.id, 'notification_not_due');
+    expect(mocks.failed).toHaveBeenCalledWith(PUSH_OUTBOX_KEY, 'notification_not_due');
     expect(mocks.deliveryFailed).not.toHaveBeenCalled();
     expect(mocks.send).not.toHaveBeenCalled();
   });

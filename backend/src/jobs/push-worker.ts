@@ -20,6 +20,7 @@
 import { db } from '../db.js';
 import { sendPushNotification } from '../services/PushNotificationService.js';
 import { markOutboxEventProcessed, markOutboxEventFailed } from './outbox-worker.js';
+import { requireOutboxDurableKey } from './OutboxIdentity.js';
 import { workerLogger } from '../logger.js';
 import type { Job } from 'bullmq';
 import {
@@ -46,6 +47,7 @@ interface PushJobData {
     title: string;
     body: string;
     data?: Record<string, string>;
+    _outbox_key: string;
   };
 }
 
@@ -61,7 +63,7 @@ interface PushJobData {
  */
 export async function processPushJob(job: Job<PushJobData>): Promise<void> {
   const { notificationId, userId, title, body, data } = job.data.payload;
-  const idempotencyKey = job.id || `push:${notificationId}`;
+  const idempotencyKey = requireOutboxDurableKey(job.id, job.data.payload._outbox_key);
 
   try {
     // Structured log: job started

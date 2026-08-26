@@ -45,6 +45,12 @@ vi.mock('../../src/logger', () => ({
     debug: vi.fn(),
   },
   escrowLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
+  taskLogger: {
+    child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() }),
+  },
+  aiLogger: {
+    child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() }),
+  },
   stripeLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 
@@ -60,14 +66,20 @@ vi.mock('../../src/services/ComplianceGuardianService', () => ({
   ComplianceGuardianService: { evaluate: controlledMocks.compliance },
 }));
 
-vi.mock('../../src/services/TaskRiskClassifier', () => ({
-  TaskRiskClassifier: {
-    classifyWithTemplate: controlledMocks.classifyRisk,
-    toLegacyRiskLevel: controlledMocks.legacyRisk,
-  },
-}));
+vi.mock('../../src/services/TaskRiskClassifier', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/services/TaskRiskClassifier')>();
+  return {
+    ...actual,
+    TaskRiskClassifier: {
+      ...actual.TaskRiskClassifier,
+      classifyWithTemplate: controlledMocks.classifyRisk,
+      toLegacyRiskLevel: controlledMocks.legacyRisk,
+    },
+  };
+});
 
-vi.mock('../../src/services/TaskTemplateRegistry', () => ({
+vi.mock('../../src/services/TaskTemplateRegistry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/TaskTemplateRegistry')>()),
   isCareContent: controlledMocks.careContent,
 }));
 

@@ -13,7 +13,28 @@ const identity: BuildIdentity = {
   built_at: '2026-07-22T10:23:48.000Z',
   environment: 'production',
   clean_source: true,
-  source: 'test',
+  source: 'release-provenance',
+  source_tree: '1'.repeat(40),
+  source_archive_sha256: '2'.repeat(64),
+  migration_artifact_sha256: '3'.repeat(64),
+  provenance_sha256: '4'.repeat(64),
+};
+
+const databaseAdmission = {
+  migrationCount: 116,
+  schemaVersion: '1.0.0',
+  invariantTriggerCount: 14,
+  acceptanceTriggerCount: 9,
+  pinnedFunctionCount: 22,
+  frozenTableCount: 6,
+  databaseIdentitySha256: '5'.repeat(64),
+  migrationLedgerSha256: '6'.repeat(64),
+  migrationArtifactSha256: '3'.repeat(64),
+};
+const taskLocationCrypto = {
+  configured: true as const,
+  currentKeyId: 'location-production-v1',
+  decryptionKeyCount: 2,
 };
 
 const handles: WorkerHealthServer[] = [];
@@ -23,6 +44,9 @@ async function create(options: Parameters<typeof startWorkerHealthServer>[0] = {
     host: '127.0.0.1',
     port: 0,
     identity,
+    databaseAdmission,
+    runtimeEnvironment: 'production',
+    taskLocationCrypto,
     ...options,
   });
   handles.push(handle);
@@ -57,6 +81,9 @@ describe('worker deployment health server', () => {
       state: 'ready',
       ready: true,
       build: identity,
+      runtime: { environment: 'production', role: 'worker' },
+      databaseAdmission,
+      taskLocationCrypto,
     });
   });
 
@@ -70,6 +97,32 @@ describe('worker deployment health server', () => {
     const response = await fetch(`${url}/health`);
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({ state: 'ready', ready: false });
+  });
+
+  it('fails closed when production database admission is absent', async () => {
+    const { handle, url } = await create({
+      production: true,
+      databaseAdmission: undefined,
+      trustedIdentity: () => true,
+    });
+    handle.markReady();
+
+    const response = await fetch(`${url}/health`);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ ready: false, databaseAdmission: null });
+  });
+
+  it('fails closed when production location crypto admission is absent', async () => {
+    const { handle, url } = await create({
+      production: true,
+      taskLocationCrypto: undefined,
+      trustedIdentity: () => true,
+    });
+    handle.markReady();
+
+    const response = await fetch(`${url}/health`);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ ready: false, taskLocationCrypto: null });
   });
 
   it('withdraws readiness before graceful shutdown', async () => {

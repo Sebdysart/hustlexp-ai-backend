@@ -15,6 +15,10 @@ import { ControlledTestDurationEvidenceService } from '../services/ControlledTes
 import { ControlledTestProviderCapabilityService } from '../services/ControlledTestProviderCapabilityService.js';
 import { notifyPaymentReleased } from '../lib/task-lifecycle-notifications.js';
 import { ErrorCodes } from '../types.js';
+import {
+  newPaymentCreationFailure,
+  paymentCreationErrorCause,
+} from '../services/NewPaymentCreationGuard.js';
 
 const idempotencyKey = z
   .string()
@@ -34,6 +38,16 @@ function throwServiceError(error: { code: string; message: string }): never {
           ? 'BAD_REQUEST'
           : 'PRECONDITION_FAILED';
   throw new TRPCError({ code, message: error.message });
+}
+
+function requireSettlementCreation(): void {
+  const frozen = newPaymentCreationFailure('settlement_transfer');
+  if (!frozen) return;
+  throw new TRPCError({
+    code: 'PRECONDITION_FAILED',
+    message: frozen.error.message,
+    cause: paymentCreationErrorCause(frozen.error.code),
+  });
 }
 
 /** Admin-gated engine lifecycle and automation scheduler contracts. */
@@ -158,6 +172,7 @@ export const automationRouter = router({
       idempotencyKey,
     }))
     .mutation(async ({ input }) => {
+      requireSettlementCreation();
       const context = await db.query<{
         task_id: string;
         worker_id: string | null;

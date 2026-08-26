@@ -2,7 +2,8 @@
  * Web Leads & Surveys Router
  *
  * Replaces Supabase edge functions: lead-submit, survey-submit
- * Public endpoints — no Firebase auth required, rate-limited via middleware.
+ * Public acquisition endpoints only — no administrative reads or writes.
+ * Operator workflows are owned by authenticated webOps procedures.
  */
 
 import { z } from 'zod';
@@ -172,106 +173,4 @@ export const webLeadsRouter = router({
     .input(SurveySchema)
     .mutation(handleSubmitSurvey),
 
-  // ── Admin reads ─────────────────────────────────────────────────────────────
-
-  listLeads: publicProcedure
-    .input(z.object({
-      adminKey: z.string(),
-      status: z.string().optional(),
-      leadType: z.string().optional(),
-      limit: z.number().min(1).max(200).default(50),
-      offset: z.number().min(0).default(0),
-    }))
-    .query(async ({ input }) => {
-      if (input.adminKey !== process.env.OPS_ADMIN_KEY) {
-        throw new TRPCError({ code: 'FORBIDDEN', message: 'Invalid admin key' });
-      }
-
-      const conditions: string[] = [];
-      const params: unknown[] = [];
-
-      if (input.status) { conditions.push(`status = $${params.push(input.status)}`); }
-      if (input.leadType) { conditions.push(`lead_type = $${params.push(input.leadType)}`); }
-
-      const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-      params.push(input.limit, input.offset);
-
-      const result = await db.query(
-        `SELECT id, submission_id, lead_type, email, name, phone, region, zip,
-                answers, utm, status, notes, assigned_to, source,
-                created_at, updated_at, status_changed_at
-         FROM leads ${where}
-         ORDER BY created_at DESC
-         LIMIT $${params.length - 1} OFFSET $${params.length}`,
-        params
-      );
-
-      const count = await db.query<{ total: string }>(
-        `SELECT COUNT(*)::text AS total FROM leads ${where}`,
-        params.slice(0, -2)
-      );
-
-      return { ok: true, leads: result.rows, total: parseInt(count.rows[0]?.total ?? '0', 10) };
-    }),
-
-  updateLead: publicProcedure
-    .input(z.object({
-      adminKey: z.string(),
-      id: z.string().uuid(),
-      status: z.string().optional(),
-      notes: z.string().optional(),
-      assigned_to: z.string().optional(),
-    }))
-    .mutation(async ({ input }) => {
-      if (input.adminKey !== process.env.OPS_ADMIN_KEY) {
-        throw new TRPCError({ code: 'FORBIDDEN', message: 'Invalid admin key' });
-      }
-
-      const sets: string[] = ['updated_at = now()'];
-      const params: unknown[] = [];
-
-      if (input.status !== undefined) {
-        sets.push(`status = $${params.push(input.status)}`);
-        sets.push(`status_changed_at = now()`);
-      }
-      if (input.notes !== undefined) sets.push(`notes = $${params.push(input.notes)}`);
-      if (input.assigned_to !== undefined) sets.push(`assigned_to = $${params.push(input.assigned_to)}`);
-
-      params.push(input.id);
-      await db.query(
-        `UPDATE leads SET ${sets.join(', ')} WHERE id = $${params.length}`,
-        params
-      );
-
-      return { ok: true };
-    }),
-
-  getSurveyStats: publicProcedure
-    .input(z.object({ adminKey: z.string() }))
-    .query(async ({ input }) => {
-      if (input.adminKey !== process.env.OPS_ADMIN_KEY) {
-        throw new TRPCError({ code: 'FORBIDDEN', message: 'Invalid admin key' });
-      }
-
-      const result = await db.query<{
-        native_1h: string; native_24h: string; native_7d: string; queue_depth: string;
-      }>(`
-        SELECT
-          COUNT(*) FILTER (WHERE created_at > now() - interval '1 hour')::text  AS native_1h,
-          COUNT(*) FILTER (WHERE created_at > now() - interval '24 hours')::text AS native_24h,
-          COUNT(*) FILTER (WHERE created_at > now() - interval '7 days')::text   AS native_7d,
-          COUNT(*) FILTER (WHERE status = 'new')::text                           AS queue_depth
-        FROM surveys
-      `);
-
-      const r = result.rows[0];
-      return {
-        native_1h:   parseInt(r?.native_1h  ?? '0', 10),
-        native_24h:  parseInt(r?.native_24h ?? '0', 10),
-        native_7d:   parseInt(r?.native_7d  ?? '0', 10),
-        tally_24h:   0,
-        queue_depth: parseInt(r?.queue_depth ?? '0', 10),
-        fetchedAt:   new Date().toISOString(),
-      };
-    }),
 });

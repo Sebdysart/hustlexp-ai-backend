@@ -2,6 +2,10 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { HustlerWalletService } from '../services/HustlerWalletService.js';
 import { LocalCertificationPayoutProvider } from '../services/LocalCertificationPayoutProvider.js';
+import {
+  newPaymentCreationFailure,
+  paymentCreationErrorCause,
+} from '../services/NewPaymentCreationGuard.js';
 import { hustlerProcedure, router } from '../trpc.js';
 
 const amountSchema = z.number().int().positive().max(100_000_000);
@@ -62,6 +66,14 @@ export const hustlerWalletRouter = router({
       idempotencyKey: z.string().min(8).max(200),
     }))
     .mutation(async ({ ctx, input }) => {
+      const frozen = newPaymentCreationFailure('cash_out_payout');
+      if (frozen) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: frozen.error.message,
+          cause: paymentCreationErrorCause(frozen.error.code),
+        });
+      }
       const result = await HustlerWalletService.requestCashOut({
         workerId: ctx.user.id,
         amountCents: input.amountCents,
