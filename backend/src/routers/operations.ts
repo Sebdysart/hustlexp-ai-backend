@@ -7,8 +7,6 @@ import {
   operationsPriorityClasses,
 } from '../services/OperationsExceptionService.js';
 
-import { getOpsLiquidityPayload } from '../services/OpsLiquidityService.js';
-
 const clusterKey = z.string().min(3).max(240);
 const idempotencyKey = z.string().uuid();
 
@@ -35,13 +33,6 @@ export const operationsRouter = router({
       );
       if (!detail) throw new TRPCError({ code: 'NOT_FOUND', message: 'AI observation not found.' });
       return detail;
-    }),
-
-  getLiquidity: operationsAdminProcedure
-    .input(z.object({}).optional())
-    .query(async () => {
-      const payload = await getOpsLiquidityPayload();
-      return { ok: true, ...payload };
     }),
 
   listExceptions: operationsAdminProcedure

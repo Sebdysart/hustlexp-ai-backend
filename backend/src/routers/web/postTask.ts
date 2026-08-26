@@ -203,16 +203,17 @@ async function handlePostTask({
             replayed: false,
         };
     });
-    /* const quote = await QuoteGenerationService.generateForDraft(
+    const quote = await QuoteGenerationService.generateForDraft(
     result.taskDraftId,
     {
         executionEnvironment: 'TEST',
         record: true,
     },
-    ); */
+    );
     return {
         ok: true,
         ...result,
+        quote,
         correlation_id: correlationId,
     };
     } catch (error) {

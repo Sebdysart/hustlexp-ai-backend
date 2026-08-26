@@ -14,8 +14,6 @@ export interface ReleaseTaskRow {
   worker_id: string | null;
   payout_recipient_user_id: string | null;
   provider_organization_id: string | null;
-  business_fulfiller_organization_id: string | null;
-  orchestration_mode: string | null;
   price: number;
   payment_method: string | null;
   poster_id: string | null;
@@ -30,8 +28,7 @@ export type ReleasePayoutProvider =
   | 'MANUAL_RECONCILIATION';
 
 export interface ReleasePost {
-  workerId: string | null;
-  businessFulfillerOrganizationId: string | null;
+  workerId: string;
   payoutRecipientUserId: string;
   serviceBusinessProvider: boolean;
   grossPayoutCents: number;

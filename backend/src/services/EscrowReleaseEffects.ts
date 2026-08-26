@@ -63,95 +63,44 @@ async function recordPlatformFee(
   }
 }
 
-async function recordInsurance(
-  escrowId: string,
-  post: ReleasePost,
-): Promise<void> {
-  if (!post.workerId) return;
-
+async function recordInsurance(escrowId:string,post:ReleasePost):Promise<void> {
   try {
     await SelfInsurancePoolService.recordContribution(
-      post.taskId,
-      post.workerId,
-      post.insuranceContributionCents,
+      post.taskId,post.workerId,post.insuranceContributionCents,
     );
-  } catch (error) {
-    escrowLogger.warn(
-      {
-        err: error instanceof Error ? error.message : String(error),
-        workerId: post.workerId,
-        escrowId,
-      },
-      'Failed to record self-insurance contribution — escrow release proceeds',
-    );
+  } catch(error) {
+    escrowLogger.warn({ err:error instanceof Error ? error.message : String(error),workerId:post.workerId,escrowId },
+      'Failed to record self-insurance contribution — escrow release proceeds');
   }
 }
 
-async function recordEarnings(
-  post: ReleasePost,
-  escrowId: string,
-): Promise<void> {
-  if (!post.workerId) return;
+async function recordEarnings(post:ReleasePost,escrowId:string):Promise<void> {
   if (post.serviceBusinessProvider) return;
-
   await EarnedVerificationUnlockService.recordEarnings(
-    post.workerId,
-    post.taskId,
-    escrowId,
-    post.netPayoutCents,
+    post.workerId,post.taskId,escrowId,post.netPayoutCents,
   );
 }
 
-async function recordOfflineTax(
-  post: ReleasePost,
-): Promise<void> {
-  if (!post.workerId) return;
-
-  if (
-    !['offline_cash', 'offline_venmo', 'offline_cashapp']
-      .includes(post.paymentMethod)
-  ) {
-    return;
-  }
-
+async function recordOfflineTax(post:ReleasePost):Promise<void> {
+  if (!['offline_cash','offline_venmo','offline_cashapp'].includes(post.paymentMethod)) return;
   await XPTaxService.recordOfflinePayment(
-    post.workerId,
-    post.taskId,
-    post.paymentMethod as
-      | 'offline_cash'
-      | 'offline_venmo'
-      | 'offline_cashapp',
+    post.workerId,post.taskId,
+    post.paymentMethod as 'offline_cash'|'offline_venmo'|'offline_cashapp',
     post.grossPayoutCents,
   );
 }
 
-async function awardXp(
-  post: ReleasePost,
-  escrowId: string,
-): Promise<void> {
-  if (!post.workerId) return;
-
+async function awardXp(post:ReleasePost,escrowId:string):Promise<void> {
   try {
     await XPService.awardXP({
-      userId: post.workerId,
-      taskId: post.taskId,
-      escrowId,
-      baseXP: Math.round(post.grossPayoutCents / 10),
+      userId:post.workerId,taskId:post.taskId,escrowId,
+      baseXP:Math.round(post.grossPayoutCents/10),
     });
-  } catch (error) {
-    const taxBlocked =
-      error instanceof Error
-      && error.message.includes('XP-TAX-BLOCK');
-
+  } catch(error) {
+    const taxBlocked=error instanceof Error && error.message.includes('XP-TAX-BLOCK');
     escrowLogger.warn(
-      {
-        err: error instanceof Error ? error.message : String(error),
-        workerId: post.workerId,
-        escrowId,
-      },
-      taxBlocked
-        ? 'XP blocked by tax trigger'
-        : 'Auto-award XP failed after escrow release — worker can retry via escrow.awardXP',
+      { err:error instanceof Error ? error.message : String(error),workerId:post.workerId,escrowId },
+      taxBlocked ? 'XP blocked by tax trigger' : 'Auto-award XP failed after escrow release — worker can retry via escrow.awardXP',
     );
   }
 }

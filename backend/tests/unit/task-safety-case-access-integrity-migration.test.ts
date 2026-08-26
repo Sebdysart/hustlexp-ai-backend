@@ -3,7 +3,9 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const read = (path: string) => readFileSync(resolve(process.cwd(), path), 'utf8');
-const MIGRATION = read('backend/database/migrations/20260720_task_safety_case_access_integrity.sql');
+const MIGRATION = read(
+  'backend/database/migrations/20260720_task_safety_case_access_integrity.sql'
+);
 const RUNNER = [
   read('backend/src/jobs/engine-automation-migration.ts'),
   read('backend/src/jobs/engine-automation-migration-files.ts'),
@@ -33,7 +35,7 @@ describe('task safety case-access integrity migration', () => {
     expect(RUNNER).toContain("'20260720_task_safety_case_access_integrity'");
     expect(RUNNER).toContain("fileName: '20260720_task_safety_case_access_integrity.sql'");
     expect(DOCKERFILE).toContain(
-      '/app/backend/database/migrations/20260720_task_safety_case_access_integrity.sql',
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
     );
   });
 });

@@ -15,6 +15,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 // ============================================================================
 // ALL vi.mock CALLS MUST BE BEFORE ANY IMPORTS
@@ -137,6 +138,7 @@ beforeEach(() => {
   // bleed across tests when a previous test fails before consuming all its
   // queued mockResolvedValueOnce / mockRejectedValueOnce responses.
   vi.resetAllMocks();
+  enableControlledStripePaymentTestCohortV7();
   // Re-apply default implementations that were wiped by resetAllMocks.
   vi.mocked(isInvariantViolation).mockReturnValue(false);
   // isEligible is the default for feed tests — all tasks eligible unless overridden.
@@ -149,6 +151,10 @@ beforeEach(() => {
     success: true,
     data: { observationId: '11111111-1111-4111-8111-111111111111' },
   });
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 // ============================================================================
@@ -1265,6 +1271,7 @@ describe('XPTaxService.payTax', () => {
   it('returns XP_TAX_PAYMENT_UNAVAILABLE when Stripe is not configured (FIX 4)', async () => {
     // FIX 4: payTax hard-blocks when Stripe is not configured (no dev-mode bypass)
     vi.mocked(mockStripe.isConfigured).mockReturnValueOnce(false);
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
     const result = await XPTaxService.payTax('user-1', 'pi_test_123');
 

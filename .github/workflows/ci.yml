@@ -60,9 +60,6 @@ jobs:
     needs: typecheck
     env:
       NODE_ENV: test
-      DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
-      UPSTASH_REDIS_REST_URL: ${{ secrets.TEST_UPSTASH_REDIS_REST_URL }}
-      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.TEST_UPSTASH_REDIS_REST_TOKEN }}
       FIREBASE_PROJECT_ID: test-project
     steps:
       - uses: actions/checkout@v4
@@ -72,6 +69,10 @@ jobs:
           cache: npm
       - run: npm ci
       - name: "Tests — zero failures"
+        env:
+          DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.TEST_UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.TEST_UPSTASH_REDIS_REST_TOKEN }}
         run: npx vitest run --reporter=verbose
         timeout-minutes: 10
       - name: Production role readiness contract
@@ -96,6 +97,20 @@ jobs:
     name: Build Validation
     runs-on: ubuntu-latest
     needs: [typecheck, test]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: hx_ci_runner
+          POSTGRES_PASSWORD: hx_ci_password
+          POSTGRES_DB: hx_ci_admin_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hx_ci_runner -d hx_ci_admin_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -105,3 +120,26 @@ jobs:
       - run: npm ci
       - name: Validate build compiles cleanly
         run: npm run compile
+      - name: Execute fresh, upgrade, replay, and recovery migrations on PostgreSQL
+        env:
+          DATABASE_URL: postgresql://hx_ci_runner:hx_ci_password@127.0.0.1:5432/hx_ci_admin_test
+          TASK_LOCATION_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+          TASK_LOCATION_ENCRYPTION_KEY_ID: hx-ci-location-v1
+        run: node scripts/verify-engine-migrations-postgres.mjs
+      - name: Build production container
+        env:
+          IMAGE_TAG: hustlexp-backend-ci:${{ github.sha }}
+        run: |
+          docker build \
+            --build-arg GITHUB_SHA="${GITHUB_SHA}" \
+            --tag "${IMAGE_TAG}" \
+            .
+      - name: Verify exact production image migration artifact
+        env:
+          IMAGE_TAG: hustlexp-backend-ci:${{ github.sha }}
+        run: |
+          expected_digest="$(tr -d '[:space:]' < backend/database/engine-migration-artifact.sha256)"
+          source_digest="$(node dist/backend/src/jobs/engine-migration-manifest.js)"
+          image_digest="$(docker run --rm --entrypoint node "${IMAGE_TAG}" dist/backend/src/jobs/engine-migration-manifest.js)"
+          test "$source_digest" = "$expected_digest"
+          test "$image_digest" = "$expected_digest"

@@ -62,31 +62,6 @@ start: hustlerProcedure
       await invalidateTask(input.taskId);
       return result.data;
     }),
-startManualBusiness: protectedProcedure
-  .input(z.object({ taskId: Schemas.uuid }))
-  .mutation(async ({ ctx, input }) => {
-    const result = await TaskService.startManualBusinessWork(
-      input.taskId,
-      ctx.user.id,
-    );
-
-    if (!result.success) {
-      const code =
-        result.error.code === ErrorCodes.NOT_FOUND
-          ? 'NOT_FOUND'
-          : result.error.code === ErrorCodes.FORBIDDEN
-            ? 'FORBIDDEN'
-            : 'PRECONDITION_FAILED';
-
-      throw new TRPCError({
-        code,
-        message: result.error.message,
-      });
-    }
-
-    await invalidateTask(input.taskId);
-    return result.data;
-  }),    
 getProof: protectedProcedure
     .input(z.object({ taskId: z.string().uuid() }))
     .query(async ({ ctx, input }) => {
@@ -203,63 +178,12 @@ submitProof: hustlerProcedure
       // but verifying here at the router boundary avoids hitting ProofService
       // at all for non-assigned workers, and makes the authorization boundary
       // explicit at the procedure layer.
-      const taskOwnership = await db.query<{
-        worker_id: string | null;
-        orchestration_mode: 'AUTOMATED' | 'OPS_MANUAL';
-        business_fulfiller_organization_id: string | null;
-      }>(
-        `
-        SELECT
-          worker_id,
-          orchestration_mode,
-          business_fulfiller_organization_id
-        FROM tasks
-        WHERE id = $1
-        `,
-        [input.taskId],
+      const taskOwnership = await db.query<{ worker_id: string | null }>(
+        'SELECT worker_id FROM tasks WHERE id = $1',
+        [input.taskId]
       );
-
-      const task = taskOwnership.rows[0];
-
-      if (!task) {
-        throw new TRPCError({
-          code: 'NOT_FOUND',
-          message: 'Task not found',
-        });
-      }
-
-      if (task.orchestration_mode === 'OPS_MANUAL') {
-        if (!task.business_fulfiller_organization_id) {
-          throw new TRPCError({
-            code: 'PRECONDITION_FAILED',
-            message: 'Manual task has no Business fulfiller.',
-          });
-        }
-
-        const membership = await db.query<{ id: string }>(
-          `
-          SELECT id
-          FROM business_memberships
-          WHERE organization_id = $1
-            AND user_id = $2
-            AND status = 'ACTIVE'
-            AND role = 'OWNER'
-          LIMIT 1
-          `,
-          [task.business_fulfiller_organization_id, ctx.user.id],
-        );
-
-        if (!membership.rows[0]) {
-          throw new TRPCError({
-            code: 'FORBIDDEN',
-            message: 'Only an authorized member of the fulfilling Business can submit proof.',
-          });
-        }
-      } else if (task.worker_id !== ctx.user.id) {
-        throw new TRPCError({
-          code: 'FORBIDDEN',
-          message: 'Only the assigned worker can submit proof.',
-        });
+      if (!taskOwnership.rows[0] || taskOwnership.rows[0].worker_id !== ctx.user.id) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the assigned worker can submit proof' });
       }
 
       const { proofResult, taskResult } = await db.transaction(async (query) => {

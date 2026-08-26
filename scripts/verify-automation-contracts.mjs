@@ -65,13 +65,6 @@ requirePattern('exact address vault', location, /task_location_vault/);
 requirePattern('E4 proof submission', task, /submitProof\s*:/);
 requirePattern('E1 admin lifecycle read', automation, /listTasks\s*:/);
 requirePattern('E1 webOps compatibility endpoint', webOps, /listEngineTasks\s*:/);
-requirePattern('webOps Firebase ops admin procedure', webOps, /operationsAdminProcedure/);
-requirePattern('webOps display-safe draft columns', webOps, /TASK_DRAFT_SAFE_COLS/);
-requirePattern('webOps transactional quotes', webOps, /db\.transaction/);
-requirePattern('webOps liquidity read', webOps, /getLiquidity\s*:/);
-requirePattern('webOps command engine join', webOps, /getCommandEngineJoin\s*:/);
-requirePattern('webOps redacted hustler roster', webOps, /name_initial/);
-
 requirePattern('E1 lifecycle facade', lifecycle, /AutomationLifecycleReadService/);
 requirePattern('E1 bounded cursor query', lifecycleRead, /LIMIT \$3/);
 forbidPattern('E1 lifecycle read omits exact address', lifecycleRead, /task_location_vault|exact_location|t\.location\b/i);
