@@ -88,6 +88,16 @@ export const config = {
       region: process.env.R2_REGION || process.env.AWS_DEFAULT_REGION || 'auto',
     },
   },
+  
+  backblaze: {
+    b2: {
+      endpoint: process.env.B2_ENDPOINT || '',
+      region: process.env.B2_REGION || '',
+      keyId: process.env.B2_KEY_ID || '',
+      applicationKey: process.env.B2_APPLICATION_KEY || '',
+      bucketName: process.env.B2_BUCKET_NAME || '',
+    },
+  },
 
   // Maps & Geocoding (Google Maps Platform)
   googleMaps: {
@@ -386,3 +396,4 @@ export function validateConfig(): { valid: boolean; errors: string[]; warnings: 
 }
 
 export default config;
+

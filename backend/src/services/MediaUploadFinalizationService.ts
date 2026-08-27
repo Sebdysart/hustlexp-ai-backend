@@ -2,7 +2,7 @@ import { TRPCError } from '@trpc/server';
 import { createHash } from 'node:crypto';
 import { db } from '../db.js';
 import { logger } from '../logger.js';
-import { r2 } from '../storage/r2.js';
+import { backblazeB2 } from '../storage/backblaze-b2.js';
 import {
   MAX_MEDIA_UPLOAD_BYTES,
   MediaSanitizationError,
@@ -47,9 +47,9 @@ export interface FinalizedMediaEvidence {
 }
 
 interface MediaStorage {
-  downloadFile: typeof r2.downloadFile;
-  uploadFile: typeof r2.uploadFile;
-  deleteFile: typeof r2.deleteFile;
+  downloadFile: typeof backblazeB2.downloadFile;
+  uploadFile: typeof backblazeB2.uploadFile;
+  deleteFile: typeof backblazeB2.deleteFile;
 }
 
 const CANONICAL_EXTENSION: Record<SanitizedImageContentType, 'jpg' | 'png' | 'webp'> = {
@@ -226,7 +226,7 @@ export async function finalizeMediaUpload(
     uploaderId: string;
     purpose: MediaUploadPurpose;
   },
-  storage: MediaStorage = r2,
+  storage: MediaStorage = backblazeB2,
 ): Promise<FinalizedMediaEvidence> {
   const receipt = await db.query<MediaUploadReceiptRow>(
     `SELECT * FROM media_upload_receipts WHERE id=$1`,
@@ -354,8 +354,8 @@ export async function expireMediaUploadReceipts(limit = 100): Promise<{
   let failed = 0;
   for (const row of due.rows) {
     try {
-      await r2.deleteFile(row.quarantine_key);
-      if (row.canonical_key) await r2.deleteFile(row.canonical_key);
+      await backblazeB2.deleteFile(row.quarantine_key);
+      if (row.canonical_key) await backblazeB2.deleteFile(row.canonical_key);
       const updated = await db.query(
         `UPDATE media_upload_receipts
             SET status='EXPIRED',
@@ -384,3 +384,4 @@ export async function expireMediaUploadReceipts(limit = 100): Promise<{
   }
   return { expired, failed };
 }
+

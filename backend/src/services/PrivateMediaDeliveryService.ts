@@ -1,6 +1,6 @@
 import { db, type QueryFn } from '../db.js';
 import { logger } from '../logger.js';
-import { r2 } from '../storage/r2.js';
+import { backblazeB2 } from '../storage/backblaze-b2.js';
 import type { ProofPhoto } from '../types.js';
 import type { TaskMessage } from './MessagingTypes.js';
 
@@ -363,7 +363,7 @@ export async function issueParticipantMediaAccess(
   if (params.references.length > 300) throw new Error('Private media request exceeds the bounded batch size.');
 
   const query = dependencies.query ?? db.query;
-  const signObject = dependencies.signObject ?? r2.getSignedUrlForObject;
+  const signObject = dependencies.signObject ?? backblazeB2.getSignedUrlForObject;
   const now = dependencies.now ?? (() => new Date());
   const authorized = await loadAuthorizedReceipts(query, params);
   const signed: SignedReceipt[] = [];
@@ -421,7 +421,7 @@ export async function issueSystemMediaAccess(
   if (params.references.length > 100) throw new Error('System media request exceeds the bounded batch size.');
 
   const query = dependencies.query ?? db.query;
-  const signObject = dependencies.signObject ?? r2.getSignedUrlForObject;
+  const signObject = dependencies.signObject ?? backblazeB2.getSignedUrlForObject;
   const now = dependencies.now ?? (() => new Date());
   const authorized = await loadAuthorizedSystemReceipts(query, params);
   const signed: SignedReceipt[] = [];
@@ -485,7 +485,7 @@ export async function issueAdminModerationMediaAccess(
   if (params.references.length === 0) return new Map();
   if (params.references.length > 100) throw new Error('Moderation media request exceeds the bounded batch size.');
   const query = dependencies.query ?? db.query;
-  const signObject = dependencies.signObject ?? r2.getSignedUrlForObject;
+  const signObject = dependencies.signObject ?? backblazeB2.getSignedUrlForObject;
   const now = dependencies.now ?? (() => new Date());
   const authorized = await loadAuthorizedAdminReceipts(query, params.adminId, params.references);
   const signed: SignedReceipt[] = [];
@@ -670,3 +670,4 @@ export async function issueSingleParticipantMediaAccess(params: {
   }, dependencies);
   return delivered.get(referenceIdentity(reference)) ?? null;
 }
+

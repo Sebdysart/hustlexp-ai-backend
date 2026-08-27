@@ -538,10 +538,6 @@ export async function finalizePaidQuote(
     }
     // Business quote payment is the Business's commitment to perform.
     // Once the customer has funded the escrow, move the Business task into execution.
-    //
-    // This is intentionally state-aware rather than replay-aware because a previous
-    // finalization attempt may have already funded the escrow but failed before the
-    // Business task was accepted.
     const accepted = await db.query<{ id: string }>(
       `
       UPDATE tasks
@@ -556,6 +552,7 @@ export async function finalizePaidQuote(
         AND state = 'OPEN'
         AND business_fulfiller_organization_id IS NOT NULL
         AND worker_id IS NULL
+        AND orchestration_mode = 'OPS_MANUAL'
       RETURNING id
       `,
       [materialized.taskId],
@@ -571,12 +568,11 @@ export async function finalizePaidQuote(
         [materialized.taskId],
       );
 
-      const state = currentTask.rows[0]?.state;
-
-      if (state !== 'ACCEPTED') {
+      if (currentTask.rows[0]?.state !== 'ACCEPTED') {
         throw new Error('BUSINESS_TASK_ACCEPT_FAILED');
       }
     }
+
     /*
      * Step 4:
      * Finalize the payment/quote state.
@@ -715,3 +711,4 @@ export async function finalizePaidQuote(
     );
   }
 }
+
