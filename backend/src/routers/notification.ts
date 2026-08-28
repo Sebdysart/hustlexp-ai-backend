@@ -1,0 +1,438 @@
+/**
+ * Notification Router v1.0.0
+ * 
+ * CONSTITUTIONAL: PRODUCT_SPEC §11, NOTIFICATION_SPEC.md
+ * 
+ * Endpoints for notification system (priority tiers, quiet hours, preferences).
+ * 
+ * @see backend/src/services/NotificationService.ts
+ */
+
+import { TRPCError } from '@trpc/server';
+import { z } from 'zod';
+import { router, protectedProcedure, platformAdminProcedure, Schemas } from '../trpc.js';
+import { NotificationService } from '../services/NotificationService.js';
+import { sendPushNotification } from '../services/PushNotificationService.js';
+import { db } from '../db.js';
+
+export const DEVICE_TOKEN_CAP = 10;
+
+export const notificationRouter = router({
+  // --------------------------------------------------------------------------
+  // READ OPERATIONS
+  // --------------------------------------------------------------------------
+  
+  /**
+   * Get notifications for user (with pagination)
+   * 
+   * PRODUCT_SPEC §11: Notification System
+   */
+  getList: protectedProcedure
+    .input(z.object({
+      limit: z.number().int().min(1).max(100).default(50),
+      offset: z.number().int().min(0).max(500).default(0),
+      unreadOnly: z.boolean().default(false),
+    }))
+    .query(async ({ input, ctx }) => {
+      if (!ctx.user) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required',
+        });
+      }
+      
+      const result = await NotificationService.getUserNotifications(
+        ctx.user.id,
+        input.limit,
+        input.offset,
+        input.unreadOnly
+      );
+      
+      if (!result.success) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+      
+      return result.data;
+    }),
+  
+  /**
+   * Get unread notification count
+   */
+  getUnreadCount: protectedProcedure
+    .input(z.void())
+    .query(async ({ ctx }) => {
+      if (!ctx.user) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required',
+        });
+      }
+      
+      const result = await NotificationService.getUnreadCount(ctx.user.id);
+      
+      if (!result.success) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+      
+      return { count: result.data };
+    }),
+  
+  /**
+   * Get notification by ID
+   */
+  getById: protectedProcedure
+    .input(z.object({
+      notificationId: Schemas.uuid,
+    }))
+    .query(async ({ input, ctx }) => {
+      if (!ctx.user) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required',
+        });
+      }
+      
+      const result = await NotificationService.getNotificationById(
+        input.notificationId,
+        ctx.user.id
+      );
+      
+      if (!result.success) {
+        throw new TRPCError({
+          code: result.error.code === 'NOT_FOUND' || result.error.code === 'FORBIDDEN'
+            ? result.error.code
+            : 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+      
+      return result.data;
+    }),
+  
+  // --------------------------------------------------------------------------
+  // UPDATE OPERATIONS
+  // --------------------------------------------------------------------------
+  
+  /**
+   * Mark notification as read
+   */
+  markAsRead: protectedProcedure
+    .input(z.object({
+      notificationId: Schemas.uuid,
+    }))
+    .mutation(async ({ input, ctx }) => {
+      if (!ctx.user) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required',
+        });
+      }
+      
+      const result = await NotificationService.markAsRead(
+        input.notificationId,
+        ctx.user.id
+      );
+      
+      if (!result.success) {
+        throw new TRPCError({
+          code: result.error.code === 'NOT_FOUND' || result.error.code === 'FORBIDDEN'
+            ? result.error.code
+            : 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+      
+      return result.data;
+    }),
+  
+  /**
+   * Mark all notifications as read for user
+   */
+  markAllAsRead: protectedProcedure
+    .input(z.void())
+    .mutation(async ({ ctx }) => {
+      if (!ctx.user) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required',
+        });
+      }
+      
+      const result = await NotificationService.markAllAsRead(ctx.user.id);
+      
+      if (!result.success) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+      
+      return result.data;
+    }),
+  
+  /**
+   * Mark notification as clicked (tracking)
+   */
+  markAsClicked: protectedProcedure
+    .input(z.object({
+      notificationId: Schemas.uuid,
+    }))
+    .mutation(async ({ input, ctx }) => {
+      if (!ctx.user) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required',
+        });
+      }
+      
+      const result = await NotificationService.markAsClicked(
+        input.notificationId,
+        ctx.user.id
+      );
+      
+      if (!result.success) {
+        throw new TRPCError({
+          code: result.error.code === 'NOT_FOUND' || result.error.code === 'FORBIDDEN'
+            ? result.error.code
+            : 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+      
+      return result.data;
+    }),
+  
+  // --------------------------------------------------------------------------
+  // PREFERENCES
+  // --------------------------------------------------------------------------
+  
+  /**
+   * Get notification preferences for user
+   */
+  getPreferences: protectedProcedure
+    .input(z.void())
+    .query(async ({ ctx }) => {
+      if (!ctx.user) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required',
+        });
+      }
+      
+      const result = await NotificationService.getPreferences(ctx.user.id);
+      
+      if (!result.success) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+      
+      return result.data;
+    }),
+  
+  /**
+   * Update notification preferences
+   */
+  updatePreferences: protectedProcedure
+    .input(z.object({
+      quietHoursEnabled: z.boolean().optional(),
+      quietHoursStart: z.string().regex(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$/).optional(), // TIME format: HH:MM:SS
+      quietHoursEnd: z.string().regex(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$/).optional(), // TIME format: HH:MM:SS
+      pushEnabled: z.boolean().optional(),
+      emailEnabled: z.boolean().optional(),
+      smsEnabled: z.boolean().optional(),
+      categoryPreferences: z.record(z.string().max(64), z.boolean()).superRefine((val, ctx) => {
+        if (Object.keys(val).length > 20) {
+          ctx.addIssue({ code: 'too_big', type: 'array', maximum: 20, inclusive: true, message: 'categoryPreferences must have at most 20 entries' });
+        }
+      }).optional(), // JSONB - per-category enable/disable flags (max 20 keys)
+    }))
+    .mutation(async ({ input, ctx }) => {
+      if (!ctx.user) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required',
+        });
+      }
+      
+      const result = await NotificationService.updatePreferences({
+        userId: ctx.user.id,
+        ...input,
+      });
+      
+      if (!result.success) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+      
+      return result.data;
+    }),
+
+  // --------------------------------------------------------------------------
+  // DEVICE TOKEN MANAGEMENT
+  // --------------------------------------------------------------------------
+
+  /**
+   * Register a device token for push notifications (FCM)
+   * Upserts: if the token already exists for this user, reactivates it
+   */
+  registerDeviceToken: protectedProcedure
+    .input(z.object({
+      fcmToken: z.string().min(1).max(1024),
+      deviceType: z.enum(['ios', 'android']).default('ios'),
+      deviceName: z.string().max(100).optional(),
+      appVersion: z.string().max(20).optional(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      if (!ctx.user) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required',
+        });
+      }
+
+      try {
+        // ----------------------------------------------------------------
+        // Token cap enforcement: max DEVICE_TOKEN_CAP active tokens per user.
+        // If the incoming token is already in the table this will be a no-op
+        // UPSERT, so we only need to evict when it is a genuinely new token
+        // that would push the user over the cap.
+        // ----------------------------------------------------------------
+        const existingCheck = await db.query<{ count: string }>(
+          `SELECT COUNT(*) AS count
+           FROM device_tokens
+           WHERE user_id = $1 AND is_active = true AND fcm_token != $2`,
+          [ctx.user.id, input.fcmToken]
+        );
+
+        const activeCount = parseInt(existingCheck.rows[0]?.count ?? '0', 10);
+
+        if (activeCount >= DEVICE_TOKEN_CAP) {
+          // Delete the oldest active token to make room for the new one
+          await db.query(
+            `DELETE FROM device_tokens
+             WHERE id = (
+               SELECT id FROM device_tokens
+               WHERE user_id = $1 AND is_active = true AND fcm_token != $2
+               ORDER BY created_at ASC
+               LIMIT 1
+             )`,
+            [ctx.user.id, input.fcmToken]
+          );
+        }
+
+        const result = await db.query<{
+          id: string;
+          user_id: string;
+          fcm_token: string;
+          device_type: string;
+          device_name: string | null;
+          app_version: string | null;
+          is_active: boolean;
+          created_at: Date;
+          updated_at: Date;
+        }>(
+          `INSERT INTO device_tokens (user_id, fcm_token, device_type, device_name, app_version, is_active)
+           VALUES ($1, $2, $3, $4, $5, true)
+           ON CONFLICT (user_id, fcm_token) DO UPDATE SET
+             updated_at = NOW(),
+             is_active = true,
+             device_type = EXCLUDED.device_type,
+             device_name = EXCLUDED.device_name,
+             app_version = EXCLUDED.app_version
+           RETURNING *`,
+          [
+            ctx.user.id,
+            input.fcmToken,
+            input.deviceType,
+            input.deviceName || null,
+            input.appVersion || null,
+          ]
+        );
+
+        return result.rows[0];
+      } catch (error) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: error instanceof Error ? error.message : 'Failed to register device token',
+        });
+      }
+    }),
+
+  /**
+   * Unregister a device token (deactivate, not delete)
+   */
+  unregisterDeviceToken: protectedProcedure
+    .input(z.object({
+      fcmToken: z.string().min(1).max(1024),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      if (!ctx.user) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required',
+        });
+      }
+
+      try {
+        const result = await db.query(
+          `UPDATE device_tokens
+           SET is_active = false, updated_at = NOW()
+           WHERE user_id = $1 AND fcm_token = $2
+           RETURNING id`,
+          [ctx.user.id, input.fcmToken]
+        );
+
+        if (result.rowCount === 0) {
+          throw new TRPCError({
+            code: 'NOT_FOUND',
+            message: 'Device token not found for this user',
+          });
+        }
+
+        return { success: true };
+      } catch (error) {
+        if (error instanceof TRPCError) throw error;
+
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: error instanceof Error ? error.message : 'Failed to unregister device token',
+        });
+      }
+    }),
+
+  // --------------------------------------------------------------------------
+  // ADMIN / DEBUG
+  // --------------------------------------------------------------------------
+
+  /**
+   * Send a test push notification to a user (admin-only)
+   *
+   * Used for E2E push notification verification on real devices.
+   * Calls PushNotificationService.sendPushNotification() directly.
+   */
+  sendTestPush: platformAdminProcedure
+    .input(z.object({
+      userId: Schemas.uuid,
+      title: z.string().trim().min(1).max(120).regex(/^[^\r\n]*$/, 'Title must be one line.').default('HustleXP Test Push'),
+      body: z.string().trim().min(1).max(500).regex(/^[^\r\n]*$/, 'Body must be one line.').default('If you see this, push notifications are working!'),
+    }))
+    .mutation(async ({ input }) => {
+      const result = await sendPushNotification(
+        input.userId,
+        input.title,
+        input.body,
+        { type: 'test', source: 'admin_debug' }
+      );
+      return result;
+    }),
+});

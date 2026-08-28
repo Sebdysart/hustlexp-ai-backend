@@ -1,0 +1,923 @@
+/**
+ * Stripe Connect Service v1.0.0
+ * 
+ * CONSTITUTIONAL: Worker Stripe Connect account management
+ * 
+ * Handles:
+ * - Stripe Express account creation and onboarding
+ * - Payout settings management
+ * - Tax information collection
+ * - Earnings tracking for 1099 reporting
+ * 
+ * @see PRODUCT_SPEC.md §4 (Payments)
+ */
+
+import Stripe from 'stripe';
+import { config } from '../config.js';
+import { db } from '../db.js';
+import type { ServiceResult } from '../types.js';
+import { stripeBreaker } from '../middleware/circuit-breaker.js';
+import { stripeLogger } from '../logger.js';
+import { newPaymentCreationFailure } from './NewPaymentCreationGuard.js';
+
+// ============================================================================
+// INITIALIZATION
+// ============================================================================
+
+let stripe: Stripe | null = null;
+
+if (config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder')) {
+  stripe = new Stripe(config.stripe.secretKey, {
+    apiVersion: '2025-11-17.clover',
+  });
+  stripeLogger.info('Stripe Connect initialized');
+} else {
+  stripeLogger.warn('Stripe Connect not configured (placeholder or missing key)');
+}
+
+// ============================================================================
+// TYPES
+// ============================================================================
+
+export interface OnboardingStatus {
+  isOnboarded: boolean;
+  accountId: string | null;
+  accountStatus: 'pending' | 'enabled' | 'restricted' | 'disabled' | null;
+  requirementsDue: string[];
+  requirementsCurrentlyDue: string[];
+  requirementsEventuallyDue: string[];
+  disabledReason: string | null;
+  chargesEnabled: boolean;
+  payoutsEnabled: boolean;
+  onboardingUrl: string | null;
+}
+
+export interface OnboardingLinkResult {
+  url: string;
+  expiresAt: Date;
+}
+
+export interface DashboardLinkResult {
+  url: string;
+  expiresAt: Date;
+}
+
+export interface PayoutSettings {
+  schedule: 'instant' | 'standard';
+  instantEligible: boolean;
+  instantFees: {
+    percentage: number;
+    fixedCents: number;
+  } | null;
+  standardSchedule: {
+    interval: 'daily' | 'weekly' | 'monthly' | 'manual';
+    weeklyAnchor?: string;
+    monthlyAnchor?: number;
+  };
+  defaultBankAccount: {
+    id: string;
+    last4: string;
+    bankName: string;
+  } | null;
+  defaultDebitCard: {
+    id: string;
+    last4: string;
+    brand: string;
+  } | null;
+}
+
+export interface TaxInfo {
+  formType: 'W9' | 'W8BEN' | 'W8BENE' | null;
+  status: 'not_submitted' | 'pending' | 'verified' | 'rejected';
+  submittedAt: Date | null;
+  verifiedAt: Date | null;
+  requiresUpdate: boolean;
+  taxIdLast4: string | null;
+  nameOnFile: string | null;
+  businessNameOnFile: string | null;
+}
+
+export interface TaxInfoInput {
+  formType: 'W9' | 'W8BEN' | 'W8BENE';
+  name?: string;
+  businessName?: string;
+  taxClassification?: string;
+  llcClassification?: 'C' | 'S' | 'P';
+  otherClassification?: string;
+  exemptions?: string;
+  addressLine1?: string;
+  addressLine2?: string;
+  city?: string;
+  state?: string;
+  zipCode?: string;
+  country?: string;
+  ssnLast4?: string;
+  ein?: string;
+  foreignTaxId?: string;
+  treatyCountry?: string;
+  treatyArticle?: string;
+  signature?: string;
+  signatureDate?: string;
+}
+
+export interface EarningsSummary {
+  year: number;
+  totalEarningsCents: number;
+  totalTransactions: number;
+  threshold1099K: {
+    amount: number;
+    transactions: number;
+    metAmountThreshold: boolean;
+    metTransactionThreshold: boolean;
+    willReceive1099K: boolean;
+  };
+  byMonth: {
+    month: number;
+    earningsCents: number;
+    transactions: number;
+  }[];
+  pendingEarningsCents: number;
+  availableBalanceCents: number;
+}
+
+export interface AccountDetails {
+  accountId: string;
+  accountType: 'express';
+  email: string;
+  country: string;
+  defaultCurrency: string;
+  status: {
+    onboardingComplete: boolean;
+    chargesEnabled: boolean;
+    payoutsEnabled: boolean;
+    requirementsDue: boolean;
+  };
+  capabilities: {
+    cardPayments: 'active' | 'inactive' | 'pending';
+    transfers: 'active' | 'inactive' | 'pending';
+  };
+  requirements: {
+    currentlyDue: string[];
+    eventuallyDue: string[];
+    pastDue: string[];
+    disabledReason: string | null;
+  };
+  settings: {
+    payoutSchedule: string;
+    debitCardPayoutsEnabled: boolean;
+  };
+  createdAt: Date;
+}
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+/**
+ * Get or create Stripe Connect account for user
+ */
+async function getOrCreateConnectAccount(
+  userId: string,
+  email: string,
+  fullName: string
+): Promise<ServiceResult<{ accountId: string; isNew: boolean }>> {
+  const frozen = newPaymentCreationFailure('connect_account');
+  if (frozen) return frozen;
+  // Check if user already has a connect account
+  const userResult = await db.query<{ stripe_connect_id: string | null }>(
+    'SELECT stripe_connect_id FROM users WHERE id = $1',
+    [userId]
+  );
+
+  if (userResult.rows.length === 0) {
+    return {
+      success: false,
+      error: { code: 'USER_NOT_FOUND', message: 'User not found' },
+    };
+  }
+
+  const existingAccountId = userResult.rows[0].stripe_connect_id;
+
+  // If account exists, return it
+  if (existingAccountId) {
+    return {
+      success: true,
+      data: { accountId: existingAccountId, isNew: false },
+    };
+  }
+
+  // Create new Stripe Connect Express account
+  if (!stripe) {
+    return {
+      success: false,
+      error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe is not configured' },
+    };
+  }
+
+  try {
+    const account = await stripeBreaker.execute(() =>
+      stripe!.accounts.create({
+        type: 'express',
+        email,
+        business_type: 'individual',
+        individual: {
+          first_name: fullName.split(' ')[0],
+          last_name: fullName.split(' ').slice(1).join(' ') || undefined,
+        },
+        metadata: {
+          user_id: userId,
+        },
+      })
+    );
+
+    // Save account ID to user record
+    await db.query(
+      'UPDATE users SET stripe_connect_id = $1, updated_at = NOW() WHERE id = $2',
+      [account.id, userId]
+    );
+
+    stripeLogger.info({ userId, accountId: account.id }, 'Created Stripe Connect account');
+
+    return {
+      success: true,
+      data: { accountId: account.id, isNew: true },
+    };
+  } catch (error) {
+    stripeLogger.error({ err: error, userId }, 'Failed to create Stripe Connect account');
+    return {
+      success: false,
+      error: {
+        code: 'STRIPE_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown Stripe error',
+      },
+    };
+  }
+}
+
+/**
+ * Get user's Stripe Connect account ID
+ */
+async function getConnectAccountId(userId: string): Promise<string | null> {
+  const result = await db.query<{ stripe_connect_id: string | null }>(
+    'SELECT stripe_connect_id FROM users WHERE id = $1',
+    [userId]
+  );
+  return result.rows[0]?.stripe_connect_id || null;
+}
+
+// ============================================================================
+// SERVICE
+// ============================================================================
+
+export const StripeConnectService = {
+  /**
+   * Check if Stripe is configured
+   */
+  isConfigured: (): boolean => stripe !== null,
+
+  /**
+   * Get onboarding status for a worker
+   */
+  getOnboardingStatus: async (userId: string): Promise<ServiceResult<OnboardingStatus>> => {
+    const accountId = await getConnectAccountId(userId);
+
+    if (!accountId) {
+      return {
+        success: true,
+        data: {
+          isOnboarded: false,
+          accountId: null,
+          accountStatus: null,
+          requirementsDue: [],
+          requirementsCurrentlyDue: [],
+          requirementsEventuallyDue: [],
+          disabledReason: null,
+          chargesEnabled: false,
+          payoutsEnabled: false,
+          onboardingUrl: null,
+        },
+      };
+    }
+
+    if (!stripe) {
+      return {
+        success: false,
+        error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe is not configured' },
+      };
+    }
+
+    try {
+      const account = await stripeBreaker.execute(() => stripe!.accounts.retrieve(accountId));
+
+      const requirements = account.requirements as Stripe.Account.Requirements || {};
+      const isOnboarded = account.charges_enabled && account.payouts_enabled;
+
+      return {
+        success: true,
+        data: {
+          isOnboarded,
+          accountId,
+          accountStatus: account.capabilities?.transfers === 'active' ? 'enabled' : 'restricted',
+          requirementsDue: requirements.currently_due || [],
+          requirementsCurrentlyDue: requirements.currently_due || [],
+          requirementsEventuallyDue: requirements.eventually_due || [],
+          disabledReason: requirements.disabled_reason || null,
+          chargesEnabled: account.charges_enabled,
+          payoutsEnabled: account.payouts_enabled,
+          onboardingUrl: !isOnboarded ? `/api/stripe-connect/onboard?userId=${userId}` : null,
+        },
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'STRIPE_ERROR',
+          message: error instanceof Error ? error.message : 'Unknown Stripe error',
+        },
+      };
+    }
+  },
+
+  /**
+   * Create onboarding link for worker to complete KYC
+   */
+  createOnboardingLink: async (params: {
+    userId: string;
+    email: string;
+    fullName: string;
+    refreshUrl: string;
+    returnUrl: string;
+    collectTaxInfo?: boolean;
+  }): Promise<ServiceResult<OnboardingLinkResult>> => {
+    const { userId, email, fullName, refreshUrl, returnUrl, collectTaxInfo = true } = params;
+
+    const frozen = newPaymentCreationFailure('connect_onboarding');
+    if (frozen) return frozen;
+
+    if (!stripe) {
+      return {
+        success: false,
+        error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe is not configured' },
+      };
+    }
+
+    // Get or create account
+    const accountResult = await getOrCreateConnectAccount(userId, email, fullName);
+    if (!accountResult.success) {
+      return accountResult;
+    }
+
+    const { accountId } = accountResult.data;
+
+    try {
+      const accountLink = await stripeBreaker.execute(() =>
+        stripe!.accountLinks.create({
+          account: accountId,
+          refresh_url: refreshUrl,
+          return_url: returnUrl,
+          type: 'account_onboarding',
+          collect: collectTaxInfo ? 'eventually_due' : undefined,
+        })
+      );
+
+      return {
+        success: true,
+        data: {
+          url: accountLink.url,
+          expiresAt: new Date(accountLink.expires_at * 1000),
+        },
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'STRIPE_ERROR',
+          message: error instanceof Error ? error.message : 'Unknown Stripe error',
+        },
+      };
+    }
+  },
+
+  /**
+   * Get dashboard link to worker's Stripe Express dashboard
+   */
+  getDashboardLink: async (userId: string): Promise<ServiceResult<DashboardLinkResult>> => {
+    const accountId = await getConnectAccountId(userId);
+
+    if (!accountId) {
+      return {
+        success: false,
+        error: { code: 'STRIPE_CONNECT_NOT_SETUP', message: 'Stripe Connect account not set up' },
+      };
+    }
+
+    if (!stripe) {
+      return {
+        success: false,
+        error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe is not configured' },
+      };
+    }
+
+    const frozen = newPaymentCreationFailure('connect_login_link');
+    if (frozen) return frozen;
+
+    try {
+      const loginLink = await stripeBreaker.execute(() =>
+        stripe!.accounts.createLoginLink(accountId)
+      );
+
+      return {
+        success: true,
+        data: {
+          url: loginLink.url,
+          expiresAt: new Date(Date.now() + 3600 * 1000), // Links typically expire in 1 hour
+        },
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'STRIPE_ERROR',
+          message: error instanceof Error ? error.message : 'Unknown Stripe error',
+        },
+      };
+    }
+  },
+
+  /**
+   * Get current payout settings
+   */
+  getPayoutSettings: async (userId: string): Promise<ServiceResult<PayoutSettings>> => {
+    const accountId = await getConnectAccountId(userId);
+
+    if (!accountId) {
+      return {
+        success: false,
+        error: { code: 'STRIPE_CONNECT_NOT_SETUP', message: 'Stripe Connect account not set up' },
+      };
+    }
+
+    if (!stripe) {
+      return {
+        success: false,
+        error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe is not configured' },
+      };
+    }
+
+    try {
+      const account = await stripeBreaker.execute(() => stripe!.accounts.retrieve(accountId));
+
+      const settings = account.settings;
+      const payoutSettings = settings?.payouts;
+      const cardPayments = settings?.card_payments;
+
+      // Determine if instant payouts are available
+      const instantEligible = account.capabilities?.transfers === 'active' &&
+                             cardPayments?.statement_descriptor_prefix !== undefined;
+
+      return {
+        success: true,
+        data: {
+          schedule: instantEligible ? 'standard' : 'standard', // Default to standard
+          instantEligible,
+          instantFees: instantEligible ? { percentage: 1.5, fixedCents: 0 } : null,
+          standardSchedule: {
+            interval: (payoutSettings?.schedule?.interval || 'daily') as 'daily' | 'weekly' | 'monthly' | 'manual',
+            weeklyAnchor: payoutSettings?.schedule?.weekly_anchor || undefined,
+            monthlyAnchor: payoutSettings?.schedule?.monthly_anchor || undefined,
+          },
+          defaultBankAccount: null, // Would be fetched from external_accounts
+          defaultDebitCard: null, // Would be fetched from external_accounts
+        },
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'STRIPE_ERROR',
+          message: error instanceof Error ? error.message : 'Unknown Stripe error',
+        },
+      };
+    }
+  },
+
+  /**
+   * Update payout preferences
+   */
+  updatePayoutSettings: async (params: {
+    userId: string;
+    schedule: 'instant' | 'standard';
+    debitCardId?: string;
+    bankAccountId?: string;
+    interval?: 'daily' | 'weekly' | 'monthly' | 'manual';
+    weeklyAnchor?: string;
+    monthlyAnchor?: number;
+  }): Promise<ServiceResult<PayoutSettings>> => {
+    const { userId, schedule, interval, weeklyAnchor, monthlyAnchor } = params;
+
+    const frozen = newPaymentCreationFailure('connect_payout_settings');
+    if (frozen) return frozen;
+
+    const accountId = await getConnectAccountId(userId);
+
+    if (!accountId) {
+      return {
+        success: false,
+        error: { code: 'STRIPE_CONNECT_NOT_SETUP', message: 'Stripe Connect account not set up' },
+      };
+    }
+
+    if (!stripe) {
+      return {
+        success: false,
+        error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe is not configured' },
+      };
+    }
+
+    try {
+      // Check instant payout eligibility if requested
+      if (schedule === 'instant') {
+        const account = await stripeBreaker.execute(() => stripe!.accounts.retrieve(accountId));
+        const isEligible = account.capabilities?.transfers === 'active';
+        
+        if (!isEligible) {
+          return {
+            success: false,
+            error: { code: 'INSTANT_PAYOUT_NOT_ELIGIBLE', message: 'Instant payout not eligible' },
+          };
+        }
+      }
+
+      // Update standard payout schedule if provided
+      if (interval && schedule === 'standard') {
+        await stripeBreaker.execute(() =>
+          stripe!.accounts.update(accountId, {
+            settings: {
+              payouts: {
+                schedule: {
+                  interval: interval as 'daily' | 'weekly' | 'monthly' | 'manual',
+                  weekly_anchor: weeklyAnchor as 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday' | 'sunday' | undefined,
+                  monthly_anchor: monthlyAnchor,
+                },
+              },
+            },
+          })
+        );
+      }
+
+      // Return updated settings
+      return StripeConnectService.getPayoutSettings(userId);
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'STRIPE_ERROR',
+          message: error instanceof Error ? error.message : 'Unknown Stripe error',
+        },
+      };
+    }
+  },
+
+  /**
+   * Get tax information status
+   * Reads from tax_forms table (migration 009)
+   */
+  getTaxInfo: async (userId: string): Promise<ServiceResult<TaxInfo>> => {
+    const accountId = await getConnectAccountId(userId);
+
+    if (!accountId) {
+      return {
+        success: false,
+        error: { code: 'STRIPE_CONNECT_NOT_SETUP', message: 'Stripe Connect account not set up' },
+      };
+    }
+
+    const result = await db.query<{
+      form_type: string;
+      status: string;
+      submitted_at: Date;
+      verified_at: Date | null;
+      requires_update: boolean;
+      tax_id_last4: string | null;
+      name_on_file: string | null;
+      business_name_on_file: string | null;
+    }>(
+      `SELECT form_type, status, submitted_at, verified_at, requires_update,
+              tax_id_last4, name_on_file, business_name_on_file
+       FROM tax_forms
+       WHERE user_id = $1 AND status IN ('pending', 'verified')
+       ORDER BY submitted_at DESC
+       LIMIT 1`,
+      [userId]
+    );
+
+    if (result.rows.length === 0) {
+      return {
+        success: true,
+        data: {
+          formType: null,
+          status: 'not_submitted',
+          submittedAt: null,
+          verifiedAt: null,
+          requiresUpdate: false,
+          taxIdLast4: null,
+          nameOnFile: null,
+          businessNameOnFile: null,
+        },
+      };
+    }
+
+    const row = result.rows[0];
+    return {
+      success: true,
+      data: {
+        formType: row.form_type as TaxInfo['formType'],
+        status: row.status as TaxInfo['status'],
+        submittedAt: row.submitted_at,
+        verifiedAt: row.verified_at,
+        requiresUpdate: row.requires_update,
+        taxIdLast4: row.tax_id_last4,
+        nameOnFile: row.name_on_file,
+        businessNameOnFile: row.business_name_on_file,
+      },
+    };
+  },
+
+  /**
+   * Submit tax information (W-9 or W-8BEN)
+   * Persists to tax_forms table (migration 009)
+   */
+  submitTaxInfo: async (params: TaxInfoInput & { userId: string }): Promise<ServiceResult<TaxInfo>> => {
+    const { userId } = params;
+
+    const accountId = await getConnectAccountId(userId);
+
+    if (!accountId) {
+      return {
+        success: false,
+        error: { code: 'STRIPE_CONNECT_NOT_SETUP', message: 'Stripe Connect account not set up' },
+      };
+    }
+
+    const taxIdLast4 = params.ssnLast4 || params.ein?.slice(-4) || null;
+
+    // Expire any existing active form before inserting new one
+    await db.query(
+      `UPDATE tax_forms SET status = 'expired', updated_at = NOW()
+       WHERE user_id = $1 AND status IN ('pending', 'verified')`,
+      [userId]
+    );
+
+    const result = await db.query<{
+      form_type: string;
+      status: string;
+      submitted_at: Date;
+      verified_at: Date | null;
+      requires_update: boolean;
+      tax_id_last4: string | null;
+      name_on_file: string | null;
+      business_name_on_file: string | null;
+    }>(
+      `INSERT INTO tax_forms (
+        user_id, stripe_connect_id, form_type, tax_id_last4,
+        name_on_file, business_name_on_file, tax_classification,
+        address_line1, address_city, address_state, address_zip, address_country,
+        foreign_tax_id, treaty_country, treaty_article,
+        signature_on_file, signed_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+      RETURNING form_type, status, submitted_at, verified_at, requires_update,
+                tax_id_last4, name_on_file, business_name_on_file`,
+      [
+        userId, accountId, params.formType, taxIdLast4,
+        params.name || null, params.businessName || null, params.taxClassification || null,
+        params.addressLine1 || null, params.city || null, params.state || null,
+        params.zipCode || null, params.country || 'US',
+        params.foreignTaxId || null, params.treatyCountry || null, params.treatyArticle || null,
+        !!params.signature, params.signature ? new Date() : null,
+      ]
+    );
+
+    const row = result.rows[0];
+    return {
+      success: true,
+      data: {
+        formType: row.form_type as TaxInfo['formType'],
+        status: row.status as TaxInfo['status'],
+        submittedAt: row.submitted_at,
+        verifiedAt: row.verified_at,
+        requiresUpdate: row.requires_update,
+        taxIdLast4: row.tax_id_last4,
+        nameOnFile: row.name_on_file,
+        businessNameOnFile: row.business_name_on_file,
+      },
+    };
+  },
+
+  /**
+   * Get earnings summary for 1099 threshold tracking
+   */
+  getEarningsSummary: async (params: { userId: string; year: number }): Promise<ServiceResult<EarningsSummary>> => {
+    const { userId, year } = params;
+
+    const accountId = await getConnectAccountId(userId);
+
+    if (!accountId) {
+      return {
+        success: false,
+        error: { code: 'STRIPE_CONNECT_NOT_SETUP', message: 'Stripe Connect account not set up' },
+      };
+    }
+
+    try {
+      // Calculate earnings from completed tasks
+      const earningsResult = await db.query<{
+        total_cents: string;
+        transaction_count: string;
+      }>(
+        `SELECT 
+          COALESCE(SUM(e.amount), 0) as total_cents,
+          COUNT(*) as transaction_count
+         FROM escrows e
+         JOIN tasks t ON t.id = e.task_id
+         WHERE t.worker_id = $1 
+           AND e.state = 'RELEASED'
+           AND EXTRACT(YEAR FROM e.released_at) = $2`,
+        [userId, year]
+      );
+
+      const totalEarningsCents = parseInt(earningsResult.rows[0]?.total_cents || '0', 10);
+      const totalTransactions = parseInt(earningsResult.rows[0]?.transaction_count || '0', 10);
+
+      // Get pending earnings (funded but not released)
+      const pendingResult = await db.query<{ pending_cents: string }>(
+        `SELECT COALESCE(SUM(e.amount), 0) as pending_cents
+         FROM escrows e
+         JOIN tasks t ON t.id = e.task_id
+         WHERE t.worker_id = $1 
+           AND e.state = 'FUNDED'`,
+        [userId]
+      );
+      const pendingEarningsCents = parseInt(pendingResult.rows[0]?.pending_cents || '0', 10);
+
+      // Calculate monthly breakdown
+      const monthlyResult = await db.query<{
+        month: number;
+        earnings_cents: string;
+        transactions: string;
+      }>(
+        `SELECT 
+          EXTRACT(MONTH FROM e.released_at) as month,
+          COALESCE(SUM(e.amount), 0) as earnings_cents,
+          COUNT(*) as transactions
+         FROM escrows e
+         JOIN tasks t ON t.id = e.task_id
+         WHERE t.worker_id = $1 
+           AND e.state = 'RELEASED'
+           AND EXTRACT(YEAR FROM e.released_at) = $2
+         GROUP BY EXTRACT(MONTH FROM e.released_at)
+         ORDER BY month`,
+        [userId, year]
+      );
+
+      const byMonth = monthlyResult.rows.map(row => ({
+        month: row.month,
+        earningsCents: parseInt(row.earnings_cents, 10),
+        transactions: parseInt(row.transactions, 10),
+      }));
+
+      // 1099-K thresholds (IRS rules may change)
+      const THRESHOLD_CENTS = 500000; // $5,000 (reduced threshold for 2024)
+      const THRESHOLD_TRANSACTIONS = 200;
+
+      return {
+        success: true,
+        data: {
+          year,
+          totalEarningsCents,
+          totalTransactions,
+          threshold1099K: {
+            amount: THRESHOLD_CENTS,
+            transactions: THRESHOLD_TRANSACTIONS,
+            metAmountThreshold: totalEarningsCents >= THRESHOLD_CENTS,
+            metTransactionThreshold: totalTransactions >= THRESHOLD_TRANSACTIONS,
+            willReceive1099K: totalEarningsCents >= THRESHOLD_CENTS || totalTransactions >= THRESHOLD_TRANSACTIONS,
+          },
+          byMonth,
+          pendingEarningsCents,
+          availableBalanceCents: 0, // Would be fetched from Stripe
+        },
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'DATABASE_ERROR',
+          message: error instanceof Error ? error.message : 'Unknown database error',
+        },
+      };
+    }
+  },
+
+  /**
+   * Get Stripe Connect account details
+   */
+  getAccountDetails: async (userId: string): Promise<ServiceResult<AccountDetails>> => {
+    const accountId = await getConnectAccountId(userId);
+
+    if (!accountId) {
+      return {
+        success: false,
+        error: { code: 'STRIPE_CONNECT_NOT_SETUP', message: 'Stripe Connect account not set up' },
+      };
+    }
+
+    if (!stripe) {
+      return {
+        success: false,
+        error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe is not configured' },
+      };
+    }
+
+    try {
+      const account = await stripeBreaker.execute(() => stripe!.accounts.retrieve(accountId));
+      const requirements = account.requirements as Stripe.Account.Requirements || {};
+
+      return {
+        success: true,
+        data: {
+          accountId,
+          accountType: 'express',
+          email: account.email || '',
+          country: account.country || 'US',
+          defaultCurrency: account.default_currency || 'usd',
+          status: {
+            onboardingComplete: account.charges_enabled && account.payouts_enabled,
+            chargesEnabled: account.charges_enabled,
+            payoutsEnabled: account.payouts_enabled,
+            requirementsDue: (requirements.currently_due?.length || 0) > 0,
+          },
+          capabilities: {
+            cardPayments: (account.capabilities?.card_payments || 'inactive') as 'active' | 'inactive' | 'pending',
+            transfers: (account.capabilities?.transfers || 'inactive') as 'active' | 'inactive' | 'pending',
+          },
+          requirements: {
+            currentlyDue: requirements.currently_due || [],
+            eventuallyDue: requirements.eventually_due || [],
+            pastDue: requirements.past_due || [],
+            disabledReason: requirements.disabled_reason || null,
+          },
+          settings: {
+            payoutSchedule: account.settings?.payouts?.schedule?.interval || 'daily',
+            debitCardPayoutsEnabled: false,
+          },
+          createdAt: new Date((account as unknown as { created: number }).created * 1000),
+        },
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: {
+          code: 'STRIPE_ERROR',
+          message: error instanceof Error ? error.message : 'Unknown Stripe error',
+        },
+      };
+    }
+  },
+
+  /**
+   * Refresh onboarding link
+   */
+  refreshOnboarding: async (params: {
+    userId: string;
+    refreshUrl: string;
+    returnUrl: string;
+  }): Promise<ServiceResult<OnboardingLinkResult>> => {
+    const frozen = newPaymentCreationFailure('connect_onboarding');
+    if (frozen) return frozen;
+    // This is essentially the same as createOnboardingLink
+    // Get user details first
+    const userResult = await db.query<{ email: string; full_name: string }>(
+      'SELECT email, full_name FROM users WHERE id = $1',
+      [params.userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return {
+        success: false,
+        error: { code: 'USER_NOT_FOUND', message: 'User not found' },
+      };
+    }
+
+    const user = userResult.rows[0];
+
+    return StripeConnectService.createOnboardingLink({
+      userId: params.userId,
+      email: user.email,
+      fullName: user.full_name,
+      refreshUrl: params.refreshUrl,
+      returnUrl: params.returnUrl,
+    });
+  },
+};
+
+export default StripeConnectService;

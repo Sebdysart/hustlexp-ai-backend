@@ -1,0 +1,175 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('../../src/db.js', () => ({
+  db: {
+    query: vi.fn(),
+    transaction: vi.fn(),
+  },
+}));
+
+const { db } = await import('../../src/db.js');
+const {
+  LocalCertificationPaymentProvider,
+  isLocalCertificationPaymentIntentId,
+  localCertificationPaymentEnabled,
+} = await import('../../src/services/LocalCertificationPaymentProvider.js');
+
+const enabled = {
+  NODE_ENV: 'test',
+  HXOS_ALLOW_LOCAL_TEST_PAYMENT: 'true',
+  ENGINE_API_MODE: 'test',
+  STRIPE_MODE: 'test',
+  STRIPE_SECRET_KEY: 'sk_test_local_certification',
+  HX_PAYMENT_CREATION_MODE: 'enabled',
+  HXOS_LOCAL_TEST_PAYMENT_SECRET: 'local-payment-secret-is-at-least-thirty-two-chars',
+  DATABASE_URL: 'postgresql://hx_test_role@127.0.0.1:5432/hx_payment_test',
+  HXOS_LOCAL_TEST_DATABASE_NAME: 'hx_payment_test',
+  HXOS_LOCAL_TEST_DATABASE_ROLE: 'hx_test_role',
+};
+
+function enable(): void {
+  for (const [key, value] of Object.entries(enabled)) vi.stubEnv(key, value);
+}
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.clearAllMocks();
+});
+
+describe('local certification payment provider', () => {
+  it('requires every non-production TEST guard and a strong secret', () => {
+    expect(localCertificationPaymentEnabled(enabled)).toBe(true);
+    for (const override of [
+      { NODE_ENV: 'production' },
+      { NODE_ENV: 'development' },
+      { HXOS_ALLOW_LOCAL_TEST_PAYMENT: 'false' },
+      { ENGINE_API_MODE: 'live' },
+      { STRIPE_MODE: 'live' },
+      { STRIPE_SECRET_KEY: 'sk_live_forbidden' },
+      { HX_PAYMENT_CREATION_MODE: 'frozen' },
+      { HXOS_LOCAL_TEST_PAYMENT_SECRET: 'weak' },
+      { DATABASE_URL: 'postgresql://hx_test_role@prod.internal:5432/hx_payment_test' },
+      { DATABASE_URL: 'postgresql://hx_test_role@127.0.0.1:5432/hustlexp' },
+      { HXOS_LOCAL_TEST_DATABASE_NAME: 'wrong_test' },
+      { HXOS_LOCAL_TEST_DATABASE_ROLE: '' },
+    ]) expect(localCertificationPaymentEnabled({ ...enabled, ...override })).toBe(false);
+  });
+
+  it('cannot write a fake intent while the global creation authority is frozen', async () => {
+    enable();
+    vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'frozen');
+    const result = await LocalCertificationPaymentProvider.createIntent({
+      taskId: 'task-1', escrowId: 'escrow-1', posterId: 'poster-1', amountCents: 13000,
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.code).toBe('PAYMENT_CREATION_FROZEN');
+    expect(db.transaction).not.toHaveBeenCalled();
+    expect(db.query).not.toHaveBeenCalled();
+  });
+
+  it('cannot confirm fake money while the global creation authority is frozen', async () => {
+    enable();
+    vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'frozen');
+    const result = await LocalCertificationPaymentProvider.confirmIntent({
+      paymentIntentId: `pi_hxos_test_${'a'.repeat(32)}`,
+      clientSecret: 'x'.repeat(64),
+      posterId: 'poster-1',
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.code).toBe('PAYMENT_CREATION_FROZEN');
+    expect(db.transaction).not.toHaveBeenCalled();
+    expect(db.query).not.toHaveBeenCalled();
+  });
+
+  it('creates a deterministic TEST intent and reuses only equivalent state', async () => {
+    enable();
+    vi.mocked(db.query).mockResolvedValueOnce({
+      rows: [{ database_name: 'hx_payment_test', database_user: 'hx_test_role' }],
+      rowCount: 1,
+    } as never);
+    const query = vi.fn();
+    vi.mocked(db.transaction).mockImplementation(async (work) => work(query));
+    let inserted: unknown[] = [];
+    query.mockImplementationOnce(async (_sql: string, values: unknown[]) => {
+      inserted = values;
+      return { rows: [], rowCount: 1 };
+    });
+    query.mockImplementationOnce(async () => ({
+      rows: [{
+        id: inserted[0], task_id: 'task-1', escrow_id: 'escrow-1', poster_id: 'poster-1',
+        amount_cents: 13000, status: 'requires_confirmation',
+        client_secret_hash: inserted[5], is_test: true,
+      }],
+      rowCount: 1,
+    }));
+    query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    const result = await LocalCertificationPaymentProvider.createIntent({
+      taskId: 'task-1', escrowId: 'escrow-1', posterId: 'poster-1', amountCents: 13000,
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(isLocalCertificationPaymentIntentId(result.data.paymentIntentId)).toBe(true);
+    expect(result.data.clientSecret).toMatch(new RegExp(`^${result.data.paymentIntentId}_secret_[a-f0-9]{64}$`));
+    expect(query).toHaveBeenCalledTimes(3);
+  });
+
+  it('rejects confirmation with the wrong hashed client secret', async () => {
+    enable();
+    vi.mocked(db.query).mockResolvedValueOnce({
+      rows: [{ database_name: 'hx_payment_test', database_user: 'hx_test_role' }],
+      rowCount: 1,
+    } as never);
+    const query = vi.fn().mockResolvedValueOnce({ rows: [{
+      id: `pi_hxos_test_${'a'.repeat(32)}`, task_id: 'task-1', escrow_id: 'escrow-1',
+      poster_id: 'poster-1', amount_cents: 13000, status: 'requires_confirmation',
+      client_secret_hash: 'b'.repeat(64), is_test: true,
+    }] });
+    vi.mocked(db.transaction).mockImplementation(async (work) => work(query));
+    const result = await LocalCertificationPaymentProvider.confirmIntent({
+      paymentIntentId: `pi_hxos_test_${'a'.repeat(32)}`,
+      clientSecret: 'wrong-secret',
+      posterId: 'poster-1',
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.code).toBe('LOCAL_TEST_PAYMENT_SECRET_INVALID');
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  it('verifies only a succeeded intent with exact task, escrow, Poster, and amount', async () => {
+    enable();
+    vi.mocked(db.query)
+      .mockResolvedValueOnce({
+        rows: [{ database_name: 'hx_payment_test', database_user: 'hx_test_role' }],
+        rowCount: 1,
+      } as never)
+      .mockResolvedValueOnce({ rows: [{ amount_cents: 13000 }], rowCount: 1 } as never);
+    const result = await LocalCertificationPaymentProvider.verifySucceededIntent({
+      paymentIntentId: `pi_hxos_test_${'a'.repeat(32)}`,
+      escrowId: 'escrow-1', taskId: 'task-1', posterId: 'poster-1', amountCents: 13000,
+    });
+    expect(result).toEqual({ success: true, data: { status: 'succeeded', amountCents: 13000 } });
+    const params = vi.mocked(db.query).mock.calls[1]?.[1];
+    expect(params).toEqual([
+      `pi_hxos_test_${'a'.repeat(32)}`, 'escrow-1', 'task-1', 'poster-1', 13000,
+    ]);
+  });
+
+  it('fails before mutation when the connected database identity is not disposable', async () => {
+    enable();
+    vi.mocked(db.query).mockResolvedValueOnce({
+      rows: [{ database_name: 'production', database_user: 'app_owner' }],
+      rowCount: 1,
+    } as never);
+
+    const result = await LocalCertificationPaymentProvider.createIntent({
+      taskId: 'task-1', escrowId: 'escrow-1', posterId: 'poster-1', amountCents: 13000,
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      error: { code: 'LOCAL_TEST_STORAGE_IDENTITY_MISMATCH' },
+    });
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+});

@@ -1,0 +1,1418 @@
+/**
+ * Payment Worker v1.2.0
+ *
+ * Phase D: Authoritative interpreter of Stripe events → Escrow state transitions
+ *
+ * Processes payment.stripe_event_received events from critical_payments queue.
+ * Updates escrow state based on Stripe event type.
+ *
+ * Event mapping:
+ * - payment_intent.succeeded → escrow PENDING → FUNDED
+ * - payment_intent.payment_failed → escrow PENDING → CANCELLED (task returns to OPEN)
+ * - transfer.created → escrow FUNDED|LOCKED_DISPUTE → RELEASED
+ * - transfer.failed → escrow RELEASED → LOCKED_DISPUTE (ops triage required)
+ * - charge.refunded → escrow PENDING|FUNDED|LOCKED_DISPUTE → REFUNDED
+ * - payout.failed → audited multi-channel notification to worker, ledger entry, no state change
+ *
+ * CRITICAL RULES:
+ * - All state transitions must check version (optimistic locking)
+ * - All state transitions must increment version
+ * - Terminal states cannot transition (enforced by DB trigger)
+ * - Illegal transitions fail and are recorded as failed
+ * - SELECT ... FOR UPDATE MUST be inside db.transaction() — bare db.query() releases
+ *   the row lock when the connection is returned to the pool.
+ *
+ * @see ARCHITECTURE.md §2.4
+ */
+
+import { db } from '../db.js';
+import { writeToOutbox } from '../lib/outbox-helpers.js';
+import { TaskService } from '../services/TaskService.js';
+import { RevenueService } from '../services/RevenueService.js';
+import { StripeService } from '../services/StripeService.js';
+import { EscrowService } from '../services/EscrowService.js';
+import { NotificationService } from '../services/NotificationService.js';
+import { notifyAdmins } from '../services/AdminNotificationHelper.js';
+import { workerLogger } from '../logger.js';
+import { verifyJobSignature } from './queues.js';
+import { config } from '../config.js';
+import {
+  clampFeePercent,
+  computeFeeBreakdown,
+  feeBasisPoints,
+  resolvePlatformFeeCents,
+} from '../lib/money.js';
+import type { Job } from 'bullmq';
+import type Stripe from 'stripe';
+import type { QueryFn } from '../db.js';
+import { ErrorCodes } from '../types.js';
+import { newPaymentCreationMode } from '../services/NewPaymentCreationGuard.js';
+
+const log = workerLogger.child({ worker: 'payment' });
+
+// ============================================================================
+// TYPES
+// ============================================================================
+
+interface StripeEventReceivedPayload {
+  stripeEventId: string;
+  eventType?: string;
+  type?: string;
+  eventCreated?: string;
+  _sig: string;
+}
+
+interface PaymentJobData {
+  payload: StripeEventReceivedPayload;
+}
+
+// ============================================================================
+// PAYMENT WORKER
+// ============================================================================
+
+export async function processPaymentJob(job: Job<PaymentJobData>): Promise<void> {
+  // HMAC signature verification (Attack 12 — Redis injection defence)
+  // payment.stripe_event_received jobs are signed via FINANCIAL_EVENT_TYPES in outbox-worker.
+  // Every financial job must retain the exact signed outbox payload. The
+  // canonical Stripe route uses `type`; the legacy payment route used
+  // `eventType`, so both are accepted without mutating the signed envelope.
+  const payload = job.data?.payload as unknown as Record<string, unknown> | undefined;
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('JOB_SCHEMA_INVALID: Missing payment payload');
+  }
+  const stripeEventId = typeof payload.stripeEventId === 'string' ? payload.stripeEventId : '';
+  const eventType = typeof payload.eventType === 'string'
+    ? payload.eventType
+    : typeof payload.type === 'string'
+      ? payload.type
+      : '';
+  const signature = payload._sig;
+  if (!stripeEventId || !eventType) {
+    throw new Error('JOB_SCHEMA_INVALID: stripeEventId and event type are required');
+  }
+  if (typeof signature !== 'string' || signature.length === 0) {
+    log.error({ jobId: job.id, eventType }, 'Missing job signature — possible Redis injection attack');
+    throw new Error('JOB_SIGNATURE_REQUIRED: Payment jobs must be signed');
+  }
+  const { _sig: _signature, ...payloadWithoutSig } = payload;
+  if (!verifyJobSignature(payloadWithoutSig, signature)) {
+    log.error(
+      { jobId: job.id, eventType },
+      'Job signature verification failed — possible Redis injection attack',
+    );
+    throw new Error('JOB_SIGNATURE_INVALID: Payload signature verification failed');
+  }
+
+  const _idempotencyKey = job.id || `payment:${stripeEventId}`;
+
+  try {
+    // P0: Atomic claim - Only one worker can process this event
+    // Prevents duplicate processing under retry/multi-worker scenarios
+    // claimed_at = processing started, processed_at = terminal finalized
+    const claimResult = await db.query<{
+      stripe_event_id: string;
+      type: string;
+      payload_json: Stripe.Event;
+    }>(
+      `UPDATE stripe_events
+       SET claimed_at = NOW(),
+           result = 'processing',
+           error_message = NULL
+       WHERE stripe_event_id = $1
+         AND claimed_at IS NULL
+         AND processed_at IS NULL
+       RETURNING stripe_event_id, type, payload_json`,
+      [stripeEventId]
+    );
+
+    // If claim failed (already claimed or processed), exit silently (no-op for duplicate jobs)
+    if (claimResult.rowCount === 0) {
+      const existingResult = await db.query<{ result: string | null; claimed_at: Date | null; processed_at: Date | null }>(
+        `SELECT result, claimed_at, processed_at
+         FROM stripe_events
+         WHERE stripe_event_id = $1`,
+        [stripeEventId]
+      );
+
+      if (existingResult.rowCount === 0) {
+        throw new Error(`Stripe event ${stripeEventId} not found`);
+      }
+
+      // Already claimed or already processed: expected under duplicate jobs / concurrency.
+      // No-op (no exception for normal concurrency).
+      log.info({ stripeEventId, result: existingResult.rows[0].result }, 'Stripe event already claimed/processed, skipping');
+      return;
+    }
+
+    const stripeEvent = claimResult.rows[0];
+
+    if (eventType === 'payment_intent.succeeded' && newPaymentCreationMode() === 'frozen') {
+      await db.query(
+        `UPDATE stripe_events
+         SET processed_at = NOW(),
+             result = 'skipped',
+             error_message = 'PAYMENT_CREATION_FROZEN: positive processor fact retained for reconciliation; escrow funding suppressed'
+         WHERE stripe_event_id = $1`,
+        [stripeEventId],
+      );
+      log.warn({ stripeEventId, eventType }, 'Frozen payment event retained without escrow funding');
+      return;
+    }
+
+    // Extract event object from payload (Stripe.Event.data.object)
+    const eventObject = stripeEvent.payload_json.data.object;
+
+    // Process event based on type
+    switch (eventType) {
+      case 'payment_intent.succeeded':
+        await handlePaymentIntentSucceeded(eventObject as Stripe.PaymentIntent, stripeEventId);
+        break;
+
+      case 'transfer.created':
+        await handleTransferCreated(eventObject as Stripe.Transfer, stripeEventId);
+        break;
+
+      case 'transfer.failed':
+        await handleTransferFailed(eventObject as Stripe.Transfer, stripeEventId);
+        break;
+
+      case 'payment_intent.payment_failed':
+        await handlePaymentIntentPaymentFailed(eventObject as Stripe.PaymentIntent, stripeEventId);
+        break;
+
+      case 'payout.failed':
+        await handlePayoutFailed(eventObject as Stripe.Payout, stripeEventId);
+        break;
+
+      case 'charge.refunded':
+        await handleChargeRefunded(eventObject as Stripe.Charge, stripeEventId);
+        break;
+
+      default:
+        // Unknown event type - mark as skipped (not failed)
+        // Set processed_at = NOW() to finalize (terminal state)
+        await db.query(
+          `UPDATE stripe_events
+           SET processed_at = NOW(),
+               result = 'skipped',
+               error_message = $1
+           WHERE stripe_event_id = $2`,
+          [`Unknown event type: ${eventType}`, stripeEventId]
+        );
+        log.warn({ stripeEventId, eventType }, 'Stripe event skipped (unknown type)');
+        return;
+    }
+
+    // Mark event as processed (success) - set processed_at = NOW() to finalize
+    await db.query(
+      `UPDATE stripe_events
+       SET processed_at = NOW(),
+           result = 'success'
+       WHERE stripe_event_id = $1`,
+      [stripeEventId]
+    );
+
+    log.info({ stripeEventId, eventType }, 'Stripe event processed successfully');
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    // Release the claim so BullMQ retries can re-claim this event.
+    // CRITICAL: Do NOT set processed_at here — that would prevent all retries.
+    await db.query(
+      `UPDATE stripe_events
+       SET result = 'failed',
+           claimed_at = NULL,
+           error_message = $1
+       WHERE stripe_event_id = $2`,
+      [errorMessage, stripeEventId]
+    );
+
+    log.error({ stripeEventId, eventType, err: errorMessage }, 'Stripe event processing failed — claim released for retry');
+
+    // Re-throw for BullMQ retry logic
+    throw error;
+  }
+}
+
+// ============================================================================
+// EVENT HANDLERS
+// ============================================================================
+
+/**
+ * Handle payment_intent.succeeded: escrow PENDING → FUNDED
+ *
+ * The SELECT ... FOR UPDATE and the subsequent UPDATE run inside a single
+ * db.transaction() so the row lock is held for the entire critical section.
+ * writeToOutbox is intentionally outside the transaction — it calls an
+ * external helper that manages its own connection.
+ */
+async function handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent, stripeEventId: string): Promise<void> {
+  const paymentIntentId = paymentIntent.id;
+
+  // -------------------------------------------------------------------------
+  // Critical section: lock escrow row, validate state, update atomically
+  // -------------------------------------------------------------------------
+  const { updatedEscrow, escrowId, amount } = await db.transaction(async (trx: QueryFn) => {
+    // Find escrow by stripe_payment_intent_id — FOR UPDATE holds the lock
+    const escrowResult = await trx<{
+      id: string;
+      state: string;
+      version: number;
+      amount: number;
+    }>(
+      `SELECT id, state, version, amount
+       FROM escrows
+       WHERE stripe_payment_intent_id = $1
+       FOR UPDATE`,
+      [paymentIntentId]
+    );
+
+    if (escrowResult.rows.length === 0) {
+      throw new Error(`Escrow not found for payment_intent ${paymentIntentId}`);
+    }
+
+    const escrow = escrowResult.rows[0];
+
+    // Terminal skip: If escrow is already terminal, skip (prevents noise)
+    if (['RELEASED', 'REFUNDED', 'REFUND_PARTIAL'].includes(escrow.state)) {
+      // Mark the stripe_event as skipped inside the transaction so that the
+      // terminal-skip path is also atomic with the lock.
+      await trx(
+        `UPDATE stripe_events
+         SET processed_at = NOW(),
+             result = 'skipped',
+             error_message = $1
+         WHERE stripe_event_id = $2`,
+        [`Escrow ${escrow.id} already terminal (${escrow.state})`, stripeEventId]
+      );
+      log.warn({ escrowId: escrow.id, state: escrow.state, stripeEventId }, 'Stripe event skipped: escrow already terminal');
+      // Signal the outer function to return early by returning a sentinel
+      return { updatedEscrow: null, escrowId: escrow.id, amount: escrow.amount };
+    }
+
+    // Validate state transition: PENDING → FUNDED
+    if (escrow.state !== 'PENDING') {
+      throw new Error(`Cannot fund escrow ${escrow.id}: current state is ${escrow.state}, expected PENDING`);
+    }
+
+    // The canonical PaymentIntent creator authorizes exactly the immutable
+    // escrow/customer total; it does not add Stripe Tax or Connect fees. Reject
+    // both underpayment and overpayment so a compromised or manually altered PI
+    // cannot silently change what the Poster pays.
+    if (paymentIntent.amount_received !== escrow.amount) {
+      throw new Error(`Payment received (${paymentIntent.amount_received}) does not exactly match escrow amount (${escrow.amount})`);
+    }
+    if (paymentIntent.amount !== escrow.amount) {
+      throw new Error(`Payment intent amount (${paymentIntent.amount}) does not exactly match escrow amount (${escrow.amount})`);
+    }
+
+    // Update escrow: PENDING → FUNDED (with version check and increment)
+    const updateResult = await trx<{
+      id: string;
+      state: string;
+      version: number;
+    }>(
+      `UPDATE escrows
+       SET state = 'FUNDED',
+           funded_at = NOW(),
+           version = version + 1,
+           updated_at = NOW()
+       WHERE id = $1
+         AND state = 'PENDING'
+         AND version = $2
+       RETURNING id, state, version`,
+      [escrow.id, escrow.version]
+    );
+
+    if (updateResult.rowCount === 0) {
+      throw new Error(`Escrow ${escrow.id} state or version changed during update (version mismatch or state changed)`);
+    }
+
+    return { updatedEscrow: updateResult.rows[0], escrowId: escrow.id, amount: escrow.amount };
+  });
+
+  // Terminal-skip path: transaction already wrote the skipped status; exit here
+  if (!updatedEscrow) {
+    return;
+  }
+
+  // -------------------------------------------------------------------------
+  // Post-transaction side effects (outbox write uses its own connection)
+  // -------------------------------------------------------------------------
+  await writeToOutbox({
+    eventType: 'escrow.funded',
+    aggregateType: 'escrow',
+    aggregateId: escrowId,
+    eventVersion: updatedEscrow.version,
+    payload: {
+      escrowId,
+      paymentIntentId,
+      amount,
+      version: updatedEscrow.version,
+    },
+    queueName: 'user_notifications',
+    idempotencyKey: `escrow.funded:${escrowId}:${updatedEscrow.version}`,
+  });
+
+  log.info({ escrowId, version: updatedEscrow.version }, 'Escrow funded (PENDING → FUNDED)');
+}
+
+/**
+ * Handle transfer.created: escrow FUNDED|LOCKED_DISPUTE → RELEASED
+ *
+ * Provider facts are validated under a row lock, then the state transition is
+ * delegated to EscrowService.release(), the single audited release path.
+ */
+async function handleTransferCreated(transfer: Stripe.Transfer, stripeEventId: string): Promise<void> {
+  const transferId = transfer.id;
+
+  // Extract escrow_id from metadata (CRITICAL: we set this when creating transfer)
+  const escrowId = transfer.metadata?.escrow_id;
+
+  if (!escrowId) {
+    throw new Error(`Transfer ${transferId} missing escrow_id metadata`);
+  }
+
+  // -------------------------------------------------------------------------
+  // Critical section: lock escrow row and validate provider facts. This handler
+  // must never terminalize escrow directly; EscrowService owns that mutation.
+  // -------------------------------------------------------------------------
+  const releaseContext = await db.transaction(async (trx: QueryFn) => {
+    // Find escrow by id (with version check) — FOR UPDATE holds the lock
+    const escrowResult = await trx<{
+      id: string;
+      task_id: string;
+      state: string;
+      version: number;
+      amount: number;
+      platform_fee_cents: number | null;
+      stripe_transfer_id: string | null;
+      stripe_payment_intent_id: string | null;
+    }>(
+      `SELECT id, task_id, state, version, amount, platform_fee_cents, stripe_transfer_id, stripe_payment_intent_id
+       FROM escrows
+       WHERE id = $1
+       FOR UPDATE`,
+      [escrowId]
+    );
+
+    if (escrowResult.rows.length === 0) {
+      throw new Error(`Escrow ${escrowId} not found`);
+    }
+
+    const escrow = escrowResult.rows[0];
+
+    if (escrow.state === 'REFUNDED' || escrow.state === 'REFUND_PARTIAL') {
+      throw new Error(
+        `Transfer ${transferId} cannot settle escrow ${escrowId}: escrow is already ${escrow.state}`,
+      );
+    }
+
+    // Validate state transition: FUNDED|LOCKED_DISPUTE → RELEASED
+    // BUG FIX: When a dispute is resolved in the worker's favour, EscrowService.release()
+    // creates a Stripe transfer from LOCKED_DISPUTE state. The resulting transfer.created
+    // event must be accepted here too — previously only FUNDED was allowed, causing the
+    // worker to throw and retry forever on dispute-won transfers.
+    if (escrow.state !== 'FUNDED' && escrow.state !== 'LOCKED_DISPUTE' && escrow.state !== 'RELEASED') {
+      throw new Error(`Cannot release escrow ${escrowId}: current state is ${escrow.state}, expected FUNDED or LOCKED_DISPUTE`);
+    }
+
+    if (escrow.stripe_transfer_id && escrow.stripe_transfer_id !== transferId) {
+      throw new Error(
+        `Transfer conflict for escrow ${escrowId}: recorded ${escrow.stripe_transfer_id}, received ${transferId}`,
+      );
+    }
+    if (escrow.state === 'RELEASED' && escrow.stripe_transfer_id !== transferId) {
+      throw new Error(
+        `Released escrow ${escrowId} is not bound to transfer ${transferId}`,
+      );
+    }
+
+    // A provider receipt is not settlement evidence unless it proves the exact
+    // worker transfer. The immutable quote stores the gross worker share while
+    // release withholds the disclosed self-insurance adjustment; both the
+    // completion worker and this webhook validator consume the same helper.
+    const expectedTransferAmount = computeFeeBreakdown(
+      escrow.amount,
+      config.stripe.platformFeePercent,
+      escrow.platform_fee_cents,
+    ).netPayoutCents;
+    if (!Number.isInteger(transfer.amount) || transfer.amount !== expectedTransferAmount) {
+      throw new Error(
+        `Transfer ${transferId} amount (${String(transfer.amount)}) does not match expected net payout (${expectedTransferAmount}) for escrow ${escrowId}`,
+      );
+    }
+
+    return {
+      taskId: escrow.task_id,
+      escrowAmount: escrow.amount,
+      escrowPlatformFeeCents: escrow.platform_fee_cents,
+      stripePaymentIntentId: escrow.stripe_payment_intent_id,
+      alreadyReleased: escrow.state === 'RELEASED',
+      version: escrow.version,
+    };
+  });
+
+  let releasedVersion = releaseContext.version;
+  if (!releaseContext.alreadyReleased) {
+    const releaseResult = await EscrowService.release({ escrowId, stripeTransferId: transferId });
+    if (!releaseResult.success) {
+      // A concurrent completion worker may win after preflight. Accept only the
+      // exact same terminal fact; every other terminal or transfer is a conflict.
+      if (
+        releaseResult.error.code !== ErrorCodes.ESCROW_TERMINAL
+        && releaseResult.error.code !== ErrorCodes.INVALID_STATE
+      ) {
+        throw new Error(
+          `EscrowService.release failed for ${escrowId}: ${releaseResult.error.message}`,
+        );
+      }
+      const current = await EscrowService.getById(escrowId);
+      if (
+        !current.success
+        || current.data.state !== 'RELEASED'
+        || current.data.stripe_transfer_id !== transferId
+      ) {
+        throw new Error(
+          `Escrow ${escrowId} changed during release without converging on transfer ${transferId}`,
+        );
+      }
+      releasedVersion = current.data.version;
+    } else {
+      releasedVersion = releaseResult.data.version;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Post-transaction side effects
+  // -------------------------------------------------------------------------
+
+  // Step 4: Hook CLOSED transition (Pillar A - Realtime Tracking)
+  // System-driven transition: COMPLETED → CLOSED (triggered by escrow terminalization)
+  await TaskService.advanceProgress({
+    taskId: releaseContext.taskId,
+    to: 'CLOSED',
+    actor: { type: 'system' },
+  });
+
+  // BUG 4 FIX: Log platform_fee to revenue ledger as a fallback for the case where
+  // EscrowService.release()'s non-fatal logEvent call failed silently.
+  // Idempotency guard prevents double-write: if the fee was already recorded by
+  // EscrowService.release() this block is a no-op.
+  try {
+    const existingFee = await db.query<{ id: string }>(
+      `SELECT id FROM revenue_ledger
+       WHERE event_type = 'platform_fee'
+         AND (stripe_event_id = $1 OR escrow_id = $2)
+       LIMIT 1`,
+      [stripeEventId, escrowId]
+    );
+    if ((existingFee.rowCount ?? 0) === 0) {
+      // Look up poster_id and worker_id from the task for ledger attribution.
+      // F-23 FIX: Platform fee is charged to the poster (buyer), not the worker.
+      const taskRow = await db.query<{ worker_id: string | null; poster_id: string | null }>(
+        `SELECT worker_id, poster_id FROM tasks WHERE id = $1`,
+        [releaseContext.taskId]
+      );
+      const workerId = taskRow.rows[0]?.worker_id ?? null;
+      const posterId = taskRow.rows[0]?.poster_id ?? null;
+      if (workerId && releaseContext.escrowAmount > 0) {
+        // AUDIT FIX H3: unified money helper (same Math.round result, adds clamping)
+        const platformFeePercent = clampFeePercent(config.stripe.platformFeePercent);
+        const platformFeeCents = resolvePlatformFeeCents(
+          releaseContext.escrowAmount,
+          platformFeePercent,
+          releaseContext.escrowPlatformFeeCents,
+        );
+        if (platformFeeCents > 0) {
+          const netAmountCents = releaseContext.escrowAmount - platformFeeCents;
+          const processingFee = releaseContext.stripePaymentIntentId
+            ? await StripeService.getPaymentIntentProcessingFee(releaseContext.stripePaymentIntentId)
+            : null;
+          if (processingFee && !processingFee.success) {
+            log.warn(
+              {
+                escrowId,
+                stripePaymentIntentId: releaseContext.stripePaymentIntentId,
+                code: processingFee.error.code,
+              },
+              'handleTransferCreated: actual Stripe processing fee unavailable; contribution remains unknown',
+            );
+          }
+          const revenue = await RevenueService.logEvent({
+            eventType: 'platform_fee',
+            userId: posterId ?? workerId, // F-23: prefer poster_id; fall back to workerId if missing
+            taskId: releaseContext.taskId,
+            amountCents: platformFeeCents,
+            grossAmountCents: releaseContext.escrowAmount,
+            platformFeeCents,
+            netAmountCents,
+            feeBasisPoints: feeBasisPoints(releaseContext.escrowAmount, platformFeeCents),
+            stripeProcessingFeeCents: processingFee?.success
+              ? processingFee.data.feeCents
+              : undefined,
+            escrowId,
+            stripeTransferId: transferId,
+            stripeEventId,
+            stripeChargeId: processingFee?.success
+              ? processingFee.data.chargeId
+              : undefined,
+            stripePaymentIntentId: releaseContext.stripePaymentIntentId ?? undefined,
+            metadata: {
+              event: 'escrow_release_transfer_created_fallback',
+              ...(processingFee?.success
+                ? { stripe_balance_transaction_id: processingFee.data.balanceTransactionId }
+                : { stripe_processing_fee_status: 'unknown' }),
+            },
+          });
+          if (!revenue.success) {
+            throw new Error(`Platform-fee ledger write failed: ${revenue.error.message}`);
+          }
+          log.info({ escrowId, platformFeeCents, posterId, workerId }, 'handleTransferCreated: platform_fee fallback ledger entry written');
+        }
+      }
+    }
+  } catch (feeErr) {
+    // Non-fatal: fallback ledger write failure must not block event processing
+    log.warn(
+      { err: feeErr instanceof Error ? feeErr.message : String(feeErr), escrowId, stripeEventId },
+      'handleTransferCreated: platform_fee fallback ledger write failed — manual reconciliation may be required'
+    );
+  }
+
+  log.info({ escrowId, version: releasedVersion }, 'Escrow released through canonical service (→ RELEASED)');
+}
+
+/**
+ * Handle charge.refunded: escrow PENDING|FUNDED|LOCKED_DISPUTE → REFUNDED
+ *
+ * The SELECT ... FOR UPDATE and the subsequent UPDATE run inside a single
+ * db.transaction(). TaskService.advanceProgress and writeToOutbox are
+ * intentionally outside.
+ */
+async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string): Promise<void> {
+  // P0: Extract escrow_id from charge metadata (preferred), fallback to payment_intent lookup
+  const escrowId = charge.metadata?.escrow_id;
+
+  // Extract the triggering refund ID: find the most-recently-created refund in the
+  // inline list. Stripe returns inline refund lists newest-first for <10 refunds,
+  // but reduce() is safe regardless of order and handles paginated charges (>10
+  // refunds) where data[0] may not be the just-created one.
+  const refundId = charge.refunds?.data?.reduce(
+    (latest: Stripe.Refund | null, r: Stripe.Refund) =>
+      !latest || r.created > latest.created ? r : latest,
+    null
+  )?.id;
+  if (!refundId) {
+    throw new Error(`Charge ${charge.id} missing refund ID`);
+  }
+
+  // -------------------------------------------------------------------------
+  // F-03 FIX: Split into three phases to avoid holding the DB connection and
+  // FOR UPDATE row lock for the entire Stripe network round-trip.
+  //
+  // Phase 1 (transaction): Lock escrow FOR UPDATE, read state + stripe_transfer_id,
+  //   perform state checks and terminal-skip handling.
+  // Phase 2 (outside transaction): Call StripeService.createTransferReversal() if needed.
+  // Phase 3 (transaction): Update escrow state to REFUNDED atomically.
+  // -------------------------------------------------------------------------
+
+  // --- Phase 1: Lock and read ---
+  type EscrowReadRow = {
+    id: string;
+    task_id: string;
+    state: string;
+    version: number;
+    amount: number;
+    platform_fee_cents: number | null;
+    stripe_refund_id: string | null;
+    stripe_transfer_id: string | null;
+  };
+  const phase1Result = await db.transaction(async (trx: QueryFn) => {
+    let escrowResult;
+    if (escrowId) {
+      // Find by metadata (preferred - explicit correlation)
+      escrowResult = await trx<EscrowReadRow>(
+        `SELECT id, task_id, state, version, amount, platform_fee_cents, stripe_refund_id, stripe_transfer_id
+         FROM escrows
+         WHERE id = $1
+         FOR UPDATE`,
+        [escrowId]
+      );
+    } else {
+      // Fallback: Find by payment_intent_id (charge.payment_intent)
+      const paymentIntentId = typeof charge.payment_intent === 'string'
+        ? charge.payment_intent
+        : charge.payment_intent?.id;
+
+      if (!paymentIntentId) {
+        // BUG 3 FIX: Both paths failed — no escrow_id in charge metadata AND no
+        // payment_intent on the charge. Throwing here causes infinite BullMQ retry
+        // because there is no recoverable state to retry into. Log CRITICAL and alert
+        // ops instead so a human can reconcile manually.
+        const criticalMsg = `CRITICAL: charge.refunded for charge ${charge.id} has no escrow_id metadata and no payment_intent — cannot correlate to an escrow. Manual reconciliation required.`;
+        log.error({ chargeId: charge.id, stripeEventId }, criticalMsg);
+        await notifyAdmins({
+          title: 'charge.refunded: unroutable refund event',
+          body: criticalMsg,
+          deepLink: `/admin/stripe-events/${stripeEventId}`,
+          priority: 'CRITICAL',
+          metadata: { charge_id: charge.id, stripe_event_id: stripeEventId },
+        }).catch(err => log.error({ err }, 'Failed to send admin notification for unroutable charge.refunded'));
+        // Mark the stripe_event as failed-permanent so it is not retried.
+        await trx(
+          `UPDATE stripe_events
+           SET processed_at = NOW(),
+               result = 'failed',
+               error_message = $1
+           WHERE stripe_event_id = $2`,
+          [criticalMsg, stripeEventId]
+        );
+        return { escrow: null as EscrowReadRow | null, skipped: true, unroutable: true };
+      }
+
+      escrowResult = await trx<EscrowReadRow>(
+        `SELECT id, task_id, state, version, amount, platform_fee_cents, stripe_refund_id, stripe_transfer_id
+         FROM escrows
+         WHERE stripe_payment_intent_id = $1
+         FOR UPDATE`,
+        [paymentIntentId]
+      );
+    }
+
+    if (escrowResult.rows.length === 0) {
+      throw new Error(`Escrow not found for refund ${refundId} (escrow_id: ${escrowId || 'not in metadata'})`);
+    }
+
+    const escrow = escrowResult.rows[0];
+
+    // Terminal skip: If escrow is already terminal (but NOT RELEASED — a refund after
+    // release is valid and requires a platform_fee_reversal), skip (prevents noise).
+    // RELEASED is intentionally excluded: a charge.refunded on a previously-released
+    // escrow must flow through so we can reverse the platform fee that was collected.
+    if (['REFUNDED', 'REFUND_PARTIAL'].includes(escrow.state)) {
+      await trx(
+        `UPDATE stripe_events
+         SET processed_at = NOW(),
+             result = 'skipped',
+             error_message = $1
+         WHERE stripe_event_id = $2`,
+        [`Escrow ${escrow.id} already terminal (${escrow.state})`, stripeEventId]
+      );
+      log.warn({ escrowId: escrow.id, state: escrow.state, stripeEventId }, 'Stripe event skipped: escrow already terminal');
+      return { escrow, skipped: true, unroutable: false };
+    }
+
+    // Validate state transition: PENDING|FUNDED|LOCKED_DISPUTE|RELEASED → REFUNDED
+    if (!['PENDING', 'FUNDED', 'LOCKED_DISPUTE', 'RELEASED'].includes(escrow.state)) {
+      throw new Error(`Cannot refund escrow ${escrow.id}: current state is ${escrow.state}, expected PENDING, FUNDED, LOCKED_DISPUTE, or RELEASED`);
+    }
+
+    // Idempotency check: If already refunded with this refund_id, skip
+    if (escrow.state === 'REFUNDED' && escrow.stripe_refund_id === refundId) {
+      log.info({ escrowId: escrow.id, refundId }, 'Escrow already refunded, idempotent replay');
+      return { escrow, skipped: true, unroutable: false };
+    }
+
+    // Transaction committed here; row lock released. stripe_transfer_id captured for Phase 2.
+    return { escrow, skipped: false, unroutable: false };
+  });
+
+  if (phase1Result.unroutable) {
+    return;
+  }
+
+  const { escrow: phase1Escrow, skipped: phase1Skipped } = phase1Result;
+
+  // Handle Phase 1 skipped path (retry recovery runs below, same as before)
+  if (phase1Skipped || !phase1Escrow) {
+    // BUG FIX (MEDIUM - Bug 3 retry recovery): When BullMQ retries after a side-effect
+    // failure (TaskService.advanceProgress or writeToOutbox threw), the DB transaction has
+    // already committed and the escrow is REFUNDED. The terminal-skip guard fires and we
+    // reach this branch. If the original transition was RELEASED→REFUNDED (platform fee was
+    // collected), the platform_fee_reversal ledger entry may not have been written yet.
+    // We recover by checking escrow_events (which records the from_state atomically inside
+    // the DB transaction) and revenue_ledger (which is the dedup key).
+    if (phase1Escrow && phase1Escrow.state === 'REFUNDED') {
+      try {
+        // Check if this Stripe event triggered a RELEASED→REFUNDED transition (retry recovery)
+        const reversalCheckResult = await db.query<{ id: string }>(
+          `SELECT id FROM revenue_ledger WHERE stripe_event_id = $1 AND event_type = 'platform_fee_reversal' LIMIT 1`,
+          [stripeEventId]
+        );
+        const reversalAlreadyLogged = (reversalCheckResult?.rows?.length ?? 0) > 0;
+
+        if (!reversalAlreadyLogged) {
+          // Check escrow_events to see if the prior transition was from RELEASED state
+          const priorStateCheckResult = await db.query<{ from_state: string }>(
+            `SELECT from_state FROM escrow_events
+             WHERE escrow_id = $1
+               AND to_state = 'REFUNDED'
+               AND metadata::jsonb->>'stripe_event_id' = $2
+             ORDER BY created_at DESC LIMIT 1`,
+            [phase1Escrow.id, stripeEventId]
+          );
+          const priorFromState = priorStateCheckResult?.rows?.[0]?.from_state;
+
+          // Only emit reversal if the transition was from RELEASED (fee was previously collected)
+          if (priorFromState === 'RELEASED') {
+            // AUDIT FIX H3: unified money helper (same Math.round result, adds clamping)
+            const platformFeePercent = clampFeePercent(config.stripe.platformFeePercent);
+            const platformFeeCents = resolvePlatformFeeCents(
+              phase1Escrow.amount,
+              platformFeePercent,
+              phase1Escrow.platform_fee_cents,
+            );
+            await RevenueService.logEvent({
+              eventType: 'platform_fee_reversal',
+              userId: null,
+              amountCents: -platformFeeCents,
+              escrowId: phase1Escrow.id,
+              stripeEventId,
+              stripeChargeId: charge.id,
+              metadata: {
+                reason: 'charge_refunded_after_release',
+                escrow_amount_cents: phase1Escrow.amount,
+                platform_fee_basis_points: feeBasisPoints(phase1Escrow.amount, platformFeeCents),
+                refund_id: refundId,
+                retry_recovery: true,
+              },
+            }).catch(err => log.error({ err }, 'Failed to log platform_fee_reversal (retry recovery)'));
+          }
+        }
+      } catch (recoveryErr) {
+        // Non-fatal: retry recovery failure must not block the skip path return
+        log.warn(
+          { err: recoveryErr instanceof Error ? recoveryErr.message : String(recoveryErr), escrowId: phase1Escrow?.id, stripeEventId },
+          'handleChargeRefunded: retry recovery check failed — may need manual reconciliation',
+        );
+      }
+    }
+    return;
+  }
+
+  // --- Phase 2: Stripe transfer reversal (outside transaction, lock released) ---
+  // F-15 FIX: If escrow is RELEASED and a worker transfer exists, reverse it before
+  // marking REFUNDED. Without reversal the worker keeps the funds while the poster
+  // is also refunded — a double-spend. Non-fatal: if reversal fails, log and alert
+  // ops but still proceed with REFUNDED so the webhook is not retried forever.
+  //
+  // F-03 FIX: This call is now OUTSIDE the db.transaction block so the DB connection
+  // and FOR UPDATE row lock are not held during the Stripe network round-trip.
+  if (phase1Escrow.state === 'RELEASED' && phase1Escrow.stripe_transfer_id) {
+    try {
+      const reversalResult = await StripeService.createTransferReversal(phase1Escrow.stripe_transfer_id, phase1Escrow.id);
+      if (!reversalResult.success) {
+        log.error(
+          { escrowId: phase1Escrow.id, stripeTransferId: phase1Escrow.stripe_transfer_id, err: reversalResult.error.message },
+          'F-15: Transfer reversal failed on charge.refunded — proceeding with REFUNDED but ops must manually reconcile worker payout'
+        );
+        await notifyAdmins({
+          title: 'charge.refunded: transfer reversal failed',
+          body: `Escrow ${phase1Escrow.id} — reversal of transfer ${phase1Escrow.stripe_transfer_id} failed: ${reversalResult.error.message}. Worker may retain funds. Manual reconciliation required.`,
+          deepLink: `/admin/escrows/${phase1Escrow.id}`,
+          priority: 'CRITICAL',
+          metadata: { escrow_id: phase1Escrow.id, stripe_transfer_id: phase1Escrow.stripe_transfer_id, stripe_event_id: stripeEventId },
+        }).catch(notifyErr => log.error({ notifyErr }, 'F-15: Failed to alert ops on reversal failure'));
+      } else {
+        log.info({ escrowId: phase1Escrow.id, stripeTransferId: phase1Escrow.stripe_transfer_id }, 'F-15: Transfer reversal succeeded before REFUNDED transition');
+      }
+    } catch (reversalErr) {
+      log.error(
+        { escrowId: phase1Escrow.id, stripeTransferId: phase1Escrow.stripe_transfer_id, err: reversalErr instanceof Error ? reversalErr.message : String(reversalErr) },
+        'F-15: Transfer reversal threw on charge.refunded — proceeding with REFUNDED, ops must manually reconcile'
+      );
+      await notifyAdmins({
+        title: 'charge.refunded: transfer reversal threw',
+        body: `Escrow ${phase1Escrow.id} — reversal of transfer ${phase1Escrow.stripe_transfer_id} threw an error. Worker may retain funds. Manual reconciliation required.`,
+        deepLink: `/admin/escrows/${phase1Escrow.id}`,
+        priority: 'CRITICAL',
+        metadata: { escrow_id: phase1Escrow.id, stripe_transfer_id: phase1Escrow.stripe_transfer_id, stripe_event_id: stripeEventId },
+      }).catch(notifyErr => log.error({ notifyErr }, 'F-15: Failed to alert ops on reversal throw'));
+    }
+  }
+
+  // --- Phase 3: Commit state transition to REFUNDED ---
+  const { updatedEscrow, escrow, skipped } = await db.transaction(async (trx: QueryFn) => {
+    // Re-read and re-lock the escrow row for the state UPDATE.
+    // The state and version may have changed since Phase 1 (lock was released at commit).
+    const reReadResult = await trx<{ id: string; state: string; version: number; stripe_refund_id: string | null }>(
+      `SELECT id, state, version, stripe_refund_id
+       FROM escrows
+       WHERE id = $1
+       FOR UPDATE`,
+      [phase1Escrow.id]
+    );
+
+    if (!reReadResult.rows.length) {
+      throw new Error(`Escrow ${phase1Escrow.id} disappeared between Phase 1 and Phase 3`);
+    }
+
+    const freshEscrow = reReadResult.rows[0];
+
+    // Idempotency: if already REFUNDED (concurrent worker or retry), skip
+    if (['REFUNDED', 'REFUND_PARTIAL'].includes(freshEscrow.state)) {
+      await trx(
+        `UPDATE stripe_events
+         SET processed_at = NOW(),
+             result = 'skipped',
+             error_message = $1
+         WHERE stripe_event_id = $2`,
+        [`Escrow ${freshEscrow.id} already terminal (${freshEscrow.state}) — Phase 3 re-check`, stripeEventId]
+      );
+      log.warn({ escrowId: freshEscrow.id, state: freshEscrow.state, stripeEventId }, 'Phase 3: escrow became terminal between Phase 1 and Phase 3 — skipping');
+      return { updatedEscrow: null, escrow: phase1Escrow, skipped: true };
+    }
+
+    // Update escrow: → REFUNDED (with version check and increment)
+    const updateResult = await trx<{
+      id: string;
+      state: string;
+      version: number;
+    }>(
+      `UPDATE escrows
+       SET state = 'REFUNDED',
+           stripe_refund_id = $1,
+           refunded_at = NOW(),
+           version = version + 1,
+           updated_at = NOW()
+       WHERE id = $2
+         AND state IN ('PENDING', 'FUNDED', 'LOCKED_DISPUTE', 'RELEASED')
+         AND version = $3
+       RETURNING id, state, version`,
+      [refundId, freshEscrow.id, freshEscrow.version]
+    );
+
+    if (updateResult.rowCount === 0) {
+      throw new Error(`Escrow ${freshEscrow.id} state or version changed during Phase 3 update`);
+    }
+
+    // BUG FIX (MEDIUM - Bug 3): Record the from_state and stripe_event_id in escrow_events
+    // so that the retry-recovery path in handleChargeRefunded can detect RELEASED→REFUNDED
+    // transitions and emit the platform_fee_reversal ledger entry if the original run failed
+    // after the DB commit (before logEvent could persist it).
+    if (phase1Escrow.state === 'RELEASED') {
+      await trx(
+        `INSERT INTO escrow_events (escrow_id, from_state, to_state, actor_id, actor_type, metadata)
+         VALUES ($1, 'RELEASED', 'REFUNDED', NULL, 'system', $2)`,
+        [phase1Escrow.id, JSON.stringify({ reason: 'charge_refunded', stripe_event_id: stripeEventId, charge_id: charge.id })]
+      );
+    }
+
+    return { updatedEscrow: updateResult.rows[0], escrow: phase1Escrow, skipped: false };
+  });
+
+  // Phase 3 skipped: Phase 3 transaction detected concurrent terminal transition.
+  if (skipped || !updatedEscrow) {
+    return;
+  }
+
+  // -------------------------------------------------------------------------
+  // Post-Phase-3 side effects
+  // -------------------------------------------------------------------------
+
+  // Step 4: Hook CLOSED transition (Pillar A - Realtime Tracking)
+  await TaskService.advanceProgress({
+    taskId: escrow.task_id,
+    to: 'CLOSED',
+    actor: { type: 'system' },
+  });
+
+  // Record platform fee reversal in revenue ledger for accurate P&L.
+  // A platform fee is only collected when escrow reaches RELEASED state (transfer to worker).
+  // We must ONLY reverse the fee when the pre-transition escrow state was RELEASED —
+  // for PENDING/FUNDED/LOCKED_DISPUTE states no fee was ever collected, so no reversal needed.
+  //
+  // stripeEventId is passed through so the revenue_ledger row carries a stable dedup key.
+  // If logEvent itself fails (DB transient), the .catch() swallows the error. The Phase 1
+  // retry-recovery path handles the case where the entire handler fails after the DB commit.
+  if (escrow.state === 'RELEASED') {
+    // AUDIT FIX H3: unified money helper (same Math.round result, adds clamping)
+    const platformFeePercent = clampFeePercent(config.stripe.platformFeePercent);
+    const platformFeeCents = resolvePlatformFeeCents(
+      escrow.amount,
+      platformFeePercent,
+      escrow.platform_fee_cents,
+    );
+    await RevenueService.logEvent({
+      eventType: 'platform_fee_reversal',
+      userId: null,
+      amountCents: -platformFeeCents,
+      escrowId: escrow.id,
+      stripeEventId,
+      stripeChargeId: charge.id,
+      metadata: {
+        reason: 'charge_refunded_after_release',
+        escrow_amount_cents: escrow.amount,
+        platform_fee_basis_points: feeBasisPoints(escrow.amount, platformFeeCents),
+        refund_id: refundId,
+      },
+    }).catch(err => log.error({ err }, 'Failed to log platform_fee_reversal'));
+  }
+
+  // Emit outbox event: escrow.refunded
+  await writeToOutbox({
+    eventType: 'escrow.refunded',
+    aggregateType: 'escrow',
+    aggregateId: escrow.id,
+    eventVersion: updatedEscrow.version,
+    payload: {
+      escrowId: escrow.id,
+      refundId,
+      version: updatedEscrow.version,
+    },
+    queueName: 'user_notifications',
+    idempotencyKey: `escrow.refunded:${escrow.id}:${updatedEscrow.version}`,
+  });
+
+  log.info({ escrowId: escrow.id, prevState: escrow.state, version: updatedEscrow.version }, 'Escrow refunded (→ REFUNDED)');
+}
+
+/**
+ * Handle transfer.failed: escrow RELEASED → LOCKED_DISPUTE (ops triage required)
+ *
+ * A released escrow whose underlying Stripe transfer has failed must be flagged
+ * for manual ops intervention. We cannot automatically re-release — that would
+ * risk a double-payment if the transfer was retried by Stripe. Instead we:
+ *  1. Look up the escrow by stripe_transfer_id (inside a transaction with FOR UPDATE)
+ *  2. Revert to LOCKED_DISPUTE with reason='transfer_failed' so ops can triage
+ *  3. Log a CRITICAL error for alerting
+ *  4. Insert a revenue_ledger row (type='failed_transfer') as an audit trail
+ *  5. Push an urgent notification to the worker
+ *
+ * NOTE: Admin must resolve via the dispute resolution path — no auto re-release.
+ *
+ * The SELECT ... FOR UPDATE and state revert UPDATE run inside a db.transaction().
+ * RevenueService.logEvent, NotificationService, and writeToOutbox are intentionally
+ * outside — they must always fire even if the lock is lost (so the worker is
+ * never silently unnotified).
+ */
+async function handleTransferFailed(transfer: Stripe.Transfer, stripeEventId: string): Promise<void> {
+  const transferId = transfer.id;
+
+  // -------------------------------------------------------------------------
+  // Critical section: lock escrow row, attempt state revert atomically
+  // -------------------------------------------------------------------------
+  const { escrow, revertedVersion, revertError, workerId } = await db.transaction(async (trx: QueryFn) => {
+    // Find escrow by stripe_transfer_id — FOR UPDATE holds the lock
+    const escrowResult = await trx<{
+      id: string;
+      task_id: string;
+      state: string;
+      version: number;
+      amount: number;
+    }>(
+      `SELECT e.id, e.task_id, e.state, e.version, e.amount
+       FROM escrows e
+       WHERE e.stripe_transfer_id = $1
+       FOR UPDATE`,
+      [transferId]
+    );
+
+    if (escrowResult.rows.length === 0) {
+      // No escrow linked to this transfer — log and skip gracefully
+      log.warn({ transferId, stripeEventId }, 'transfer.failed: no escrow found for transfer_id, skipping');
+      return { escrow: null, revertedVersion: null, revertError: null, workerId: null };
+    }
+
+    const escrow = escrowResult.rows[0];
+
+    // CRITICAL: A payout to a worker has failed. Requires manual intervention.
+    log.error(
+      { transferId, escrowId: escrow.id, escrowState: escrow.state, stripeEventId },
+      'CRITICAL: Stripe transfer.failed — worker payout failed, escrow requires ops triage'
+    );
+
+    // If the escrow is already in a non-RELEASED state (e.g. already locked by another
+    // signal), log and skip the state revert — do not double-transition.
+    if (escrow.state !== 'RELEASED') {
+      log.warn(
+        { transferId, escrowId: escrow.id, state: escrow.state },
+        'transfer.failed: escrow not in RELEASED state, skipping state revert'
+      );
+      // Look up worker for notification even when we skip the revert
+      const taskResult = await trx<{ worker_id: string | null }>(
+        `SELECT worker_id FROM tasks WHERE id = $1`,
+        [escrow.task_id]
+      );
+      return { escrow, revertedVersion: null, revertError: null, workerId: taskResult.rows[0]?.worker_id ?? null };
+    }
+
+    // Revert escrow: RELEASED → LOCKED_DISPUTE (ops triage path)
+    const updateResult = await trx<{ id: string; state: string; version: number }>(
+      `UPDATE escrows
+       SET state = 'LOCKED_DISPUTE',
+           version = version + 1,
+           updated_at = NOW()
+       WHERE id = $1
+         AND state = 'RELEASED'
+         AND version = $2
+       RETURNING id, state, version`,
+      [escrow.id, escrow.version]
+    );
+
+    // Look up worker — inside transaction so the read is consistent
+    const taskResult = await trx<{ worker_id: string | null }>(
+      `SELECT worker_id FROM tasks WHERE id = $1`,
+      [escrow.task_id]
+    );
+    const workerId = taskResult.rows[0]?.worker_id ?? null;
+
+    if (updateResult.rowCount === 0) {
+      const revertError = new Error(
+        `Escrow ${escrow.id} state or version changed during transfer.failed revert (optimistic lock)`
+      );
+      log.error(
+        { escrowId: escrow.id, transferId },
+        'Optimistic lock failure during transfer.failed revert — notification still sent, BullMQ will retry'
+      );
+      return { escrow, revertedVersion: null, revertError, workerId };
+    }
+
+    const updatedEscrow = updateResult.rows[0];
+
+    // Log escrow event for audit trail — inside transaction so it's atomic with the revert
+    await trx(
+      `INSERT INTO escrow_events (escrow_id, from_state, to_state, actor_id, actor_type, metadata)
+       VALUES ($1, 'RELEASED', 'LOCKED_DISPUTE', NULL, 'system', $2)`,
+      [escrow.id, JSON.stringify({ reason: 'transfer_failed', stripe_transfer_id: transferId, stripe_event_id: stripeEventId })]
+    );
+
+    log.info(
+      { escrowId: escrow.id, transferId, version: updatedEscrow.version },
+      'Escrow reverted to LOCKED_DISPUTE after transfer.failed (requires admin triage)'
+    );
+
+    return { escrow, revertedVersion: updatedEscrow.version, revertError: null, workerId };
+  });
+
+  // No escrow found — nothing more to do
+  if (!escrow) {
+    return;
+  }
+
+  // -------------------------------------------------------------------------
+  // Post-transaction side effects — always fire regardless of revert outcome
+  // so the worker is never silently unnotified.
+  // -------------------------------------------------------------------------
+
+  // BUG 3 FIX: Insert failed_transfer ledger entry only if not already present.
+  // On BullMQ retry, a second call to logEvent would create a duplicate entry.
+  // Mirror the idempotency guard pattern used in handleInvoicePaid.
+  const existingFailedTransferEntry = await db.query(
+    `SELECT id FROM revenue_ledger WHERE stripe_event_id = $1 AND event_type = 'failed_transfer' LIMIT 1`,
+    [stripeEventId]
+  );
+  if (existingFailedTransferEntry.rows.length > 0) {
+    log.info(
+      { stripeEventId, escrowId: escrow.id },
+      'handleTransferFailed: failed_transfer ledger entry already exists — skipping duplicate (idempotent retry)',
+    );
+  } else {
+    await RevenueService.logEvent({
+      eventType: 'failed_transfer',
+      userId: workerId,
+      amountCents: -escrow.amount,
+      escrowId: escrow.id,
+      stripeEventId,
+      stripeTransferId: transferId,
+      metadata: {
+        reason: 'transfer_failed',
+        escrow_state_before: 'RELEASED',
+        escrow_state_after: revertedVersion != null ? 'LOCKED_DISPUTE' : 'REVERT_FAILED',
+        requires_admin_intervention: true,
+      },
+    });
+  }
+
+  // Emit outbox event for ops alerting / escalation pipeline
+  await writeToOutbox({
+    eventType: 'escrow.transfer_failed',
+    aggregateType: 'escrow',
+    aggregateId: escrow.id,
+    eventVersion: revertedVersion ?? escrow.version,
+    payload: {
+      escrowId: escrow.id,
+      transferId,
+      workerId: workerId ?? null,
+      version: revertedVersion ?? escrow.version,
+      requiresAdminIntervention: true,
+      revertSucceeded: revertedVersion != null,
+    },
+    queueName: 'user_notifications',
+    idempotencyKey: `escrow.transfer_failed:${escrow.id}:${revertedVersion ?? escrow.version}`,
+  });
+
+  // Throw AFTER notifications so BullMQ retries the revert but worker is already notified
+  if (revertError) {
+    throw revertError;
+  }
+}
+
+/**
+ * Handle payment_intent.payment_failed: escrow PENDING → CANCELLED, task → OPEN
+ *
+ * When a poster's payment fails at the PaymentIntent level:
+ *  1. Find the escrow by stripe_payment_intent_id
+ *  2. If PENDING: cancel the escrow (set state = 'REFUNDED' which is the terminal
+ *     cancel-from-pending path, with reason='payment_failed')
+ *  3. Return the task to OPEN state so the poster can retry
+ *  4. Notify the poster: "Payment failed — please retry"
+ *
+ * Note: There is no CANCELLED escrow state in the type system; tasks have CANCELLED
+ * but for a PENDING escrow that never funded, the appropriate terminal state is
+ * REFUNDED (nothing moved, nothing to refund — but it closes the escrow cleanly).
+ * We use REFUNDED here per the existing state machine: PENDING → REFUNDED is a
+ * valid transition and the only terminal path for a never-funded escrow.
+ *
+ * The SELECT ... FOR UPDATE, the escrow UPDATE, the escrow_events INSERT, and the
+ * tasks UPDATE all run inside a single db.transaction(). NotificationService and
+ * writeToOutbox are intentionally outside.
+ */
+async function handlePaymentIntentPaymentFailed(paymentIntent: Stripe.PaymentIntent, stripeEventId: string): Promise<void> {
+  const paymentIntentId = paymentIntent.id;
+
+  // -------------------------------------------------------------------------
+  // Critical section: lock escrow row, validate state, update atomically
+  // -------------------------------------------------------------------------
+  const { updatedEscrow, escrow, posterId, skipped } = await db.transaction(async (trx: QueryFn) => {
+    // Find escrow by stripe_payment_intent_id — FOR UPDATE holds the lock
+    const escrowResult = await trx<{
+      id: string;
+      task_id: string;
+      state: string;
+      version: number;
+      amount: number;
+    }>(
+      `SELECT e.id, e.task_id, e.state, e.version, e.amount
+       FROM escrows e
+       WHERE e.stripe_payment_intent_id = $1
+       FOR UPDATE`,
+      [paymentIntentId]
+    );
+
+    if (escrowResult.rows.length === 0) {
+      log.warn({ paymentIntentId, stripeEventId }, 'payment_intent.payment_failed: no escrow found, skipping');
+      return { updatedEscrow: null, escrow: null, posterId: null, skipped: true };
+    }
+
+    const escrow = escrowResult.rows[0];
+
+    // If escrow is already terminal, skip silently (idempotency)
+    if (['RELEASED', 'REFUNDED', 'REFUND_PARTIAL'].includes(escrow.state)) {
+      await trx(
+        `UPDATE stripe_events
+         SET processed_at = NOW(),
+             result = 'skipped',
+             error_message = $1
+         WHERE stripe_event_id = $2`,
+        [`Escrow ${escrow.id} already terminal (${escrow.state})`, stripeEventId]
+      );
+      log.warn({ escrowId: escrow.id, state: escrow.state, stripeEventId }, 'Stripe event skipped: escrow already terminal');
+      return { updatedEscrow: null, escrow, posterId: null, skipped: true };
+    }
+
+    if (escrow.state !== 'PENDING') {
+      // Payment failed but escrow already funded — unexpected scenario, surface as error
+      throw new Error(
+        `payment_intent.payment_failed: escrow ${escrow.id} is in state ${escrow.state}, expected PENDING`
+      );
+    }
+
+    // Cancel the escrow: PENDING → REFUNDED (terminal; nothing was funded)
+    const updateResult = await trx<{ id: string; state: string; version: number }>(
+      `UPDATE escrows
+       SET state = 'REFUNDED',
+           refunded_at = NOW(),
+           version = version + 1,
+           updated_at = NOW()
+       WHERE id = $1
+         AND state = 'PENDING'
+         AND version = $2
+       RETURNING id, state, version`,
+      [escrow.id, escrow.version]
+    );
+
+    if (updateResult.rowCount === 0) {
+      throw new Error(
+        `Escrow ${escrow.id} state or version changed during payment_intent.payment_failed update (optimistic lock)`
+      );
+    }
+
+    // Log escrow event for audit trail — inside transaction so it's atomic with the cancel
+    await trx(
+      `INSERT INTO escrow_events (escrow_id, from_state, to_state, actor_id, actor_type, metadata)
+       VALUES ($1, 'PENDING', 'REFUNDED', NULL, 'system', $2)`,
+      [escrow.id, JSON.stringify({ reason: 'payment_failed', stripe_payment_intent_id: paymentIntentId, stripe_event_id: stripeEventId })]
+    );
+
+    // Return task to OPEN so poster can retry payment — inside the same transaction
+    // so the task state flip and escrow cancel are atomic. If it fails we log and
+    // let the transaction roll back (both will retry together).
+    try {
+      await trx(
+        `UPDATE tasks
+         SET state = 'OPEN',
+             updated_at = NOW()
+         WHERE id = $1
+           AND state NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED')`,
+        [escrow.task_id]
+      );
+    } catch (taskError) {
+      log.error(
+        { escrowId: escrow.id, taskId: escrow.task_id, err: taskError instanceof Error ? taskError.message : String(taskError) },
+        'payment_intent.payment_failed: failed to revert task to OPEN — rolling back escrow cancel too'
+      );
+      throw taskError;
+    }
+
+    // Look up poster via task — inside transaction so the read is consistent
+    const taskResult = await trx<{ poster_id: string | null }>(
+      `SELECT poster_id FROM tasks WHERE id = $1`,
+      [escrow.task_id]
+    );
+
+    return {
+      updatedEscrow: updateResult.rows[0],
+      escrow,
+      posterId: taskResult.rows[0]?.poster_id ?? null,
+      skipped: false,
+    };
+  });
+
+  // Skipped paths: already handled inside the transaction
+  if (skipped || !updatedEscrow || !escrow) {
+    return;
+  }
+
+  // -------------------------------------------------------------------------
+  // Post-transaction side effects
+  // -------------------------------------------------------------------------
+
+  // Emit outbox event
+  await writeToOutbox({
+    eventType: 'escrow.payment_failed',
+    aggregateType: 'escrow',
+    aggregateId: escrow.id,
+    eventVersion: updatedEscrow.version,
+    payload: {
+      escrowId: escrow.id,
+      paymentIntentId,
+      taskId: escrow.task_id,
+      posterId: posterId ?? null,
+      version: updatedEscrow.version,
+    },
+    queueName: 'user_notifications',
+    idempotencyKey: `escrow.payment_failed:${escrow.id}:${updatedEscrow.version}`,
+  });
+
+  log.info(
+    { escrowId: escrow.id, taskId: escrow.task_id, paymentIntentId, version: updatedEscrow.version },
+    'Escrow cancelled and task returned to OPEN after payment_intent.payment_failed'
+  );
+}
+
+/**
+ * Handle payout.failed: audited notification to worker, ledger entry, no state machine change
+ *
+ * Stripe automatically returns funds to the Connect balance when a payout fails.
+ * Therefore no escrow state transition is needed. We:
+ *  1. Extract the Connect account ID from the payout object
+ *  2. Look up the user by stripe_connect_id
+ *  3. Create an audited notification: "Your bank transfer failed — update bank details"
+ *  4. Insert a revenue_ledger row (type='failed_payout') for ops visibility
+ *
+ * Note: payout.destination is typed as string | Stripe.BankAccount | Stripe.Card |
+ * Stripe.ExternalAccount | null. We read account from payout object itself which
+ * comes through as a Connect webhook with account metadata in the Stripe event.
+ * The Payout.destination is the bank account — but the Connect account ID is stored
+ * in users.stripe_connect_id, and is the Account ID the webhook was received for.
+ * On connected account webhooks, transfer_data.destination / account is available
+ * in the Stripe event envelope, not the payout object itself. We use the
+ * stripe_connect_id lookup via the account field that Stripe places in metadata
+ * when available, or fall back to querying by stripe_connect_id pattern.
+ *
+ * This handler has no FOR UPDATE — no transaction needed; it is read-only + side effects.
+ */
+async function handlePayoutFailed(payout: Stripe.Payout, stripeEventId: string): Promise<void> {
+  const payoutId = payout.id;
+  const payoutAmount = payout.amount; // In cents
+
+  // The Connect account that owns this payout. Stripe sets this in the event envelope
+  // for Connect webhooks. When we process via stripe_events table, the raw event payload
+  // contains account at event level. We can also read it from payout.destination if it
+  // has an account property, or rely on metadata set at payout creation time.
+  // Best-effort: check payout.metadata.connect_account_id (set by our code on payout creation)
+  // or fall back to the payout's destination account lookup via users table.
+  const connectAccountId: string | null =
+    (payout.metadata?.connect_account_id as string | undefined) ?? null;
+
+  log.error(
+    { payoutId, payoutAmount, connectAccountId, stripeEventId },
+    'CRITICAL: Stripe payout.failed — worker bank transfer failed'
+  );
+
+  let userId: string | null = null;
+
+  if (connectAccountId) {
+    // Look up user by stripe_connect_id — read-only, no lock needed
+    const userResult = await db.query<{ id: string }>(
+      `SELECT id FROM users WHERE stripe_connect_id = $1 LIMIT 1`,
+      [connectAccountId]
+    );
+    userId = userResult.rows[0]?.id ?? null;
+  }
+
+  // Persist a provider-observable notification if we can identify the worker.
+  if (userId) {
+    const notification = await NotificationService.createNotification({
+      userId,
+      category: 'payout_failed',
+      title: 'Bank Transfer Failed',
+      body: 'Your bank transfer failed. Please update your bank details in the app to receive your earnings.',
+      deepLink: 'app://settings/payouts',
+      objectRef: { type: 'payout', id: payoutId },
+      dedupeKey: `stripe:${stripeEventId}:payout_failed`,
+      metadata: { payoutId, stripeEventId, eventVersion: 1 },
+      channels: ['in_app', 'push'],
+      priority: 'CRITICAL',
+    });
+    if (!notification.success) throw new Error(notification.error.message);
+  } else {
+    log.warn(
+      { payoutId, connectAccountId, stripeEventId },
+      'payout.failed: could not identify user for audited notification (connect_account_id not in metadata or not found in users table)'
+    );
+  }
+
+  // Insert failed_payout ledger entry for financial ops visibility
+  // Amount is negative (funds did not reach the worker's bank)
+  // Idempotency guard: check for an existing entry before writing so that
+  // BullMQ retries do not create duplicate ledger rows.
+  const existingFailedPayoutEntry = await db.query(
+    `SELECT id FROM revenue_ledger WHERE stripe_event_id = $1 AND event_type = 'failed_payout' LIMIT 1`,
+    [stripeEventId]
+  );
+  if (existingFailedPayoutEntry.rows.length > 0) {
+    log.info({ stripeEventId, payoutId }, 'handlePayoutFailed: failed_payout ledger entry already exists — skipping duplicate (idempotent retry)');
+  } else {
+    await RevenueService.logEvent({
+      eventType: 'failed_payout',
+      userId: userId ?? null,
+      amountCents: -payoutAmount,
+      stripeEventId,
+      metadata: {
+        payout_id: payoutId,
+        connect_account_id: connectAccountId,
+        payout_status: payout.status,
+        failure_code: payout.failure_code,
+        failure_message: payout.failure_message,
+      },
+    });
+  }
+
+  log.info(
+    { payoutId, connectAccountId, userId, stripeEventId },
+    'payout.failed processed: audited notification created (if user found), ledger entry created, no state machine change needed'
+  );
+}

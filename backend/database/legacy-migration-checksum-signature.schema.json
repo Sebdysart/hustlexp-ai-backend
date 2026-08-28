@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hustlexp.com/schemas/legacy-migration-checksum-signature-v1.json",
+  "title": "HustleXP legacy migration checksum review signature evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "algorithm",
+    "payloadSha256",
+    "signerIdentity",
+    "reviewedCommitSha",
+    "publicKeyPem",
+    "publicKeySha256",
+    "signatureBase64"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "hustlexp.legacy-migration-checksum-signature/v1"
+    },
+    "algorithm": { "const": "ed25519" },
+    "payloadSha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "signerIdentity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "reviewedCommitSha": {
+      "type": "string",
+      "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"
+    },
+    "publicKeyPem": {
+      "type": "string",
+      "minLength": 1
+    },
+    "publicKeySha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "signatureBase64": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9+/]+={0,2}$"
+    }
+  }
+}

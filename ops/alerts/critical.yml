@@ -1,0 +1,173 @@
+# HustleXP Critical Alert Rules
+# AUTHORITY: PRODUCT_SPEC.md §8 (Observability), §9 (SLA)
+#
+# Deploy to: Grafana Alerting / Prometheus Alertmanager
+# Notification channels: PagerDuty (P1), Slack #alerts (P2), Email (P3)
+
+groups:
+  - name: hustlexp.critical
+    interval: 30s
+    rules:
+      # ===================================================================
+      # P0: MONEY PATH ALERTS (wake someone up)
+      # ===================================================================
+
+      - alert: EscrowStuckInFunded
+        expr: |
+          (time() - escrow_funded_at_timestamp{app="hustlexp"}) > 86400
+          AND escrow_state{app="hustlexp"} == "FUNDED"
+        for: 10m
+        labels:
+          severity: critical
+          team: backend
+          sla: money
+        annotations:
+          summary: "Escrow {{ $labels.escrow_id }} stuck in FUNDED for >24h"
+          description: "Funded escrow has not progressed to RELEASED or REFUNDED. May indicate stuck task or failed Stripe transfer."
+          runbook: "https://wiki.hustlexp.com/runbooks/escrow-stuck-funded"
+
+      - alert: StripeWebhookFailures
+        expr: |
+          rate(stripe_webhook_errors_total{app="hustlexp"}[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+          team: backend
+          sla: money
+        annotations:
+          summary: "Stripe webhook processing failures detected"
+          description: "More than 0.1 webhook failures per second. May cause escrow state drift."
+
+      - alert: EscrowInvariantViolation
+        expr: |
+          increase(escrow_invariant_violations_total{app="hustlexp"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          team: backend
+          sla: money
+        annotations:
+          summary: "Escrow invariant violation detected (INV-2)"
+          description: "Database trigger caught an invalid escrow state transition. This should never happen."
+
+      # ===================================================================
+      # P1: AVAILABILITY ALERTS
+      # ===================================================================
+
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_requests_total{app="hustlexp", status=~"5.."}[5m]))
+          / sum(rate(http_requests_total{app="hustlexp"}[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "Error rate >5% for 5 minutes"
+          description: "{{ $value | humanizePercentage }} of requests returning 5xx. SLA target: <1%."
+
+      - alert: HighP99Latency
+        expr: |
+          histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{app="hustlexp"}[5m])) > 2
+        for: 10m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "P99 latency >2s for 10 minutes"
+          description: "API latency degraded. Check DB connection pool and circuit breaker states."
+
+      - alert: DatabaseConnectionPoolExhausted
+        expr: |
+          pg_pool_active_connections{app="hustlexp"} / pg_pool_max_connections{app="hustlexp"} > 0.9
+        for: 5m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "DB connection pool >90% utilized"
+          description: "{{ $value | humanizePercentage }} of connections in use. Risk of request queuing."
+
+      - alert: DatabaseConnectionErrors
+        expr: |
+          rate(pg_pool_errors_total{app="hustlexp"}[5m]) > 0
+        for: 3m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "Database connection errors detected"
+
+      # ===================================================================
+      # P2: AI/COST ALERTS
+      # ===================================================================
+
+      - alert: AIDailyBudgetWarning
+        expr: |
+          sum(increase(ai_usage_cost_usd_total{app="hustlexp"}[24h])) > 40
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "AI daily spend approaching $50 budget cap"
+          description: "Current daily AI spend: ${{ $value }}. Budget: $50/day."
+
+      - alert: AIBudgetExceeded
+        expr: |
+          sum(increase(ai_usage_cost_usd_total{app="hustlexp"}[24h])) > 50
+        for: 1m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "AI daily budget exceeded ($50/day cap)"
+          description: "AI requests will be rejected until midnight UTC reset."
+
+      - alert: CircuitBreakerOpen
+        expr: |
+          circuit_breaker_state{app="hustlexp"} == 1
+        for: 1m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "Circuit breaker {{ $labels.breaker }} is OPEN"
+          description: "External service {{ $labels.breaker }} has been failing. Requests are being short-circuited."
+
+      # ===================================================================
+      # P3: SECURITY ALERTS
+      # ===================================================================
+
+      - alert: RateLimitBurst
+        expr: |
+          sum(rate(rate_limit_exceeded_total{app="hustlexp"}[5m])) by (category) > 10
+        for: 5m
+        labels:
+          severity: warning
+          team: security
+        annotations:
+          summary: "High rate limiting for {{ $labels.category }}"
+          description: "Possible abuse or misconfigured client."
+
+      - alert: AIOutputViolations
+        expr: |
+          increase(ai_output_violations_total{app="hustlexp"}[1h]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          team: security
+        annotations:
+          summary: "Multiple AI output validation violations"
+          description: "{{ $value }} violations in the last hour. May indicate prompt injection attempts."
+
+      - alert: AuthenticationFailureSpike
+        expr: |
+          rate(auth_failures_total{app="hustlexp"}[5m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+          team: security
+        annotations:
+          summary: "Authentication failure spike detected"
+          description: "{{ $value }} auth failures/sec. Possible brute force or credential stuffing."

@@ -1,0 +1,63 @@
+import { describe, it, expect, afterEach, vi } from 'vitest';
+
+describe('validateEnv', () => {
+  const savedEnv = { ...process.env };
+
+  afterEach(() => {
+    // Restore saved env
+    for (const key of ['DATABASE_URL', 'REDIS_URL', 'STRIPE_SECRET_KEY', 'JWT_SECRET', 'R2_ACCOUNT_ID', 'STRIPE_WEBHOOK_SECRET', 'STRIPE_CONNECT_WEBHOOK_SECRET', 'SESSION_ENCRYPTION_KEY']) {
+      if (savedEnv[key] !== undefined) {
+        process.env[key] = savedEnv[key];
+      } else {
+        delete process.env[key];
+      }
+    }
+    vi.resetModules();
+  });
+
+  it('does not throw when all required vars are present', async () => {
+    process.env.DATABASE_URL = 'postgres://test';
+    process.env.REDIS_URL = 'redis://test';
+    process.env.STRIPE_SECRET_KEY = 'sk_test_xxx';
+    process.env.JWT_SECRET = 'secret';
+    process.env.R2_ACCOUNT_ID = 'r2id';
+    process.env.STRIPE_WEBHOOK_SECRET = 'whsec_test';
+    process.env.STRIPE_CONNECT_WEBHOOK_SECRET = 'whsec_connect_test';
+    process.env.SESSION_ENCRYPTION_KEY = 'a'.repeat(64);
+    const { validateEnv } = await import('../../src/lib/env-validator');
+    expect(() => validateEnv()).not.toThrow();
+  });
+
+  it('throws with message containing the missing var name', async () => {
+    delete process.env.DATABASE_URL;
+    process.env.REDIS_URL = 'redis://test';
+    process.env.STRIPE_SECRET_KEY = 'sk_test_xxx';
+    process.env.JWT_SECRET = 'secret';
+    process.env.R2_ACCOUNT_ID = 'r2id';
+    const { validateEnv } = await import('../../src/lib/env-validator');
+    expect(() => validateEnv()).toThrowError('DATABASE_URL');
+  });
+
+  it('requires the Connect webhook signing secret', async () => {
+    process.env.DATABASE_URL = 'postgres://test';
+    process.env.REDIS_URL = 'redis://test';
+    process.env.STRIPE_SECRET_KEY = 'sk_test_xxx';
+    process.env.STRIPE_WEBHOOK_SECRET = 'whsec_platform';
+    delete process.env.STRIPE_CONNECT_WEBHOOK_SECRET;
+    process.env.JWT_SECRET = 'secret';
+    process.env.R2_ACCOUNT_ID = 'r2id';
+    process.env.SESSION_ENCRYPTION_KEY = 'a'.repeat(64);
+    const { validateEnv } = await import('../../src/lib/env-validator');
+    expect(() => validateEnv()).toThrowError('STRIPE_CONNECT_WEBHOOK_SECRET');
+  });
+
+  it('throws listing all missing vars when multiple are absent', async () => {
+    delete process.env.DATABASE_URL;
+    delete process.env.REDIS_URL;
+    process.env.STRIPE_SECRET_KEY = 'sk_test_xxx';
+    process.env.JWT_SECRET = 'secret';
+    process.env.R2_ACCOUNT_ID = 'r2id';
+    const { validateEnv } = await import('../../src/lib/env-validator');
+    expect(() => validateEnv()).toThrowError('REDIS_URL');
+  });
+});

@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "kind": "epic03_webhook_replay_evidence",
+  "as_of": "2026-07-31T10:42:23.733Z",
+  "event_id": "evt_3TzDtM97UdWM2cEw1PvHp5ud",
+  "deliveries_for_event": 3,
+  "stored_once": true,
+  "duplicate_acks": 2,
+  "pass": true,
+  "deliveries": [
+    {
+      "event_id": "evt_3TzDtM97UdWM2cEw1PvHp5ud",
+      "type": "payment_intent.succeeded",
+      "at": "2026-07-31T10:42:18.404Z",
+      "outcome": "stored",
+      "delivery_n": 1
+    },
+    {
+      "event_id": "evt_3TzDtM97UdWM2cEw1L0X5Dpc",
+      "type": "payment_intent.created",
+      "at": "2026-07-31T10:42:18.637Z",
+      "outcome": "stored",
+      "delivery_n": 1
+    },
+    {
+      "event_id": "evt_3TzDtM97UdWM2cEw1PvHp5ud",
+      "type": "payment_intent.succeeded",
+      "at": "2026-07-31T10:42:19.867Z",
+      "outcome": "duplicate_ack",
+      "delivery_n": 2
+    },
+    {
+      "event_id": "evt_3TzDtM97UdWM2cEw1PvHp5ud",
+      "type": "payment_intent.succeeded",
+      "at": "2026-07-31T10:42:23.171Z",
+      "outcome": "duplicate_ack",
+      "delivery_n": 3
+    }
+  ],
+  "engine_contract": "backend/src/services/StripeWebhookService.ts ON CONFLICT (stripe_event_id) DO NOTHING + stripe-webhook-branches.test.ts idempotent replay",
+  "note": "Same Stripe event delivered ≥2 times; local receiver stored once and ack’d duplicates (mirrors engine S-1)."
+}

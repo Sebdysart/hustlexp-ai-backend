@@ -1,0 +1,352 @@
+/**
+ * Messaging Router v1.0.0
+ * 
+ * CONSTITUTIONAL: PRODUCT_SPEC §10, MESSAGING_SPEC.md
+ * 
+ * Endpoints for task-scoped messaging (text, auto-messages, photos, location).
+ * 
+ * @see backend/src/services/MessagingService.ts
+ */
+
+import { TRPCError } from '@trpc/server';
+import { z } from 'zod';
+import { router, protectedProcedure, Schemas } from '../trpc.js';
+import { MessagingService } from '../services/MessagingService.js';
+import { db } from '../db.js';
+
+// Photo inputs carry opaque finalized upload receipt IDs only. Private object
+// keys and short-lived read URLs are resolved inside the service boundary.
+
+export const messagingRouter = router({
+  // --------------------------------------------------------------------------
+  // SEND MESSAGES
+  // --------------------------------------------------------------------------
+  
+  /**
+   * Send a message in a task thread
+   * 
+   * PRODUCT_SPEC §10: Task-scoped messaging
+   * MSG-1: Only allowed during ACCEPTED/PROOF_SUBMITTED/DISPUTED states
+   * MSG-2: Sender must be task participant
+   */
+  sendMessage: protectedProcedure
+    .input(z.object({
+      taskId: Schemas.uuid,
+      messageType: z.enum(['TEXT', 'AUTO']),
+      content: z.string().trim().min(1).max(500).optional(), // Required for TEXT
+      autoMessageTemplate: z.enum(['on_my_way', 'running_late', 'completed', 'need_clarification']).optional(), // Required for AUTO
+    }))
+    .mutation(async ({ input, ctx }) => {
+      if (!ctx.user) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required',
+        });
+      }
+      
+      // Validate input based on message type
+      if (input.messageType === 'TEXT' && !input.content) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Content is required for TEXT messages',
+        });
+      }
+      
+      if (input.messageType === 'AUTO' && !input.autoMessageTemplate) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'autoMessageTemplate is required for AUTO messages',
+        });
+      }
+      
+      const result = await MessagingService.sendMessage({
+        taskId: input.taskId,
+        senderId: ctx.user.id,
+        messageType: input.messageType,
+        content: input.content,
+        autoMessageTemplate: input.autoMessageTemplate,
+      });
+      
+      if (!result.success) {
+        // Map service errors to tRPC errors
+        let code: 'BAD_REQUEST' | 'FORBIDDEN' | 'NOT_FOUND' | 'PRECONDITION_FAILED' = 'BAD_REQUEST';
+        if (result.error.code === 'FORBIDDEN' || result.error.code === 'INVALID_STATE') {
+          code = result.error.code === 'FORBIDDEN' ? 'FORBIDDEN' : 'PRECONDITION_FAILED';
+        } else if (result.error.code === 'NOT_FOUND') {
+          code = 'NOT_FOUND';
+        }
+        
+        throw new TRPCError({
+          code,
+          message: result.error.message,
+        });
+      }
+      
+      return result.data;
+    }),
+  
+  /**
+   * Send a photo message (separate endpoint for photos)
+   */
+  sendPhotoMessage: protectedProcedure
+    .input(z.object({
+      taskId: Schemas.uuid,
+      uploadReceiptIds: z.array(z.string().uuid()).min(1).max(3),
+      caption: z.string().trim().max(200).optional(),
+    }).strict())
+    .mutation(async ({ input, ctx }) => {
+      if (!ctx.user) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required',
+        });
+      }
+      
+      const result = await MessagingService.sendPhotoMessage({
+        taskId: input.taskId,
+        senderId: ctx.user.id,
+        uploadReceiptIds: input.uploadReceiptIds,
+        caption: input.caption,
+      });
+      
+      if (!result.success) {
+        let code: 'BAD_REQUEST' | 'FORBIDDEN' | 'NOT_FOUND' | 'PRECONDITION_FAILED' = 'BAD_REQUEST';
+        if (result.error.code === 'FORBIDDEN' || result.error.code === 'INVALID_STATE') {
+          code = result.error.code === 'FORBIDDEN' ? 'FORBIDDEN' : 'PRECONDITION_FAILED';
+        } else if (result.error.code === 'NOT_FOUND') {
+          code = 'NOT_FOUND';
+        }
+        
+        throw new TRPCError({
+          code,
+          message: result.error.message,
+        });
+      }
+      
+      return result.data;
+    }),
+  
+  // --------------------------------------------------------------------------
+  // READ OPERATIONS
+  // --------------------------------------------------------------------------
+  
+  /**
+   * Get messages for a task (paginated, max 100 per page)
+   *
+   * Returns { messages, hasMore } — clients should request the next page
+   * with offset += 100 while hasMore === true.
+   */
+  getTaskMessages: protectedProcedure
+    .input(z.object({
+      taskId: Schemas.uuid,
+      offset: z.number().int().nonnegative().default(0),
+    }))
+    .query(async ({ input, ctx }) => {
+      if (!ctx.user) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required',
+        });
+      }
+
+      const result = await MessagingService.getMessagesForTask(
+        input.taskId,
+        ctx.user.id,
+        input.offset
+      );
+
+      if (!result.success) {
+        throw new TRPCError({
+          code: result.error.code === 'NOT_FOUND' || result.error.code === 'FORBIDDEN'
+            ? result.error.code
+            : 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+
+      return result.data; // { messages: TaskMessage[], hasMore: boolean }
+    }),
+  
+  /**
+   * Mark message as read
+   */
+  markAsRead: protectedProcedure
+    .input(z.object({
+      messageId: Schemas.uuid,
+    }))
+    .mutation(async ({ input, ctx }) => {
+      if (!ctx.user) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required',
+        });
+      }
+      
+      const result = await MessagingService.markAsRead(
+        input.messageId,
+        ctx.user.id
+      );
+      
+      if (!result.success) {
+        throw new TRPCError({
+          code: result.error.code === 'NOT_FOUND' || result.error.code === 'FORBIDDEN'
+            ? result.error.code
+            : 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+      
+      return result.data;
+    }),
+  
+  /**
+   * Mark all messages for a task as read
+   */
+  markAllAsRead: protectedProcedure
+    .input(z.object({
+      taskId: Schemas.uuid,
+    }))
+    .mutation(async ({ input, ctx }) => {
+      if (!ctx.user) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required',
+        });
+      }
+      
+      const result = await MessagingService.markAllAsRead(
+        input.taskId,
+        ctx.user.id
+      );
+      
+      if (!result.success) {
+        throw new TRPCError({
+          code: result.error.code === 'NOT_FOUND' || result.error.code === 'FORBIDDEN'
+            ? result.error.code
+            : 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+      
+      return result.data;
+    }),
+  
+  /**
+   * Get unread message count (global, not task-specific)
+   */
+  getUnreadCount: protectedProcedure
+    .input(z.void())
+    .query(async ({ ctx }) => {
+      if (!ctx.user) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required',
+        });
+      }
+      
+      const result = await MessagingService.getUnreadCount(ctx.user.id);
+      
+      if (!result.success) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+      
+      // Return both field names for frontend compat
+      return { unreadCount: result.data, count: result.data };
+    }),
+
+  /**
+   * Get conversation summaries for current user
+   * Returns one entry per task with latest message and unread count
+   */
+  getConversations: protectedProcedure
+    .input(z.object({
+      limit: z.number().int().min(1).max(50).default(20),
+      offset: z.number().int().min(0).max(500).default(0),
+    }).optional())
+    .query(async ({ ctx, input }) => {
+      if (!ctx.user) {
+        throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Authentication required' });
+      }
+
+      const limit = input?.limit ?? 20;
+      const offset = input?.offset ?? 0;
+
+      // BUG-6 FIX: Moderation side-channel prevention.
+      //
+      // Original behaviour: quarantined/flagged messages were hidden entirely from
+      // lastMessage AND excluded from unread_count. This created a side-channel:
+      // a sender could watch the recipient's unread count not increment after sending
+      // a message and infer their message had been flagged — without the system
+      // ever telling them directly.
+      //
+      // Fixed behaviour:
+      //   - For the SENDER of a flagged/quarantined message: show
+      //     '[Message under review]' as lastMessage (they know it's under review).
+      //   - For the RECIPIENT: do NOT show the content (moderation preserved); the
+      //     flagged message does not appear as lastMessage to them.
+      //   - unread_count for recipients still excludes flagged/quarantined messages
+      //     (consistent with what they can see), but now lastMessage also uses the
+      //     same filter so the counts are coherent and no side-channel leaks.
+      //   - A 'hasFlaggedMessage' boolean is returned so the sender can confirm
+      //     their own message status via the API response rather than side-channel.
+      const result = await db.query(
+        `SELECT * FROM (
+          SELECT DISTINCT ON (t.id)
+            t.id as "taskId",
+            t.id as id,
+            t.title as "taskTitle",
+            CASE WHEN t.poster_id = $1 THEN t.worker_id ELSE t.poster_id END as "otherUserId",
+            CASE WHEN t.poster_id = $1 THEN wu.full_name ELSE pu.full_name END as "otherUserName",
+            CASE WHEN t.poster_id = $1 THEN 'worker' ELSE 'poster' END as "otherUserRole",
+            COALESCE(
+              CASE
+                WHEN m.moderation_status IN ('quarantined', 'flagged') AND m.sender_id = $1
+                  THEN '[Message under review]'
+                WHEN m.moderation_status IN ('quarantined', 'flagged') AND m.sender_id != $1
+                  THEN NULL
+                ELSE m.content
+              END,
+              '[No messages yet]'
+            ) as "lastMessage",
+            m.created_at as "lastMessageAt",
+            COALESCE(unread.cnt, 0)::int as "unreadCount",
+            COALESCE(flagged.has_flagged, false) as "hasFlaggedMessage"
+          FROM tasks t
+          LEFT JOIN users wu ON wu.id = t.worker_id
+          LEFT JOIN users pu ON pu.id = t.poster_id
+          LEFT JOIN LATERAL (
+            SELECT content, created_at, sender_id, moderation_status FROM task_messages
+            WHERE task_id = t.id
+            ORDER BY created_at DESC LIMIT 1
+          ) m ON true
+          LEFT JOIN LATERAL (
+            SELECT COUNT(*)::int as cnt FROM task_messages
+            WHERE task_id = t.id
+              AND sender_id != $1
+              AND read_at IS NULL
+              AND (moderation_status IS NULL OR moderation_status NOT IN ('quarantined', 'flagged'))
+          ) unread ON true
+          LEFT JOIN LATERAL (
+            SELECT EXISTS (
+              SELECT 1 FROM task_messages
+              WHERE task_id = t.id
+                AND sender_id = $1
+                AND moderation_status IN ('quarantined', 'flagged')
+            ) as has_flagged
+          ) flagged ON true
+          WHERE (t.poster_id = $1 OR t.worker_id = $1)
+            AND t.state IN ('ACCEPTED', 'PROOF_SUBMITTED', 'DISPUTED', 'COMPLETED', 'CANCELLED')
+            AND (t.state NOT IN ('COMPLETED', 'CANCELLED') OR t.updated_at >= NOW() - INTERVAL '7 days')
+          ORDER BY t.id, m.created_at DESC NULLS LAST
+        ) conversations
+        ORDER BY "lastMessageAt" DESC NULLS LAST, "taskId"
+        LIMIT $2 OFFSET $3`,
+        [ctx.user.id, limit, offset]
+      );
+
+      return result.rows;
+    }),
+});

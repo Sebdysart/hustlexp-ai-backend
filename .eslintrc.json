@@ -1,0 +1,56 @@
+{
+  "root": true,
+  "parser": "@typescript-eslint/parser",
+  "plugins": ["@typescript-eslint"],
+  "extends": [
+    "eslint:recommended",
+    "plugin:@typescript-eslint/recommended",
+    "prettier"
+  ],
+  "parserOptions": {
+    "project": ["./tsconfig.eslint.json"],
+    "ecmaVersion": 2022,
+    "sourceType": "module"
+  },
+  "rules": {
+    "@typescript-eslint/explicit-function-return-type": "off",
+    "@typescript-eslint/no-explicit-any": "error",
+    "@typescript-eslint/no-unused-vars": ["error", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_", "caughtErrorsIgnorePattern": "^_", "ignoreRestSiblings": true }],
+    "no-console": ["warn", { "allow": ["warn", "error"] }]
+  },
+  "overrides": [
+    {
+      "files": [
+        "**/tests/**/*.ts",
+        "**/*.test.ts",
+        "**/server.ts",
+        "scripts/**/*.ts",
+        "backend/scripts/**/*.ts",
+        "backend/database/**/*.ts",
+        "tests-vault/**/*.ts"
+      ],
+      "rules": {
+        "no-console": "off",
+        "no-constant-condition": "off",
+        "no-inner-declarations": "off",
+        "@typescript-eslint/no-explicit-any": "off",
+        "@typescript-eslint/no-unused-vars": "off",
+        "@typescript-eslint/no-require-imports": "off",
+        "@typescript-eslint/no-this-alias": "off",
+        "@typescript-eslint/no-unsafe-function-type": "off"
+      }
+    }
+  ],
+  "ignorePatterns": [
+    "dist",
+    "node_modules",
+    "*.js",
+    "src/index.ts",
+    "src/routes/**/*",
+    "src/middleware/**/*",
+    "src/ai/orchestrator.ts",
+    "src/services/DisputeResolutionService.ts",
+    "src/services/TaskApplicationService.ts",
+    "src/services/TaxReportingService.ts"
+  ]
+}

@@ -1,0 +1,662 @@
+import { z } from 'zod';
+import { db } from '../db.js';
+import { AIClient } from './AIClient.js';
+import { PromptInjectionGuard } from '../ai/PromptInjectionGuard.js';
+import { logger } from '../logger.js';
+import { scrubPII } from '../lib/pii-scrubber.js';
+import { aiObservation } from './AIObservabilityPolicy.js';
+
+// FIX 1 & 2: Zod schema to validate LLM response shape and clamp score to [0, 100]
+const AiCheckResponseSchema = z.object({
+  score: z.number().int().min(0).max(100),
+  rules: z.array(z.string()).default([]),
+  deception_detected: z.boolean().default(false),
+  is_genuinely_bizarre: z.boolean().default(false),
+});
+
+// FIX 3: Maximum description length before LLM call
+const MAX_DESCRIPTION_LENGTH = 2000;
+
+const log = logger.child({ service: 'ComplianceGuardianService' });
+
+export type ComplianceTier = 'clean' | 'soft_flag' | 'hard_block';
+
+export interface ComplianceResult {
+  score: number;
+  tier: ComplianceTier;
+  triggeredRules: string[];
+  suggestedAlternative?: string;
+  notes: ComplianceNotes;
+  deception_detected: boolean;
+  is_genuinely_bizarre: boolean;
+  ai_signals_computed: boolean;
+  ai_advisory?: {
+    score: number;
+    triggeredRules: string[];
+    deception_detected: boolean;
+    is_genuinely_bizarre: boolean;
+    authority: 'A2_PROPOSAL_ONLY';
+  };
+}
+
+export interface ComplianceNotes {
+  score: number;
+  tier: ComplianceTier;
+  triggered_rules: string[];
+  suggested_alternative: string | null;
+  admin_review_id: string | null;
+  appeal_status: 'none' | 'pending' | 'approved' | 'rejected';
+  deception_detected: boolean;
+  is_genuinely_bizarre: boolean;
+  ai_signals_computed: boolean;
+}
+
+interface EvaluateInput {
+  description: string;
+  userId: string;
+  templateSlug?: string;
+  ipAddress?: string;
+  deviceFingerprint?: string;
+}
+
+function deterministicPolicySignals(description: string, templateSlug?: string): {
+  deceptionDetected: boolean;
+  genuinelyBizarre: boolean;
+} {
+  const normalized = description.toLowerCase();
+  const deceptiveRole = /\b(boyfriend|girlfriend|date|friend|business\s+partner|partner|employee|colleague|coworker|hoa|official|inspector|officer|critic|journalist|reporter|professional|admirer)\b/i;
+  const deceptionAction = /\b(pretend(?:ing)?|pose|act(?:ing)?|impersonat(?:e|ing)|fake)\b/i;
+  const actionMatch = deceptionAction.exec(description);
+  const roleMatch = deceptiveRole.exec(description);
+  const actionAndRole = Boolean(actionMatch && roleMatch && Math.abs(actionMatch.index - roleMatch.index) <= 100);
+  const fakeEmployment = /\b(?:be|serve as)\b.{0,20}\bfake\b.{0,20}\b(employee|partner|representative)\b/i.test(description);
+  const anonymousIdentity = /\bpretend(?:ing)?\b.{0,80}\bfrom\b.{0,30}\banonymous\s+(admirer|friend|customer)\b/i.test(description);
+  const selfAwareCharacterRoleplay = /\bimaginary\s+friend\b/i.test(description)
+    && /\b(character\s+description|roleplay|made\s+real)\b/i.test(description);
+  const deceptionDetected = !selfAwareCharacterRoleplay
+    && (actionAndRole || fakeEmployment || anonymousIdentity);
+  const activeBizarreSignal = /\b(act|acting|roleplay|scripted|perform|performance|audience|ceremony|ritual|serenade|s[ée]ance|recite|reciting)\b/i.test(description)
+    || /\bscatter(?:ing)?\b.{0,60}\bashes\b/i.test(description)
+    || /\b(comedy\s+show|straight\s+man)\b/i.test(description);
+  const standardPhysicalLabor = /\b(deliver|delivery|move|moving|clean|cleaning|repair|assemble|assembly|yard|lawn|haul|painting|install|installation|pack|packing|boxes)\b/i.test(normalized);
+  const privatePerformance = /\b(private|home|house|apartment)\b.{0,40}\b(show|performance|serenade|ceremony)\b/i.test(description);
+  const genuinelyBizarre = templateSlug === 'wildcard_bizarre'
+    && activeBizarreSignal
+    && (!standardPhysicalLabor || privatePerformance);
+  return { deceptionDetected, genuinelyBizarre };
+}
+
+const HARD_BLOCK_PATTERNS = [
+  /no\s+questions?\s+asked/i,
+  // Fragmented/synonym variants of the same anonymous-delivery signal.
+  /no\s+(questions?|queries)(?:\s+\w+){0,3}\s+(asked|deliver(?:y|ed)?)/i,
+  /discreet\s+(only|delivery|service)/i,
+  /with\s+benefits/i,
+  /adult\s+(service|entertainment|modeling)/i,
+  /happy\s*ending/i,
+  /erotic|sexual\s+service/i,
+  /unlicensed\s+(medical|legal|therapy)/i,
+  /no\s+address.{0,20}deliver/i,
+  /\b(buy|sell|score|source|obtain|get\s+me|find\s+me).{0,30}(drugs?|weed|meth|cocaine|heroin|pills?|controlled\s+substances?|narcotics?)\b/i,
+  /\b(lockpick(ing)?|pick\s+the\s+lock|break\s+in|breaking\s+and\s+entering|b\s*and\s*e)\b/i,
+  // "don't/no need to know what's inside" — drug-mule / contraband concealment signal
+  /\b(don'?t|no)\s+(need\s+to\s+know|ask|tell\s+me).{0,20}(inside|contents?|what\s+(it\s+is|is\s+inside|s\s+inside))\b/i,
+  // "no need for details" — anonymous drop/pickup signal
+  /\bno\s+(need|requirement)\s+for\s+(the\s+)?(details|specifics|information|info)\b/i,
+  // "address (info) not needed" — anonymous drop-off signal
+  /\baddress\s+(info(rmation)?\s+)?(is\s+)?(not\s+needed|unnecessary|not\s+required|doesnt\s+matter|not\s+important)\b/i,
+];
+
+// Weapon transport patterns — evaluated via _weaponPatternCheck() to support negator carveout
+const WEAPON_TRANSPORT_PATTERNS = [
+  /\b(deliver|bring|transport|carry|drop.?off).{0,30}(gun|firearm|weapon|pistol|rifle|ammo|ammunition)\b/i,
+  /\b(gun|firearm|weapon|pistol|rifle).{0,30}(delivery|transport|drop.?off|location)\b/i,
+];
+
+// If any of these words appear in the description, weapon transport is downgraded to soft_flag
+const WEAPON_CONTEXT_NEGATORS = /gun\s+range|shooting\s+range|hunting|rifle\s+case|gun\s+case|firearm\s+case|storage\s+unit|licensed\s+dealer|licensed\s+firearm|sporting\s+goods/i;
+
+const SOFT_FLAG_PATTERNS = [
+  { pattern: /massage/i, rule: 'physical_contact_ambiguous', score: 35 },
+  { pattern: /overnight.{0,30}(stay|companion|babysit|nanny|childcare|caregiver|sitter|(?<!self\s)(?<!\w)care\b)/i, rule: 'overnight_ambiguous', score: 45 },
+  { pattern: /alone.{0,20}(house|home|apartment)/i, rule: 'isolation_flag', score: 30 },
+  { pattern: /(notary|legal\s+document).{0,30}(home|house)/i, rule: 'unlicensed_legal', score: 40 },
+  { pattern: /medical.{0,20}(advice|treatment|injection)/i, rule: 'unlicensed_medical', score: 50 },
+  { pattern: /cash\s+only.{0,20}no\s+record/i, rule: 'unreported_payment', score: 45 },
+  // Broader cash + no-record variant: "cash payment only, no records needed" (ATK-18)
+  { pattern: /\bcash\s+(payment|payments?)\b.{0,40}\bno\s+(records?|receipts?|documentation|trace)\b/i, rule: 'unreported_payment', score: 45 },
+  { pattern: /\b(gfe|girlfriend\s+experience|full\s+service(?!\s*(car|auto|vehicle|detailing|cleaning|wardrobe|consultation|menu|buffet|spa|salon|wash|wax|oil\s+change|repair|maintenance))|intimate\s+service|companionship\s+service)\b/i, score: 50, rule: 'sex_work_coded_language' },
+  { pattern: /\b(escort(?!\s*(to\b|service\s+dog|vehicle|my|her|his|their|our|your|someone|a\s+person|the\s+patient|the\s+guest))|private\s+escort)\b/i, score: 45, rule: 'escort_ambiguous' },
+  { pattern: /\b(controlled\s+substances?|pharmacolog\w*|score\s+some)\b/i, score: 40, rule: 'drug_reference' },
+  { pattern: /\b(reconnaissance|casing|staking?\s+out|surveil).{0,20}(house|home|property|neighbor|building)\b/i, score: 45, rule: 'property_surveillance' },
+  { pattern: /\b(houses?|homes?|properties|buildings?)\b.{0,35}\b(easy|simple|possible)\s+to\s+(enter|access|break\s+into)\b/i, score: 55, rule: 'property_entry_reconnaissance' },
+  { pattern: /\b(pretend|pose|act).{0,20}(you'?re|to\s+be|as).{0,20}(hoa|police|officer|inspector|official|city|government|landlord|authority|representative|agent\s+from)\b/i, score: 55, rule: 'authority_impersonation' },
+  { pattern: /\b(impersonat|pretend.{0,10}official|fake.{0,10}(inspector|officer|agent|representative))\b/i, score: 55, rule: 'authority_impersonation' },
+  { pattern: /\b(pose|pretend|act|go\s+as).{0,20}(a|an).{0,20}(journalist|reporter|critic|reviewer|doctor|nurse|lawyer|attorney|detective|investigator|photographer|influencer)\b/i, score: 40, rule: 'professional_role_impersonation' },
+  { pattern: /\b(live|stay|sleep).{0,20}(in|at).{0,20}(my\s+)?(house|home|apartment|place|unit)\b/i, score: 45, rule: 'extended_presence_livein' },
+  { pattern: /\buntil\s+i\s+(fall\s+)?asleep\b/i, score: 35, rule: 'presence_until_asleep' },
+  { pattern: /\bfor\s+(one|1|two|2|three|3|a)\s+(week|weeks|night|nights)\b.{0,30}(companion|assistant|stay|live)/i, score: 40, rule: 'multi_night_arrangement' },
+];
+
+// ============================================================
+// FLAGGED PATTERNS — 12 high-signal coded phrases
+// Code-first exact match (normalize: lowercase, trim, strip punctuation, collapse whitespace)
+// These populate flagged_phrase_counter on the users table for cross-task detection.
+// ============================================================
+export const FLAGGED_PATTERNS: string[] = [
+  'no questions asked',
+  'dont ask questions',
+  'no questions',
+  'drop it off no details',
+  'deliver for a friend no questions',
+  'discreet delivery',
+  'cash only no record',
+  'split payment later',
+  'deliver for a friend',
+  'bring it just leave it',
+  'no address needed',
+  'package for a friend no details',
+  // Additional coded phrases (v2.8.5)
+  'package for a friend',        // ATK-20: fragmented version still signals anonymous delivery
+  'no need for details',         // ATK-17: variant of "drop it off no details"
+  'no further details',          // ATK-20: "no further details" = same intent
+  'friend of mine no need',      // ATK-17: "friend of mine, no need for details"
+];
+
+// Override: if description contains license-affirming words, suppress soft flags
+const LICENSE_AFFIRMERS = [/licensed/i, /certified/i, /credentials/i, /professional/i, /therapist/i, /practitioner/i];
+
+// Homoglyph map: common visual lookalikes (Cyrillic + accented Latin + Greek + Armenian → ASCII)
+// IMPORTANT: This map is applied BEFORE the replace(/[^\w\s]/g, ' ') strip step.
+// JavaScript \w only covers [A-Za-z0-9_], so Greek/Armenian letters would otherwise be
+// stripped to spaces rather than mapped to their ASCII equivalents, silently breaking
+// pattern detection (e.g. "nο questions asked" with Greek ο → "n questions asked" → no match).
+const HOMOGLYPH_MAP: Record<string, string> = {
+  // ── Cyrillic lookalikes ──────────────────────────────────────────────────
+  '\u0456': 'i',  // Cyrillic і → i
+  '\u0430': 'a',  // Cyrillic а → a
+  '\u0435': 'e',  // Cyrillic е → e
+  '\u043E': 'o',  // Cyrillic о → o
+  '\u0440': 'r',  // Cyrillic р → r
+  '\u0441': 'c',  // Cyrillic с → c
+  '\u0445': 'x',  // Cyrillic х → x
+  // ── Accented Latin ──────────────────────────────────────────────────────
+  '\u00E8': 'e',  // è → e
+  '\u00E9': 'e',  // é → e
+  '\u00E0': 'a',  // à → a
+  '\u00F3': 'o',  // ó → o
+  '\u00FA': 'u',  // ú → u
+  // ── Greek lowercase lookalikes ───────────────────────────────────────────
+  '\u03B1': 'a',  // α (alpha)   → a
+  '\u03B2': 'b',  // β (beta)    → b
+  '\u03B5': 'e',  // ε (epsilon) → e
+  '\u03B9': 'i',  // ι (iota)    → i
+  '\u03BA': 'k',  // κ (kappa)   → k
+  '\u03BD': 'n',  // ν (nu)      → n
+  '\u03BF': 'o',  // ο (omicron) → o   ← key bypass character
+  '\u03C1': 'r',  // ρ (rho)     → r
+  '\u03C4': 't',  // τ (tau)     → t
+  '\u03C5': 'u',  // υ (upsilon) → u
+  '\u03C7': 'x',  // χ (chi)     → x
+  // ── Greek uppercase lookalikes ───────────────────────────────────────────
+  '\u0391': 'A',  // Α (Alpha)   → A
+  '\u0392': 'B',  // Β (Beta)    → B
+  '\u0395': 'E',  // Ε (Epsilon) → E
+  '\u0399': 'I',  // Ι (Iota)    → I
+  '\u039A': 'K',  // Κ (Kappa)   → K
+  '\u039C': 'M',  // Μ (Mu)      → M
+  '\u039D': 'N',  // Ν (Nu)      → N
+  '\u039F': 'O',  // Ο (Omicron) → O
+  '\u03A1': 'R',  // Ρ (Rho)     → R
+  '\u03A4': 'T',  // Τ (Tau)     → T
+  '\u03A5': 'Y',  // Υ (Upsilon) → Y
+  '\u03A7': 'X',  // Χ (Chi)     → X
+  '\u0396': 'Z',  // Ζ (Zeta)    → Z
+  // ── Armenian lowercase lookalikes ────────────────────────────────────────
+  '\u0570': 'h',  // հ (he)   → h
+  '\u0578': 'o',  // ո (vo)   → o
+  '\u0561': 'a',  // ա (ayb)  → a
+  '\u0565': 'e',  // ե (yech) → e
+  '\u056B': 'i',  // ի (ini)  → i
+  '\u0576': 'n',  // ն (now)  → n
+  '\u057D': 's',  // ս (seh)  → s
+  '\u057F': 't',  // տ (tiwn) → t
+};
+
+const SUGGESTED_ALTERNATIVES: Record<string, string> = {
+  physical_contact_ambiguous: 'specialized_licensed',
+  unlicensed_medical: 'specialized_licensed',
+  unlicensed_legal: 'specialized_licensed',
+};
+
+export const ComplianceGuardianService = {
+  evaluate: async (input: EvaluateInput): Promise<ComplianceResult> => {
+    const { description, userId, ipAddress, deviceFingerprint } = input;
+
+    const patternMatch = await ComplianceGuardianService._codeLevelPatternMatch(description, userId);
+    const normalizedDescription = ComplianceGuardianService._normalizeDescription(description);
+    let heuristicResult = ComplianceGuardianService._heuristicCheck(normalizedDescription);
+
+    // Injection attempts are a deterministic policy signal even when the task
+    // would otherwise score clean and the AI ambiguity gate would not run.
+    // This prevents attackers from hiding response-control instructions inside
+    // benign task text to bypass the guard by keeping the heuristic score at 0.
+    const injectionResult = PromptInjectionGuard.analyze(description);
+    if (injectionResult.decision === 'BLOCK') {
+      heuristicResult = {
+        score: 100,
+        triggeredRules: [...new Set([...heuristicResult.triggeredRules, 'prompt_injection_blocked'])],
+      };
+    }
+
+    let codedPhraseMatched = false;
+    if (patternMatch.matched && patternMatch.matchedPhrase) {
+      codedPhraseMatched = true;
+      // BUG FIX #1: If the heuristic already returned hard_block (score=85), do NOT add the
+      // coded-phrase score delta. The phrase is already in HARD_BLOCK_PATTERNS — double-scoring
+      // would inflate the score to 100 without adding any new signal. Still record the rule for
+      // analytics but cap the score at the heuristic value.
+      const alreadyHardBlock = heuristicResult.score >= 85;
+      if (patternMatch.isRepeat) {
+        // Repeat occurrence: +25 to push firmly into soft_flag range
+        heuristicResult = {
+          score: alreadyHardBlock ? heuristicResult.score : heuristicResult.score + 25,
+          triggeredRules: [...heuristicResult.triggeredRules, 'cross_task_pattern_repeat'],
+        };
+      } else {
+        // First occurrence: +15 to push into soft_flag range
+        heuristicResult = {
+          score: alreadyHardBlock ? heuristicResult.score : heuristicResult.score + 15,
+          triggeredRules: [...heuristicResult.triggeredRules, 'coded_phrase_first_occurrence'],
+        };
+      }
+    }
+
+    if (codedPhraseMatched) {
+      heuristicResult = {
+        ...heuristicResult,
+        score: Math.max(heuristicResult.score, 21), // Ensure coded phrase alone reaches soft_flag
+      };
+    }
+
+    const deterministicSignals = deterministicPolicySignals(description, input.templateSlug);
+    if (deterministicSignals.deceptionDetected) {
+      heuristicResult = {
+        score: Math.max(heuristicResult.score, 35),
+        triggeredRules: [...new Set([...heuristicResult.triggeredRules, 'deterministic_social_deception'])],
+      };
+    }
+    let aiAdvisory: ComplianceResult['ai_advisory'];
+
+    const isWildcardTask = input.templateSlug === 'wildcard_bizarre';
+    const scoreInAmbiguousRange = heuristicResult.score >= 15 && heuristicResult.score <= 50;
+    const shouldRunAI = AIClient.isConfigured() && (scoreInAmbiguousRange || isWildcardTask);
+
+    let aiSignalsComputed = false;
+
+    if (shouldRunAI) {
+      try {
+        const proposal = await ComplianceGuardianService._aiCheck(description, heuristicResult, input.templateSlug, userId);
+        aiAdvisory = {
+          score: proposal.score,
+          triggeredRules: proposal.triggeredRules,
+          deception_detected: proposal.deception_detected,
+          is_genuinely_bizarre: proposal.is_genuinely_bizarre,
+          authority: 'A2_PROPOSAL_ONLY',
+        };
+        aiSignalsComputed = true;
+      } catch (err) {
+        log.warn({ err }, 'AI compliance check failed, using heuristic result');
+      }
+    }
+
+    if (!AIClient.isConfigured() && isWildcardTask) {
+      log.warn(
+        { templateSlug: input.templateSlug },
+        'AI not configured — model advisory unavailable; deterministic compliance policy remains authoritative.'
+      );
+    }
+
+    const tier = ComplianceGuardianService._scoreTotier(heuristicResult.score);
+
+    if (heuristicResult.score >= 21) {
+      await ComplianceGuardianService._logViolation({
+        userId, ipAddress, deviceFingerprint,
+        description, score: heuristicResult.score,
+        triggeredRules: heuristicResult.triggeredRules,
+      });
+    }
+
+    const suggestedAlternative = heuristicResult.triggeredRules
+      .map(r => SUGGESTED_ALTERNATIVES[r])
+      .find(Boolean) ?? null;
+
+    const notes = ComplianceGuardianService.toNotes(
+      heuristicResult.score,
+      heuristicResult.triggeredRules,
+      suggestedAlternative ?? undefined,
+      deterministicSignals.deceptionDetected,
+      deterministicSignals.genuinelyBizarre,
+      aiSignalsComputed,
+    );
+
+    return {
+      score: heuristicResult.score,
+      tier,
+      triggeredRules: heuristicResult.triggeredRules,
+      suggestedAlternative: suggestedAlternative ?? undefined,
+      notes,
+      deception_detected: deterministicSignals.deceptionDetected,
+      is_genuinely_bizarre: deterministicSignals.genuinelyBizarre,
+      ai_signals_computed: aiSignalsComputed,
+      ...(aiAdvisory ? { ai_advisory: aiAdvisory } : {}),
+    };
+  },
+
+  toNotes: (
+    score: number,
+    triggeredRules: string[],
+    suggestedAlternative?: string,
+    deception_detected: boolean = false,
+    is_genuinely_bizarre: boolean = false,
+    ai_signals_computed: boolean = false
+  ): ComplianceNotes => ({
+    score,
+    tier: ComplianceGuardianService._scoreTotier(score),
+    triggered_rules: triggeredRules,
+    suggested_alternative: suggestedAlternative ?? null,
+    admin_review_id: null,
+    appeal_status: 'none',
+    deception_detected,
+    is_genuinely_bizarre,
+    ai_signals_computed,
+  }),
+
+  _scoreTotier: (score: number): ComplianceTier => {
+    if (score >= 61) return 'hard_block';
+    if (score >= 21) return 'soft_flag';
+    return 'clean';
+  },
+
+  _weaponPatternCheck: (description: string): { score: number; triggeredRules: string[] } | null => {
+    const weaponMatch = WEAPON_TRANSPORT_PATTERNS.some(p => p.test(description));
+    if (!weaponMatch) return null;
+
+    const hasNegator = WEAPON_CONTEXT_NEGATORS.test(description);
+    if (hasNegator) {
+      // Legitimate sporting/hunting/storage context — downgrade to soft_flag
+      return { score: 60, triggeredRules: ['weapon_transport_context'] };
+    }
+    // No context words — treat as hard_block
+    return { score: 85, triggeredRules: ['weapon_delivery_attempt'] };
+  },
+
+  _heuristicCheck: (description: string): { score: number; triggeredRules: string[] } => {
+    // A single-person 24-hour continuous engagement is incompatible with the
+    // platform's fatigue and worker-protection rules. It must be split into
+    // shifts or routed through a staffed business workflow.
+    if (/\b(?:full\s+)?(?:24|twenty[-\s]?four)[-\s]*(?:hour|hr)s?\b/i.test(description)) {
+      return { score: 85, triggeredRules: ['excessive_continuous_duration'] };
+    }
+
+    for (const pattern of HARD_BLOCK_PATTERNS) {
+      if (pattern.test(description)) {
+        return { score: 85, triggeredRules: ['hard_block_pattern'] };
+      }
+    }
+
+    const weaponResult = ComplianceGuardianService._weaponPatternCheck(description);
+    if (weaponResult) {
+      return weaponResult;
+    }
+
+    // Check if description contains license affirmers (suppress soft flags)
+    const hasLicenseAffirmer = LICENSE_AFFIRMERS.some(p => p.test(description));
+
+    let highestScore = 0;
+    const triggeredRules: string[] = [];
+    for (const { pattern, rule, score } of SOFT_FLAG_PATTERNS) {
+      if (pattern.test(description)) {
+        // If description has license-affirming words, suppress physical_contact_ambiguous
+        if (rule === 'physical_contact_ambiguous' && hasLicenseAffirmer) continue;
+        highestScore = Math.max(highestScore, score);
+        triggeredRules.push(rule);
+      }
+    }
+
+    return { score: highestScore, triggeredRules };
+  },
+
+  _normalizeDescription: (description: string): string => {
+    // Step 0a: Pre-normalize abbreviations that normalization would destroy.
+    // "b&e" / "B&E" (breaking & entering) → expand before & is stripped to space.
+    let normalized = description.replace(/\bb\s*&\s*e\b/gi, 'breaking and entering');
+
+    // Step 0b: Replace known homoglyphs (Cyrillic lookalikes, accented Latin)
+    for (const [char, replacement] of Object.entries(HOMOGLYPH_MAP)) {
+      normalized = normalized.split(char).join(replacement);
+    }
+
+    normalized = normalized
+      .normalize('NFKC')              // normalize ligatures, fullwidth, superscripts, etc.
+      .toLowerCase()
+      .replace(/['\u2019\u2018`]/g, '') // strip apostrophes/smart quotes (contractions: don't → dont)
+      .replace(/_/g, ' ')             // underscores → spaces (FIX 2)
+      .replace(/[^\w\s]/g, ' ')       // punctuation/remaining non-ASCII → spaces (FIX 1: space not empty)
+      .replace(/\s+/g, ' ')           // collapse whitespace
+      .trim();
+
+    // Step N: Collapse letter-spaced words — e.g. "h a p p y e n d i n g" → "happyending"
+    // A run of 3+ consecutive single-character tokens is characteristic of letter-spacing
+    // evasion (e.g. "h a p p y e n d i n g"). Collapse by stripping the spaces within
+    // each run so the underlying word reassembles and can be matched by normal patterns.
+    // Note: runs of 2 are intentionally excluded to avoid false positives (e.g. "I o" or
+    // common abbreviated speech). Only 3+ consecutive single-char tokens are collapsed.
+    normalized = normalized.replace(/\b(\w)( \w){2,}\b/g, (match) => match.replace(/ /g, ''));
+
+    return normalized;
+  },
+
+  _codeLevelPatternMatch: async (
+    description: string,
+    userId: string
+  ): Promise<{ matched: boolean; isRepeat: boolean; matchedPhrase: string | null }> => {
+    const normalized = ComplianceGuardianService._normalizeDescription(description);
+    const matchedPhrase = FLAGGED_PATTERNS.find(p => normalized.includes(p)) ?? null;
+
+    if (!matchedPhrase) {
+      return { matched: false, isRepeat: false, matchedPhrase: null };
+    }
+
+    // FIX 4: Per-phrase object-keyed counter — eliminates cycling attack.
+    // flagged_phrase_counter is now a JSONB object keyed by phrase string:
+    //   { "no questions asked": { "count": 2, "first_at": "...", "last_at": "..." }, ... }
+    // Each phrase has its own independent slot that cannot be displaced by other phrases.
+    try {
+      const atomicResult = await db.query<{ was_repeat: boolean }>(
+        `WITH current_entry AS (
+          SELECT flagged_phrase_counter->$3 AS entry FROM users WHERE id = $1
+        ),
+        was_repeat AS (
+          SELECT
+            (current_entry.entry IS NOT NULL
+             AND (current_entry.entry->>'last_at')::timestamptz >= NOW() - INTERVAL '30 days') AS was_repeat,
+            COALESCE((current_entry.entry->>'count')::int, 0) AS current_count
+          FROM current_entry
+        ),
+        new_entry AS (
+          SELECT jsonb_build_object(
+            'count', (SELECT current_count + 1 FROM was_repeat),
+            'first_at', COALESCE(
+              (SELECT entry->>'first_at' FROM current_entry WHERE entry IS NOT NULL),
+              NOW()::text
+            ),
+            'last_at', NOW()::text
+          ) AS entry
+        )
+        UPDATE users
+        SET flagged_phrase_counter = COALESCE(flagged_phrase_counter, '{}'::jsonb) || jsonb_build_object($3, (SELECT entry FROM new_entry))
+        WHERE id = $1
+        RETURNING (SELECT was_repeat FROM was_repeat) AS was_repeat`,
+        [userId, null, matchedPhrase]
+      );
+
+      // If no row was returned, the user doesn't exist in the DB.
+      // The counter was never updated. Log a warning but don't block — treat as first occurrence.
+      if (!atomicResult.rows[0]) {
+        log.warn({ userId }, 'flagged_phrase_counter update found no user row — counter not updated, treating as first occurrence');
+        return { matched: true, isRepeat: false, matchedPhrase };
+      }
+      const isRepeat = atomicResult.rows[0].was_repeat ?? false;
+      return { matched: true, isRepeat, matchedPhrase };
+    } catch (err) {
+      log.warn({ err }, 'Failed to update flagged_phrase_counter atomically, continuing without cross-task check');
+      return { matched: true, isRepeat: false, matchedPhrase };
+    }
+  },
+
+  _aiCheck: async (
+    description: string,
+    heuristic: { score: number; triggeredRules: string[] },
+    templateSlug?: string,
+    userId?: string,
+  ): Promise<{ score: number; triggeredRules: string[]; deception_detected: boolean; is_genuinely_bizarre: boolean }> => {
+    const templateContext = templateSlug === 'wildcard_bizarre'
+      ? '\nTEMPLATE CONTEXT: This task was submitted under the wildcard_bizarre template. The Poster intentionally classified it as a custom or unusual one-off gig. Use this as context when evaluating is_genuinely_bizarre — the Poster has already signalled they expect this to be unusual.\n'
+      : '';
+
+    // FIX 3: Truncate description before sending to LLM to prevent cost DoS.
+    // Use Array.from / spread iteration (Unicode scalar values) instead of substring()
+    // to avoid splitting surrogate pairs at the truncation boundary, which would produce
+    // a dangling high surrogate that can cause JSON serialization failures.
+    let truncatedDesc = description;
+    if ([...description].length > MAX_DESCRIPTION_LENGTH) {
+      log.warn({ userId, originalLength: description.length }, 'compliance: description truncated before AI check');
+      truncatedDesc = [...description].slice(0, MAX_DESCRIPTION_LENGTH).join('') + '…';
+    }
+
+    // FIX 1 (HIGH): Guard against prompt injection before sending user-supplied text to LLM.
+    const injectionResult = PromptInjectionGuard.analyze(truncatedDesc);
+    if (injectionResult.decision === 'BLOCK') {
+      log.warn(
+        { userId, injectionScore: injectionResult.score, matchedPatterns: injectionResult.matchedPatterns },
+        'compliance: prompt injection attempt blocked — returning max score without LLM call'
+      );
+      return {
+        score: 100,
+        triggeredRules: [...heuristic.triggeredRules, 'prompt_injection_blocked'],
+        deception_detected: false,
+        is_genuinely_bizarre: false,
+      };
+    }
+
+    // On FLAG: use sanitized input to strip injection markers but still run the AI check.
+    const safeDesc = injectionResult.decision === 'FLAG'
+      ? (injectionResult.sanitizedInput ?? truncatedDesc)
+      : truncatedDesc;
+
+    if (injectionResult.decision === 'FLAG') {
+      log.warn(
+        { userId, injectionScore: injectionResult.score, matchedPatterns: injectionResult.matchedPatterns },
+        'compliance: suspicious input flagged — using sanitizedInput for AI check'
+      );
+    }
+
+    const response = await AIClient.callJSON<{
+      score: number;
+      rules: string[];
+      deception_detected: boolean;
+      is_genuinely_bizarre: boolean;
+    }>({
+      observability: aiObservation('AI-COMPLIANCE-ADVISORY', {
+        actorUserId: userId,
+        affectedObjectType: 'TASK_DRAFT',
+      }),
+      route: 'fast',
+      temperature: 0.1,
+      timeoutMs: 5000,
+      systemPrompt: `You are HustleXP's Compliance Guardian v2.7. ${templateContext}Score this IRL gig task description 0–100 for illegal content. Return JSON with exactly these fields: score, rules, deception_detected, is_genuinely_bizarre.
+
+SCORING:
+0–20 = clearly legal IRL gig task
+21–60 = ambiguous, needs review
+61–100 = likely illegal (drugs, adult services, weapons, fraud, exploitation)
+
+PROHIBITED: controlled substances, adult/sexual services, unlicensed medical/legal/notary,
+fraud/counterfeit, weapons, animal cruelty, child exploitation, "no questions asked" deliveries.
+
+ALSO FLAG (add to rules array, raise score appropriately):
+"no questions asked", "dont ask questions", "deliver for a friend no details",
+"discreet delivery", "cash only no record", "split payment later",
+"bring it just leave it", "no address needed", "package for a friend no details"
+
+DECEPTION DETECTION:
+Set deception_detected: true if the task involves the Hustler pretending to be someone
+they are not in a social context (fake boyfriend/girlfriend/friend/professional/colleague).
+Innocent roleplay for creative/performance tasks is NOT deception.
+
+GENUINE BIZARRENESS HEURISTIC (5 rules):
+Active rules (at least one must fire):
+  Rule 1: Task requires acting, roleplay, or scripted dialogue
+  Rule 3: Task requires audience interaction or performance for an audience
+  Rule 4: Task is a one-off ceremonial or ritual element (scattering ashes, cultural ceremony, unique life-event ritual)
+Corroborating rules (at least one must also fire alongside an active rule):
+  Rule 2: Task has no standard physical labor outcome (not delivery/assembly/cleaning/repair)
+  Rule 5: Task is explicitly a performance in a private setting (private show, private ceremony, private serenade) — NOT simply a task that takes place at home
+
+Set is_genuinely_bizarre: true ONLY IF (Rule1 OR Rule3 OR Rule4) AND (Rule2 OR Rule5).
+Rule 2 and Rule 5 alone cannot satisfy the threshold.
+
+Return JSON: { "score": number, "rules": string[], "deception_detected": boolean, "is_genuinely_bizarre": boolean }`,
+      prompt: scrubPII(safeDesc),
+    });
+
+    // FIX 1 & 2: Validate and clamp LLM response via Zod — reject non-numeric / out-of-range scores.
+    // NOTE: If response.data is null/undefined, throw so the catch block in evaluate() handles it
+    // gracefully (aiSignalsComputed=false, heuristic fallback). This preserves the pre-existing
+    // null-safety behaviour from before this patch.
+    if (response.data == null) {
+      throw new TypeError('_aiCheck: LLM returned null/undefined data');
+    }
+    const parsed = AiCheckResponseSchema.safeParse(response.data);
+    if (!parsed.success) {
+      log.warn({ error: parsed.error, userId }, '_aiCheck: invalid LLM response shape, using heuristic fallback');
+      return { score: heuristic.score, triggeredRules: heuristic.triggeredRules, deception_detected: false, is_genuinely_bizarre: false };
+    }
+    const { score, rules, deception_detected, is_genuinely_bizarre } = parsed.data;
+
+    return {
+      score: Math.max(heuristic.score, score),
+      triggeredRules: [...new Set([...heuristic.triggeredRules, ...rules])],
+      deception_detected: deception_detected ?? false,
+      is_genuinely_bizarre: is_genuinely_bizarre ?? false,
+    };
+  },
+
+  _logViolation: async (params: {
+    userId: string;
+    ipAddress?: string;
+    deviceFingerprint?: string;
+    description: string;
+    score: number;
+    triggeredRules: string[];
+  }) => {
+    try {
+      await db.query(
+        `INSERT INTO compliance_violations
+           (user_id, ip_address, device_fingerprint, raw_description, risk_score, triggered_rules)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          params.userId,
+          params.ipAddress ?? null,
+          params.deviceFingerprint ?? null,
+          params.description,
+          params.score,
+          JSON.stringify(params.triggeredRules),
+        ]
+      );
+    } catch (err) {
+      log.error({ err }, 'Failed to log compliance violation');
+    }
+  },
+};

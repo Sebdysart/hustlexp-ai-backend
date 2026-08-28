@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "If the Bash command contained 'git push', respond with: 'IMPORTANT: Code was just pushed. Check for Greptile review comments using the Greptile MCP get_unaddressed_comments tool. Fix any issues found and push again.' Otherwise respond with 'proceed'."
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/verify-before-stop.sh"
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/task-quality-gate.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

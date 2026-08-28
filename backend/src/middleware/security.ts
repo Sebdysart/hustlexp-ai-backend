@@ -1,0 +1,459 @@
+/**
+ * Security Middleware for HustleXP Backend
+ *
+ * Provides:
+ * - Security headers (CSP, X-Frame-Options, etc.)
+ * - Rate limiting per endpoint category
+ * - Input sanitization helpers
+ * - Prompt injection safeguards for AI endpoints
+ */
+
+import { Context, Next } from 'hono';
+import { checkRateLimit, redis } from '../cache/redis.js';
+import { config } from '../config.js';
+import { firebaseAuth } from '../auth/firebase.js';
+import { logger } from '../logger.js';
+
+const securityLog = logger.child({ module: 'security' });
+
+// ============================================================================
+// TRUSTED IP RESOLUTION
+// ============================================================================
+
+/**
+ * Resolve the canonical client IP from an incoming request, safe against
+ * X-Forwarded-For spoofing.
+ *
+ * The X-Forwarded-For header is formatted as:
+ *   "client, proxy1, proxy2"
+ * Each hop APPENDS its own entry to the right.  The leftmost entry is
+ * client-controlled — an attacker can set any value they want there before
+ * the request reaches the proxy.  The rightmost entry is appended by our
+ * trusted reverse proxy (Fly.io / Cloudflare) and cannot be forged.
+ *
+ * Rules (checked in priority order):
+ *   1. cf-connecting-ip — set by Cloudflare directly from the TCP connection,
+ *      cannot be forged by the client under any circumstances.
+ *   2. XFF rightmost — the entry appended by the trusted proxy; the client
+ *      cannot control this position because the proxy always appends after
+ *      any client-supplied values.
+ *   3. x-real-ip — set by nginx/other proxies from the connection address.
+ *   4. 'unknown' if none of the above are present.
+ *
+ * A-22: NEVER use ips[0] (leftmost XFF) for rate-limit keys — doing so allows
+ * any attacker to spoof a different IP per request and bypass all IP-based
+ * limits entirely.
+ *
+ * This function must be used for ALL IP-based rate limiting.
+ */
+function getTrustedClientIP(c: Context): string {
+  // cf-connecting-ip: set by Cloudflare from the raw TCP connection; cannot
+  // be forged by the client regardless of what they put in XFF.
+  const cfIp = c.req.header('cf-connecting-ip');
+  if (cfIp) return cfIp.trim();
+
+  // X-Forwarded-For: rightmost entry is proxy-appended — the proxy always
+  // appends AFTER any client-supplied entries, so it cannot be forged.
+  const xff = c.req.header('x-forwarded-for');
+  if (xff) {
+    const ips = xff.split(',').map((ip) => ip.trim()).filter(Boolean);
+    if (ips.length > 0) return ips[ips.length - 1]; // rightmost = proxy-confirmed
+  }
+
+  // x-real-ip: set by nginx/proxies from the connection address.
+  const realIp = c.req.header('x-real-ip');
+  if (realIp) return realIp.trim();
+
+  return 'unknown';
+}
+
+// ============================================================================
+// SECURITY HEADERS
+// ============================================================================
+
+export async function securityHeaders(c: Context, next: Next) {
+  await next();
+
+  // Prevent clickjacking
+  c.header('X-Frame-Options', 'DENY');
+  // Block MIME sniffing
+  c.header('X-Content-Type-Options', 'nosniff');
+  // Referrer policy
+  c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+  // Permissions policy
+  c.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  // Remove server identification
+  c.header('X-Powered-By', '');
+
+  // HSTS — enforce HTTPS for 1 year, include subdomains
+  if (!config.app.isDevelopment) {
+    c.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+  }
+
+  // Content Security Policy — API-only server, block everything except JSON responses
+  c.header(
+    'Content-Security-Policy',
+    "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+  );
+
+  // Prevent cross-site scripting via cache sniffing
+  c.header('X-XSS-Protection', '0'); // Modern CSP replaces this; 0 avoids XSS-Auditor bugs
+  // Cross-Origin policies
+  c.header('Cross-Origin-Opener-Policy', 'same-origin');
+  c.header('Cross-Origin-Resource-Policy', 'same-origin');
+}
+
+// ============================================================================
+// RATE LIMITING MIDDLEWARE
+// ============================================================================
+
+/**
+ * Rate limiting configuration per endpoint category.
+ * Limits are per-user per-window.
+ */
+const RATE_LIMITS = {
+  ai: { limit: 20, windowSeconds: 60 },         // 20 AI requests/min
+  auth: { limit: 20, windowSeconds: 60 },        // 20 auth attempts/min (brute force protection)
+  browse: { limit: 30, windowSeconds: 60 },      // 30 public browse requests/min — IP-based DoS protection
+  escrow: { limit: 30, windowSeconds: 60 },      // 30 escrow ops/min
+  financial: { limit: 10, windowSeconds: 60 },   // 10 financial ops/min (escrow release, stripe)
+  live: { limit: 20, windowSeconds: 60 },        // 20 live mode requests/min — multi-table JOIN, geo amplification risk
+  mutation: { limit: 60, windowSeconds: 60 },    // 60 mutation ops/min (write-heavy routes)
+  task: { limit: 60, windowSeconds: 60 },        // 60 task ops/min
+  general: { limit: 120, windowSeconds: 60 },    // 120 general requests/min
+  sse: { limit: 10, windowSeconds: 60 },         // 10 SSE connection attempts/min (connection-flood protection)
+} as const;
+
+type RateLimitCategory = keyof typeof RATE_LIMITS;
+
+/**
+ * Creates a rate-limiting middleware for the given category.
+ *
+ * Bucket key strategy
+ * -------------------
+ * We deliberately do NOT decode the JWT payload here to extract a user ID.
+ * Decoding without verifying the signature lets an attacker forge arbitrary
+ * `sub` / `user_id` claims and cycle through unlimited fresh rate-limit
+ * buckets with no cost.  The verified user identity is only available after
+ * Firebase token verification (in the tRPC auth middleware), which runs
+ * inside the procedure handler — too late for HTTP-layer rate limiting.
+ *
+ * Therefore this middleware uses the trusted client IP (cf-connecting-ip
+ * first; rightmost XFF as fallback — both proxy-confirmed) as the bucket
+ * key for all requests.  This is per-client and requires no JWT inspection.
+ *
+ * Per-user rate limiting (using the verified ctx.user.id) can be added at
+ * the tRPC procedure level where the verified identity is already available.
+ */
+export function rateLimitMiddleware(category: RateLimitCategory) {
+  return async (c: Context, next: Next) => {
+    // Always use the trusted client IP — avoids unverified-JWT sub spoofing.
+    // A-22: getTrustedClientIP uses cf-connecting-ip / rightmost XFF, never leftmost.
+    const identifier = `ip:${getTrustedClientIP(c)}`;
+
+    const { limit, windowSeconds } = RATE_LIMITS[category];
+    const result = await checkRateLimit(identifier, category, limit, windowSeconds);
+
+    // Set rate-limit headers
+    c.header('X-RateLimit-Limit', String(limit));
+    c.header('X-RateLimit-Remaining', String(Math.max(0, result.remaining)));
+    if (result.resetAt) {
+      c.header('X-RateLimit-Reset', String(result.resetAt));
+    }
+
+    if (!result.allowed) {
+      c.header('Retry-After', String(windowSeconds));
+      return c.json(
+        {
+          error: 'Too Many Requests',
+          message: `Rate limit exceeded. Try again in ${windowSeconds} seconds.`,
+          retryAfter: windowSeconds,
+        },
+        429,
+      );
+    }
+
+    await next();
+  };
+}
+
+// ============================================================================
+// INPUT SANITIZATION
+// ============================================================================
+
+/**
+ * Strip common prompt injection patterns from user input.
+ * This is a defense-in-depth measure — the AI authority model is the primary safeguard.
+ */
+export function sanitizeAIInput(input: string): string {
+  if (!input || typeof input !== 'string') return '';
+
+  let sanitized = input;
+
+  // Remove attempts to override system prompts
+  const injectionPatterns = [
+    /ignore\s+(all\s+)?previous\s+instructions/gi,
+    /ignore\s+(all\s+)?above\s+instructions/gi,
+    /you\s+are\s+now\s+a\s+/gi,
+    /system\s*:\s*/gi,
+    /\[INST\]/gi,
+    /\[\/INST\]/gi,
+    /<<SYS>>/gi,
+    /<\/SYS>/gi,
+    /\bact\s+as\b/gi,
+    /\bpretend\s+(to\s+be|you\s+are)\b/gi,
+    /\brole[\s-]*play\b/gi,
+    /new\s+instructions?\s*:/gi,
+    /override\s+(safety|instructions|rules)/gi,
+  ];
+
+  for (const pattern of injectionPatterns) {
+    sanitized = sanitized.replace(pattern, '[FILTERED]');
+  }
+
+  // Limit length (prevent token exhaustion)
+  const MAX_AI_INPUT_LENGTH = 4000;
+  if (sanitized.length > MAX_AI_INPUT_LENGTH) {
+    sanitized = sanitized.slice(0, MAX_AI_INPUT_LENGTH);
+  }
+
+  return sanitized.trim();
+}
+
+/**
+ * General input sanitizer — strips control characters and limits length.
+ */
+
+// ============================================================================
+// AI-SPECIFIC RATE LIMITING (Per-User Per-Minute)
+// ============================================================================
+
+const AI_RATE_LIMITS = {
+  groq: { requests: 30, windowMs: 60000 },      // 30 req/min
+  openai: { requests: 20, windowMs: 60000 },    // 20 req/min
+  deepseek: { requests: 25, windowMs: 60000 },  // 25 req/min
+  anthropic: { requests: 15, windowMs: 60000 }, // 15 req/min
+};
+
+// A48-4 FIX: In-memory cache to avoid calling firebaseAuth.verifyIdToken on every
+// AI request. Without this, each AI request triggers a Firebase network round-trip,
+// doubling Firebase load on AI routes and risking false 401s when Firebase throttles.
+// TTL is 5 minutes — tokens are still valid for at least 1 hour, so early eviction
+// does not cause auth failures. Max 10,000 entries with on-demand eviction of stale
+// entries prevents unbounded memory growth.
+const aiAuthCache = new Map<string, { uid: string; expMs: number }>();
+const AI_AUTH_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * AI per-minute rate limiter per user
+ * Prevents cost abuse while allowing legitimate usage
+ *
+ * Identity strategy: extract the Firebase Bearer token from the Authorization
+ * header and verify it cryptographically before using the resulting uid as the
+ * rate-limit bucket key.  Reading a Hono context variable (c.get('userId'))
+ * does NOT work here because that variable is only set inside tRPC procedure
+ * handlers — it is never populated at the HTTP middleware layer, so it is
+ * always undefined, making the middleware permanently return 401.
+ */
+export function aiRateLimitMiddleware(provider: keyof typeof AI_RATE_LIMITS) {
+  const limits = AI_RATE_LIMITS[provider];
+
+  return async (c: Context, next: Next) => {
+    const authHeader = c.req.header('authorization');
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+
+    if (!token) {
+      return c.json({ error: 'Authentication required' }, 401);
+    }
+
+    let userId: string;
+    // A48-4 FIX: Check the in-memory cache before calling Firebase.
+    // Evict stale entries when cache exceeds 10,000 entries to prevent unbounded growth.
+    const cached = aiAuthCache.get(token);
+    if (cached && cached.expMs > Date.now()) {
+      // A49-1 FIX: A cached entry does NOT automatically mean the user is still active.
+      // A ban/revocation sets `auth:revoked:{uid}` in Redis. Without this check, a banned
+      // user's cache entry remains valid for up to 5 minutes — the full cache TTL.
+      // Check the Redis revocation marker on every cache hit. If Redis is unavailable,
+      // fail safe by evicting the cache entry and falling through to Firebase verification.
+      let isRevoked = false;
+      try {
+        const revokedAt = await redis.get(`auth:revoked:${cached.uid}`);
+        if (revokedAt) {
+          isRevoked = true;
+          aiAuthCache.delete(token);
+        }
+      } catch {
+        // Redis unavailable — evict the cache entry and fall through to Firebase
+        // verification rather than fail open (a banned user must not bypass auth).
+        aiAuthCache.delete(token);
+        isRevoked = true; // forces fall-through to Firebase verification below
+      }
+      if (!isRevoked) {
+        userId = cached.uid;
+      } else {
+        // Fall through to full Firebase verification (handled by the else branch below).
+        // Re-enter the Firebase path by clearing cached so the else block runs.
+        // We achieve this by setting userId to a sentinel and letting it fall into
+        // the try/catch block via a synthetic miss path:
+        try {
+          const decoded = await firebaseAuth.verifyIdToken(token, true);
+          userId = decoded.uid;
+          if (aiAuthCache.size > 10000) {
+            const now = Date.now();
+            for (const [k, v] of aiAuthCache) {
+              if (v.expMs <= now) aiAuthCache.delete(k);
+            }
+          }
+          aiAuthCache.set(token, { uid: userId, expMs: Date.now() + AI_AUTH_CACHE_TTL_MS });
+        } catch {
+          return c.json({ error: 'Authentication required' }, 401);
+        }
+      }
+    } else {
+      try {
+        const decoded = await firebaseAuth.verifyIdToken(token, true);
+        userId = decoded.uid;
+        // Cache the result so subsequent AI requests skip Firebase for up to 5 minutes.
+        if (aiAuthCache.size > 10000) {
+          const now = Date.now();
+          for (const [k, v] of aiAuthCache) {
+            if (v.expMs <= now) aiAuthCache.delete(k);
+          }
+        }
+        aiAuthCache.set(token, { uid: userId, expMs: Date.now() + AI_AUTH_CACHE_TTL_MS });
+      } catch {
+        return c.json({ error: 'Authentication required' }, 401);
+      }
+    }
+
+    // Use the sliding-window checkRateLimit (Upstash) instead of the fixed-window
+    // incrWithTtl approach. Fixed windows allow a 2x burst at the window boundary
+    // (N requests at the end of window 1 + N at the start of window 2 = 2N in ~0s).
+    // Sliding windows prevent this by counting requests across a rolling period.
+    // The identifier encodes both provider and userId so limits are enforced per
+    // user per provider independently.
+    const identifier = `ai:${provider}:${userId}`;
+    const windowSeconds = limits.windowMs / 1000;
+    const result = await checkRateLimit(identifier, 'ai', limits.requests, windowSeconds);
+
+    c.header('X-RateLimit-Limit', limits.requests.toString());
+    c.header('X-RateLimit-Remaining', Math.max(0, result.remaining).toString());
+    if (result.resetAt) {
+      c.header('X-RateLimit-Reset', result.resetAt.toString());
+    }
+
+    if (!result.allowed) {
+      c.header('Retry-After', String(windowSeconds));
+      return c.json({
+        error: 'AI rate limit exceeded',
+        retryAfter: windowSeconds,
+      }, 429);
+    }
+
+    await next();
+  };
+}
+
+
+export function sanitizeInput(input: string, maxLength = 10000): string {
+  if (!input || typeof input !== 'string') return '';
+
+  // Remove null bytes and control characters (except newlines/tabs)
+  // eslint-disable-next-line no-control-regex -- intentional removal of control characters for input sanitization
+  let sanitized = input.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+
+  // Trim to max length
+  if (sanitized.length > maxLength) {
+    sanitized = sanitized.slice(0, maxLength);
+  }
+
+  return sanitized.trim();
+}
+
+// ============================================================================
+// PUBLIC (UNAUTHENTICATED) IP RATE LIMITER
+// ============================================================================
+
+const PUBLIC_IP_RATE_LIMIT = 60;       // requests
+const PUBLIC_IP_WINDOW_SECONDS = 60;   // per minute
+
+/**
+ * IP-based rate limiter applied to ALL requests — authenticated and unauthenticated.
+ *
+ * Uses Redis fixed-window INCR + EXPIRE (via `redis.incrWithTtl`) to maintain
+ * a per-IP counter.  Key format: `rate:public:ip:{ip}`.
+ * Window: 60 seconds / 60 requests.
+ *
+ * Authenticated requests are NOT skipped.  Applying this limiter to all
+ * requests is intentional (defence in depth): without it, any attacker holding
+ * a valid Firebase token — including a free throwaway account — could bypass
+ * the IP-level limit entirely.  Per-user limits enforced by `rateLimitMiddleware`
+ * on protected routes are additive on top of this IP limit.
+ *
+ * Note: this uses a fixed-window counter, not a sliding window.  A 2× burst
+ * at the window boundary is theoretically possible (N requests at the end of
+ * window 1 + N at the start of window 2).  The AI-specific limiter
+ * (`aiRateLimitMiddleware`) uses a sliding window where burst prevention is
+ * more critical.
+ *
+ * Behaviour when Redis is unavailable:
+ *   - Production: FAIL CLOSED (429) — prevents bypass via Redis outage.
+ *   - Development: ALLOW with a console warning.
+ */
+export function publicIpRateLimitMiddleware() {
+  return async (c: Context, next: Next) => {
+    // Always apply IP rate limiting regardless of auth status.
+    // Authenticated users are still subject to the IP-level limit as a
+    // defence-in-depth layer; their per-user limits are enforced separately
+    // by rateLimitMiddleware on protected routes.  An early-return bypass here
+    // would allow any attacker with a valid Firebase token (including a free
+    // account) to make unlimited requests from a single IP.
+
+    // A-22: use getTrustedClientIP (cf-connecting-ip first, then rightmost XFF).
+    // The leftmost XFF entry is client-controlled and must never be used as a
+    // rate-limit key — an attacker can rotate it on every request to get fresh buckets.
+    const rawIp = getTrustedClientIP(c);
+
+    const key = `rate:public:ip:${rawIp}`;
+
+    try {
+      // Atomic INCR + conditional EXPIRE via Lua script (see redis.incrWithTtl).
+      // A non-atomic INCR then EXPIRE pair risks leaving an immortal key if the
+      // process crashes between the two calls — permanently blocking the IP.
+      const current = await redis.incrWithTtl(key, PUBLIC_IP_WINDOW_SECONDS);
+
+      const remaining = Math.max(0, PUBLIC_IP_RATE_LIMIT - current);
+      c.header('X-RateLimit-Limit', String(PUBLIC_IP_RATE_LIMIT));
+      c.header('X-RateLimit-Remaining', String(remaining));
+
+      if (current > PUBLIC_IP_RATE_LIMIT) {
+        c.header('Retry-After', String(PUBLIC_IP_WINDOW_SECONDS));
+        return c.json(
+          {
+            error: 'Too Many Requests',
+            message: `Rate limit exceeded. Try again in ${PUBLIC_IP_WINDOW_SECONDS} seconds.`,
+            retryAfter: PUBLIC_IP_WINDOW_SECONDS,
+          },
+          429,
+        );
+      }
+    } catch (err) {
+      // Redis error — fail closed in production, open in dev.
+      if (config.app.isProduction) {
+        c.header('Retry-After', String(PUBLIC_IP_WINDOW_SECONDS));
+        return c.json(
+          { error: 'Too Many Requests', message: 'Rate limiting unavailable', retryAfter: PUBLIC_IP_WINDOW_SECONDS },
+          429,
+        );
+      }
+      // Development: log and allow.
+      console.warn('[publicIpRateLimit] Redis error — allowing request in dev mode', err);
+    }
+
+    await next();
+  };
+}
+
+// Suppress unused variable warning for securityLog — used by callers via module import
+void securityLog;

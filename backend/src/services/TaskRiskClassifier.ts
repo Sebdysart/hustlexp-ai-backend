@@ -1,0 +1,122 @@
+/**
+ * Task Risk Classifier — v1 (LOCKED)
+ * 
+ * Pre-Alpha Prerequisite: Authoritative task risk classification.
+ * 
+ * Rules:
+ * - Rule-first, conservative
+ * - Runs at task creation
+ * - Writes tasks.risk_tier
+ * - Immutable after creation
+ */
+
+// ============================================================================
+// TASK RISK ENUM (Authoritative)
+// ============================================================================
+
+export enum TaskRisk {
+  TIER_0 = 0, // outdoor, no property
+  TIER_1 = 1, // assembly, yard work
+  TIER_2 = 2, // entering home, no people
+  TIER_3 = 3, // people / pets / care
+}
+
+// ============================================================================
+// TYPES
+// ============================================================================
+
+export interface TaskRiskInput {
+  insideHome: boolean;
+  peoplePresent: boolean;
+  petsPresent: boolean;
+  caregiving: boolean;
+}
+
+// ============================================================================
+// TEMPLATE MINIMUM TIERS
+// ============================================================================
+
+// Template minimum risk tiers (flags can only raise, never lower)
+const TEMPLATE_MIN_TIERS: Record<string, TaskRisk> = {
+  standard_physical:    TaskRisk.TIER_0,
+  in_home:              TaskRisk.TIER_2,
+  care:                 TaskRisk.TIER_3,
+  content_creator:      TaskRisk.TIER_1,
+  event_appearance:     TaskRisk.TIER_1,
+  creative_production:  TaskRisk.TIER_1,
+  specialized_licensed: TaskRisk.TIER_1,
+  wildcard_bizarre:     TaskRisk.TIER_1,
+};
+
+// ============================================================================
+// TASK RISK CLASSIFIER
+// ============================================================================
+
+export const TaskRiskClassifier = {
+  /**
+   * Classify task risk (pure function, deterministic)
+   */
+  classifyTaskRisk: (input: TaskRiskInput): TaskRisk => {
+    // Rule 1: People/pets/caregiving → TIER_3 (highest risk)
+    if (input.peoplePresent || input.petsPresent || input.caregiving) {
+      return TaskRisk.TIER_3;
+    }
+
+    // Rule 2: Inside home → TIER_2
+    if (input.insideHome) {
+      return TaskRisk.TIER_2;
+    }
+
+    // Rule 3: Everything else → TIER_0/1 (use simple heuristics)
+    // For alpha, default to TIER_0 (outdoor, no property)
+    return TaskRisk.TIER_0;
+  },
+
+  /**
+   * Map TaskRisk enum to legacy risk_level string
+   * (for compatibility with existing schema)
+   */
+  toLegacyRiskLevel: (risk: TaskRisk): 'LOW' | 'MEDIUM' | 'HIGH' | 'IN_HOME' => {
+    switch (risk) {
+      case TaskRisk.TIER_0:
+      case TaskRisk.TIER_1:
+        return 'LOW';
+      case TaskRisk.TIER_2:
+        return 'HIGH';
+      case TaskRisk.TIER_3:
+        return 'IN_HOME';
+      default:
+        return 'LOW';
+    }
+  },
+
+  /**
+   * Classify task risk with template-aware minimum tiers.
+   * Active flags can only raise the tier, never lower it.
+   */
+  classifyWithTemplate: (
+    input: TaskRiskInput,
+    templateSlug: string,
+    activeFlags: string[] = [],
+    complianceResult?: import('./ComplianceGuardianService.js').ComplianceResult,
+  ): TaskRisk => {
+    // Start with base boolean-flag classification
+    const baseRisk = TaskRiskClassifier.classifyTaskRisk(input);
+
+    // Apply template minimum tier
+    const templateMin = TEMPLATE_MIN_TIERS[templateSlug] ?? TaskRisk.TIER_1;
+
+    // private_location_flag bumps to TIER_2
+    const flagBump = activeFlags.includes('private_location_flag') ? TaskRisk.TIER_2 : TaskRisk.TIER_0;
+
+    // Flags can only raise, never lower
+    let finalTier = Math.max(baseRisk, templateMin, flagBump) as TaskRisk;
+
+    // Deception tasks carry social-manipulation risk — minimum TIER_2 regardless of physical signals
+    if (complianceResult?.deception_detected) {
+      finalTier = Math.max(finalTier, TaskRisk.TIER_2) as TaskRisk;
+    }
+
+    return finalTier;
+  },
+};

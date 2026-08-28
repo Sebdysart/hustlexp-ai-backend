@@ -1,0 +1,399 @@
+/**
+ * Analytics Router v1.0.0
+ * 
+ * CONSTITUTIONAL: PRODUCT_SPEC §13, ANALYTICS_SPEC.md
+ * 
+ * Endpoints for event tracking, conversion funnels, cohort analysis, and A/B testing.
+ * 
+ * @see backend/src/services/AnalyticsService.ts
+ */
+
+import { TRPCError } from '@trpc/server';
+import { z } from 'zod';
+import { router, protectedProcedure, platformAdminProcedure, Schemas } from '../trpc.js';
+import { AnalyticsService, type EventType } from '../services/AnalyticsService.js';
+import { db } from '../db.js';
+
+export const analyticsRouter = router({
+  // --------------------------------------------------------------------------
+  // EVENT TRACKING
+  // --------------------------------------------------------------------------
+  
+  /**
+   * Track an analytics event
+   *
+   * ANALYTICS_SPEC.md §1: All user actions and system events are tracked
+   * Privacy: Respects user consent (only track if user has granted analytics consent)
+   *
+   * Security: Requires authentication — userId is always derived from ctx.user.id,
+   * never accepted from the request body.
+   */
+  trackEvent: protectedProcedure
+    .input(z.object({
+      eventType: z.string().min(1).max(128), // Allow custom event types
+      eventCategory: z.enum(['user_action', 'system_event', 'error', 'performance']),
+      sessionId: z.string().uuid(),
+      deviceId: z.string().uuid(),
+      taskId: Schemas.uuid.optional(),
+      taskCategory: z.string().max(128).optional(),
+      // trustTier is intentionally NOT accepted from the request body —
+      // it is always derived from ctx.user.trust_tier (server-authoritative)
+      // to prevent callers from poisoning analytics dashboards.
+      properties: z.record(z.string().max(64), z.union([z.string().max(256), z.number(), z.boolean()])).superRefine((val, ctx) => {
+        if (Object.keys(val).length > 20) {
+          ctx.addIssue({ code: 'too_big', type: 'array', maximum: 20, inclusive: true, message: 'properties must have at most 20 entries' });
+        }
+      }).optional(), // Optional event properties — bounded
+      platform: z.enum(['ios', 'android', 'web']), // Required in schema
+      appVersion: z.string().max(20).optional(),
+      abTestId: z.string().max(128).optional(),
+      abVariant: z.string().max(512).optional(),
+      eventTimestamp: z.string().datetime().optional(), // Optional - defaults to NOW()
+    }))
+    .mutation(async ({ input, ctx }) => {
+      // Security: always derive userId from auth context — never from request body
+      const userId = ctx.user.id;
+
+      const result = await AnalyticsService.trackEvent({
+        eventType: input.eventType,
+        eventCategory: input.eventCategory,
+        userId,
+        sessionId: input.sessionId,
+        deviceId: input.deviceId,
+        taskId: input.taskId,
+        taskCategory: input.taskCategory,
+        trustTier: ctx.user.trust_tier, // server-authoritative — never from request body
+        properties: input.properties,
+        platform: input.platform,
+        appVersion: input.appVersion,
+        abTestId: input.abTestId,
+        abVariant: input.abVariant,
+        eventTimestamp: input.eventTimestamp ? new Date(input.eventTimestamp) : undefined,
+      });
+      
+      if (!result.success) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+      
+      return result.data;
+    }),
+  
+  /**
+   * Track multiple events in a batch (for performance)
+   *
+   * Security: Requires authentication — userId is always derived from ctx.user.id,
+   * never accepted from the request body.
+   */
+  trackBatch: protectedProcedure
+    .input(z.object({
+      events: z.array(z.object({
+        eventType: z.string().min(1).max(128),
+        eventCategory: z.enum(['user_action', 'system_event', 'error', 'performance']),
+        sessionId: z.string().uuid(),
+        deviceId: z.string().uuid(),
+        taskId: Schemas.uuid.optional(),
+        taskCategory: z.string().max(128).optional(),
+        // trustTier is intentionally NOT accepted from the request body — server-authoritative
+        properties: z.record(z.string().max(64), z.union([z.string().max(256), z.number(), z.boolean()])).superRefine((val, ctx) => {
+          if (Object.keys(val).length > 20) {
+            ctx.addIssue({ code: 'too_big', type: 'array', maximum: 20, inclusive: true, message: 'properties must have at most 20 entries' });
+          }
+        }).optional(),
+        platform: z.enum(['ios', 'android', 'web']),
+        appVersion: z.string().max(20).optional(),
+        abTestId: z.string().max(128).optional(),
+        abVariant: z.string().max(512).optional(),
+        eventTimestamp: z.string().datetime().optional(),
+      })).min(1).max(100), // Batch limit
+    }))
+    .mutation(async ({ input, ctx }) => {
+      // Security: always derive userId from auth context — never from request body
+      const userId = ctx.user.id;
+
+      const events = input.events.map(event => ({
+        eventType: event.eventType,
+        eventCategory: event.eventCategory,
+        userId,
+        sessionId: event.sessionId,
+        deviceId: event.deviceId,
+        taskId: event.taskId,
+        taskCategory: event.taskCategory,
+        trustTier: ctx.user.trust_tier, // server-authoritative — never from request body
+        properties: event.properties,
+        platform: event.platform,
+        appVersion: event.appVersion,
+        abTestId: event.abTestId,
+        abVariant: event.abVariant,
+        eventTimestamp: event.eventTimestamp ? new Date(event.eventTimestamp) : undefined,
+      }));
+      
+      const result = await AnalyticsService.trackBatch(events);
+      
+      if (!result.success) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+      
+      return result.data;
+    }),
+  
+  // --------------------------------------------------------------------------
+  // READ OPERATIONS
+  // --------------------------------------------------------------------------
+  
+  /**
+   * Get events for the authenticated user (with privacy checks)
+   */
+  getUserEvents: protectedProcedure
+    .input(z.object({
+      eventTypes: z.array(z.string()).optional(), // Optional filter by event types
+      limit: z.number().int().min(1).max(100).default(100),
+      offset: z.number().int().min(0).max(500).default(0),
+    }))
+    .query(async ({ input, ctx }) => {
+      if (!ctx.user) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required',
+        });
+      }
+      
+      const result = await AnalyticsService.getUserEvents(
+        ctx.user.id,
+        input.eventTypes as EventType[] | undefined,
+        input.limit,
+        input.offset
+      );
+      
+      if (!result.success) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+      
+      return result.data;
+    }),
+  
+  /**
+   * Get events for a task (protected - must be task participant or admin)
+   * 
+   * CONSTITUTIONAL: Only task poster, worker, or admin can access task analytics
+   */
+  getTaskEvents: protectedProcedure
+    .input(z.object({
+      taskId: Schemas.uuid,
+      limit: z.number().int().min(1).max(100).default(100),
+    }))
+    .query(async ({ input, ctx }) => {
+      if (!ctx.user) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required',
+        });
+      }
+      
+      // Verify user is task participant (poster or worker) or admin
+      const taskResult = await db.query<{ poster_id: string; worker_id: string | null }>(
+        'SELECT poster_id, worker_id FROM tasks WHERE id = $1',
+        [input.taskId]
+      );
+      
+      if (taskResult.rows.length === 0) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'Task not found',
+        });
+      }
+      
+      const task = taskResult.rows[0];
+      const isPoster = task.poster_id === ctx.user.id;
+      const isWorker = task.worker_id === ctx.user.id;
+      
+      // Check if user is admin.
+      // A63-3 FIX: Use capability-scoped Operations access — a bare
+      // SELECT without a role filter would grant admin access to any admin_roles
+      // row regardless of role value, allowing privilege escalation.
+      let isAdmin = false;
+      if (!isPoster && !isWorker) {
+        const VALID_ADMIN_ROLES = ['admin', 'support', 'finance', 'moderator', 'founder'];
+        const adminResult = await db.query(
+          `SELECT 1
+           FROM admin_roles
+           WHERE user_id = $1
+             AND role = ANY($2::text[])
+             AND (role IN ('admin', 'founder') OR COALESCE(can_resolve_disputes, false))
+           LIMIT 1`,
+          [ctx.user.id, VALID_ADMIN_ROLES]
+        );
+        isAdmin = adminResult.rows.length > 0;
+      }
+      
+      // Only allow if user is task participant or admin
+      if (!isPoster && !isWorker && !isAdmin) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'Access denied: Must be task participant (poster or worker) or admin',
+        });
+      }
+      
+      const result = await AnalyticsService.getTaskEvents(
+        input.taskId,
+        input.limit
+      );
+      
+      if (!result.success) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+      
+      return result.data;
+    }),
+  
+  // --------------------------------------------------------------------------
+  // CONVERSION FUNNELS (Admin only)
+  // --------------------------------------------------------------------------
+  
+  /**
+   * Calculate conversion funnel
+   * 
+   * ANALYTICS_SPEC.md §2: Track conversion rates through multi-step processes
+   */
+  calculateFunnel: platformAdminProcedure
+    .input(z.object({
+      funnelName: z.string().min(1),
+      steps: z.array(z.string()).min(2), // At least 2 steps required
+      timeWindowDays: z.number().int().min(1).max(365).default(30),
+    }))
+    .query(async ({ input }) => {
+      const result = await AnalyticsService.calculateFunnel(
+        input.funnelName,
+        input.steps as EventType[],
+        input.timeWindowDays
+      );
+      
+      if (!result.success) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+      
+      return result.data;
+    }),
+  
+  // --------------------------------------------------------------------------
+  // COHORT ANALYSIS (Admin only)
+  // --------------------------------------------------------------------------
+  
+  /**
+   * Calculate cohort retention rates
+   * 
+   * ANALYTICS_SPEC.md §3: Track user cohorts and retention
+   */
+  calculateCohortRetention: platformAdminProcedure
+    .input(z.object({
+      cohortMonth: z.string().regex(/^\d{4}-\d{2}$/), // Format: "2025-01"
+    }))
+    .query(async ({ input }) => {
+      const result = await AnalyticsService.calculateCohortRetention(
+        input.cohortMonth
+      );
+      
+      if (!result.success) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+      
+      return result.data;
+    }),
+  
+  // --------------------------------------------------------------------------
+  // A/B TESTING
+  // --------------------------------------------------------------------------
+  
+  /**
+   * Track A/B test assignment and conversion
+   * 
+   * ANALYTICS_SPEC.md §4: A/B testing framework
+   * 
+   * Note: sessionId and deviceId should be provided by the client for proper tracking.
+   * If not provided, the service will generate them (not ideal for cross-device tracking).
+   */
+  trackABTest: protectedProcedure
+    .input(z.object({
+      testName: z.string().min(1),
+      variant: z.enum(['A', 'B', 'control']),
+      conversionEvent: z.string().optional(), // Optional conversion event to track
+      sessionId: z.string().uuid().optional(), // Optional: Should be provided by client
+      deviceId: z.string().uuid().optional(), // Optional: Should be provided by client
+      platform: z.enum(['ios', 'android', 'web']).optional(), // Client platform
+    }))
+    .mutation(async ({ input, ctx }) => {
+      if (!ctx.user) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required',
+        });
+      }
+      
+      // Note: sessionId, deviceId, and platform are provided by the client.
+      // iOS client sends these from device info. Web clients can use fingerprinting.
+      // Future: Add these to tRPC context via middleware for automatic injection.
+      const result = await AnalyticsService.trackABTest(
+        ctx.user.id,
+        input.testName,
+        input.variant,
+        input.conversionEvent as EventType | undefined,
+        input.sessionId,
+        input.deviceId,
+        input.platform || 'ios' // Default to iOS since primary client is native app
+      );
+      
+      if (!result.success) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+      
+      return result.data;
+    }),
+  
+  // --------------------------------------------------------------------------
+  // AGGREGATIONS (Admin only)
+  // --------------------------------------------------------------------------
+  
+  /**
+   * Get event counts by type (for dashboards)
+   */
+  getEventCounts: platformAdminProcedure
+    .input(z.object({
+      eventTypes: z.array(z.string()).min(1),
+      timeWindowDays: z.number().int().min(1).max(365).default(30),
+    }))
+    .query(async ({ input }) => {
+      const result = await AnalyticsService.getEventCounts(
+        input.eventTypes as EventType[],
+        input.timeWindowDays
+      );
+      
+      if (!result.success) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: result.error.message,
+        });
+      }
+      
+      return result.data;
+    }),
+});

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800">
+  <rect width="1200" height="800" fill="#0b0a0f"/>
+  <rect x="64" y="64" width="1072" height="672" rx="32" fill="#15121f" stroke="#8b5cf6" stroke-width="4"/>
+  <text x="112" y="150" fill="#a78bfa" font-family="Arial, sans-serif" font-size="28" font-weight="700">HUSTLEXP · CONTROLLED TEST EVIDENCE 2/2</text>
+  <text x="112" y="235" fill="#ffffff" font-family="Arial, sans-serif" font-size="54" font-weight="700">Execution state witness</text>
+  <text x="112" y="315" fill="#d1d5db" font-family="Arial, sans-serif" font-size="34">Assigned worker reached WORKING before proof submission</text>
+  <rect x="112" y="382" width="976" height="112" rx="20" fill="#221b35"/>
+  <text x="152" y="450" fill="#fbbf24" font-family="Arial, sans-serif" font-size="30" font-weight="700">TEST-ONLY: no real payout or customer completion claim</text>
+  <text x="112" y="580" fill="#d1d5db" font-family="Arial, sans-serif" font-size="30">Purpose: verify task-bound minimum evidence and idempotent submission.</text>
+  <text x="112" y="650" fill="#9ca3af" font-family="monospace" font-size="24">Environment: CONTROLLED_TEST · Generated 2026-07-20</text>
+</svg>

@@ -1,0 +1,571 @@
+/**
+ * HustleXP Database Client v1.0.0
+ *
+ * CONSTITUTIONAL: Layer 0 - Highest Authority
+ *
+ * Uses the standard pg driver (Railway PostgreSQL in production).
+ * Handles HustleXP-specific error codes from triggers.
+ *
+ * @see ../database/constitutional-schema.sql
+ */
+
+import pg from 'pg';
+const { Pool } = pg;
+import { logger } from './logger.js';
+
+// ============================================================================
+// CONNECTION POOLING
+// ============================================================================
+// Railway may be paired with PgBouncer for transaction-level pooling:
+// 
+// PGBOUNCER_CONFIG = {
+//   pool_mode: 'transaction',     // Transaction-level pooling
+//   max_client_conn: 10000,       // Max client connections
+//   default_pool_size: 25,        // Connections per database/user
+//   min_pool_size: 5,             // Keep warm connections
+//   reserve_pool_size: 5,         // Overflow pool
+//   reserve_pool_timeout: 3,      // Seconds to wait for reserve
+//   server_idle_timeout: 600,     // Close idle server connections
+//   server_lifetime: 3600,        // Max connection lifetime
+//   server_connect_timeout: 15,   // Connection attempt timeout
+// }
+//
+const dbLog = logger.child({ module: 'db' });
+
+// ============================================================================
+// CONFIGURATION
+// ============================================================================
+
+const DATABASE_URL = process.env.DATABASE_URL ?? '';
+const DATABASE_REPLICA_URL = process.env.DATABASE_REPLICA_URL ?? '';
+const POOL_MAX = parseInt(process.env.DB_POOL_MAX || '20', 10);
+const REPLICA_POOL_MAX = parseInt(process.env.DB_REPLICA_POOL_MAX || '15', 10);
+const DB_IDLE_TIMEOUT = parseInt(process.env.DB_IDLE_TIMEOUT_MS || '30000', 10);
+const DB_CONNECT_TIMEOUT = parseInt(process.env.DB_CONNECT_TIMEOUT_MS || '10000', 10);
+const DB_STATEMENT_TIMEOUT = parseInt(process.env.DB_STATEMENT_TIMEOUT_MS || '30000', 10);
+const DB_PGBOUNCER = process.env.DB_PGBOUNCER === 'true';
+
+if (!DATABASE_URL) {
+  dbLog.fatal('DATABASE_URL is required');
+  // In test environments without a database, we still allow the module to load
+  // so that tests can be skipped gracefully via `describe.skipIf(!hasDb)`.
+  // In production (NODE_ENV=production) we throw immediately to fail fast.
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('DATABASE_URL environment variable is not set');
+  }
+}
+
+/** True when a DATABASE_URL has been provided — use with describe.skipIf(!hasDb) in tests */
+export const hasDb = !!DATABASE_URL;
+
+// ============================================================================
+// CONNECTION POOL
+// ============================================================================
+
+// Disable prepared statements in test env (stale plan cache) or PgBouncer (no prepared stmt support)
+const disablePreparedStatements = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true' || DB_PGBOUNCER;
+
+const pool = DATABASE_URL
+  ? new Pool({
+      connectionString: DATABASE_URL,
+      max: POOL_MAX,
+      idleTimeoutMillis: DB_IDLE_TIMEOUT,
+      connectionTimeoutMillis: DB_CONNECT_TIMEOUT,
+      statement_timeout: DB_STATEMENT_TIMEOUT,
+    })
+  : null;
+
+if (pool) {
+  dbLog.info('Database primary pool initialized');
+}
+
+// ============================================================================
+// READ REPLICA POOL (AUDIT FIX: Read-Write Splitting)
+// ============================================================================
+
+/**
+ * Optional read replica pool for horizontal read scaling.
+ * Set DATABASE_REPLICA_URL to enable read-write splitting.
+ * Read-only queries (SELECT) can use `db.readQuery()` to hit replicas.
+ * Writes always go to the primary via `db.query()`.
+ */
+const replicaPool = DATABASE_REPLICA_URL
+  ? new Pool({
+      connectionString: DATABASE_REPLICA_URL,
+      max: REPLICA_POOL_MAX,
+      idleTimeoutMillis: DB_IDLE_TIMEOUT,
+      connectionTimeoutMillis: DB_CONNECT_TIMEOUT,
+      statement_timeout: DB_STATEMENT_TIMEOUT,
+    })
+  : null;
+
+if (replicaPool) {
+  dbLog.info({ replicaMax: REPLICA_POOL_MAX }, 'Database replica pool initialized');
+
+  replicaPool.on('error', (err) => {
+    dbLog.error({ err: err.message }, 'Replica pool: idle client error');
+  });
+}
+
+// ============================================================================
+// POOL MONITORING
+// ============================================================================
+
+/**
+ * Pool event listeners for operational visibility.
+ * Logs connection lifecycle events to help diagnose pool exhaustion.
+ */
+if (pool) {
+  pool.on('connect', () => {
+    dbLog.info({ total: pool!.totalCount, idle: pool!.idleCount, waiting: pool!.waitingCount }, 'Pool: client connected');
+    if (pool!.totalCount / POOL_MAX > 0.8) {
+      dbLog.warn({ total: pool!.totalCount, max: POOL_MAX, utilization: Math.round((pool!.totalCount / POOL_MAX) * 100) }, 'Pool saturation warning: >80% connections in use');
+    }
+  });
+
+  pool.on('error', (err) => {
+    dbLog.error({ err: err.message, total: pool!.totalCount, idle: pool!.idleCount, waiting: pool!.waitingCount }, 'Pool: idle client error');
+  });
+
+  pool.on('remove', () => {
+    dbLog.info({ total: pool!.totalCount, idle: pool!.idleCount, waiting: pool!.waitingCount }, 'Pool: client removed');
+  });
+}
+
+/**
+ * Get current pool utilization metrics.
+ * Consumed by the /health endpoint for operational monitoring.
+ */
+export function getPoolStats() {
+  return {
+    totalConnections: pool ? pool.totalCount : 0,
+    idleConnections: pool ? pool.idleCount : 0,
+    waitingRequests: pool ? pool.waitingCount : 0,
+    maxConnections: POOL_MAX,
+    utilizationPercent: pool ? Math.round((pool.totalCount / POOL_MAX) * 100) : 0,
+    replicaConnections: replicaPool ? replicaPool.totalCount : null,
+    replicaIdle: replicaPool ? replicaPool.idleCount : null,
+    replicaConfigured: !!replicaPool,
+  };
+}
+
+// ============================================================================
+// HUSTLEXP ERROR CODES
+// ============================================================================
+
+/**
+ * HustleXP-specific error codes raised by database triggers.
+ * These map to invariant violations.
+ * 
+ * @see PRODUCT_SPEC.md §10 (Error Codes)
+ * @see backend/database/constitutional-schema.sql (Error code reference)
+ */
+export const HX_ERROR_CODES = {
+  // Terminal state violations
+  HX001: 'Task terminal state violation - Cannot modify task in COMPLETED/CANCELLED/EXPIRED state',
+  HX002: 'Escrow terminal state violation - Cannot modify escrow in RELEASED/REFUNDED/REFUND_PARTIAL state',
+  
+  // INV-4: Escrow amount immutable
+  HX004: 'INV-4 VIOLATION: Escrow amount cannot be modified after creation',
+  
+  // INV-1: XP requires RELEASED escrow
+  HX101: 'INV-1 VIOLATION: Cannot award XP - escrow not in RELEASED state',
+  HX102: 'XP ledger immutability violation - XP ledger entries cannot be deleted',
+  
+  // INV-2: RELEASED requires COMPLETED task
+  HX201: 'INV-2 VIOLATION: Cannot release escrow - task not in COMPLETED state',
+  
+  // INV-3: COMPLETED requires ACCEPTED proof
+  HX301: 'INV-3 VIOLATION: Cannot complete task - proof not in ACCEPTED state',
+  
+  // Badge system
+  HX401: 'INV-BADGE-2 VIOLATION: Badge delete attempt - Badges are append-only',
+  
+  // Admin actions
+  HX801: 'Admin action audit immutability - Admin action entries cannot be deleted',
+  
+  // Live Mode (HX9XX)
+  HX901: 'LIVE-1 VIOLATION: Live broadcast without funded escrow',
+  HX902: 'LIVE-2 VIOLATION: Live task below price floor ($15.00 minimum)',
+  HX903: 'Hustler not in ACTIVE live mode state',
+  HX904: 'Live Mode toggle cooldown violation',
+  HX905: 'Live Mode banned - Cannot enable while banned',
+  
+  // Human Systems (HX6XX) - Reserved for future enforcement
+  HX601: 'Fatigue mandatory break bypass attempt',
+  HX602: 'Pause state violation',
+  HX603: 'Poster reputation access by poster (POSTER-1 violation)',
+  HX604: 'Percentile public exposure attempt (PERC-1 violation)',
+} as const;
+
+export type HXErrorCode = keyof typeof HX_ERROR_CODES;
+
+// ============================================================================
+// ERROR HANDLING
+// ============================================================================
+
+export interface DatabaseError extends Error {
+  code?: string;
+  constraint?: string;
+  detail?: string;
+  schema?: string;
+  table?: string;
+  column?: string;
+}
+
+/**
+ * Check if error is a HustleXP invariant violation
+ * PostgreSQL custom error codes are set via ERRCODE in triggers
+ */
+export function isInvariantViolation(error: unknown): error is DatabaseError {
+  if (!(error instanceof Error)) return false;
+  const dbError = error as DatabaseError;
+  if (!dbError.code) return false;
+  
+  // Check if it's an HX error code (HX001, HX002, etc.)
+  const hxCodePattern = /^HX\d{3}$/;
+  if (hxCodePattern.test(dbError.code)) {
+    return dbError.code in HX_ERROR_CODES;
+  }
+  
+  return false;
+}
+
+/**
+ * Get the HX error code from an error, if present
+ */
+export function getHXErrorCode(error: unknown): HXErrorCode | null {
+  if (!isInvariantViolation(error)) return null;
+  return error.code as HXErrorCode;
+}
+
+/**
+ * Helper: Check if error is INV-1 violation (XP requires RELEASED escrow)
+ */
+export function isInv1Violation(error: unknown): boolean {
+  return getHXErrorCode(error) === 'HX101';
+}
+
+/**
+ * Helper: Check if error is INV-2 violation (RELEASED requires COMPLETED task)
+ */
+export function isInv2Violation(error: unknown): boolean {
+  return getHXErrorCode(error) === 'HX201';
+}
+
+/**
+ * Helper: Check if error is INV-3 violation (COMPLETED requires ACCEPTED proof)
+ */
+export function isInv3Violation(error: unknown): boolean {
+  return getHXErrorCode(error) === 'HX301';
+}
+
+/**
+ * Helper: Check if error is INV-4 violation (Escrow amount immutable)
+ */
+export function isInv4Violation(error: unknown): boolean {
+  return getHXErrorCode(error) === 'HX004';
+}
+
+/**
+ * Helper: Check if error is terminal state violation (task)
+ */
+export function isTaskTerminalViolation(error: unknown): boolean {
+  return getHXErrorCode(error) === 'HX001';
+}
+
+/**
+ * Helper: Check if error is terminal state violation (escrow)
+ */
+export function isEscrowTerminalViolation(error: unknown): boolean {
+  return getHXErrorCode(error) === 'HX002';
+}
+
+/**
+ * Helper: Check if error is Live Mode violation
+ */
+export function isLiveModeViolation(error: unknown): boolean {
+  const code = getHXErrorCode(error);
+  return code !== null && ['HX901', 'HX902', 'HX903', 'HX904', 'HX905'].includes(code);
+}
+
+/**
+ * Check if error is a unique constraint violation (INV-5)
+ */
+export function isUniqueViolation(error: unknown): error is DatabaseError {
+  if (!(error instanceof Error)) return false;
+  const dbError = error as DatabaseError;
+  return dbError.code === '23505';
+}
+
+/**
+ * Get human-readable message for HustleXP error code
+ */
+export function getErrorMessage(code: string): string {
+  return HX_ERROR_CODES[code as HXErrorCode] || `Unknown error: ${code}`;
+}
+
+// ============================================================================
+// QUERY INTERFACE
+// ============================================================================
+
+export interface QueryResult<T = Record<string, unknown>> {
+  rows: T[];
+  rowCount: number;
+}
+
+/**
+ * Database query function signature.
+ * Extracted as a named type to break circular reference in the db object
+ * and ensure TypeScript properly infers generic type arguments on all callers.
+ */
+export type QueryFn = <T = Record<string, unknown>>(
+  sql: string,
+  params?: unknown[]
+) => Promise<QueryResult<T>>;
+
+/**
+ * Database client interface.
+ * Explicit interface prevents TypeScript from losing generic type information
+ * when the db object self-references (e.g., healthCheck calling db.query).
+ */
+export interface Database {
+  query: QueryFn;
+  /** Route read-only queries to replica (falls back to primary if no replica configured) */
+  readQuery: QueryFn;
+  transaction: <T>(fn: (query: QueryFn) => Promise<T>) => Promise<T>;
+  serializableTransaction: <T>(fn: (query: QueryFn) => Promise<T>) => Promise<T>;
+  healthCheck: () => Promise<{ connected: boolean; schemaVersion: string | null; latencyMs: number }>;
+  getPool: () => pg.Pool;
+  getPoolStats: () => { totalConnections: number; idleConnections: number; waitingRequests: number; maxConnections: number; utilizationPercent: number; replicaConnections: number | null };
+  close: () => Promise<void>;
+}
+
+export const db: Database = {
+  /**
+   * Execute a SQL query
+   */
+  query: async <T = Record<string, unknown>>(
+    sql: string,
+    params?: unknown[]
+  ): Promise<QueryResult<T>> => {
+    if (!pool) throw new Error('DATABASE_URL is not set — database unavailable');
+    const startMs = Date.now();
+    const client = await pool.connect();
+    try {
+      // Clear prepared statement cache before each query when needed
+      // (test env: prevents stale plans; PgBouncer: avoids prepared stmt conflicts)
+      if (disablePreparedStatements) {
+        // Clear all prepared statements on this connection
+        // This ensures fresh planning for each query in tests
+        try {
+          await client.query('DEALLOCATE ALL');
+        } catch {
+          // Ignore errors - connection may not have prepared statements yet
+        }
+      }
+      const result = await client.query(sql, params);
+      const durationMs = Date.now() - startMs;
+      if (durationMs > 1000) {
+        dbLog.warn({ durationMs, query: sql.slice(0, 200).replace(/[\w.-]+@[\w.-]+/g, '[EMAIL]').replace(/\+?\d{10,}/g, '[PHONE]') }, 'Slow query detected');
+      }
+      return {
+        rows: result.rows as T[],
+        rowCount: result.rowCount ?? 0,
+      };
+    } finally {
+      client.release();
+    }
+  },
+
+  /**
+   * Execute a read-only query, routed to replica if available.
+   * Falls back to primary pool if no replica is configured.
+   * Use this for SELECT queries that don't need real-time consistency.
+   *
+   * AUDIT FIX: Read replica routing for horizontal read scaling.
+   */
+  readQuery: async <T = Record<string, unknown>>(
+    sql: string,
+    params?: unknown[]
+  ): Promise<QueryResult<T>> => {
+    if (!pool) throw new Error('DATABASE_URL is not set — database unavailable');
+    const targetPool = replicaPool || pool;
+    const client = await targetPool.connect();
+    try {
+      const result = await client.query(sql, params);
+      return {
+        rows: result.rows as T[],
+        rowCount: result.rowCount ?? 0,
+      };
+    } finally {
+      client.release();
+    }
+  },
+
+  /**
+   * Execute queries within a transaction
+   */
+  transaction: async <T>(
+    fn: (query: QueryFn) => Promise<T>
+  ): Promise<T> => {
+    if (!pool) throw new Error('DATABASE_URL is not set — database unavailable');
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      
+      const txQuery = async <R = Record<string, unknown>>(
+        sql: string,
+        params?: unknown[]
+      ): Promise<QueryResult<R>> => {
+        const result = await client.query(sql, params);
+        return {
+          rows: result.rows as R[],
+          rowCount: result.rowCount ?? 0,
+        };
+      };
+      
+      const result = await fn(txQuery);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        dbLog.error({ originalError: error, rollbackError }, 'ROLLBACK failed — original error may be lost');
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+
+  /**
+   * Execute queries within a SERIALIZABLE transaction
+   * Use for critical invariant operations
+   */
+  serializableTransaction: async <T>(
+    fn: (query: QueryFn) => Promise<T>
+  ): Promise<T> => {
+    if (!pool) throw new Error('DATABASE_URL is not set — database unavailable');
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+      
+      const txQuery = async <R = Record<string, unknown>>(
+        sql: string,
+        params?: unknown[]
+      ): Promise<QueryResult<R>> => {
+        const result = await client.query(sql, params);
+        return {
+          rows: result.rows as R[],
+          rowCount: result.rowCount ?? 0,
+        };
+      };
+      
+      const result = await fn(txQuery);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        dbLog.error({ originalError: error, rollbackError }, 'ROLLBACK failed — original error may be lost');
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+
+  /**
+   * Health check - verify database connection and schema version
+   */
+  healthCheck: async (): Promise<{
+    connected: boolean;
+    schemaVersion: string | null;
+    latencyMs: number;
+  }> => {
+    const start = Date.now();
+    try {
+      const result = await db.query<{ version: string }>(
+        'SELECT version FROM schema_versions ORDER BY applied_at DESC LIMIT 1'
+      );
+      return {
+        connected: true,
+        schemaVersion: result.rows[0]?.version ?? null,
+        latencyMs: Date.now() - start,
+      };
+    } catch (_error) {
+      return {
+        connected: false,
+        schemaVersion: null,
+        latencyMs: Date.now() - start,
+      };
+    }
+  },
+
+  /**
+   * Get underlying pool for advanced usage
+   */
+  getPool: () => {
+    if (!pool) throw new Error('DATABASE_URL is not set — database unavailable');
+    return pool;
+  },
+
+  /**
+   * Get pool utilization metrics for health endpoint
+   */
+  getPoolStats,
+
+  /**
+   * Close all connections (for graceful shutdown)
+   */
+  close: async () => {
+    if (pool) {
+      await pool.end();
+      dbLog.info('Database pool closed');
+    }
+  },
+};
+
+// ============================================================================
+// HEALTH CHECK (Extended)
+// ============================================================================
+
+export async function checkHealth(): Promise<{
+  database: boolean;
+  schemaVersion: string | null;
+  triggers: number;
+  latencyMs: number;
+}> {
+  const start = Date.now();
+  try {
+    // Check schema version
+    const versionResult = await db.query<{ version: string }>(
+      'SELECT version FROM schema_versions ORDER BY applied_at DESC LIMIT 1'
+    );
+    
+    // Count triggers
+    const triggerResult = await db.query<{ count: string }>(
+      "SELECT COUNT(*) as count FROM information_schema.triggers WHERE trigger_schema = 'public'"
+    );
+    
+    return {
+      database: true,
+      schemaVersion: versionResult.rows[0]?.version ?? null,
+      triggers: parseInt(triggerResult.rows[0]?.count ?? '0', 10),
+      latencyMs: Date.now() - start,
+    };
+  } catch (error) {
+    dbLog.error({ err: error }, 'Health check failed');
+    return {
+      database: false,
+      schemaVersion: null,
+      triggers: 0,
+      latencyMs: Date.now() - start,
+    };
+  }
+}
+
+export default db;

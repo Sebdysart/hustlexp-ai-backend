@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "kind": "epic04_fixture_request",
+  "requested_at": "2026-07-31T14:15:00.000Z",
+  "expires_at_default": "2026-08-14T00:00:00.000Z",
+  "site_revision_target": "31f33e13ad7c82bff8b182cfb0f7033a6ca3f26d",
+  "engine_revision_target": "140ce19f4f77926249b1e7c0e5d2aac29bd4c9ef",
+  "rules": [
+    "Least privilege only — no shared real-customer credentials",
+    "Expiry ≤ 14 days unless re-authorized",
+    "test_exclusion=true — never count as GMV/liquidity/reputation",
+    "Payout destinations: Stripe test Connect or dual-controlled corporate only",
+    "Revoke immediately after evidence capture or on expiry"
+  ],
+  "fixtures": [
+    {
+      "role": "poster",
+      "identity_redacted": "poster+epic04@hustlexp-fixtures.test",
+      "expires_at": "2026-08-14T00:00:00.000Z",
+      "entry": "/get-help",
+      "destination": "/task-preview",
+      "recovery": "/get-help",
+      "test_exclusion": true,
+      "identity_provider": "Firebase",
+      "db_predicates": "default_mode=poster + ACTIVE + onboarding + PRODUCTION identity verification",
+      "journey_evidence": null,
+      "provision_status": "REQUESTED"
+    },
+    {
+      "role": "hustler",
+      "identity_redacted": "hustler+epic04@hustlexp-fixtures.test",
+      "expires_at": "2026-08-14T00:00:00.000Z",
+      "entry": "/earn",
+      "destination": "/earn/setup",
+      "recovery": "/earn",
+      "test_exclusion": true,
+      "identity_provider": "Firebase",
+      "payout_destination": "Stripe test Connect (transfers active)",
+      "db_predicates": "default_mode=worker + ACTIVE + verified + payouts_enabled + stripe_connect_id",
+      "journey_evidence": null,
+      "provision_status": "REQUESTED"
+    },
+    {
+      "role": "business-client",
+      "identity_redacted": "bizclient+epic04@hustlexp-fixtures.test",
+      "expires_at": "2026-08-14T00:00:00.000Z",
+      "entry": "/business",
+      "destination": "/business/workspace",
+      "recovery": "/business",
+      "test_exclusion": true,
+      "identity_provider": "Firebase",
+      "org_predicates": "ACTIVE membership + client_enabled org VERIFIED",
+      "journey_evidence": null,
+      "provision_status": "REQUESTED"
+    },
+    {
+      "role": "service-business",
+      "identity_redacted": "svcbusiness+epic04@hustlexp-fixtures.test",
+      "expires_at": "2026-08-14T00:00:00.000Z",
+      "entry": "/business/provide",
+      "destination": "/business/workspace?mode=provider",
+      "recovery": "/business/provide",
+      "test_exclusion": true,
+      "identity_provider": "Firebase",
+      "payout_destination": "Stripe test Connect (transfers active)",
+      "org_predicates": "ACTIVE membership + provider_enabled + VERIFIED + payout_status=ACTIVE",
+      "journey_evidence": null,
+      "provision_status": "REQUESTED"
+    },
+    {
+      "role": "operations",
+      "identity_redacted": "ops+epic04@hustlexp-fixtures.test",
+      "expires_at": "2026-08-14T00:00:00.000Z",
+      "entry": "/ops",
+      "destination": "/ops",
+      "recovery": "/",
+      "test_exclusion": true,
+      "identity_provider": "Firebase + admin_roles.can_manage_operations",
+      "journey_evidence": null,
+      "provision_status": "REQUESTED"
+    }
+  ]
+}

@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hustlexp.com/schemas/legacy-migration-checksum-reconciliation-v1.json",
+  "title": "HustleXP legacy migration checksum reconciliation manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "status", "payload", "authorization"],
+  "properties": {
+    "schemaVersion": {
+      "const": "hustlexp.legacy-migration-checksum-reconciliation/v1"
+    },
+    "status": {
+      "enum": ["HOLD", "AUTHORIZED"]
+    },
+    "payload": {
+      "$ref": "#/$defs/payload"
+    },
+    "authorization": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/authorization" }]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "status": { "const": "HOLD" } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": { "authorization": { "type": "null" } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "status": { "const": "AUTHORIZED" } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "authorization": { "$ref": "#/$defs/authorization" },
+          "payload": {
+            "allOf": [
+              { "$ref": "#/$defs/payload" },
+              {
+                "properties": {
+                  "migrations": { "minItems": 1 }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "identity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^\\S(?:.*\\S)?$"
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceCommitSha",
+        "preparedBy",
+        "reviewedBy",
+        "preparedAt",
+        "reviewedAt",
+        "target",
+        "migrations"
+      ],
+      "properties": {
+        "sourceCommitSha": {
+          "type": "string",
+          "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"
+        },
+        "preparedBy": { "$ref": "#/$defs/identity" },
+        "reviewedBy": { "$ref": "#/$defs/identity" },
+        "preparedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "reviewedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "target": { "$ref": "#/$defs/target" },
+        "migrations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/migration" }
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "environmentId",
+        "databaseName",
+        "roleName",
+        "serverAddress",
+        "serverPort",
+        "serverVersionNum",
+        "clusterName",
+        "fingerprint"
+      ],
+      "properties": {
+        "environmentId": { "$ref": "#/$defs/identity" },
+        "databaseName": { "$ref": "#/$defs/identity" },
+        "roleName": { "$ref": "#/$defs/identity" },
+        "serverAddress": { "$ref": "#/$defs/identity" },
+        "serverPort": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "serverVersionNum": { "$ref": "#/$defs/identity" },
+        "clusterName": { "$ref": "#/$defs/identity" },
+        "fingerprint": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "migration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "sourcePath", "sha256", "expectedLedgerState"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$"
+        },
+        "sourcePath": {
+          "type": "string",
+          "pattern": "^backend/database/migrations/[^/]+\\.sql$"
+        },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "expectedLedgerState": {
+          "enum": ["NULL_CHECKSUM", "VERIFIED_CHECKSUM"]
+        }
+      }
+    },
+    "authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "payloadSha256",
+        "signatureEvidencePath",
+        "signatureEvidenceSha256",
+        "signerPublicKeySha256"
+      ],
+      "properties": {
+        "payloadSha256": { "$ref": "#/$defs/sha256" },
+        "signatureEvidencePath": {
+          "type": "string",
+          "pattern": "^backend/database/migration-checksum-signatures/[^/]+\\.json$"
+        },
+        "signatureEvidenceSha256": { "$ref": "#/$defs/sha256" },
+        "signerPublicKeySha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}
