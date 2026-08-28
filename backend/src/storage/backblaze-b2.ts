@@ -245,4 +245,8 @@ export const backblazeB2 = {
   deleteFile,
   getSignedUrlForObject,
   verifyFile,
+<<<<<<< HEAD
 };
+=======
+};
+>>>>>>> integrate/stage1-backbone

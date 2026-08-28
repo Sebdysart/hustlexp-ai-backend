@@ -421,3 +421,4 @@ export function startOutboxWorker(intervalMs: number = 5000): OutboxWorkerHandle
 
   return { outboxInterval, surgeInterval, trustTierInterval };
 }
+

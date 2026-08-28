@@ -601,3 +601,4 @@ process.on('SIGINT',  () => { void shutdownHandler('SIGINT'); });
 
 export { Queue, Worker };
 export type { QueueOptions, WorkerOptions };
+

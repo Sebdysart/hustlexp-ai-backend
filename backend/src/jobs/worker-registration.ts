@@ -210,3 +210,4 @@ export function registerWorkers(active: Worker[]): void {
   }));
   log.info('All BullMQ workers registered');
 }
+
