@@ -15,8 +15,5 @@ WHEN (
 )
 EXECUTE FUNCTION public.enforce_worker_offer_decision_on_accept();
 
-<<<<<<< HEAD
 COMMIT;
-=======
-COMMIT;
->>>>>>> integrate/stage1-backbone
+

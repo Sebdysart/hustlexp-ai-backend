@@ -16,8 +16,4 @@ WHEN (
 )
 EXECUTE FUNCTION public.enforce_task_liquidity_cell_on_accept();
 
-<<<<<<< HEAD
 COMMIT;
-=======
-COMMIT;
->>>>>>> integrate/stage1-backbone
