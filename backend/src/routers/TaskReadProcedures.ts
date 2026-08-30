@@ -157,6 +157,34 @@ listByPoster: posterProcedure
 
       return result.data; // { tasks, nextCursor }
     }),
+listDraftsByPoster: posterProcedure
+  .input(
+    Schemas.cursorPagination.optional()
+  )
+  .query(async ({ ctx, input }) => {
+    const result = await db.query(
+      `SELECT
+         id,
+         title,
+         category,
+         created_at,
+         updated_at,
+         quote_id
+       FROM task_drafts
+       WHERE poster_user_id = $1
+       ORDER BY created_at DESC
+       LIMIT $2`,
+      [
+        ctx.user.id,
+        input?.limit ?? 20,
+      ],
+    );
+
+    return {
+      drafts: result.rows,
+      nextCursor: null,
+    };
+  }),    
 listByWorker: hustlerProcedure
     .input(
       Schemas.cursorPagination.extend({
