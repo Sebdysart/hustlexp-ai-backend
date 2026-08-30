@@ -1,22 +1,35 @@
-import { z } from 'zod';
+import { z, type RefinementCtx } from 'zod';
+
+import type { FinancialOperationKind } from './FinancialProviderPorts.js';
+import {
+  FAKE_FINANCIAL_SCENARIO_VALUES,
+  fakeFinancialScenarioSupportsOperation,
+  type FakeFinancialScenario,
+} from './FakeFinancialScenarioPolicy.js';
 
 const idempotencyKey = z
   .string()
   .min(16)
   .max(128)
   .regex(/^[A-Za-z0-9:_-]+$/u);
-const scenario = z.enum([
-  'SUCCESS',
-  'DECLINE',
-  'TIMEOUT',
-  'DUPLICATE_WEBHOOK',
-  'RETRY',
-  'REVERSAL',
-  'PARTIAL_REFUND',
-  'DELAYED_SETTLEMENT',
-  'RECONCILIATION_MISMATCH',
-  'PROVIDER_ACCOUNT_FAILURE',
-]);
+const scenario = z.enum(FAKE_FINANCIAL_SCENARIO_VALUES);
+
+function enforceScenarioOperation(
+  selectedScenario: FakeFinancialScenario | undefined,
+  operationKind: FinancialOperationKind,
+  context: RefinementCtx
+): void {
+  if (
+    selectedScenario !== undefined &&
+    !fakeFinancialScenarioSupportsOperation(selectedScenario, operationKind)
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['scenario'],
+      message: 'FAKE_FINANCIAL_SCENARIO_OPERATION_INVALID',
+    });
+  }
+}
 
 const commandBase = {
   providerKind: z.literal('FAKE'),
@@ -38,7 +51,10 @@ const paymentMethodPreparation = z
     operationKind: z.literal('PREPARE_PAYMENT_METHOD'),
     customerId: z.string().trim().min(3).max(160),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    enforceScenarioOperation(value.scenario, 'PREPARE_PAYMENT_METHOD', context);
+  });
 
 const boundFinancialEffect = z
   .object({
@@ -68,7 +84,10 @@ const boundFinancialEffect = z
     originalAmountCents: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
     providerAccountReference: z.string().trim().min(3).max(256).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    enforceScenarioOperation(value.scenario, value.operationKind, context);
+  });
 
 export const syntheticFinancialEventCommandSchema = z.union([
   paymentMethodPreparation,
@@ -120,23 +139,37 @@ export const syntheticReconciliationCommandSchema = z
       })
       .strict(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    enforceScenarioOperation(value.scenario, 'RECONCILE', context);
+  });
+
+const providerCommandBase = {
+  providerKind: z.literal('FAKE'),
+  operationId: z.string().uuid(),
+  idempotencyKey,
+  providerExpectedVersion: z.number().int().nonnegative(),
+  scenario: scenario.optional(),
+} as const;
 
 export const syntheticProviderOnboardingCommandSchema = z
   .object({
-    providerKind: z.literal('FAKE'),
-    operationId: z.string().uuid(),
-    idempotencyKey,
-    providerExpectedVersion: z.number().int().nonnegative(),
-    scenario: scenario.optional(),
+    ...providerCommandBase,
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    enforceScenarioOperation(value.scenario, 'ONBOARD_PROVIDER', context);
+  });
 
-export const syntheticProviderAccountStateCommandSchema = syntheticProviderOnboardingCommandSchema
-  .extend({
+export const syntheticProviderAccountStateCommandSchema = z
+  .object({
+    ...providerCommandBase,
     providerAccountReference: z.string().trim().min(3).max(256),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    enforceScenarioOperation(value.scenario, 'REFRESH_PROVIDER_ACCOUNT_STATE', context);
+  });
 
 export const syntheticWebhookCommandSchema = z
   .object({
@@ -144,7 +177,7 @@ export const syntheticWebhookCommandSchema = z
     operationId: z.string().uuid(),
     idempotencyKey,
     providerExpectedVersion: z.number().int().nonnegative(),
-    providerEventReference: z.string().trim().min(3).max(256),
+    providerEventReference: z.string().trim().min(3).max(255),
     scenario: z.enum(['SUCCESS', 'DUPLICATE_WEBHOOK']).optional(),
   })
   .strict();

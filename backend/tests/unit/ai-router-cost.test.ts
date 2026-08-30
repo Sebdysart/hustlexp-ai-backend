@@ -21,6 +21,12 @@ const {
   mockCheckUserBudget,
   mockTrackUserCost,
   mockTrackGlobalCost,
+  mockCheckAgentBudget,
+  mockReserveSpend,
+  mockSettleSpend,
+  mockMarkUnknown,
+  mockReleaseSpend,
+  mockFailOperation,
   mockGroqCreate,
   mockOpenAICreate,
 } = vi.hoisted(() => ({
@@ -32,6 +38,12 @@ const {
   mockCheckUserBudget:   vi.fn(),
   mockTrackUserCost:     vi.fn(),
   mockTrackGlobalCost:   vi.fn(),
+  mockCheckAgentBudget:  vi.fn(),
+  mockReserveSpend:      vi.fn(),
+  mockSettleSpend:       vi.fn(),
+  mockMarkUnknown:       vi.fn(),
+  mockReleaseSpend:      vi.fn(),
+  mockFailOperation:     vi.fn(),
   mockGroqCreate:        vi.fn(),
   mockOpenAICreate:      vi.fn(),
 }));
@@ -52,7 +64,7 @@ vi.mock('@upstash/redis', () => ({
       const chain = {
         incrby: (key: string, value: number) => { mockIncrby(key, value); return chain; },
         expire: (key: string, seconds: number) => { mockExpire(key, seconds); return chain; },
-        exec: vi.fn().mockResolvedValue([]),
+        exec: vi.fn().mockResolvedValue([1, 1]),
       };
       return chain;
     };
@@ -79,6 +91,7 @@ vi.mock('../../src/config', () => ({
 // AUDIT FIX H6: AIRouter now imports circuit breakers (module chain pulls in
 // logger → real config). Pass-through mock keeps this suite hermetic.
 vi.mock('../../src/middleware/circuit-breaker', () => ({
+  CircuitOpenError: class CircuitOpenError extends Error {},
   openaiBreaker: { execute: (fn: () => unknown) => fn() },
   groqBreaker: { execute: (fn: () => unknown) => fn() },
   deepseekBreaker: { execute: (fn: () => unknown) => fn() },
@@ -90,6 +103,17 @@ vi.mock('../../src/ai/UserAIBudget', () => ({
   checkUserBudget:   mockCheckUserBudget,
   trackUserCost:     mockTrackUserCost,
   trackGlobalCost:   mockTrackGlobalCost,
+  checkAgentBudget:  mockCheckAgentBudget,
+  failAIOperation: mockFailOperation,
+}));
+vi.mock('../../src/ai/AISpendAttemptLedger', () => ({
+  reserveAIProviderAttempt: mockReserveSpend,
+  settleAIProviderAttempt: mockSettleSpend,
+  markAIProviderAttemptUnknown: mockMarkUnknown,
+  releaseAIProviderAttempt: mockReleaseSpend,
+}));
+vi.mock('../../src/ai/ExternalAIProviderAuthority', () => ({
+  assertExternalAIProviderIOAuthorized: vi.fn(),
 }));
 
 vi.mock('groq-sdk', () => ({
@@ -110,7 +134,15 @@ vi.mock('openai', () => ({
 // System-under-test (import AFTER mocks are registered)
 // ---------------------------------------------------------------------------
 
-import { callAI, getBudgetStatus, getCostDashboard, checkCostAlerts } from '../../src/ai/AIRouter';
+import { callAI as callAIRaw, getBudgetStatus, getCostDashboard, checkCostAlerts } from '../../src/ai/AIRouter';
+
+let operationSequence = 0;
+const callAI = (agent: string, userId: string, prompt: string) => callAIRaw(
+  agent,
+  userId,
+  prompt,
+  { operationId: `unit-cost-${++operationSequence}` },
+);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -138,12 +170,22 @@ function makeOpenAIResponse(text = 'OpenAI response', tokens = 200) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  operationSequence = 0;
 
   // Budgets pass by default
   mockCheckGlobalBudget.mockResolvedValue({ allowed: true, spent: 0, limit: 50000 });
   mockCheckUserBudget.mockResolvedValue({ allowed: true, spent: 0, limit: 500 });
   mockTrackUserCost.mockResolvedValue(undefined);
   mockTrackGlobalCost.mockResolvedValue(undefined);
+  mockCheckAgentBudget.mockImplementation(async (_agent: string, _userId: string, limit: number) => {
+    const spent = Number(await mockGet() ?? 0);
+    return { allowed: spent < limit, spent, limit };
+  });
+  mockReserveSpend.mockResolvedValue({ status: 'reserved', reservedCents: 4 });
+  mockSettleSpend.mockResolvedValue(undefined);
+  mockMarkUnknown.mockResolvedValue(undefined);
+  mockReleaseSpend.mockResolvedValue(undefined);
+  mockFailOperation.mockResolvedValue(undefined);
 
   // Agent-level Redis budget: 0 spent
   mockGet.mockResolvedValue(null);
@@ -179,21 +221,22 @@ describe('callAI — happy path', () => {
     expect(result.provider).toBe('groq');
   });
 
-  it('tracks cost in Redis and DB after successful call', async () => {
+  it('reserves first, writes the audit row, and settles after a successful call', async () => {
     await callAI('judge', USER_ID, 'Score this');
 
-    expect(mockIncrby).toHaveBeenCalled();
-    expect(mockExpire).toHaveBeenCalled();
-    // REVIEW FIX (PR242): the old `expect.any(Array)` hid a real bug — the
-    // INSERT omitted the NOT NULL `model` column, so every cost row was
-    // rejected by Postgres while CI stayed green. Pin the column list AND the
-    // param shape so a schema-violating insert can never pass again.
+    expect(mockReserveSpend).toHaveBeenCalledTimes(1);
+    expect(mockSettleSpend).toHaveBeenCalledTimes(1);
+    expect(mockReserveSpend.mock.invocationCallOrder[0]).toBeLessThan(mockGroqCreate.mock.invocationCallOrder[0]);
+    expect(mockGroqCreate.mock.invocationCallOrder[0]).toBeLessThan(mockQuery.mock.invocationCallOrder[0]);
+    expect(mockQuery.mock.invocationCallOrder[0]).toBeLessThan(mockSettleSpend.mock.invocationCallOrder[0]);
     expect(mockQuery).toHaveBeenCalledWith(
-      expect.stringContaining('INSERT INTO ai_cost_logs (agent_type, user_id, provider, model, tokens_used, estimated_cost_cents, created_at)'),
-      ['judge', USER_ID, 'groq', 'llama-3.3-70b-versatile', expect.any(Number), expect.any(Number)],
+      expect.stringContaining('INSERT INTO ai_cost_logs'),
+      ['judge', USER_ID, 'groq', 'llama-3.3-70b-versatile', 100, 70, 30, expect.any(Number), expect.any(String)],
     );
-    expect(mockTrackUserCost).toHaveBeenCalled();
-    expect(mockTrackGlobalCost).toHaveBeenCalled();
+    expect(mockGroqCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ max_tokens: 4000 }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it('returns the correct model name from the provider config', async () => {
@@ -209,7 +252,7 @@ describe('callAI — happy path', () => {
 
 describe('callAI — global budget exceeded', () => {
   it('throws TOO_MANY_REQUESTS when platform daily budget is exceeded', async () => {
-    mockCheckGlobalBudget.mockResolvedValue({ allowed: false, spent: 50000, limit: 50000 });
+    mockReserveSpend.mockResolvedValue({ status: 'limit', scope: 'global', spent: 50000, limit: 50000 });
 
     await expect(callAI('judge', USER_ID, 'test')).rejects.toMatchObject({
       code: 'TOO_MANY_REQUESTS',
@@ -220,7 +263,7 @@ describe('callAI — global budget exceeded', () => {
 
 describe('callAI — per-user budget exceeded', () => {
   it('throws TOO_MANY_REQUESTS when user daily budget is exceeded', async () => {
-    mockCheckUserBudget.mockResolvedValue({ allowed: false, spent: 500, limit: 500 });
+    mockReserveSpend.mockResolvedValue({ status: 'limit', scope: 'user', spent: 500, limit: 500 });
 
     await expect(callAI('judge', USER_ID, 'test')).rejects.toMatchObject({
       code: 'TOO_MANY_REQUESTS',
@@ -231,8 +274,7 @@ describe('callAI — per-user budget exceeded', () => {
 
 describe('callAI — agent-level budget exceeded', () => {
   it('throws TOO_MANY_REQUESTS when agent daily budget is exceeded', async () => {
-    // Simulate agent budget already at the limit (reputation: 5 cents/day)
-    mockGet.mockResolvedValue(5);
+    mockReserveSpend.mockResolvedValue({ status: 'limit', scope: 'agent', spent: 5, limit: 5 });
 
     await expect(callAI('reputation', USER_ID, 'test')).rejects.toMatchObject({
       code: 'TOO_MANY_REQUESTS',
@@ -254,7 +296,7 @@ describe('callAI — provider fallback', () => {
 
     expect(result.provider).toBe('openai');
     expect(result.text).toBe('OpenAI fallback');
-    expect(result.attempts).toBe(2);
+    expect(result.attempts).toBe(3);
   });
 
   it('throws INTERNAL_SERVER_ERROR when all providers in the chain fail', async () => {
@@ -274,15 +316,80 @@ describe('callAI — provider fallback', () => {
 // ---------------------------------------------------------------------------
 
 describe('callAI — Redis unavailable', () => {
-  it('denies the call when Redis is unavailable during agent-level budget check', async () => {
-    // Simulate Redis.get throwing for the agent-level checkBudget
-    mockGet.mockRejectedValue(new Error('Redis connection refused'));
+  it('denies the call before provider I/O when atomic reservation is unavailable', async () => {
+    mockReserveSpend.mockRejectedValue(new Error('Redis connection refused'));
 
-    // Should deny (fail-closed) — throws TOO_MANY_REQUESTS for budget exceeded
     await expect(callAI('judge', USER_ID, 'test')).rejects.toMatchObject({
-      code: 'TOO_MANY_REQUESTS',
-      message: expect.stringContaining('HX701'),
+      code: 'INTERNAL_SERVER_ERROR',
+      message: expect.stringContaining('HX705'),
     });
+    expect(mockGroqCreate).not.toHaveBeenCalled();
+  });
+});
+
+describe('callAI — spend authority and idempotency', () => {
+  it('requires a caller-supplied stable operation identity', async () => {
+    await expect(callAIRaw('judge', USER_ID, 'test', undefined as never)).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+      message: expect.stringContaining('HX700'),
+    });
+    expect(mockReserveSpend).not.toHaveBeenCalled();
+    expect(mockGroqCreate).not.toHaveBeenCalled();
+  });
+
+  it('returns a completed replay without another provider call or reservation', async () => {
+    const cached = { text: 'cached', provider: 'groq', model: 'm', tokensUsed: 10, estimatedCostCents: 1, attempts: 1 };
+    mockReserveSpend.mockResolvedValue({ status: 'completed', resultJson: JSON.stringify(cached) });
+
+    await expect(callAIRaw('judge', USER_ID, 'same', { operationId: 'stable-op' })).resolves.toEqual(cached);
+    expect(mockGroqCreate).not.toHaveBeenCalled();
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockSettleSpend).not.toHaveBeenCalled();
+  });
+
+  it('rejects a concurrent/uncertain replay without provider I/O', async () => {
+    mockReserveSpend.mockResolvedValue({ status: 'in_progress' });
+    await expect(callAIRaw('judge', USER_ID, 'same', { operationId: 'stable-op' })).rejects.toMatchObject({
+      code: 'CONFLICT',
+      message: expect.stringContaining('HX706'),
+    });
+    expect(mockGroqCreate).not.toHaveBeenCalled();
+  });
+
+  it('retains each unknown reservation before retrying or falling back', async () => {
+    mockGroqCreate.mockRejectedValue(new Error('unknown outcome'));
+    mockOpenAICreate.mockResolvedValue(makeOpenAIResponse('fallback', 150));
+
+    await callAIRaw('judge', USER_ID, 'test', { operationId: 'retry-reservations' });
+
+    expect(mockReserveSpend).toHaveBeenCalledTimes(3);
+    expect(mockMarkUnknown).toHaveBeenCalledTimes(2);
+    expect(mockReserveSpend.mock.calls.map((call) => call[0].reservation.attemptId)).toEqual([
+      '0:groq:0',
+      '0:groq:1',
+      '1:openai:0',
+    ]);
+  });
+
+  it('does not call a fallback after successful provider I/O when audit persistence fails', async () => {
+    mockQuery.mockRejectedValue(new Error('Postgres unavailable'));
+
+    await expect(callAIRaw('judge', USER_ID, 'test', { operationId: 'audit-failure' })).rejects.toMatchObject({
+      message: expect.stringContaining('HX705'),
+    });
+    expect(mockGroqCreate).toHaveBeenCalledTimes(1);
+    expect(mockOpenAICreate).not.toHaveBeenCalled();
+    expect(mockSettleSpend).not.toHaveBeenCalled();
+  });
+
+  it('does not call a fallback when post-provider Redis settlement fails', async () => {
+    mockSettleSpend.mockRejectedValue(new Error('Redis unavailable'));
+
+    await expect(callAIRaw('judge', USER_ID, 'test', { operationId: 'settle-failure' })).rejects.toMatchObject({
+      message: expect.stringContaining('HX705'),
+    });
+    expect(mockGroqCreate).toHaveBeenCalledTimes(1);
+    expect(mockOpenAICreate).not.toHaveBeenCalled();
   });
 });
 
@@ -292,7 +399,7 @@ describe('callAI — Redis unavailable', () => {
 
 describe('getBudgetStatus', () => {
   it('returns budget status with spent/limit/remaining', async () => {
-    mockGet.mockResolvedValue(3); // 3 cents spent
+    mockGet.mockResolvedValue('3'); // raw Redis string: 3 cents spent
 
     const status = await getBudgetStatus('judge', USER_ID);
 
@@ -306,14 +413,14 @@ describe('getBudgetStatus', () => {
   });
 
   it('clamps remaining to 0 when over budget', async () => {
-    mockGet.mockResolvedValue(100); // spent more than limit
+    mockGet.mockResolvedValue('100'); // raw Redis string: spent more than limit
 
     const status = await getBudgetStatus('judge', USER_ID);
     expect(status.remaining).toBe(0);
   });
 
   it('uses default config for unknown agents', async () => {
-    mockGet.mockResolvedValue(0);
+    mockGet.mockResolvedValue('0');
 
     const status = await getBudgetStatus('unknown_agent', USER_ID);
     expect(status.limit).toBe(25); // default dailyBudgetPerUser

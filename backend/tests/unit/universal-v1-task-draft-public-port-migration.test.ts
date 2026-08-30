@@ -17,7 +17,7 @@ describe('Universal V1 task-draft-public compatibility migration', () => {
       ({ name }) => name === '20260902_universal_v1_task_draft_public_port',
     );
 
-    expect(REQUIRED_MIGRATION_FILES).toHaveLength(121);
+    expect(REQUIRED_MIGRATION_FILES).toHaveLength(128);
     expect(publicPortIndex).toBeGreaterThan(0);
     expect(REQUIRED_MIGRATION_FILES.slice(publicPortIndex - 1)).toEqual([
       {
@@ -67,6 +67,34 @@ describe('Universal V1 task-draft-public compatibility migration', () => {
       {
         name: '20260913_universal_v1_completion_delivery_receipt',
         fileName: '20260913_universal_v1_completion_delivery_receipt.sql',
+      },
+      {
+        name: '20260914_notification_provider_in_flight',
+        fileName: '20260914_notification_provider_in_flight.sql',
+      },
+      {
+        name: '20260915_ai_spend_attempt_ledger',
+        fileName: '20260915_ai_spend_attempt_ledger.sql',
+      },
+      {
+        name: '20260916_provider_event_inbox_v1',
+        fileName: '20260916_provider_event_inbox_v1.sql',
+      },
+      {
+        name: '20260917_financial_provider_command_journal_v1',
+        fileName: '20260917_financial_provider_command_journal_v1.sql',
+      },
+      {
+        name: '20260918_universal_v1_prepared_financial_command_v1',
+        fileName: '20260918_universal_v1_prepared_financial_command_v1.sql',
+      },
+      {
+        name: '20260919_provider_event_processing_v1',
+        fileName: '20260919_provider_event_processing_v1.sql',
+      },
+      {
+        name: '20260920_financial_provider_command_recovery_v1',
+        fileName: '20260920_financial_provider_command_recovery_v1.sql',
       },
     ]);
   });

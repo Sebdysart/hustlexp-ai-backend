@@ -3,6 +3,8 @@ import { logger } from '../logger.js';
 import { ContentModerationService } from './ContentModerationService.js';
 import { NotificationService } from './NotificationService.js';
 import type { TaskMessage } from './MessagingTypes.js';
+import { getRedisCommandClient } from '../redis/RedisCommandPort.js';
+import { createUserRealtimeEnvelope } from '../realtime/user-realtime-contract.js';
 
 const log = logger.child({ service: 'MessagingService' });
 
@@ -103,20 +105,21 @@ async function publishRealtime(
   recipientId: string,
 ): Promise<void> {
   try {
-    const { Redis } = await import('@upstash/redis');
-    const { config } = await import('../config.js');
-    if (!config.redis.restUrl || !config.redis.restToken) return;
-    const redis = new Redis({ url: config.redis.restUrl, token: config.redis.restToken });
-    await redis.publish(`realtime:user:${recipientId}`, JSON.stringify({
-      event: 'message.new',
-      data: {
+    const redis = getRedisCommandClient();
+    if (!redis) return;
+    const envelope = createUserRealtimeEnvelope(
+      recipientId,
+      'message.new',
+      {
         messageId: message.id,
         taskId,
         senderId,
-        content: message.content,
-        createdAt: message.created_at,
+        messageType: message.message_type,
+        content: message.content ?? null,
+        createdAt: message.created_at.toISOString(),
       },
-    }));
+    );
+    await redis.publish(envelope.room, JSON.stringify(envelope));
   } catch (error) {
     log.warn(
       { err: error instanceof Error ? error.message : String(error) },

@@ -1,4 +1,3 @@
-import type { Database } from '../db.js';
 import {
   type CompleteFakeFinancialLifecyclePublic,
   type DecideCompletionPublic,
@@ -8,13 +7,11 @@ import {
 } from './UniversalV1FulfillmentContracts.js';
 import { PostgresUniversalV1FulfillmentRepository } from './UniversalV1FulfillmentPostgresRepository.js';
 import {
-  authorizeUniversalV1FakeFinancialTransaction,
+  createUniversalV1FakeFinancialApplicationService,
   type UniversalV1FakeFinancialApplicationService,
 } from './payment/UniversalV1FinancialApplicationService.js';
 
-type FinanceAuthorization = () => (
-  database: Database
-) => UniversalV1FakeFinancialApplicationService;
+type FakeFinanceFactory = () => UniversalV1FakeFinancialApplicationService;
 
 function assertCurrentRequest(clientTimestamp: string): void {
   const timestamp = Date.parse(clientTimestamp);
@@ -31,14 +28,15 @@ function assertCurrentRequest(clientTimestamp: string): void {
  *
  * This service never writes tasks.worker_id, never resolves a processor-specific
  * adapter, and never creates production money. The terminal financial command
- * obtains the existing exact-manifest fake-finance authorization before opening
- * the repository's single SERIALIZABLE transaction.
+ * first commits its business-authority read, then uses the independent,
+ * journaled fake-finance coordinator. Provider I/O is never entered from a
+ * caller-owned business transaction.
  */
 export class UniversalV1FulfillmentApplication {
   constructor(
     private readonly repository = new PostgresUniversalV1FulfillmentRepository(),
-    private readonly authorizeFinance: FinanceAuthorization = () =>
-      authorizeUniversalV1FakeFinancialTransaction()
+    private readonly createFinance: FakeFinanceFactory = () =>
+      createUniversalV1FakeFinancialApplicationService()
   ) {}
 
   recordExecutionEvidence(actorId: string, input: RecordExecutionEvidencePublic) {
@@ -58,7 +56,7 @@ export class UniversalV1FulfillmentApplication {
 
   completeFakeFinancialLifecycle(actorId: string, input: CompleteFakeFinancialLifecyclePublic) {
     assertCurrentRequest(input.client_ts);
-    const financeFactory = this.authorizeFinance();
-    return this.repository.completeFakeFinancialLifecycle(actorId, input, financeFactory);
+    const finance = this.createFinance();
+    return this.repository.completeFakeFinancialLifecycle(actorId, input, finance);
   }
 }

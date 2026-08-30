@@ -61,7 +61,7 @@ test('prepared test URLs remain fixed to the isolated user and database names', 
 test('pins the required-test fake-finance fixture to the append-only nonproduction migration', async () => {
   assert.equal(
     NONPRODUCTION_TEST_FINANCIAL_MIGRATION,
-    '20260910_fake_financial_settlement_completion_v3'
+    '20260921_universal_v1_fake_financial_lifecycle_bridge_v1'
   );
   assert.equal(
     NONPRODUCTION_TEST_FINANCIAL_MIGRATION_PATH,
@@ -73,6 +73,7 @@ test('pins the required-test fake-finance fixture to the append-only nonproducti
       '20260827_fake_financial_provider_v1',
       '20260903_fake_financial_provider_account_refresh_v2',
       '20260910_fake_financial_settlement_completion_v3',
+      '20260921_universal_v1_fake_financial_lifecycle_bridge_v1',
     ]
   );
   const sql = await Promise.all(
@@ -87,6 +88,9 @@ test('pins the required-test fake-finance fixture to the append-only nonproducti
   assert.match(sql[2], /PROVIDER_RELEASE/u);
   assert.match(sql[2], /OBSERVE_BANK_SETTLEMENT/u);
   assert.match(sql[2], /hxos_fake_financial_schema_evidence_v3/u);
+  assert.match(sql[3], /universal_v1_fake_financial_lifecycle_bridges/u);
+  assert.match(sql[3], /hxos_fake_financial_schema_evidence_v4/u);
+  assert.match(sql[3], /nonproduction fake-provider v3/u);
   for (const migrationSql of sql) {
     assert.match(migrationSql, /append-only/iu);
     assert.doesNotMatch(migrationSql, /stripe_events/u);

@@ -21,6 +21,7 @@
 import { db } from '../db.js';
 import type { ServiceResult, Dispute, Task, Escrow, Evidence } from '../types.js';
 import { AIClient } from './AIClient.js';
+import { aiOperationId } from '../ai/AIOperationIdentity.js';
 import { aiObservation } from './AIObservabilityPolicy.js';
 import { DisputeAnalysisSchema, EvidenceRequestSchema } from '../lib/ai-response-schemas.js';
 import { scrubPII } from '../lib/pii-scrubber.js';
@@ -459,6 +460,7 @@ export const DisputeAIService = {
           );
 
           const aiResult = await AIClient.callJSON<DisputeAnalysis>({
+            operationId: aiOperationId('dispute-analysis', disputeId, safeDisputeReason, safeDisputeDesc, safeTaskTitle, safeTaskDesc),
             observability: aiObservation('AI-DISPUTE-PROPOSAL', {
               affectedObjectType: 'DISPUTE',
               affectedObjectId: disputeId,
@@ -608,6 +610,7 @@ USER HISTORIES:
           );
 
           const aiResult = await AIClient.callJSON<EvidenceRequest>({
+            operationId: aiOperationId('dispute-evidence-request', disputeId, safeDisputeReason, safeDisputeDesc, safeTaskTitle, safeTaskDesc),
             observability: aiObservation('AI-DISPUTE-PROPOSAL', {
               affectedObjectType: 'DISPUTE',
               affectedObjectId: disputeId,

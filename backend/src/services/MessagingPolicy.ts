@@ -1,7 +1,7 @@
 import { db } from '../db.js';
 import type { ServiceResult, TaskState } from '../types.js';
 import { ErrorCodes } from '../types.js';
-import { expire, incr } from '../cache/redis.js';
+import { incrWithTtl } from '../cache/redis.js';
 import type {
   CreateMessageParams,
   MessagingContext,
@@ -172,8 +172,24 @@ export async function enforceMessageRateLimit(
 ): Promise<ServiceResult<true>> {
   const limit = 30;
   const windowSeconds = 60;
-  const count = await incr(`msg_rate:${senderId}:${taskId}`);
-  if (count === 1) await expire(`msg_rate:${senderId}:${taskId}`, windowSeconds);
+  const key = `msg_rate:${senderId}:${taskId}`;
+  let count: number;
+  try {
+    // Counter creation and TTL assignment must be one Redis operation. A bare
+    // INCR followed by EXPIRE can leave an immortal conversation lock if the
+    // second command or this process fails between the two writes.
+    count = await incrWithTtl(key, windowSeconds);
+  } catch {
+    // Messaging is a user-to-user abuse boundary. When the rate-limit
+    // authority is unavailable, do not silently permit unbounded traffic.
+    return {
+      success: false,
+      error: {
+        code: ErrorCodes.SERVICE_UNAVAILABLE,
+        message: 'Messaging rate-limit authority is temporarily unavailable. Try again shortly.',
+      },
+    };
+  }
   if (count <= limit) return { success: true, data: true };
   return {
     success: false,

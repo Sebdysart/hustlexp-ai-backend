@@ -41,22 +41,6 @@ vi.mock('../../src/services/AlphaInstrumentation', () => ({
   AlphaInstrumentation: { emitTrustDeltaApplied: vi.fn().mockResolvedValue(undefined) },
 }));
 
-// Redis unconfigured → daily cap falls back to the authoritative XP ledger.
-vi.mock('../../src/config', () => ({
-  config: {
-    redis: { restUrl: '', restToken: '' },
-    stripe: { platformFeePercent: 15 },
-  },
-}));
-
-vi.mock('@upstash/redis', () => ({
-  Redis: vi.fn().mockImplementation(() => ({
-    get: vi.fn().mockResolvedValue(null),
-    incrby: vi.fn().mockResolvedValue(1),
-    expire: vi.fn().mockResolvedValue(1),
-  })),
-}));
-
 vi.mock('../../src/services/EarnedVerificationUnlockService', () => ({
   EarnedVerificationUnlockService: { recordEarnings: vi.fn().mockResolvedValue(undefined) },
 }));
@@ -140,8 +124,6 @@ function ledgerRow(overrides: Partial<{
 function wireSuccessfulAward(baseXP: number, userOverrides = {}) {
   // checkVelocity query
   mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] });
-  // checkDailyXPCap DB fallback query (Redis is unconfigured in test config)
-  mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] });
 
   const lr = ledgerRow({ base_xp: baseXP, effective_xp: baseXP, user_xp_after: baseXP });
   mockTx.mockImplementationOnce(async (fn: Function) => {
@@ -149,6 +131,7 @@ function wireSuccessfulAward(baseXP: number, userOverrides = {}) {
       .mockResolvedValueOnce({ rows: [userRow(userOverrides)] })  // user SELECT
       .mockResolvedValueOnce({ rows: [{ mode: 'STANDARD' }] })    // task mode
       .mockResolvedValueOnce({ rows: [{ count: '0' }] })          // MM3: in-tx velocity re-check
+      .mockResolvedValueOnce({ rows: [{ total: '0' }] })          // authoritative in-tx daily ledger total
       .mockResolvedValueOnce({ rows: [lr] })                       // INSERT ledger
       .mockResolvedValueOnce({ rowCount: 1 });                     // UPDATE user XP
     return fn(txQuery);
@@ -161,6 +144,9 @@ function wireSuccessfulAward(baseXP: number, userOverrides = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockQuery.mockReset();
+  mockTx.mockReset();
+  mockTxFn.mockReset();
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -168,8 +154,8 @@ beforeEach(() => {
 // ═══════════════════════════════════════════════════════════════════════════
 describe('ATTACK 1 — Micro-task spam: XP daily cap enforcement', () => {
   /**
-   * Redis uses an atomic counter. When Redis is not configured, the service
-   * sums today's immutable XP ledger and fails closed if that query fails.
+   * PostgreSQL's immutable XP ledger is authoritative and the service fails
+   * closed if that query fails.
    */
 
   it('confirms DAILY_XP_CAP constant is 10,000 XP (not cents)', async () => {
@@ -183,19 +169,17 @@ describe('ATTACK 1 — Micro-task spam: XP daily cap enforcement', () => {
     expect(tasksUntilCap).toBe(66); // 67th task would exceed cap
   });
 
-  it('DB fallback: daily cap queries xp_ledger when Redis is unconfigured (FIX 1)', async () => {
-    // FIX 1: When restUrl is '' → getXPRedis() returns null → checkDailyXPCap falls back
-    // to a DB query summing today's xp_ledger rows. Cap is now always enforced.
+  it('daily cap queries the authoritative xp_ledger', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] }); // 0 XP earned today
     const result = await XPService.checkDailyXPCap('attacker-user');
     expect(result.allowed).toBe(true);   // 0 earned < 10000 cap → allowed
     expect(result.earned).toBe(0);
     expect(result.cap).toBe(10000);
     expect(result.remaining).toBe(10000);
-    // VERDICT: PATCHED — DB fallback enforces cap even without Redis.
+    // VERDICT: PATCHED — PostgreSQL enforces the cap without Redis authorization.
   });
 
-  it('DB fallback blocks the award that would cross the 10,000 XP cap', async () => {
+  it('PostgreSQL blocks the award that would cross the 10,000 XP cap', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ total: '9900' }] });
     const result = await XPService.checkDailyXPCap('attacker-user', 150);
     expect(result.allowed).toBe(false);
@@ -203,7 +187,7 @@ describe('ATTACK 1 — Micro-task spam: XP daily cap enforcement', () => {
     expect(result.remaining).toBe(100);
   });
 
-  it('DB fallback fails closed when the ledger cannot be read', async () => {
+  it('fails closed when the PostgreSQL ledger cannot be read', async () => {
     mockQuery.mockRejectedValueOnce(new Error('database unavailable'));
     await expect(XPService.checkDailyXPCap('attacker-user', 150)).resolves.toEqual({
       allowed: false,
@@ -213,7 +197,7 @@ describe('ATTACK 1 — Micro-task spam: XP daily cap enforcement', () => {
     });
   });
 
-  it('awards XP below the ledger-backed cap when Redis is absent', async () => {
+  it('awards XP below the ledger-backed cap without Redis authorization', async () => {
     wireSuccessfulAward(150);
     const result = await XPService.awardXP({
       userId: 'attacker',
@@ -347,7 +331,7 @@ describe('ATTACK 5 — Template-stacked XP: how many $500 tasks before cap?', ()
    * So only 2 such tasks can be completed before hitting the cap.
    *
    * VERDICT: SAFE — cap is per cumulative XP, so 2 elite tasks hits the limit.
-   * Redis absence uses the ledger-backed cap in ATTACK 1.
+   * The ledger-backed cap is verified in ATTACK 1.
    */
 
   it('$500 task awards 5000 XP — only 2 needed to hit 10k daily cap', () => {
@@ -361,7 +345,7 @@ describe('ATTACK 5 — Template-stacked XP: how many $500 tasks before cap?', ()
     // effective_xp = 5000 * 2.0 = 10000 = cap on single task
     const trustedXP = Math.floor(5000 * 2.0 * 1.0 * 1.0);
     expect(trustedXP).toBe(10000); // exactly hits cap in one task
-    // VERDICT: SAFE — the effective award is capped with or without Redis.
+    // VERDICT: SAFE — PostgreSQL caps the effective award.
   });
 
   it('cap is cumulative (not per-task): XP across tasks sums toward cap', () => {
@@ -371,7 +355,7 @@ describe('ATTACK 5 — Template-stacked XP: how many $500 tasks before cap?', ()
     const cap = 10000;
     const earned = 9999;
     const nextAward = 1;
-    // checkDailyXPCap returns allowed = earned < cap
+    // The read-only probe accounts for the proposed award.
     expect(earned < cap).toBe(true); // 9999 < 10000 → still allowed
     expect((earned + nextAward) <= cap).toBe(true); // total = 10000 exactly, then blocked
     // No per-task XP ceiling; the accumulator is the only guard.
@@ -437,7 +421,6 @@ describe('ATTACK 7 — XP on cancelled task: state transition enforces no XP', (
   it('INV-1 blocks XP when escrow is not RELEASED', async () => {
     const { isInvariantViolation } = await import('../../src/db');
     (isInvariantViolation as ReturnType<typeof vi.fn>).mockReturnValue(true);
-    mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] }); // cap check DB fallback
     mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // velocity check
     mockTx.mockRejectedValueOnce({ code: 'HX101', message: 'HX101' });
 
@@ -533,6 +516,7 @@ describe('ATTACK 9 — Velocity detection bypass: slow-roll exploit', () => {
         .mockResolvedValueOnce({ rows: [userRow()] })
         .mockResolvedValueOnce({ rows: [{ mode: 'STANDARD' }] })
         .mockResolvedValueOnce({ rows: [{ count: '0' }] })          // MM3: in-tx velocity re-check
+        .mockResolvedValueOnce({ rows: [{ total: '0' }] })          // authoritative in-tx daily ledger total
         .mockResolvedValueOnce({ rows: [lr] })
         .mockResolvedValueOnce({ rowCount: 1 });
       return fn(txQuery);
@@ -570,7 +554,7 @@ describe('ATTACK 9 — Velocity detection bypass: slow-roll exploit', () => {
     // VERDICT: PATCHED — 6+ tasks/hour with large award is now hard-blocked
   });
 
-  it('daily cap still blocks slow-roll awards when Redis is absent', async () => {
+  it('PostgreSQL daily cap blocks slow-roll awards without Redis authorization', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ total: '10000' }] });
     const result = await XPService.checkDailyXPCap('slow-roller', 1);
     expect(result.allowed).toBe(false);
@@ -585,7 +569,7 @@ describe('ATTACK 10 — Cross-account velocity: XP is scoped to verified user id
   /**
    * Code path:
    *   XPService.ts:533 → checkVelocity(userId): query scoped to single userId
-   *   XPService.ts:499 → checkDailyXPCap(userId): Redis key includes userId
+   *   XPService.ts → checkDailyXPCap(userId): ledger query is scoped to userId
    *
    * Velocity and cap checks are deliberately scoped to userId. Duplicate-person
    * detection belongs to identity/KYC and fraud controls, not the XP ledger.
@@ -605,8 +589,7 @@ describe('ATTACK 10 — Cross-account velocity: XP is scoped to verified user id
     // SAFE at this boundary — one user's activity cannot contaminate another's cap.
   });
 
-  it('daily cap key is per user — two accounts have separate 10k caps', async () => {
-    // XPService.ts:503: key = `xp:daily:${userId}:${dateKey}`
+  it('daily cap ledger scope is per user — two accounts have separate 10k caps', async () => {
     // Account A can earn 10,000 XP and Account B can independently earn 10,000 XP.
     const capA = 10000;
     const capB = 10000;

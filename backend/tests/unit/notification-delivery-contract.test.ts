@@ -8,6 +8,13 @@ const REPAIR = read(
   'backend/database/migrations/20260720_notification_delivery_contract_repair.sql'
 );
 const FOCUS = read('backend/database/migrations/20260720_notification_focus_suppression.sql');
+const PROVIDER_NEUTRAL = read(
+  'backend/database/migrations/20260831_provider_neutral_outbound_communication.sql'
+);
+const LEAD_INGRESS = read(
+  'backend/database/migrations/20260901_universal_v1_lead_ingress_port.sql'
+);
+const IN_FLIGHT = read('backend/database/migrations/20260914_notification_provider_in_flight.sql');
 const CONSTITUTIONAL = read('backend/database/constitutional-schema.sql');
 const LAUNCH = read('backend/database/launch-schema.sql');
 const RUNNER = [
@@ -85,6 +92,9 @@ describe('HX/OS notification delivery database contract', () => {
       'idx_notifications_focus_deferred',
     ])
       expect(FOCUS).toContain(token);
+    expect(RUNNER).toContain("fileName: '20260914_notification_provider_in_flight.sql'");
+    expect(IN_FLIGHT).toContain("'provider_in_flight'");
+    expect(IN_FLIGHT).toContain('not provider acceptance');
   });
 
   it.each([
@@ -106,9 +116,59 @@ describe('HX/OS notification delivery database contract', () => {
       'deferred_focus',
       'focus_task_id',
       'idx_notifications_focus_deferred',
+      'provider_in_flight',
     ]) {
       expect(baseline).toContain(token);
     }
     expect(baseline).toContain("'pending', 'enqueued', 'processing', 'processed', 'failed'");
+
+    const smsOutbox = baseline.match(
+      /CREATE TABLE IF NOT EXISTS sms_outbox\s*\(([\s\S]*?)\n\);/i,
+    )?.[1];
+    expect(smsOutbox).toBeDefined();
+    expect(smsOutbox).toMatch(/\bprovider_name\s+TEXT\b/i);
+    expect(smsOutbox).toMatch(/\bprovider_message_id\s+TEXT\b/i);
+    expect(baseline).toMatch(
+      /CREATE INDEX IF NOT EXISTS idx_sms_outbox_provider_receipt\s+ON sms_outbox\(provider_name, provider_message_id\)\s+WHERE provider_message_id IS NOT NULL/i,
+    );
+
+    const emailOutbox = baseline.match(
+      /CREATE TABLE IF NOT EXISTS email_outbox\s*\(([\s\S]*?)\n\);/i,
+    )?.[1];
+    expect(emailOutbox).toBeDefined();
+    expect(emailOutbox).toMatch(/\buser_id\s+UUID\s+REFERENCES users\(id\)/i);
+    expect(emailOutbox).not.toMatch(/\buser_id\s+UUID\s+NOT NULL/i);
+    expect(emailOutbox).toMatch(/\blead_id\s+UUID\s+REFERENCES leads\(id\)/i);
+    expect(emailOutbox).toMatch(
+      /CONSTRAINT email_outbox_exactly_one_owner CHECK \(num_nonnulls\(user_id, lead_id\) = 1\)/i,
+    );
+    for (const token of [
+      'CREATE TABLE IF NOT EXISTS leads',
+      'leads_ingress_request_hash_shape',
+      'leads_ingress_contract_version_shape',
+      'idx_leads_ingress_rate_window',
+      'idx_email_outbox_lead',
+      'idx_email_outbox_provider_receipt',
+    ]) {
+      expect(baseline).toContain(token);
+    }
+  });
+
+  it('keeps upgraded and clean SMS receipt authority on the same provider-neutral columns', () => {
+    expect(PROVIDER_NEUTRAL).toMatch(
+      /ALTER TABLE public\.sms_outbox[\s\S]*ADD COLUMN IF NOT EXISTS provider_name TEXT,[\s\S]*ADD COLUMN IF NOT EXISTS provider_message_id TEXT/i,
+    );
+    expect(PROVIDER_NEUTRAL).toContain(
+      'provider_message_id = COALESCE(provider_message_id, twilio_sid)'
+    );
+    expect(PROVIDER_NEUTRAL).toContain('idx_sms_outbox_provider_receipt');
+  });
+
+  it('keeps upgraded and clean anonymous-lead email ownership equivalent', () => {
+    expect(LEAD_INGRESS).toContain('ALTER COLUMN user_id DROP NOT NULL');
+    expect(LEAD_INGRESS).toContain('ADD COLUMN IF NOT EXISTS lead_id UUID');
+    expect(LEAD_INGRESS).toContain('email_outbox_exactly_one_owner');
+    expect(LEAD_INGRESS).toContain('idx_email_outbox_lead');
+    expect(LEAD_INGRESS).toContain('idx_leads_ingress_rate_window');
   });
 });

@@ -1,53 +1,35 @@
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { config } from '../config.js';
-import { Redis } from '@upstash/redis';
-import { Ratelimit } from '@upstash/ratelimit';
 import { logger } from '../logger.js';
+import {
+  getRedisCommandClient,
+  takeSlidingWindow,
+  type RedisCommandPort,
+} from '../redis/RedisCommandPort.js';
 const redisLog = logger.child({ module: 'redis' });
 
-export type RedisClient = Redis | null;
+export type RedisClient = RedisCommandPort | null;
+export type RedisReadMode = 'tolerant-cache' | 'authority';
+const TYPED_CACHE_KEY_PREFIX = 'cache:typed:v1:';
+const TYPED_CACHE_VALUE_PREFIX = 'hx:typed-cache:v1:';
+const LEGACY_TCP_CACHE_VALUE_PREFIX = 'hx:cache-json:v1:';
+const MAX_TYPED_CACHE_VALUE_BYTES = 1024 * 1024;
+const MAX_TYPED_CACHE_DEPTH = 24;
+const MAX_TYPED_CACHE_NODES = 10_000;
+const MAX_LEGACY_TYPED_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60;
+const FORBIDDEN_JSON_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+const VERSIONED_TYPED_CACHE_PREFIXES = [
+  'task:feed:',
+  'user:profile:',
+  'ai:cache:',
+  'task:details:',
+  'user:stats:',
+  'geocode:',
+] as const;
 
-// ─── Singleton Redis Client ────────────────────────────────────────────────
-let redisClient: Redis | null = null;
-
-/** Get shared Redis REST client; null if not configured (cache/rate-limit no-op). */
-export function getClient(): Redis | null {
-  if (redisClient) return redisClient;
-
-  if (config.redis.restUrl && config.redis.restToken) {
-    try {
-      redisClient = new Redis({
-        url: config.redis.restUrl,
-        token: config.redis.restToken,
-      });
-      redisLog.info('Upstash Redis REST client initialized');
-    } catch (error) {
-      redisLog.error({ err: error }, 'Failed to initialize Upstash Redis client');
-      redisClient = null;
-    }
-  } else {
-    redisLog.warn('Redis REST not configured (UPSTASH_REDIS_REST_URL/TOKEN missing) — using stub fallbacks');
-  }
-
-  return redisClient;
-}
-
-// ─── Rate Limiter (lazy singleton) ─────────────────────────────────────────
-const rateLimiters = new Map<string, Ratelimit>();
-
-function getRateLimiter(windowMs: number, limit: number): Ratelimit | null {
-  const client = getClient();
-  if (!client) return null;
-
-  const key = `${windowMs}:${limit}`;
-  if (!rateLimiters.has(key)) {
-    rateLimiters.set(key, new Ratelimit({
-      redis: client,
-      limiter: Ratelimit.slidingWindow(limit, `${windowMs} ms`),
-      analytics: false,
-    }));
-  }
-  return rateLimiters.get(key)!;
+/** Get the shared normalized Redis client for portable TCP or explicit legacy REST. */
+export function getClient(): RedisCommandPort | null {
+  return getRedisCommandClient();
 }
 
 // ─── Cache Key Patterns ────────────────────────────────────────────────────
@@ -75,30 +57,184 @@ export const CACHE_TTL = {
   rateLimit: 60,
 } as const;
 
+function usesVersionedTypedCache(key: string): boolean {
+  return VERSIONED_TYPED_CACHE_PREFIXES.some((prefix) => key.startsWith(prefix));
+}
+
+function typedCacheStorageKey(key: string): string {
+  return `${TYPED_CACHE_KEY_PREFIX}${key}`;
+}
+
+function assertSafeJsonValue(
+  value: unknown,
+  depth = 0,
+  state: { nodes: number } = { nodes: 0 },
+): void {
+  state.nodes += 1;
+  if (depth > MAX_TYPED_CACHE_DEPTH || state.nodes > MAX_TYPED_CACHE_NODES) {
+    throw new Error('REDIS_TYPED_CACHE_VALUE_TOO_COMPLEX');
+  }
+  if (
+    value === null
+    || typeof value === 'string'
+    || typeof value === 'boolean'
+    || (typeof value === 'number' && Number.isFinite(value))
+  ) {
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) assertSafeJsonValue(entry, depth + 1, state);
+    return;
+  }
+  if (typeof value === 'object') {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new Error('REDIS_TYPED_CACHE_VALUE_NOT_PLAIN_JSON');
+    }
+    for (const [key, entry] of Object.entries(value)) {
+      if (FORBIDDEN_JSON_KEYS.has(key)) throw new Error('REDIS_TYPED_CACHE_VALUE_UNSAFE_KEY');
+      assertSafeJsonValue(entry, depth + 1, state);
+    }
+    return;
+  }
+  throw new Error('REDIS_TYPED_CACHE_VALUE_NOT_JSON');
+}
+
+function boundedJsonParse(raw: string): unknown {
+  if (Buffer.byteLength(raw, 'utf8') > MAX_TYPED_CACHE_VALUE_BYTES) {
+    throw new Error('REDIS_TYPED_CACHE_VALUE_TOO_LARGE');
+  }
+  const value = JSON.parse(raw) as unknown;
+  assertSafeJsonValue(value);
+  return value;
+}
+
+function encodeTypedCacheValue(value: unknown): string {
+  assertSafeJsonValue(value);
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined) throw new Error('REDIS_TYPED_CACHE_VALUE_NOT_JSON');
+  boundedJsonParse(serialized);
+  return `${TYPED_CACHE_VALUE_PREFIX}${serialized}`;
+}
+
+function decodeTypedCacheValue(raw: string): unknown {
+  if (!raw.startsWith(TYPED_CACHE_VALUE_PREFIX)) {
+    throw new Error('REDIS_TYPED_CACHE_VALUE_VERSION_INVALID');
+  }
+  return boundedJsonParse(raw.slice(TYPED_CACHE_VALUE_PREFIX.length));
+}
+
+function decodeLegacyTypedCacheValue(key: string, raw: string): unknown {
+  if (raw.startsWith(LEGACY_TCP_CACHE_VALUE_PREFIX)) {
+    const decoded = boundedJsonParse(raw.slice(LEGACY_TCP_CACHE_VALUE_PREFIX.length));
+    if (key.startsWith('ai:cache:') && typeof decoded !== 'string') {
+      throw new Error('REDIS_LEGACY_AI_CACHE_TYPE_INVALID');
+    }
+    return decoded;
+  }
+  if (Buffer.byteLength(raw, 'utf8') > MAX_TYPED_CACHE_VALUE_BYTES) {
+    throw new Error('REDIS_TYPED_CACHE_VALUE_TOO_LARGE');
+  }
+  // AI responses are opaque text. A valid model response may itself be JSON,
+  // so an unversioned legacy value such as `{"answer":42}` must not be
+  // reinterpreted as a structured cache object during migration.
+  if (key.startsWith('ai:cache:')) return raw;
+  try {
+    return boundedJsonParse(raw);
+  } catch (error) {
+    if (/^\s*[[{"]/.test(raw)) throw error;
+    return raw;
+  }
+}
+
+function boundedLegacyTtl(ttlSeconds: number): boolean {
+  return Number.isSafeInteger(ttlSeconds)
+    && ttlSeconds > 0
+    && ttlSeconds <= MAX_LEGACY_TYPED_CACHE_TTL_SECONDS;
+}
+
 // ─── Redis Operations ──────────────────────────────────────────────────────
 
 export async function createRedisClient(): Promise<RedisClient> {
   return getClient();
 }
 
-export async function get<T = string>(key: string): Promise<T | null> {
+/**
+ * Read a value from Redis.
+ *
+ * Ordinary cache reads are intentionally tolerant: an unavailable Redis
+ * service or failed command is treated as a cache miss. Authentication and
+ * other authority boundaries must opt into `authority`; those reads preserve
+ * the distinction between a genuine null miss and an unavailable authority
+ * store by propagating failures to the caller.
+ */
+export async function get<T = string>(
+  key: string,
+  mode: RedisReadMode = 'tolerant-cache',
+): Promise<T | null> {
   const client = getClient();
-  if (!client) return null;
+  if (!client) {
+    if (mode === 'authority') {
+      throw new Error('Redis unavailable for authoritative read');
+    }
+    return null;
+  }
 
   try {
-    const value = await client.get<T>(key);
-    return value;
+    if (!usesVersionedTypedCache(key)) {
+      return await client.get(key) as T | null;
+    }
+
+    const versionedKey = typedCacheStorageKey(key);
+    const currentValue = await client.get(versionedKey);
+    if (currentValue !== null) {
+      return decodeTypedCacheValue(currentValue) as T;
+    }
+
+    // The legacy read is deliberately TTL-bounded. Persistent, expired, and
+    // unexpectedly long-lived keys are treated as misses; they are never
+    // deleted or promoted. This drains old cache values without flushing or
+    // touching counters, revocation markers, locks, or rate-limit windows.
+    const legacyTtl = await client.ttl(key);
+    if (!boundedLegacyTtl(legacyTtl)) return null;
+    const legacyValue = await client.get(key);
+    if (legacyValue === null) return null;
+    const decoded = decodeLegacyTypedCacheValue(key, legacyValue);
+    try {
+      await client.set(versionedKey, encodeTypedCacheValue(decoded), { ex: legacyTtl });
+    } catch (error) {
+      redisLog.warn({ err: error, key }, 'Legacy cache promotion failed');
+    }
+    return decoded as T;
   } catch (error) {
     redisLog.error({ err: error, key }, 'Redis GET error');
+    if (mode === 'authority') throw error;
     return null;
   }
 }
 
 export async function set(
   key: string,
-  value: string | number | object,
+  value: unknown,
   ttl?: number
 ): Promise<void> {
+  const typed = usesVersionedTypedCache(key);
+  if (
+    typed
+    && (
+      !Number.isSafeInteger(ttl)
+      || (ttl ?? 0) <= 0
+      || (ttl ?? 0) > MAX_LEGACY_TYPED_CACHE_TTL_SECONDS
+    )
+  ) {
+    throw new Error('REDIS_TYPED_CACHE_TTL_INVALID');
+  }
+  if (!typed && typeof value !== 'string') {
+    throw new Error('REDIS_RAW_VALUE_MUST_BE_STRING');
+  }
+  const storageKey = typed ? typedCacheStorageKey(key) : key;
+  const transportValue = typed ? encodeTypedCacheValue(value) : value as string;
+
   const client = getClient();
   if (!client) {
     if (config.app.isProduction) {
@@ -109,9 +245,9 @@ export async function set(
 
   try {
     if (ttl) {
-      await client.set(key, value, { ex: ttl });
+      await client.set(storageKey, transportValue, { ex: ttl });
     } else {
-      await client.set(key, value);
+      await client.set(storageKey, transportValue);
     }
   } catch (error) {
     redisLog.error({ err: error, key }, 'Redis SET error');
@@ -131,7 +267,11 @@ export async function del(key: string): Promise<void> {
   }
 
   try {
-    await client.del(key);
+    if (usesVersionedTypedCache(key)) {
+      await client.del(typedCacheStorageKey(key), key);
+    } else {
+      await client.del(key);
+    }
   } catch (err) {
     redisLog.error({ err, key }, 'Redis del failed');
     throw err; // re-throw so callers can handle or log appropriately
@@ -143,8 +283,9 @@ export async function exists(key: string): Promise<boolean> {
   if (!client) return false;
 
   try {
-    const result = await client.exists(key);
-    return result === 1;
+    if (!usesVersionedTypedCache(key)) return await client.exists(key) === 1;
+    if (await client.exists(typedCacheStorageKey(key)) === 1) return true;
+    return boundedLegacyTtl(await client.ttl(key));
   } catch (error) {
     redisLog.error({ err: error, key }, 'Redis EXISTS error');
     return false;
@@ -183,9 +324,9 @@ export async function expire(key: string, ttl: number): Promise<void> {
  * subsequent EXPIRE leaves a key with no expiry, permanently rate-limiting
  * the affected user/IP.
  *
- * The EXPIRE is applied only when current === 1 (i.e. the key was just
- * created).  Setting it on every call would reset the window on each
- * request, allowing unlimited throughput at (windowSeconds - ε) intervals.
+ * The EXPIRE is applied when the key is new or when a legacy broken counter
+ * has no TTL. Setting it on every call would reset the window on each request,
+ * allowing unlimited throughput at (windowSeconds - ε) intervals.
  *
  * @param key          Redis key to increment.
  * @param windowSeconds TTL to apply on first creation, in seconds.
@@ -202,12 +343,12 @@ export async function incrWithTtl(key: string, windowSeconds: number): Promise<n
     return 1; // dev/test: allow
   }
 
-  // Lua script: INCR the key, then EXPIRE only if this is the first increment
-  // (current === 1).  Executed atomically — no race window between the two
-  // Redis commands.
+  // Lua script: INCR the key, then establish expiry for a new key or heal an
+  // old counter stranded without a TTL by the former two-command flow.
+  // Existing healthy windows keep their original deadline.
   const luaScript = `
     local current = redis.call('INCR', KEYS[1])
-    if current == 1 then
+    if current == 1 or redis.call('TTL', KEYS[1]) < 0 then
       redis.call('EXPIRE', KEYS[1], ARGV[1])
     end
     return current
@@ -246,7 +387,7 @@ export async function zrange(
   if (!client) return [];
 
   try {
-    const result = await client.zrange<string[]>(key, start, stop);
+    const result = await client.zrange(key, start, stop);
     return result;
   } catch (error) {
     redisLog.error({ err: error, key }, 'Redis ZRANGE error');
@@ -263,7 +404,7 @@ export async function zrevrange(
   if (!client) return [];
 
   try {
-    const result = await client.zrange<string[]>(key, start, stop, { rev: true });
+    const result = await client.zrange(key, start, stop, { rev: true });
     return result;
   } catch (error) {
     redisLog.error({ err: error, key }, 'Redis ZREVRANGE error');
@@ -277,8 +418,8 @@ export async function checkRateLimit(
   limit: number,
   window: number
 ): Promise<{ allowed: boolean; remaining: number; resetAt?: number }> {
-  const limiter = getRateLimiter(window * 1000, limit);
-  if (!limiter) {
+  const client = getClient();
+  if (!client) {
     // FAIL CLOSED in production — deny if rate limiting is unavailable
     if (config.app.isProduction) {
       redisLog.error('Rate limiting unavailable (Redis not configured) — denying request');
@@ -291,11 +432,16 @@ export async function checkRateLimit(
 
   try {
     const identifier = CACHE_KEYS.rateLimit(userId, action);
-    const result = await limiter.limit(identifier);
+    const result = await takeSlidingWindow(client, {
+      key: identifier,
+      limit,
+      windowMs: window * 1000,
+      member: randomUUID(),
+    });
     return {
-      allowed: result.success,
+      allowed: result.allowed,
       remaining: result.remaining,
-      resetAt: result.reset,
+      resetAt: result.resetAt,
     };
   } catch (error) {
     redisLog.error({ err: error, userId, action }, 'Rate limit check error');

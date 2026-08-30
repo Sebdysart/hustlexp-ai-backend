@@ -40,6 +40,14 @@ vi.mock('@upstash/redis', () => ({
 vi.mock('../../src/config', () => ({
   config: { redis: { restUrl: null, restToken: null } },
 }));
+vi.mock('../../src/redis/RedisCommandPort', () => ({
+  getRedisCommandClient: vi.fn().mockReturnValue(null),
+}));
+vi.mock('../../src/cache/redis', () => ({
+  incrWithTtl: vi.fn().mockResolvedValue(1),
+  redis: {},
+  checkRateLimit: vi.fn(),
+}));
 vi.mock('../../src/logger', () => {
   const child = () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() });
   return { logger: { child } };
@@ -72,7 +80,10 @@ function msgRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
-beforeEach(() => { vi.clearAllMocks(); });
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(db.query).mockReset();
+});
 
 // ===========================================================================
 // SECTION 1 — MESSAGE AUTHORIZATION

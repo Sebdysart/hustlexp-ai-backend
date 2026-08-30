@@ -1,7 +1,7 @@
 /**
  * AI Rate Limiting Unit Tests (backend/src/ai/rateLimit.ts)
  *
- * Tests checkRateLimit and requireRateLimit with mocked Upstash Ratelimit.
+ * Tests checkRateLimit and requireRateLimit through the normalized Redis port.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -10,22 +10,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mocks — hoisted before imports
 // ---------------------------------------------------------------------------
 
-// The Ratelimit instance that will be returned for any agent
-const mockLimit = vi.fn();
+const mockEval = vi.fn();
 
-vi.mock('@upstash/ratelimit', () => {
-  class MockRatelimit {
-    limit = mockLimit;
-    constructor(_opts: unknown) {}
-    static slidingWindow = vi.fn().mockReturnValue({ type: 'sliding', requests: 10, window: '1 m' });
-  }
-  return { Ratelimit: MockRatelimit };
-});
-
-// Redis (used by Ratelimit internally) — just needs to be constructable
 vi.mock('@upstash/redis', () => ({
   Redis: class MockRedis {
     constructor(_opts: unknown) {}
+    eval = mockEval;
   },
 }));
 
@@ -34,6 +24,7 @@ vi.mock('../../src/config', () => ({
     redis: {
       restUrl:   'https://redis.upstash.io',
       restToken: 'test-token',
+      url: '',
     },
   },
 }));
@@ -58,7 +49,7 @@ beforeEach(() => {
 
 describe('checkRateLimit — allowed', () => {
   beforeEach(() => {
-    mockLimit.mockResolvedValue({ success: true, limit: 10, remaining: 9, reset: Date.now() + 60000 });
+    mockEval.mockResolvedValue([1, 9, Date.now() + 60000]);
   });
 
   it('returns allowed=true for a new user under the limit', async () => {
@@ -72,13 +63,13 @@ describe('checkRateLimit — allowed', () => {
   it('calls the ratelimit with the correct key (agent:userId)', async () => {
     await checkRateLimit('judge', 'user-abc');
 
-    expect(mockLimit).toHaveBeenCalledWith('judge:user-abc');
+    expect(mockEval.mock.calls[0][1]).toEqual(['ratelimit:ai:judge:user-abc']);
   });
 
   it('works for different known agents', async () => {
     for (const agent of ['judge', 'matchmaker', 'dispute', 'reputation', 'onboarding', 'moderation']) {
       vi.clearAllMocks();
-      mockLimit.mockResolvedValue({ success: true, limit: 20, remaining: 19, reset: Date.now() + 60000 });
+      mockEval.mockResolvedValue([1, 19, Date.now() + 60000]);
 
       const result = await checkRateLimit(agent, 'user-1');
       expect(result.allowed).toBe(true);
@@ -86,7 +77,7 @@ describe('checkRateLimit — allowed', () => {
   });
 
   it('uses default config for an unknown agent', async () => {
-    mockLimit.mockResolvedValue({ success: true, limit: 20, remaining: 20, reset: Date.now() + 60000 });
+    mockEval.mockResolvedValue([1, 20, Date.now() + 60000]);
 
     const result = await checkRateLimit('unknown_agent', 'user-1');
     expect(result.allowed).toBe(true);
@@ -100,12 +91,7 @@ describe('checkRateLimit — allowed', () => {
 
 describe('checkRateLimit — denied', () => {
   beforeEach(() => {
-    mockLimit.mockResolvedValue({
-      success:   false,
-      limit:     10,
-      remaining: 0,
-      reset:     Date.now() + 30000,
-    });
+    mockEval.mockResolvedValue([0, 0, Date.now() + 30000]);
   });
 
   it('returns allowed=false when the ratelimit returns success=false', async () => {
@@ -122,7 +108,7 @@ describe('checkRateLimit — denied', () => {
 
 describe('checkRateLimit — failure fallback', () => {
   it('returns allowed=false when the ratelimit throws (fail-closed)', async () => {
-    mockLimit.mockRejectedValue(new Error('Redis unavailable'));
+    mockEval.mockRejectedValue(new Error('Redis unavailable'));
 
     const result = await checkRateLimit('judge', 'user-1');
 
@@ -141,7 +127,7 @@ describe('checkRateLimit — failure fallback', () => {
 
 describe('requireRateLimit — allowed', () => {
   it('resolves without throwing when under the limit', async () => {
-    mockLimit.mockResolvedValue({ success: true, limit: 10, remaining: 5, reset: Date.now() + 60000 });
+    mockEval.mockResolvedValue([1, 5, Date.now() + 60000]);
 
     await expect(requireRateLimit('judge', 'user-1')).resolves.toBeUndefined();
   });
@@ -154,7 +140,7 @@ describe('requireRateLimit — allowed', () => {
 describe('requireRateLimit — denied', () => {
   it('throws TOO_MANY_REQUESTS TRPCError when rate limit exceeded', async () => {
     const resetAt = Date.now() + 45000;
-    mockLimit.mockResolvedValue({ success: false, limit: 10, remaining: 0, reset: resetAt });
+    mockEval.mockResolvedValue([0, 0, resetAt]);
 
     await expect(requireRateLimit('judge', 'user-1')).rejects.toMatchObject({
       code:    'TOO_MANY_REQUESTS',
@@ -163,7 +149,7 @@ describe('requireRateLimit — denied', () => {
   });
 
   it('includes the agent name in the error message', async () => {
-    mockLimit.mockResolvedValue({ success: false, limit: 5, remaining: 0, reset: Date.now() + 10000 });
+    mockEval.mockResolvedValue([0, 0, Date.now() + 10000]);
 
     await expect(requireRateLimit('dispute', 'user-1')).rejects.toMatchObject({
       message: expect.stringContaining('dispute'),
@@ -172,7 +158,7 @@ describe('requireRateLimit — denied', () => {
 
   it('includes a retry-in seconds value in the error message', async () => {
     const resetAt = Date.now() + 30000; // 30 seconds from now
-    mockLimit.mockResolvedValue({ success: false, limit: 10, remaining: 0, reset: resetAt });
+    mockEval.mockResolvedValue([0, 0, resetAt]);
 
     let caughtMessage = '';
     try {
@@ -192,26 +178,26 @@ describe('requireRateLimit — denied', () => {
 
 describe('checkRateLimit — key isolation', () => {
   it('uses different Redis keys for different users', async () => {
-    mockLimit.mockResolvedValue({ success: true, limit: 10, remaining: 9, reset: Date.now() + 60000 });
+    mockEval.mockResolvedValue([1, 9, Date.now() + 60000]);
 
     await checkRateLimit('judge', 'user-1');
     await checkRateLimit('judge', 'user-2');
 
-    const calls = mockLimit.mock.calls;
-    expect(calls[0][0]).toBe('judge:user-1');
-    expect(calls[1][0]).toBe('judge:user-2');
-    expect(calls[0][0]).not.toBe(calls[1][0]);
+    const calls = mockEval.mock.calls;
+    expect(calls[0][1]).toEqual(['ratelimit:ai:judge:user-1']);
+    expect(calls[1][1]).toEqual(['ratelimit:ai:judge:user-2']);
+    expect(calls[0][1]).not.toEqual(calls[1][1]);
   });
 
   it('uses different Redis keys for different agents', async () => {
-    mockLimit.mockResolvedValue({ success: true, limit: 10, remaining: 9, reset: Date.now() + 60000 });
+    mockEval.mockResolvedValue([1, 9, Date.now() + 60000]);
 
     await checkRateLimit('judge', 'user-1');
     await checkRateLimit('matchmaker', 'user-1');
 
-    const calls = mockLimit.mock.calls;
-    expect(calls[0][0]).toBe('judge:user-1');
-    expect(calls[1][0]).toBe('matchmaker:user-1');
-    expect(calls[0][0]).not.toBe(calls[1][0]);
+    const calls = mockEval.mock.calls;
+    expect(calls[0][1]).toEqual(['ratelimit:ai:judge:user-1']);
+    expect(calls[1][1]).toEqual(['ratelimit:ai:matchmaker:user-1']);
+    expect(calls[0][1]).not.toEqual(calls[1][1]);
   });
 });

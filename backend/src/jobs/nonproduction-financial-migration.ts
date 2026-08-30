@@ -34,8 +34,10 @@ export const NONPRODUCTION_FAKE_FINANCIAL_BASE_MIGRATION =
   '20260827_fake_financial_provider_v1';
 export const NONPRODUCTION_FAKE_FINANCIAL_ACCOUNT_REFRESH_MIGRATION =
   '20260903_fake_financial_provider_account_refresh_v2';
-export const NONPRODUCTION_FAKE_FINANCIAL_MIGRATION =
+export const NONPRODUCTION_FAKE_FINANCIAL_SETTLEMENT_COMPLETION_MIGRATION =
   '20260910_fake_financial_settlement_completion_v3';
+export const NONPRODUCTION_FAKE_FINANCIAL_MIGRATION =
+  '20260921_universal_v1_fake_financial_lifecycle_bridge_v1';
 
 export const NONPRODUCTION_FAKE_FINANCIAL_MIGRATION_FILES = [
   {
@@ -49,9 +51,14 @@ export const NONPRODUCTION_FAKE_FINANCIAL_MIGRATION_FILES = [
     evidenceTable: 'hxos_fake_financial_schema_evidence_v2',
   },
   {
-    name: NONPRODUCTION_FAKE_FINANCIAL_MIGRATION,
+    name: NONPRODUCTION_FAKE_FINANCIAL_SETTLEMENT_COMPLETION_MIGRATION,
     fileName: '20260910_fake_financial_settlement_completion_v3.sql',
     evidenceTable: 'hxos_fake_financial_schema_evidence_v3',
+  },
+  {
+    name: NONPRODUCTION_FAKE_FINANCIAL_MIGRATION,
+    fileName: '20260921_universal_v1_fake_financial_lifecycle_bridge_v1.sql',
+    evidenceTable: 'hxos_fake_financial_schema_evidence_v4',
   },
 ] as const;
 

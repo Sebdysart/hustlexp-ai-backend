@@ -1,15 +1,21 @@
 import { commandHash, type ExpressInterestPublic, type MaterializeWorkOrderPublic, type PlaceHoldPublic, UniversalV1WorkOrderError } from './UniversalV1WorkOrderContracts.js';
-import { PostgresUniversalV1WorkOrderRepository } from './UniversalV1WorkOrderPostgresRepository.js';
+import { deterministicUuid, PostgresUniversalV1WorkOrderRepository } from './UniversalV1WorkOrderPostgresRepository.js';
 import { PostgresUniversalV1WorkOrderPublicFactReader } from './UniversalV1WorkOrderPublicFacts.js';
-import { authorizeUniversalV1FakeFinancialTransaction, type UniversalV1FakeFinancialApplicationService } from './payment/UniversalV1FinancialApplicationService.js';
-import type { Database } from '../db.js';
+import { createUniversalV1FakeFinancialApplicationService, type UniversalV1FakeFinancialApplicationService } from './payment/UniversalV1FinancialApplicationService.js';
 
 function current(ts:string){const d=Date.parse(ts),n=Date.now();if(!Number.isFinite(d)||Math.abs(n-d)>5*60_000)throw new UniversalV1WorkOrderError('WORK_ORDER_REQUEST_STALE','Request timestamp is stale.');}
 export class UniversalV1WorkOrderApplication {
-  constructor(private readonly facts=new PostgresUniversalV1WorkOrderPublicFactReader(),private readonly repo=new PostgresUniversalV1WorkOrderRepository(),private readonly authorizeFinance:()=>((database:Database)=>UniversalV1FakeFinancialApplicationService)=()=>authorizeUniversalV1FakeFinancialTransaction()){}
+  constructor(private readonly facts=new PostgresUniversalV1WorkOrderPublicFactReader(),private readonly repo=new PostgresUniversalV1WorkOrderRepository(),private readonly createFinance:()=>UniversalV1FakeFinancialApplicationService=()=>createUniversalV1FakeFinancialApplicationService()){}
   async expressProviderInterest(actor:string,input:ExpressInterestPublic){current(input.client_ts);const c=await this.facts.interest(actor,input.task_id);if(!c)throw new UniversalV1WorkOrderError('WORK_ORDER_CONTEXT_UNAVAILABLE','Interest context unavailable.');if(c.scope_version!==input.expected_scope_version)throw new UniversalV1WorkOrderError('WORK_ORDER_VERSION_CONFLICT','Scope version changed.');return this.repo.express(c,actor,input.idempotency_key,commandHash(input));}
   async placeConditionalHold(actor:string,input:PlaceHoldPublic){current(input.client_ts);const c=await this.facts.hold(actor,input.interest_application_id);if(!c)throw new UniversalV1WorkOrderError('WORK_ORDER_CONTEXT_UNAVAILABLE','Hold context unavailable.');if(c.eligibility_version!==input.expected_eligibility_version)throw new UniversalV1WorkOrderError('WORK_ORDER_VERSION_CONFLICT','Eligibility version changed.');return this.repo.hold(c,input.idempotency_key,commandHash(input));}
-  async secureAndMaterializeFakeWorkOrder(actor:string,input:MaterializeWorkOrderPublic){current(input.client_ts);const c=await this.facts.workOrder(actor,input.conditional_hold_id);if(!c)throw new UniversalV1WorkOrderError('WORK_ORDER_CONTEXT_UNAVAILABLE','Work Order context unavailable.');if(c.eligibility_version!==input.expected_eligibility_version)throw new UniversalV1WorkOrderError('WORK_ORDER_VERSION_CONFLICT','Eligibility version changed.');const financeFor=this.authorizeFinance();
-    return this.repo.materialize(c,input.idempotency_key,actor,financeFor);
+  async secureAndMaterializeFakeWorkOrder(actor:string,input:MaterializeWorkOrderPublic){current(input.client_ts);const c=await this.facts.workOrder(actor,input.conditional_hold_id);if(!c)throw new UniversalV1WorkOrderError('WORK_ORDER_CONTEXT_UNAVAILABLE','Work Order context unavailable.');if(c.eligibility_version!==input.expected_eligibility_version)throw new UniversalV1WorkOrderError('WORK_ORDER_VERSION_CONFLICT','Eligibility version changed.');
+    const phaseA=await this.repo.prepareMaterialization(c,input.idempotency_key,actor);
+    if(phaseA.completed)return phaseA.result;
+    const finance=this.createFinance(),live=phaseA.context,occurred=phaseA.occurredAt;
+    const base={providerKind:'FAKE' as const,providerExpectedVersion:0,taskDraftId:live.task_draft_id,taskId:live.task_id,eligibilityDecisionId:live.eligibility_decision_id,scopeVersionId:live.scope_version_id,recordedBy:actor,scenario:'SUCCESS' as const};
+    const prep=await finance.executeFinancialEvent({...base,operationKind:'PREPARE_PAYMENT_METHOD',operationId:deterministicUuid(input.idempotency_key,'prepare'),idempotencyKey:`${input.idempotency_key}:prep`,lifecycleExpectedVersion:0,occurredAt:occurred,customerId:actor});
+    const auth=await finance.executeFinancialEvent({...base,operationKind:'AUTHORIZE',operationId:deterministicUuid(input.idempotency_key,'authorize'),idempotencyKey:`${input.idempotency_key}:auth`,lifecycleExpectedVersion:1,occurredAt:new Date(Date.parse(occurred)+1).toISOString(),predecessorEventId:prep.id,relatedOperationId:prep.operationId,amountCents:Number(live.customer_total_cents),currency:live.currency.toLowerCase(),paymentMethodReference:prep.externalReference});
+    const secured=await finance.executeFinancialEvent({...base,operationKind:'SECURE',operationId:deterministicUuid(input.idempotency_key,'secure'),idempotencyKey:`${input.idempotency_key}:secure`,lifecycleExpectedVersion:2,occurredAt:new Date(Date.parse(occurred)+2).toISOString(),predecessorEventId:auth.id,relatedOperationId:auth.operationId,amountCents:Number(live.customer_total_cents),currency:live.currency.toLowerCase(),authorizationOperationId:auth.operationId});
+    return this.repo.finalizeMaterialization(phaseA,secured.id,actor);
   }
 }

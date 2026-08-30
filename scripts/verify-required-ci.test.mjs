@@ -13,12 +13,15 @@ const expectedGateSources = Object.freeze({
     'backend/tests/system/escrow-release-outbox.pg.test.ts',
     'backend/tests/system/hxos-canonical-lifecycle.pg.test.ts',
     'backend/tests/system/hxos-lifecycle-exceptions.pg.test.ts',
+    'backend/tests/system/xp-daily-cap-concurrency.pg.test.ts',
   ],
   HX_ALLOW_E2E_LIQUIDITY_EXPANSION: [
     'backend/tests/system/liquidity-expansion.pg.test.ts',
   ],
   HX_ALLOW_NOTIFICATION_PG: [
+    'backend/tests/system/notification-batching-idempotency.pg.test.ts',
     'backend/tests/system/notification-delivery-contract.pg.test.ts',
+    'backend/tests/system/notification-delivery-recovery-concurrency.pg.test.ts',
   ],
   HX_ALLOW_LEAD_INGRESS_PG: [
     'backend/tests/system/universal-v1-lead-ingress.pg.test.ts',
@@ -83,6 +86,17 @@ function stepIndex(job, name) {
   assert.ok(index >= 0, `workflow step must exist: ${name}`);
   return index;
 }
+
+test('required CI has read-only repository authority and never persists checkout credentials', async () => {
+  const workflow = await workflowDocument();
+  assert.equal(workflow.permissions.contents, 'read');
+
+  const checkoutSteps = Object.values(workflow.jobs).flatMap((job) =>
+    (job.steps || []).filter((step) => step.uses === 'actions/checkout@v4')
+  );
+  assert.ok(checkoutSteps.length > 0);
+  assert.ok(checkoutSteps.every((step) => step.with?.['persist-credentials'] === false));
+});
 
 test('required test check provisions isolated PostgreSQL and Redis services', async () => {
   const workflow = await workflowSource();
@@ -178,7 +192,7 @@ test('required test check runs the complete suite and rejects non-passing outcom
 
   assert.match(
     workflow,
-    /npx vitest run --reporter=json --outputFile=reports\/vitest\.json/u,
+    /npx vitest run --reporter=default --reporter=json --outputFile\.json=reports\/vitest\.json/u,
   );
   assert.match(
     workflow,

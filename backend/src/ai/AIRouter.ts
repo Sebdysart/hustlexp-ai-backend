@@ -7,14 +7,27 @@
  * @see AI_COST_GOVERNANCE.md
  */
 
-import { Redis } from '@upstash/redis';
+import { createHash, randomUUID } from 'node:crypto';
+import { Buffer } from 'node:buffer';
 import { TRPCError } from '@trpc/server';
 import { config } from '../config.js';
 import { db } from '../db.js';
-import { checkUserBudget, trackUserCost, checkGlobalBudget, trackGlobalCost } from './UserAIBudget.js';
+import {
+  checkAgentBudget,
+  failAIOperation,
+  type AIReservationRequest,
+} from './UserAIBudget.js';
+import {
+  markAIProviderAttemptUnknown,
+  releaseAIProviderAttempt,
+  reserveAIProviderAttempt,
+  settleAIProviderAttempt,
+  type AIProviderAttempt,
+} from './AISpendAttemptLedger.js';
 // AUDIT FIX H6: provider calls must go through circuit breakers — a dead
 // provider now fast-fails instead of being hammered by the fallback chain.
 import { openaiBreaker, groqBreaker, deepseekBreaker, alibabaBreaker, CircuitOpenError } from '../middleware/circuit-breaker.js';
+import { assertExternalAIProviderIOAuthorized } from './ExternalAIProviderAuthority.js';
 
 interface AICallConfig {
   maxTokensPerCall: number;
@@ -44,187 +57,354 @@ const AGENT_BUDGETS: Record<string, AICallConfig> = {
   default: { maxTokensPerCall: 2000, dailyBudgetPerUser: 25, fallbackChain: ['groq', 'openai', 'deepseek'], timeoutMs: 20000 },
 };
 
-let redis: Redis | null = null;
-
-function getRedis(): Redis {
-  if (!redis) {
-    if (!config.redis.restUrl || !config.redis.restToken) {
-      throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'HX001: Redis not configured for AI cost tracking' });
-    }
-    redis = new Redis({ url: config.redis.restUrl, token: config.redis.restToken });
-  }
-  return redis;
-}
-
-function getBudgetKey(agent: string, userId: string): string {
-  const today = new Date().toISOString().split('T')[0];
-  return `ai:budget:${agent}:${userId}:${today}`;
-}
-
-function estimateCost(provider: AIProvider, tokensUsed: number): number {
+function estimateActualCost(provider: AIProvider, promptTokens: number, completionTokens: number): number {
   const costs = PROVIDER_COSTS[provider];
-  const avgCostPer1K = (costs.input * 0.7 + costs.output * 0.3);
-  return Math.ceil((tokensUsed / 1000) * avgCostPer1K);
+  return Math.ceil((promptTokens / 1000) * costs.input + (completionTokens / 1000) * costs.output);
+}
+
+function estimateWorstCaseCost(provider: AIProvider, prompt: string, maxOutputTokens: number): number {
+  const costs = PROVIDER_COSTS[provider];
+  // A tokenizer cannot emit more byte tokens than the UTF-8 request payload;
+  // 256 tokens additionally cover the chat envelope and provider-added syntax.
+  const inputTokenUpperBound = Buffer.byteLength(prompt, 'utf8') + 256;
+  return Math.max(1, Math.ceil(
+    (inputTokenUpperBound / 1000) * costs.input
+      + (maxOutputTokens / 1000) * costs.output,
+  ));
 }
 
 async function checkBudget(agent: string, userId: string): Promise<{ allowed: boolean; spent: number; limit: number }> {
-  const config = AGENT_BUDGETS[agent] || AGENT_BUDGETS.default;
-  const budgetKey = getBudgetKey(agent, userId);
+  const agentConfig = AGENT_BUDGETS[agent] || AGENT_BUDGETS.default;
+  return checkAgentBudget(agent, userId, agentConfig.dailyBudgetPerUser);
+}
+
+async function recordSettledCost(
+  agent: string,
+  userId: string,
+  provider: AIProvider,
+  response: AIResponse,
+  costCents: number,
+  fingerprint: string,
+): Promise<void> {
+  // This audit write intentionally precedes Redis settlement. If it fails, the
+  // conservative reservation remains and the provider response is not returned.
+  await db.query(
+    `INSERT INTO ai_cost_logs (
+       agent_type, user_id, provider, model, tokens_used, prompt_tokens,
+       completion_tokens, estimated_cost_cents, request_hash, created_at
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())`,
+    [
+      agent,
+      userId,
+      provider,
+      response.model,
+      response.usage.total_tokens,
+      response.usage.prompt_tokens,
+      response.usage.completion_tokens,
+      costCents,
+      fingerprint,
+    ],
+  );
+}
+
+interface AIResponse {
+  text: string;
+  usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+  usageReliable: boolean;
+  provider: AIProvider;
+  model: string;
+}
+
+function normalizeUsage(usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined): Pick<AIResponse, 'usage' | 'usageReliable'> {
+  const promptTokens = usage?.prompt_tokens;
+  const completionTokens = usage?.completion_tokens;
+  const totalTokens = usage?.total_tokens;
+  const usageReliable = [promptTokens, completionTokens, totalTokens].every(
+    (value) => Number.isSafeInteger(value) && (value as number) >= 0,
+  ) && totalTokens === (promptTokens as number) + (completionTokens as number);
+  return {
+    usage: {
+      prompt_tokens: usageReliable ? promptTokens as number : 0,
+      completion_tokens: usageReliable ? completionTokens as number : 0,
+      total_tokens: usageReliable ? totalTokens as number : 0,
+    },
+    usageReliable,
+  };
+}
+
+async function withProviderTimeout<T>(
+  timeoutMs: number,
+  call: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const spent = Number(await getRedis().get(budgetKey) ?? 0);
-    return { allowed: spent < config.dailyBudgetPerUser, spent, limit: config.dailyBudgetPerUser };
-  } catch (error) {
-    console.warn(`[AI Router] Failed to check budget (fail-closed):`, error);
-    return { allowed: false, spent: 0, limit: config.dailyBudgetPerUser };
+    return await call(controller.signal);
+  } finally {
+    clearTimeout(timeoutHandle);
   }
 }
 
-async function trackCost(agent: string, userId: string, provider: AIProvider, tokensUsed: number): Promise<void> {
-  const cost = estimateCost(provider, tokensUsed);
-  const budgetKey = getBudgetKey(agent, userId);
-  try {
-    // AUDIT FIX L3: INCRBY and EXPIRE must be atomic — a crash between them
-    // left a budget key with no TTL, permanently locking the user out of AI.
-    await getRedis().multi().incrby(budgetKey, cost).expire(budgetKey, 86400).exec();
-    // REVIEW FIX (PR242): ai_cost_logs.model is NOT NULL with no default — this
-    // INSERT (and the three service-level metering inserts) previously omitted
-    // it, so EVERY cost row was silently rejected by Postgres while the
-    // try/catch swallowed the error. Cost governance was recording nothing.
-    const model = config.ai[provider]?.model ?? 'unknown';
-    await db.query(
-      `INSERT INTO ai_cost_logs (agent_type, user_id, provider, model, tokens_used, estimated_cost_cents, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
-      [agent, userId, provider, model, tokensUsed, cost]
-    );
-  } catch (error) {
-    console.error(`[AI Router] Failed to track cost:`, error);
-  }
-}
-
-interface AIResponse { text: string; usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }; provider: AIProvider; model: string; }
-
-async function callGroq(prompt: string, maxTokens: number): Promise<AIResponse> {
+async function callGroq(prompt: string, maxTokens: number, timeoutMs: number): Promise<AIResponse> {
+  assertExternalAIProviderIOAuthorized('AIRouter:groq');
   const { Groq } = await import('groq-sdk');
-  const groq = new Groq({ apiKey: config.ai.groq.apiKey });
-  const response = await groqBreaker.execute(() => groq.chat.completions.create({
-    model: config.ai.groq.model,
-    messages: [{ role: 'user', content: prompt }],
-    max_tokens: maxTokens,
-  }));
+  const groq = new Groq({ apiKey: config.ai.groq.apiKey, maxRetries: 0 });
+  const response = await withProviderTimeout(timeoutMs, (signal) =>
+    groqBreaker.execute(() => groq.chat.completions.create({
+      model: config.ai.groq.model,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: maxTokens,
+    }, { signal })),
+  );
   return {
     text: response.choices[0]?.message?.content || '',
-    usage: { prompt_tokens: response.usage?.prompt_tokens || 0, completion_tokens: response.usage?.completion_tokens || 0, total_tokens: response.usage?.total_tokens || 0 },
+    ...normalizeUsage(response.usage),
     provider: 'groq', model: config.ai.groq.model,
   };
 }
 
-async function callOpenAI(prompt: string, maxTokens: number): Promise<AIResponse> {
+async function callOpenAI(prompt: string, maxTokens: number, timeoutMs: number): Promise<AIResponse> {
+  assertExternalAIProviderIOAuthorized('AIRouter:openai');
   const { OpenAI } = await import('openai');
-  const openai = new OpenAI({ apiKey: config.ai.openai.apiKey });
-  const response = await openaiBreaker.execute(() => openai.chat.completions.create({
-    model: config.ai.openai.model,
-    messages: [{ role: 'user', content: prompt }],
-    max_tokens: maxTokens,
-  }));
+  const openai = new OpenAI({ apiKey: config.ai.openai.apiKey, maxRetries: 0 });
+  const response = await withProviderTimeout(timeoutMs, (signal) =>
+    openaiBreaker.execute(() => openai.chat.completions.create({
+      model: config.ai.openai.model,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: maxTokens,
+    }, { signal })),
+  );
   return {
     text: response.choices[0]?.message?.content || '',
-    usage: { prompt_tokens: response.usage?.prompt_tokens || 0, completion_tokens: response.usage?.completion_tokens || 0, total_tokens: response.usage?.total_tokens || 0 },
+    ...normalizeUsage(response.usage),
     provider: 'openai', model: config.ai.openai.model,
   };
 }
 
-async function callDeepSeek(prompt: string, maxTokens: number): Promise<AIResponse> {
+async function callDeepSeek(prompt: string, maxTokens: number, timeoutMs: number): Promise<AIResponse> {
+  assertExternalAIProviderIOAuthorized('AIRouter:deepseek');
   const { OpenAI } = await import('openai');
-  const deepseek = new OpenAI({ apiKey: config.ai.deepseek.apiKey, baseURL: 'https://api.deepseek.com' });
-  const response = await deepseekBreaker.execute(() => deepseek.chat.completions.create({
-    model: config.ai.deepseek.model,
-    messages: [{ role: 'user', content: prompt }],
-    max_tokens: maxTokens,
-  }));
+  const deepseek = new OpenAI({ apiKey: config.ai.deepseek.apiKey, baseURL: 'https://api.deepseek.com', maxRetries: 0 });
+  const response = await withProviderTimeout(timeoutMs, (signal) =>
+    deepseekBreaker.execute(() => deepseek.chat.completions.create({
+      model: config.ai.deepseek.model,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: maxTokens,
+    }, { signal })),
+  );
   return {
     text: response.choices[0]?.message?.content || '',
-    usage: { prompt_tokens: response.usage?.prompt_tokens || 0, completion_tokens: response.usage?.completion_tokens || 0, total_tokens: response.usage?.total_tokens || 0 },
+    ...normalizeUsage(response.usage),
     provider: 'deepseek', model: config.ai.deepseek.model,
   };
 }
 
-async function callAlibaba(prompt: string, maxTokens: number): Promise<AIResponse> {
+async function callAlibaba(prompt: string, maxTokens: number, timeoutMs: number): Promise<AIResponse> {
+  assertExternalAIProviderIOAuthorized('AIRouter:alibaba');
   const { OpenAI } = await import('openai');
-  const alibaba = new OpenAI({ apiKey: config.ai.alibaba.apiKey, baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1' });
-  const response = await alibabaBreaker.execute(() => alibaba.chat.completions.create({
-    model: config.ai.alibaba.model,
-    messages: [{ role: 'user', content: prompt }],
-    max_tokens: maxTokens,
-  }));
+  const alibaba = new OpenAI({ apiKey: config.ai.alibaba.apiKey, baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1', maxRetries: 0 });
+  const response = await withProviderTimeout(timeoutMs, (signal) =>
+    alibabaBreaker.execute(() => alibaba.chat.completions.create({
+      model: config.ai.alibaba.model,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: maxTokens,
+    }, { signal })),
+  );
   return {
     text: response.choices[0]?.message?.content || '',
-    usage: { prompt_tokens: response.usage?.prompt_tokens || 0, completion_tokens: response.usage?.completion_tokens || 0, total_tokens: response.usage?.total_tokens || 0 },
+    ...normalizeUsage(response.usage),
     provider: 'alibaba', model: config.ai.alibaba.model,
   };
 }
 
-/** Retry a provider call with exponential backoff (1s base, max 3 retries, jitter) */
-async function retryWithBackoff<T>(fn: () => Promise<T>, maxRetries: number = 3, baseDelayMs: number = 1000): Promise<T> {
-  let lastError: Error | null = null;
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      return await fn();
-    } catch (error) {
-      // REVIEW FIX (PR242): an OPEN circuit breaker cannot recover within the
-      // retry window (resetTimeout ≫ backoff) — retrying just burns ~3-4s of
-      // dead sleep per provider before the fallback chain advances. Fail fast
-      // to the next provider instead.
-      if (error instanceof CircuitOpenError) {
-        throw error;
-      }
-      lastError = error instanceof Error ? error : new Error(String(error));
-      if (attempt < maxRetries) {
-        const delay = baseDelayMs * Math.pow(2, attempt) + Math.random() * 500;
-        await new Promise(resolve => setTimeout(resolve, delay));
-      }
-    }
-  }
-  throw lastError;
-}
-
-const PROVIDER_FUNCTIONS: Record<AIProvider, (prompt: string, maxTokens: number) => Promise<AIResponse>> = {
-  groq: (p, m) => retryWithBackoff(() => callGroq(p, m), 2),
-  openai: (p, m) => retryWithBackoff(() => callOpenAI(p, m), 2),
-  deepseek: (p, m) => retryWithBackoff(() => callDeepSeek(p, m), 2),
-  alibaba: (p, m) => retryWithBackoff(() => callAlibaba(p, m), 2),
+const PROVIDER_FUNCTIONS: Record<AIProvider, (prompt: string, maxTokens: number, timeoutMs: number) => Promise<AIResponse>> = {
+  groq: callGroq,
+  openai: callOpenAI,
+  deepseek: callDeepSeek,
+  alibaba: callAlibaba,
 };
+
+const MAX_PROVIDER_IO_ATTEMPTS = 2;
+const PROVIDER_RETRY_BASE_DELAY_MS = 250;
 
 export interface CallAIResult {
   text: string; provider: AIProvider; model: string; tokensUsed: number; estimatedCostCents: number; attempts: number;
 }
 
-export async function callAI(agent: string, userId: string, prompt: string): Promise<CallAIResult> {
+export interface CallAIOptions {
+  /** Stable business-operation identity supplied by the caller. */
+  operationId: string;
+}
+
+function operationFingerprint(agent: string, userId: string, prompt: string): string {
+  return createHash('sha256').update(JSON.stringify({ agent, userId, prompt })).digest('hex');
+}
+
+function meteringFailure(cause: unknown): TRPCError {
+  console.error('[AI Router] Spend authority unavailable:', cause);
+  return new TRPCError({
+    code: 'INTERNAL_SERVER_ERROR',
+    message: 'HX705: AI spend authority unavailable; no further provider call was attempted.',
+  });
+}
+
+function parseCompletedResult(resultJson: string): CallAIResult {
+  const parsed = JSON.parse(resultJson) as Partial<CallAIResult>;
+  if (
+    typeof parsed.text !== 'string'
+    || !['groq', 'openai', 'deepseek', 'alibaba'].includes(parsed.provider ?? '')
+    || typeof parsed.model !== 'string'
+    || !Number.isSafeInteger(parsed.tokensUsed)
+    || !Number.isSafeInteger(parsed.estimatedCostCents)
+    || !Number.isSafeInteger(parsed.attempts)
+  ) {
+    throw new Error('AI_OPERATION_CACHED_RESULT_INVALID');
+  }
+  return parsed as CallAIResult;
+}
+
+function budgetError(scope: 'global' | 'user' | 'agent', agent: string): TRPCError {
+  if (scope === 'global') {
+    return new TRPCError({ code: 'TOO_MANY_REQUESTS', message: 'HX703: Platform AI daily budget exceeded. Retry after midnight UTC.' });
+  }
+  if (scope === 'user') {
+    return new TRPCError({ code: 'TOO_MANY_REQUESTS', message: 'HX704: Personal AI daily budget exceeded ($5.00/day). Retry after midnight UTC.' });
+  }
+  return new TRPCError({ code: 'TOO_MANY_REQUESTS', message: `HX701: AI daily budget exceeded for ${agent}` });
+}
+
+export async function callAI(
+  agent: string,
+  userId: string,
+  prompt: string,
+  options: CallAIOptions,
+): Promise<CallAIResult> {
+  if (!options?.operationId || options.operationId.trim() !== options.operationId || options.operationId.length > 256) {
+    throw new TRPCError({ code: 'BAD_REQUEST', message: 'HX700: A stable AI operationId is required.' });
+  }
+  // Release policy is hard-dormant. Isolated transport tests replace the
+  // authority module; deployed/local/preview/staging builds cannot proceed.
+  assertExternalAIProviderIOAuthorized(`AIRouter:${agent}`);
   const agentConfig = AGENT_BUDGETS[agent] || AGENT_BUDGETS.default;
-  const globalBudget = await checkGlobalBudget();
-  if (!globalBudget.allowed) {
-    throw new TRPCError({ code: 'TOO_MANY_REQUESTS', message: 'HX703: Platform AI daily budget exceeded. Retry after midnight UTC.' });
-  }
-  const userBudget = await checkUserBudget(userId);
-  if (!userBudget.allowed) {
-    throw new TRPCError({ code: 'TOO_MANY_REQUESTS', message: 'HX704: Personal AI daily budget exceeded ($5.00/day). Retry after midnight UTC.' });
-  }
-  const budget = await checkBudget(agent, userId);
-  if (!budget.allowed) {
-    throw new TRPCError({ code: 'TOO_MANY_REQUESTS', message: `HX701: AI daily budget exceeded for ${agent}` });
-  }
+  const ownerToken = randomUUID();
+  const fingerprint = operationFingerprint(agent, userId, prompt);
   let lastError: Error | null = null;
-  for (let i = 0; i < agentConfig.fallbackChain.length; i++) {
-    const provider = agentConfig.fallbackChain[i];
+  let providerIoAttempts = 0;
+  let lastReservation: AIReservationRequest | null = null;
+
+  for (let providerIndex = 0; providerIndex < agentConfig.fallbackChain.length; providerIndex++) {
+    const provider = agentConfig.fallbackChain[providerIndex];
+    for (let providerAttempt = 0; providerAttempt < MAX_PROVIDER_IO_ATTEMPTS; providerAttempt++) {
+      const reservation: AIReservationRequest = {
+        agent,
+        userId,
+        operationId: options.operationId,
+        fingerprint,
+        ownerToken,
+        attemptId: `${providerIndex}:${provider}:${providerAttempt}`,
+        reserveCents: estimateWorstCaseCost(provider, prompt, agentConfig.maxTokensPerCall),
+        agentLimitCents: agentConfig.dailyBudgetPerUser,
+      };
+      const durableAttempt: AIProviderAttempt = {
+        reservation,
+        providerKind: provider,
+        providerModel: config.ai[provider].model,
+      };
+      lastReservation = reservation;
+
+      let authority;
+      try {
+        authority = await reserveAIProviderAttempt(durableAttempt);
+      } catch (error) {
+        throw meteringFailure(error);
+      }
+
+      if (authority.status === 'completed') {
+        try {
+          return parseCompletedResult(authority.resultJson);
+        } catch (error) {
+          throw meteringFailure(error);
+        }
+      }
+      if (authority.status === 'failed') {
+        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: `HX702: ${authority.message}` });
+      }
+      if (authority.status === 'in_progress') {
+        throw new TRPCError({ code: 'CONFLICT', message: 'HX706: This AI operation is already in progress or has an uncertain provider outcome.' });
+      }
+      if (authority.status === 'conflict') {
+        throw new TRPCError({ code: 'CONFLICT', message: 'HX707: operationId was already used for a different AI request.' });
+      }
+      if (authority.status === 'limit') throw budgetError(authority.scope, agent);
+
+      providerIoAttempts += 1;
+      let response: AIResponse;
+      try {
+        response = await PROVIDER_FUNCTIONS[provider](prompt, agentConfig.maxTokensPerCall, agentConfig.timeoutMs);
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        try {
+          if (error instanceof CircuitOpenError) {
+            // CircuitOpenError is the only proven no-provider-I/O outcome.
+            await releaseAIProviderAttempt(durableAttempt);
+          } else {
+            // Timeouts, network errors, and provider errors have unknown billing
+            // outcomes, so the worst-case reservation remains charged.
+            await markAIProviderAttemptUnknown(durableAttempt);
+          }
+        } catch (meteringError) {
+          throw meteringFailure(meteringError);
+        }
+        if (error instanceof CircuitOpenError) break;
+        if (providerAttempt + 1 < MAX_PROVIDER_IO_ATTEMPTS) {
+          const delay = PROVIDER_RETRY_BASE_DELAY_MS * Math.pow(2, providerAttempt) + Math.random() * 50;
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+        continue;
+      }
+
+      const actualCostCents = response.usageReliable
+        ? estimateActualCost(provider, response.usage.prompt_tokens, response.usage.completion_tokens)
+        : reservation.reserveCents;
+      if (actualCostCents > reservation.reserveCents) {
+        try {
+          await markAIProviderAttemptUnknown(durableAttempt, 'USAGE_EXCEEDED_RESERVATION');
+        } catch (error) {
+          throw meteringFailure(error);
+        }
+        throw meteringFailure(new Error('AI_PROVIDER_USAGE_EXCEEDED_WORST_CASE_RESERVATION'));
+      }
+
+      const result: CallAIResult = {
+        text: response.text,
+        provider: response.provider,
+        model: response.model,
+        tokensUsed: response.usage.total_tokens,
+        estimatedCostCents: actualCostCents,
+        attempts: providerIoAttempts,
+      };
+
+      // A successful provider response is terminal. Audit or settlement failure
+      // is surfaced and can never fall through to another paid provider.
+      try {
+        await recordSettledCost(agent, userId, provider, response, actualCostCents, fingerprint);
+        await settleAIProviderAttempt({
+          ...durableAttempt,
+          actualCostCents,
+          resultJson: JSON.stringify(result),
+        });
+      } catch (error) {
+        throw meteringFailure(error);
+      }
+      return result;
+    }
+  }
+
+  if (lastReservation) {
     try {
-      const response = await PROVIDER_FUNCTIONS[provider](prompt, agentConfig.maxTokensPerCall);
-      await trackCost(agent, userId, provider, response.usage.total_tokens);
-      await trackUserCost(userId, estimateCost(provider, response.usage.total_tokens));
-      await trackGlobalCost(estimateCost(provider, response.usage.total_tokens));
-      return { text: response.text, provider: response.provider, model: response.model, tokensUsed: response.usage.total_tokens, estimatedCostCents: estimateCost(provider, response.usage.total_tokens), attempts: i + 1 };
+      await failAIOperation(lastReservation, `All AI providers exhausted for ${agent}`);
     } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
-      if (i < agentConfig.fallbackChain.length - 1) continue;
-      break;
+      throw meteringFailure(error);
     }
   }
   throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: `HX702: All AI providers exhausted for ${agent}. Last error: ${lastError?.message}` });

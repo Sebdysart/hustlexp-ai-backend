@@ -130,40 +130,65 @@ export class SyntheticFinancialCommandAuthority {
   ): Promise<void> {
     const result = await this.database.query<{ authorized: boolean }>(
       `SELECT TRUE AS authorized
-       FROM task_financial_operations operation
-       JOIN task_drafts draft
-         ON draft.id = operation.task_draft_id
-        AND draft.id = $1
+       FROM task_drafts draft
        JOIN tasks task
-         ON task.id = operation.task_id
+         ON task.id = draft.task_id
         AND task.id = $2
        LEFT JOIN task_work_orders work_order
          ON work_order.task_draft_id = draft.id
         AND work_order.task_id = task.id
-       WHERE operation.operation_id = $3
-         AND operation.provider_kind = 'FAKE'
+       WHERE draft.id = $1
          AND draft.universal_contract_version = 1
          AND task.universal_contract_version = 1
          AND task.automation_classification = 'CONTROLLED_TEST'
          AND task.worker_id IS NULL
-         AND EXISTS (
-           SELECT 1
-           FROM task_financial_security_events event
-           WHERE event.operation_id = operation.operation_id
-             AND event.provider_kind = 'FAKE'
-             AND (
-               event.recorded_by = draft.poster_user_id
-               OR event.recorded_by = task.poster_id
-               OR event.recorded_by = work_order.provider_user_id
-               OR EXISTS (
-                 SELECT 1
-                 FROM business_memberships membership
-                 WHERE membership.organization_id = work_order.provider_organization_id
-                   AND membership.user_id = event.recorded_by
-                   AND membership.status = 'ACTIVE'
-                   AND membership.role IN ('OWNER','ADMIN','DISPATCHER','CREW')
+         AND (
+           EXISTS (
+             SELECT 1
+             FROM task_financial_operations operation
+             JOIN task_financial_security_events event
+               ON event.operation_id = operation.operation_id
+              AND event.provider_kind = 'FAKE'
+             WHERE operation.operation_id = $3
+               AND operation.provider_kind = 'FAKE'
+               AND operation.task_draft_id = draft.id
+               AND operation.task_id = task.id
+               AND (
+                 event.recorded_by = draft.poster_user_id
+                 OR event.recorded_by = task.poster_id
+                 OR event.recorded_by = work_order.provider_user_id
+                 OR EXISTS (
+                   SELECT 1
+                   FROM business_memberships membership
+                   WHERE membership.organization_id = work_order.provider_organization_id
+                     AND membership.user_id = event.recorded_by
+                     AND membership.status = 'ACTIVE'
+                     AND membership.role IN ('OWNER','ADMIN','DISPATCHER','CREW')
+                 )
                )
-             )
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM financial_provider_command_journal command
+             WHERE command.operation_id::TEXT = $3
+               AND command.command_state = 'REQUESTED'
+               AND command.provider_kind = 'FAKE'
+               AND command.task_draft_id = draft.id
+               AND command.task_id = task.id
+               AND (
+                 command.recorded_actor_id = draft.poster_user_id
+                 OR command.recorded_actor_id = task.poster_id
+                 OR command.recorded_actor_id = work_order.provider_user_id
+                 OR EXISTS (
+                   SELECT 1
+                   FROM business_memberships membership
+                   WHERE membership.organization_id = work_order.provider_organization_id
+                     AND membership.user_id = command.recorded_actor_id
+                     AND membership.status = 'ACTIVE'
+                     AND membership.role IN ('OWNER','ADMIN','DISPATCHER','CREW')
+                 )
+               )
+           )
          )
        LIMIT 1`,
       [taskDraftId, taskId, operationId],

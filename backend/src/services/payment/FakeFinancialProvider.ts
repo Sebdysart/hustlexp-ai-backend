@@ -21,40 +21,24 @@ import type {
   WebhookIngestionCommand,
 } from './FinancialProviderPorts.js';
 import {
+  assertFakeFinancialScenarioSupportsOperation,
+  isFakeFinancialScenario,
+  type FakeFinancialScenario,
+} from './FakeFinancialScenarioPolicy.js';
+import { canonicalFinancialProviderRequestSha256 } from './FinancialProviderCommandJournal.js';
+import {
   assertNonproductionFakeFinanceAuthorized,
   nonproductionFakeFinanceEnabled,
 } from './NonproductionFinancialAuthorization.js';
 
-export type FakeFinancialScenario =
-  | 'SUCCESS'
-  | 'DECLINE'
-  | 'TIMEOUT'
-  | 'DUPLICATE_WEBHOOK'
-  | 'RETRY'
-  | 'REVERSAL'
-  | 'PARTIAL_REFUND'
-  | 'DELAYED_SETTLEMENT'
-  | 'RECONCILIATION_MISMATCH'
-  | 'PROVIDER_ACCOUNT_FAILURE';
+export type { FakeFinancialScenario } from './FakeFinancialScenarioPolicy.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
-const FAKE_FINANCIAL_SCENARIOS = new Set<FakeFinancialScenario>([
-  'SUCCESS',
-  'DECLINE',
-  'TIMEOUT',
-  'DUPLICATE_WEBHOOK',
-  'RETRY',
-  'REVERSAL',
-  'PARTIAL_REFUND',
-  'DELAYED_SETTLEMENT',
-  'RECONCILIATION_MISMATCH',
-  'PROVIDER_ACCOUNT_FAILURE',
-]);
 
 type FakeScenarioInput = { readonly scenario?: FakeFinancialScenario };
 type FakeInput<T extends FinancialOperationCommand> = T & FakeScenarioInput;
 
-interface FakeFinancialRepositoryCommand {
+export interface FakeFinancialRepositoryCommand {
   readonly operationId: string;
   readonly operationKind: FinancialOperationKind;
   readonly idempotencyKey: string;
@@ -68,15 +52,18 @@ interface FakeFinancialRepositoryCommand {
   readonly retryable: boolean;
   readonly identitySha256: string;
   readonly requestSha256: string;
+  readonly providerRequestSha256: string;
   readonly responseSha256: string;
   readonly metadata: Readonly<Record<string, unknown>>;
 }
 
-interface StoredFakeFinancialOperation extends FinancialOperationResult {
+export interface StoredFakeFinancialOperation extends FinancialOperationResult {
+  readonly eventId: string;
   readonly scenario: FakeFinancialScenario;
   readonly idempotencyKey: string;
   readonly identitySha256: string;
   readonly requestSha256: string;
+  readonly providerRequestSha256: string;
   readonly responseSha256: string;
   readonly relatedOperationId: string | null;
   readonly metadata: Readonly<Record<string, unknown>>;
@@ -85,6 +72,8 @@ interface StoredFakeFinancialOperation extends FinancialOperationResult {
 
 export interface FakeFinancialOperationRepository {
   execute(command: FakeFinancialRepositoryCommand): Promise<StoredFakeFinancialOperation>;
+  /** Read-only exact-event lookup used after a committed dispatch attempt. */
+  findByIdempotencyKey(idempotencyKey: string): Promise<StoredFakeFinancialOperation | null>;
 }
 
 function stableJson(value: unknown): string {
@@ -100,6 +89,11 @@ function stableJson(value: unknown): string {
 
 function sha256(value: unknown): string {
   return createHash('sha256').update(stableJson(value)).digest('hex');
+}
+
+function deterministicEventId(operationId: string, version: number): string {
+  const digest = sha256({ type: 'fake-financial-operation-event', operationId, version });
+  return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
 }
 
 function assertCommand(input: FinancialOperationCommand): void {
@@ -167,7 +161,7 @@ function stateFor(
     return 'FAILED';
   if (scenario === 'RECONCILIATION_MISMATCH' && kind === 'RECONCILE') return 'MISMATCH';
   if (scenario === 'PARTIAL_REFUND' && kind === 'REFUND') return 'PARTIALLY_REFUNDED';
-  if (scenario === 'REVERSAL' || kind === 'REVERSAL') return 'REVERSED';
+  if (kind === 'REVERSAL') return 'REVERSED';
   if (kind === 'VOID') return 'VOIDED';
   if (kind === 'REFUND') return 'REFUNDED';
   if (kind === 'INGEST_WEBHOOK') return 'ACCEPTED';
@@ -187,7 +181,10 @@ export class InMemoryFakeFinancialOperationRepository implements FakeFinancialOp
   async execute(command: FakeFinancialRepositoryCommand): Promise<StoredFakeFinancialOperation> {
     const replay = this.byIdempotency.get(command.idempotencyKey);
     if (replay) {
-      if (replay.requestSha256 !== command.requestSha256) {
+      if (
+        replay.requestSha256 !== command.requestSha256 ||
+        replay.providerRequestSha256 !== command.providerRequestSha256
+      ) {
         throw new Error('FAKE_FINANCIAL_IDEMPOTENCY_CONFLICT');
       }
       return { ...replay, idempotencyReplayed: true };
@@ -203,6 +200,7 @@ export class InMemoryFakeFinancialOperationRepository implements FakeFinancialOp
     }
 
     const record: StoredFakeFinancialOperation = {
+      eventId: deterministicEventId(command.operationId, currentVersion + 1),
       operationId: command.operationId,
       operationKind: command.operationKind,
       providerKind: 'FAKE',
@@ -217,6 +215,7 @@ export class InMemoryFakeFinancialOperationRepository implements FakeFinancialOp
       idempotencyKey: command.idempotencyKey,
       identitySha256: command.identitySha256,
       requestSha256: command.requestSha256,
+      providerRequestSha256: command.providerRequestSha256,
       responseSha256: command.responseSha256,
       relatedOperationId: command.relatedOperationId,
       metadata: command.metadata,
@@ -228,12 +227,18 @@ export class InMemoryFakeFinancialOperationRepository implements FakeFinancialOp
     return record;
   }
 
+  async findByIdempotencyKey(idempotencyKey: string): Promise<StoredFakeFinancialOperation | null> {
+    const event = this.byIdempotency.get(idempotencyKey);
+    return event ? { ...event, metadata: { ...event.metadata } } : null;
+  }
+
   events(): readonly StoredFakeFinancialOperation[] {
     return [...this.storedEvents];
   }
 }
 
 interface EventRow {
+  event_id: string;
   operation_id: string;
   operation_kind: FinancialOperationKind;
   event_version: number;
@@ -246,6 +251,7 @@ interface EventRow {
   idempotency_key: string;
   identity_sha256: string;
   request_sha256: string;
+  provider_request_sha256: string | null;
   response_sha256: string;
   retryable: boolean;
   metadata: Record<string, unknown>;
@@ -254,6 +260,7 @@ interface EventRow {
 
 function mapEventRow(row: EventRow, replayed: boolean): StoredFakeFinancialOperation {
   return {
+    eventId: row.event_id,
     operationId: row.operation_id,
     operationKind: row.operation_kind,
     providerKind: 'FAKE',
@@ -268,6 +275,7 @@ function mapEventRow(row: EventRow, replayed: boolean): StoredFakeFinancialOpera
     idempotencyKey: row.idempotency_key,
     identitySha256: row.identity_sha256,
     requestSha256: row.request_sha256,
+    providerRequestSha256: row.provider_request_sha256 ?? '',
     responseSha256: row.response_sha256,
     relatedOperationId: row.related_operation_id,
     metadata: row.metadata,
@@ -285,16 +293,20 @@ export class PostgresFakeFinancialOperationRepository implements FakeFinancialOp
         [command.operationId]
       );
       const replay = await query<EventRow>(
-        `SELECT operation_id, operation_kind, event_version, state, scenario,
+        `SELECT event_id, operation_id, operation_kind, event_version, state, scenario,
                 amount_cents, currency, related_operation_id, external_reference,
-                idempotency_key, identity_sha256, request_sha256, response_sha256,
+                idempotency_key, identity_sha256, request_sha256,
+                provider_request_sha256, response_sha256,
                 retryable, metadata, recorded_at
          FROM hxos_fake_financial_operation_events_v1
          WHERE idempotency_key = $1`,
         [command.idempotencyKey]
       );
       if (replay.rows[0]) {
-        if (replay.rows[0].request_sha256 !== command.requestSha256) {
+        if (
+          replay.rows[0].request_sha256 !== command.requestSha256 ||
+          replay.rows[0].provider_request_sha256 !== command.providerRequestSha256
+        ) {
           throw new Error('FAKE_FINANCIAL_IDEMPOTENCY_CONFLICT');
         }
         return mapEventRow(replay.rows[0], true);
@@ -342,12 +354,13 @@ export class PostgresFakeFinancialOperationRepository implements FakeFinancialOp
         `INSERT INTO hxos_fake_financial_operation_events_v1
            (operation_id, operation_kind, event_version, state, scenario,
             amount_cents, currency, related_operation_id, external_reference,
-            idempotency_key, identity_sha256, request_sha256, response_sha256,
-            retryable, metadata)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb)
-         RETURNING operation_id, operation_kind, event_version, state, scenario,
+             idempotency_key, identity_sha256, request_sha256,
+             provider_request_sha256, response_sha256, retryable, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb)
+         RETURNING event_id, operation_id, operation_kind, event_version, state, scenario,
                    amount_cents, currency, related_operation_id, external_reference,
-                   idempotency_key, identity_sha256, request_sha256, response_sha256,
+                   idempotency_key, identity_sha256, request_sha256,
+                   provider_request_sha256, response_sha256,
                    retryable, metadata, recorded_at`,
         [
           command.operationId,
@@ -362,6 +375,7 @@ export class PostgresFakeFinancialOperationRepository implements FakeFinancialOp
           command.idempotencyKey,
           command.identitySha256,
           command.requestSha256,
+          command.providerRequestSha256,
           command.responseSha256,
           command.retryable,
           JSON.stringify(command.metadata),
@@ -370,6 +384,195 @@ export class PostgresFakeFinancialOperationRepository implements FakeFinancialOp
       return mapEventRow(inserted.rows[0], false);
     });
   }
+
+  async findByIdempotencyKey(idempotencyKey: string): Promise<StoredFakeFinancialOperation | null> {
+    const result = await this.database.query<EventRow>(
+      `SELECT event_id, operation_id, operation_kind, event_version, state, scenario,
+              amount_cents, currency, related_operation_id, external_reference,
+              idempotency_key, identity_sha256, request_sha256,
+              provider_request_sha256, response_sha256,
+              retryable, metadata, recorded_at
+         FROM hxos_fake_financial_operation_events_v1
+        WHERE idempotency_key = $1`,
+      [idempotencyKey]
+    );
+    const row = result.rows[0];
+    return row ? mapEventRow(row, false) : null;
+  }
+}
+
+function exactRequestObject(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('FAKE_FINANCIAL_EXACT_EVENT_REQUEST_INVALID');
+  }
+  return value as Record<string, unknown>;
+}
+
+function exactMetadataFor(
+  operationKind: FinancialOperationKind,
+  exactRequest: Record<string, unknown>
+): Readonly<Record<string, unknown>> {
+  switch (operationKind) {
+    case 'PREPARE_PAYMENT_METHOD':
+      return { customerId: exactRequest.customerId };
+    case 'AUTHORIZE':
+      return { paymentMethodReference: exactRequest.paymentMethodReference };
+    case 'SECURE':
+      return { authorizationOperationId: exactRequest.authorizationOperationId };
+    case 'ADJUST':
+      return {
+        scopeVersionId: exactRequest.scopeVersionId,
+        changeOrderId: exactRequest.changeOrderId,
+      };
+    case 'REFUND':
+      return { originalAmountCents: exactRequest.originalAmountCents };
+    case 'ONBOARD_PROVIDER':
+      return { providerId: exactRequest.providerId };
+    case 'REFRESH_PROVIDER_ACCOUNT_STATE':
+      return {
+        providerId: exactRequest.providerId,
+        providerAccountReference: exactRequest.providerAccountReference,
+      };
+    case 'PAYOUT':
+      return { providerAccountReference: exactRequest.providerAccountReference };
+    case 'INGEST_WEBHOOK':
+      return {
+        providerEventReference: exactRequest.providerEventReference,
+        authenticated: exactRequest.authenticated === true,
+      };
+    default:
+      return {};
+  }
+}
+
+function projectStoredFakeFinancialOperation(
+  event: StoredFakeFinancialOperation,
+  idempotencyReplayed: boolean
+): FinancialOperationResult | ProviderAccountStateResult {
+  const base: FinancialOperationResult = {
+    operationId: event.operationId,
+    operationKind: event.operationKind,
+    providerKind: 'FAKE',
+    state: event.state,
+    version: event.version,
+    amountCents: event.amountCents,
+    currency: event.currency?.toUpperCase() ?? null,
+    externalReference: event.externalReference,
+    idempotencyReplayed,
+    retryable: event.retryable,
+  };
+  if (event.operationKind !== 'REFRESH_PROVIDER_ACCOUNT_STATE') return base;
+  const providerId = event.metadata.providerId;
+  if (typeof providerId !== 'string' || providerId.trim().length === 0) {
+    throw new Error('FAKE_FINANCIAL_EXACT_EVENT_METADATA_INVALID');
+  }
+  const succeeded = event.state === 'SUCCEEDED';
+  const failed = event.state === 'FAILED';
+  const pending = event.state === 'PENDING' || event.state === 'RETRYABLE_FAILURE';
+  return {
+    ...base,
+    providerId,
+    accountState: succeeded ? 'ENABLED' : failed ? 'FAILED' : pending ? 'PENDING' : 'RESTRICTED',
+    chargesEnabled: succeeded,
+    payoutsEnabled: succeeded,
+    requirementsDue: succeeded
+      ? []
+      : failed
+        ? ['identity_verification']
+        : pending
+          ? ['provider_review']
+          : ['provider_account_restricted'],
+  };
+}
+
+/**
+ * Proves that a raw fake-provider event is the exact result of the committed
+ * request. This is a read/reconstruction boundary; it never enters an adapter.
+ */
+export function resultFromExactStoredFakeFinancialOperation(
+  event: StoredFakeFinancialOperation,
+  operationKind: FinancialOperationKind,
+  exactRequestValue: unknown,
+  expectedProviderRequestSha256: string,
+  idempotencyReplayed = true
+): FinancialOperationResult | ProviderAccountStateResult {
+  const exactRequest = exactRequestObject(exactRequestValue);
+  const scenario = exactRequest.scenario ?? 'SUCCESS';
+  if (!isFakeFinancialScenario(scenario)) {
+    throw new Error('FAKE_FINANCIAL_EXACT_EVENT_SCENARIO_INVALID');
+  }
+  assertFakeFinancialScenarioSupportsOperation(scenario, operationKind);
+  const operationId = exactRequest.operationId;
+  const idempotencyKey = exactRequest.idempotencyKey;
+  const expectedVersion = exactRequest.expectedVersion;
+  const amountCents = exactRequest.amountCents ?? null;
+  const currency = exactRequest.currency ?? null;
+  const relatedOperationId = exactRequest.relatedOperationId ?? null;
+  if (
+    typeof operationId !== 'string' ||
+    typeof idempotencyKey !== 'string' ||
+    !Number.isSafeInteger(expectedVersion) ||
+    (amountCents !== null && !Number.isSafeInteger(amountCents)) ||
+    (currency !== null && (typeof currency !== 'string' || !/^[a-z]{3}$/u.test(currency))) ||
+    (relatedOperationId !== null && typeof relatedOperationId !== 'string')
+  ) {
+    throw new Error('FAKE_FINANCIAL_EXACT_EVENT_REQUEST_INVALID');
+  }
+  const exactExpectedVersion = expectedVersion as number;
+  const exactAmountCents = amountCents as number | null;
+  const exactCurrency = currency as string | null;
+  const exactRelatedOperationId = relatedOperationId as string | null;
+  const metadata = exactMetadataFor(operationKind, exactRequest);
+  const identity = {
+    operationId,
+    operationKind,
+    providerKind: 'FAKE',
+    amountCents: exactAmountCents,
+    currency: exactCurrency,
+    relatedOperationId: exactRelatedOperationId,
+    scenario,
+    metadata,
+  } as const;
+  const request = {
+    ...identity,
+    idempotencyKey,
+    expectedVersion: exactExpectedVersion,
+    metadata,
+  } as const;
+  const expectedState = stateFor(
+    operationKind,
+    scenario,
+    exactExpectedVersion,
+    typeof metadata.authenticated === 'boolean' ? metadata.authenticated : undefined
+  );
+  const response = {
+    state: expectedState,
+    retryable: retryableFor(expectedState, scenario),
+    externalReference: externalReference(operationKind, operationId),
+  } as const;
+  if (
+    event.operationId !== operationId ||
+    event.operationKind !== operationKind ||
+    event.providerKind !== 'FAKE' ||
+    event.idempotencyKey !== idempotencyKey ||
+    event.version !== exactExpectedVersion + 1 ||
+    event.scenario !== scenario ||
+    event.amountCents !== exactAmountCents ||
+    event.currency !== exactCurrency ||
+    event.relatedOperationId !== exactRelatedOperationId ||
+    event.state !== response.state ||
+    event.retryable !== response.retryable ||
+    event.externalReference !== response.externalReference ||
+    event.identitySha256 !== sha256(identity) ||
+    event.requestSha256 !== sha256(request) ||
+    event.providerRequestSha256 !== expectedProviderRequestSha256 ||
+    event.providerRequestSha256 !== canonicalFinancialProviderRequestSha256(exactRequest) ||
+    event.responseSha256 !== sha256(response) ||
+    sha256(event.metadata) !== sha256(metadata)
+  ) {
+    throw new Error('FAKE_FINANCIAL_EXACT_EVENT_IDENTITY_MISMATCH');
+  }
+  return projectStoredFakeFinancialOperation(event, idempotencyReplayed);
 }
 
 export class FakeFinancialProvider implements FinancialProviderPorts {
@@ -382,9 +585,10 @@ export class FakeFinancialProvider implements FinancialProviderPorts {
   ): Promise<FinancialOperationResult> {
     assertCommand(input);
     const scenario = input.scenario ?? 'SUCCESS';
-    if (!FAKE_FINANCIAL_SCENARIOS.has(scenario)) {
+    if (!isFakeFinancialScenario(scenario)) {
       throw new Error('FAKE_FINANCIAL_SCENARIO_INVALID');
     }
+    assertFakeFinancialScenarioSupportsOperation(scenario, kind);
     const state = stateFor(
       kind,
       scenario,
@@ -426,10 +630,11 @@ export class FakeFinancialProvider implements FinancialProviderPorts {
       retryable: response.retryable,
       identitySha256: sha256(identity),
       requestSha256: sha256(request),
+      providerRequestSha256: canonicalFinancialProviderRequestSha256(input),
       responseSha256: sha256(response),
       metadata,
     });
-    return stored;
+    return projectStoredFakeFinancialOperation(stored, stored.idempotencyReplayed);
   }
 
   preparePaymentMethod(
@@ -511,16 +716,7 @@ export class FakeFinancialProvider implements FinancialProviderPorts {
       providerId: input.providerId,
       providerAccountReference: input.providerAccountReference,
     });
-    const failed = result.state === 'FAILED';
-    const pending = result.state === 'PENDING' || result.state === 'RETRYABLE_FAILURE';
-    return {
-      ...result,
-      providerId: input.providerId,
-      accountState: failed ? 'FAILED' : pending ? 'PENDING' : 'ENABLED',
-      chargesEnabled: !failed && !pending,
-      payoutsEnabled: !failed && !pending,
-      requirementsDue: failed ? ['identity_verification'] : pending ? ['provider_review'] : [],
-    };
+    return result as ProviderAccountStateResult;
   }
 
   settle(input: FakeInput<FinancialOperationCommand>): Promise<FinancialOperationResult> {

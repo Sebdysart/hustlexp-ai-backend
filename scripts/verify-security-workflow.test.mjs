@@ -11,17 +11,21 @@ const exactGateSources = Object.freeze({
     '../backend/tests/system/escrow-release-outbox.pg.test.ts',
     '../backend/tests/system/hxos-canonical-lifecycle.pg.test.ts',
     '../backend/tests/system/hxos-lifecycle-exceptions.pg.test.ts',
+    '../backend/tests/system/xp-daily-cap-concurrency.pg.test.ts',
   ],
   HX_ALLOW_E2E_LIQUIDITY_EXPANSION: [
     '../backend/tests/system/liquidity-expansion.pg.test.ts',
   ],
   HX_ALLOW_NOTIFICATION_PG: [
+    '../backend/tests/system/notification-batching-idempotency.pg.test.ts',
     '../backend/tests/system/notification-delivery-contract.pg.test.ts',
+    '../backend/tests/system/notification-delivery-recovery-concurrency.pg.test.ts',
   ],
   HX_ALLOW_LEAD_INGRESS_PG: [
     '../backend/tests/system/universal-v1-lead-ingress.pg.test.ts',
   ],
   HX_ALLOW_TASK_DRAFT_INGRESS_PG: [
+    '../backend/tests/system/universal-v1-estimate-materialization.pg.test.ts',
     '../backend/tests/system/universal-v1-task-draft-claim.pg.test.ts',
     '../backend/tests/system/universal-v1-task-draft-legacy-port.pg.test.ts',
     '../backend/tests/system/universal-v1-task-draft-public.pg.test.ts',
@@ -51,6 +55,11 @@ test('public-repository security checks cannot be disabled by a repository varia
   assert.equal(workflow.permissions.contents, 'read');
   assert.ok(workflow.on.pull_request);
   assert.ok(workflow.on.schedule);
+  const checkoutSteps = Object.values(workflow.jobs).flatMap((job) =>
+    (job.steps || []).filter((step) => step.uses === 'actions/checkout@v4')
+  );
+  assert.ok(checkoutSteps.length > 0);
+  assert.ok(checkoutSteps.every((step) => step.with?.['persist-credentials'] === false));
 
   const audit = workflow.jobs.audit;
   const installIndex = audit.steps.findIndex((step) => step.run === 'npm ci');

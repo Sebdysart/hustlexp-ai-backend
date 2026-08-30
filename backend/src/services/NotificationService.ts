@@ -12,12 +12,10 @@
  */
 
 import { randomUUID } from 'crypto';
-import { db, isInvariantViolation, getErrorMessage } from '../db.js';
+import { db, isInvariantViolation, getErrorMessage, type QueryFn } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { ErrorCodes } from '../types.js';
 import { logger } from '../logger.js';
-import { Redis } from '@upstash/redis';
-import { config } from '../config.js';
 import {
   applyNotificationPresentation,
   NOTIFICATION_POLICY,
@@ -31,62 +29,19 @@ import {
 
 const log = logger.child({ service: 'NotificationService' });
 
-let notifRedis: Redis | null = null;
-function getNotifRedis(): Redis | null {
-  if (!notifRedis && config.redis.restUrl && config.redis.restToken) {
-    notifRedis = new Redis({ url: config.redis.restUrl, token: config.redis.restToken });
-  }
-  return notifRedis;
-}
-
-/**
- * Read-only frequency check: returns current counters WITHOUT incrementing.
- * Use before the INSERT so a failed DB write does not consume a quota slot.
- */
-async function checkFrequency(userId: string, category: string): Promise<{ hourlyCount: number; dailyCount: number }> {
-  const redis = getNotifRedis();
-  if (!redis) return { hourlyCount: 0, dailyCount: 0 };
-
-  const now = new Date();
-  const hourKey = `notif:freq:${userId}:${category}:hour:${now.toISOString().slice(0, 13)}`;
-  const dayKey = `notif:freq:${userId}:${category}:day:${now.toISOString().slice(0, 10)}`;
-
-  try {
-    const [hourly, daily] = await Promise.all([
-      redis.get<number>(hourKey),
-      redis.get<number>(dayKey),
-    ]);
-    return { hourlyCount: hourly ?? 0, dailyCount: daily ?? 0 };
-  } catch {
-    return { hourlyCount: 0, dailyCount: 0 };
+class NotificationFrequencyLimitError extends Error {
+  constructor(readonly window: 'hour' | 'day') {
+    super(`Notification ${window} frequency limit exceeded`);
+    this.name = 'NotificationFrequencyLimitError';
   }
 }
 
-/**
- * Increment frequency counters AFTER a successful INSERT.
- * Idempotent on retry: keyed on notificationId so a re-run after the INSERT
- * succeeded but before the increment did not permanently lose the quota slot.
- */
-async function incrementFrequency(userId: string, category: string): Promise<void> {
-  const redis = getNotifRedis();
-  if (!redis) return;
-
-  const now = new Date();
-  const hourKey = `notif:freq:${userId}:${category}:hour:${now.toISOString().slice(0, 13)}`;
-  const dayKey = `notif:freq:${userId}:${category}:day:${now.toISOString().slice(0, 10)}`;
-
-  try {
-    const [hourly, daily] = await Promise.all([
-      redis.incr(hourKey),
-      redis.incr(dayKey),
-    ]);
-    // Set TTLs (only on first increment)
-    if (hourly === 1) await redis.expire(hourKey, 3600);
-    if (daily === 1) await redis.expire(dayKey, 86400);
-  } catch {
-    // Non-fatal: a missed increment may allow one extra notification through.
-    // That is preferable to silently dropping a notification due to a Redis error.
+function notificationFrequencyCount(value: unknown): number {
+  const normalized = typeof value === 'number' ? value : Number(value);
+  if (!Number.isSafeInteger(normalized) || normalized < 0) {
+    throw new Error('NOTIFICATION_FREQUENCY_COUNTER_INVALID');
   }
+  return normalized;
 }
 
 // ============================================================================
@@ -300,22 +255,114 @@ function resolveDedupeKey(
   return derived.length <= 255 ? derived : null;
 }
 
-async function findMatchingReplay(
+type NotificationReplayCandidate = Notification & {
+  dedupe_identity_matches?: boolean;
+};
+
+type NotificationReplayResolution =
+  | { kind: 'missing' }
+  | { kind: 'conflict' }
+  | { kind: 'match'; notification: Notification };
+
+async function resolveNotificationReplay(
   dedupeKey: string,
   userId: string,
   category: NotificationCategory,
   objectRef: NotificationObjectReference,
-): Promise<Notification | null> {
-  const replay = await db.query<Notification>(
-    `SELECT * FROM notifications
-     WHERE dedupe_key = $1
-       AND user_id = $2
-       AND category = $3
-       AND object_type = $4
-       AND object_id = $5`,
+  query: QueryFn = db.query,
+): Promise<NotificationReplayResolution> {
+  const replay = await query<NotificationReplayCandidate>(
+    `SELECT direct_notification.*,
+            (direct_notification.user_id = $2
+             AND direct_notification.category = $3
+             AND direct_notification.object_type = $4
+             AND direct_notification.object_id = $5) AS dedupe_identity_matches
+       FROM notifications AS direct_notification
+      WHERE dedupe_key = $1
+     UNION ALL
+     SELECT batched_notification.*,
+            (batched_notification.user_id = $2
+             AND batched_notification.category = $3
+             AND batched_item->>'object_type' = $4
+             AND batched_item->>'object_id' = $5) AS dedupe_identity_matches
+       FROM notifications AS batched_notification
+       CROSS JOIN LATERAL jsonb_array_elements(
+         CASE
+           WHEN jsonb_typeof(batched_notification.metadata->'batched_items') = 'array'
+             THEN batched_notification.metadata->'batched_items'
+           ELSE '[]'::JSONB
+         END
+       ) AS batched_item
+      WHERE batched_item->>'dedupe_key' = $1`,
     [dedupeKey, userId, category, objectRef.type, objectRef.id],
   );
-  return replay.rows[0] ?? null;
+  if (replay.rows.length === 0) return { kind: 'missing' };
+
+  let notification: Notification | null = null;
+  for (const candidate of replay.rows) {
+    // PostgreSQL always supplies this computed column. Unit-test query doubles
+    // may omit it after already applying the SQL predicate; treat only an
+    // explicit false value as a collision.
+    const identityMatches = candidate.dedupe_identity_matches ?? true;
+    if (!identityMatches) return { kind: 'conflict' };
+    if (!notification) {
+      const { dedupe_identity_matches: _identityMatches, ...persistedNotification } = candidate;
+      notification = persistedNotification;
+    }
+  }
+  return notification
+    ? { kind: 'match', notification }
+    : { kind: 'missing' };
+}
+
+async function lockNotificationRecipientAndDedupe(
+  userId: string,
+  dedupeKey: string,
+  query: QueryFn,
+): Promise<boolean> {
+  // Every normal acceptance and batch receipt takes locks in this exact order:
+  // global producer-event identity first, then recipient. The transaction-level
+  // advisory lock extends notifications(dedupe_key) uniqueness to metadata-held
+  // batch receipts without relying on a process-local mutex.
+  const recipient = await query<{ id: string }>(
+    `WITH notification_dedupe_lock AS MATERIALIZED (
+       SELECT pg_advisory_xact_lock(hashtextextended($2, 0)) AS acquired
+     )
+     SELECT id FROM users
+     CROSS JOIN notification_dedupe_lock
+     WHERE id = $1
+     FOR UPDATE OF users`,
+    [userId, dedupeKey],
+  );
+  return recipient.rows.length > 0;
+}
+
+function defaultNotificationPreferences(userId: string): NotificationPreferences {
+  return {
+    id: '',
+    user_id: userId,
+    quiet_hours_enabled: true,
+    quiet_hours_start: '22:00:00',
+    quiet_hours_end: '07:00:00',
+    quiet_hours_timezone: 'America/Los_Angeles',
+    push_enabled: true,
+    email_enabled: false,
+    sms_enabled: false,
+    category_preferences: {},
+    created_at: new Date(),
+    updated_at: new Date(),
+  };
+}
+
+async function loadNotificationPreferences(
+  userId: string,
+  query: QueryFn = db.query,
+): Promise<NotificationPreferences> {
+  const result = await query<NotificationPreferences>(
+    'SELECT * FROM notification_preferences WHERE user_id = $1',
+    [userId],
+  );
+  return result.rows[0] ?? defaultNotificationPreferences(userId);
 }
 
 // ============================================================================
@@ -394,6 +441,11 @@ export const NotificationService = {
       };
     }
     const supersessionKey = `${userId}:${objectRef.type}:${objectRef.id}`;
+    const limits = NOTIFICATION_FREQUENCY_LIMITS[category]
+      ?? { perHour: Infinity, perDay: Infinity };
+    // Security and payment-recovery alerts cannot be silenced by exhausting a
+    // recipient's ordinary notification quota.
+    const bypassFrequency = FREQUENCY_BYPASS_CATEGORIES.has(category);
     
     try {
       // NOTIF-1: Verify user exists and has access to task (if task_id provided)
@@ -430,214 +482,15 @@ export const NotificationService = {
         }
       }
 
-      // Explicit keys identify a concrete producer event. Resolve an already
-      // accepted event before mutable preference or frequency state can turn a
-      // successful replay into a different outcome. Task authorization above
-      // remains mandatory, and the lookup binds the complete notification
+      // Caller-supplied keys identify an explicit producer event and can take the
+      // fast replay path before mutable preferences. Safely derived keys are
+      // rechecked under the recipient lock before any frequency decision below.
+      // Task authorization remains mandatory, and the lookup binds the complete
       // identity so a global-key collision cannot disclose another user's row.
       if (params.dedupeKey !== undefined) {
-        const replay = await findMatchingReplay(dedupeKey, userId, category, objectRef);
-        if (replay) return { success: true, data: replay };
-      }
-      
-      // Get user preferences
-      const preferencesResult = await NotificationService.getPreferences(userId);
-      if (!preferencesResult.success) return preferencesResult;
-      const preferences = preferencesResult.data;
-      
-      // Check quiet hours (NOTIFICATION_SPEC.md §2.1)
-      const categoryPrefs = preferences.category_preferences[category];
-      const policyBypass = policy.quietHours === 'security_override'
-        || (policy.quietHours === 'active_task_override' && objectRef.type === 'task');
-      // A mutable category preference cannot promote growth or digest traffic
-      // above the class-owned quiet-hour contract. Users may suppress more;
-      // only the binding active-task/security policy may suppress less.
-      const shouldBypassDND = policyBypass;
-      const quietHoursEnd = preferences.quiet_hours_enabled && !shouldBypassDND
-        ? nextQuietHoursEnd(
-          new Date(),
-          preferences.quiet_hours_start,
-          preferences.quiet_hours_end,
-          preferences.quiet_hours_timezone || 'America/Los_Angeles',
-        )
-        : null;
-      const availableAt = quietHoursEnd ?? new Date();
-      
-      // Check frequency limits (NOTIFICATION_SPEC.md §2.2) - Redis-based
-      // BUG 8 FIX: Use read-only checkFrequency here (before the INSERT) so that a
-      // failed DB write does not permanently consume a quota slot. incrementFrequency
-      // is called AFTER the INSERT succeeds below.
-      const categoryLimits = NOTIFICATION_FREQUENCY_LIMITS[category];
-      const limits = categoryLimits || { perHour: Infinity, perDay: Infinity };
-      // BUG 5 FIX: security_alert and payment_released bypass frequency caps entirely
-      // so they can never be DoS-suppressed by an attacker exhausting the daily limit.
-      const bypassFrequency = FREQUENCY_BYPASS_CATEGORIES.has(category);
-      if (!bypassFrequency && (limits.perHour !== Infinity || limits.perDay !== Infinity)) {
-        const { hourlyCount, dailyCount } = await checkFrequency(userId, category);
-
-        // Check daily limit BEFORE hourly so the broader window is independently enforced.
-        if (dailyCount >= limits.perDay) {
-          return {
-            success: false,
-            error: {
-              code: ErrorCodes.RATE_LIMIT_EXCEEDED,
-              message: `Daily limit exceeded for category ${category}. Maximum ${limits.perDay} per day`,
-            },
-          };
-        }
-
-        if (hourlyCount >= limits.perHour) {
-          // Exceeded hourly limit - batch with existing notifications
-          const batchResult = await batchNotification(userId, category, {
-            title: notificationTitle,
-            body,
-            deepLink,
-            taskId,
-            metadata: notificationMetadata,
-            priority,
-          });
-
-          if (batchResult.success) {
-            return batchResult;
-          }
-
-          return {
-            success: false,
-            error: {
-              code: ErrorCodes.RATE_LIMIT_EXCEEDED,
-              message: `Frequency limit exceeded for category ${category}. Maximum ${limits.perHour} per hour`,
-            },
-          };
-        }
-      }
-      
-      // Filter channels based on user preferences
-      let enabledChannels: NotificationChannel[] = channels;
-      {
-        if (categoryPrefs?.enabled === false) {
-          return {
-            success: false,
-            error: {
-              code: ErrorCodes.PREFERENCE_DISABLED,
-              message: `Notifications for category ${category} are disabled by user`,
-            },
-          };
-        }
-
-        if (policy.consent === 'explicit_opt_in' && categoryPrefs?.enabled !== true) {
-          return {
-            success: false,
-            error: {
-              code: ErrorCodes.PREFERENCE_DISABLED,
-              message: `Growth notification ${category} requires explicit opt-in`,
-            },
-          };
-        }
-        
-        // Filter channels based on user preferences
-        enabledChannels = channels.filter(channel => {
-          if (channel === 'push' && !preferences.push_enabled) return false;
-          if (channel === 'email' && !preferences.email_enabled) return false;
-          if (channel === 'sms' && !preferences.sms_enabled) return false;
-          // in_app is always enabled (user can't disable in-app notifications)
-          return true;
-        });
-        
-        // If all external channels are disabled, still allow in-app
-        if (enabledChannels.length === 0 && !channels.includes('in_app')) {
-          return {
-            success: false,
-            error: {
-              code: ErrorCodes.PREFERENCE_DISABLED,
-              message: 'All notification channels are disabled by user',
-            },
-          };
-        }
-        
-        // If no external channels enabled, ensure in_app is included
-        if (enabledChannels.length === 0 && channels.includes('in_app')) {
-          enabledChannels = ['in_app'];
-        }
-      }
-      
-      // Implement notification grouping (NOTIFICATION_SPEC.md §2.3)
-      // Group similar notifications within 5 minutes, max 5 per group
-      const groupingResult = await findGroupableNotification(userId, category, taskId);
-      let groupId: string | null = null;
-      let groupPosition: number | null = null;
-      
-      if (groupingResult.success) {
-        if (groupingResult.data) {
-          // Add to existing group
-          groupId = groupingResult.data.groupId;
-          groupPosition = groupingResult.data.groupPosition;
-        } else {
-          // Create new group (generate UUID for group_id)
-          groupId = randomUUID();
-          groupPosition = 1; // First item in new group
-        }
-      }
-      
-      // If grouping failed, fall back to ungrouped notification (groupId = null)
-      
-      // Create notification (schema has group_id and group_position for grouping)
-      const result = await db.query<Notification>(
-        `WITH active_focus AS (
-          SELECT task.id
-          FROM tasks task
-          WHERE $20::BOOLEAN
-            AND task.worker_id = $1
-            AND task.state = 'ACCEPTED'
-            AND task.progress_state IN ('ACCEPTED','TRAVELING','WORKING')
-          ORDER BY COALESCE(task.accepted_at, task.updated_at) DESC, task.id
-          LIMIT 1
-        )
-        INSERT INTO notifications (
-          user_id, category, title, body, deep_link, task_id, metadata,
-          channels, priority, expires_at, group_id, group_position,
-          notification_class, object_type, object_id, dedupe_key, supersession_key,
-          available_at, delivery_state, focus_task_id, focus_deferred_at, created_at
-        )
-        SELECT
-          $1, $2, $3, $4, $5, $6, $7::JSONB, $8::TEXT[], $9, $10, $11, $12,
-          $13, $14, $15, $16, $17,
-          CASE WHEN focus.id IS NULL THEN $18::TIMESTAMPTZ ELSE $21::TIMESTAMPTZ END,
-          CASE WHEN focus.id IS NULL THEN $19 ELSE 'deferred_focus' END,
-          focus.id,
-          CASE WHEN focus.id IS NULL THEN NULL ELSE NOW() END,
-          NOW()
-        FROM (SELECT 1) seed
-        LEFT JOIN active_focus focus ON TRUE
-        ON CONFLICT (dedupe_key) DO NOTHING
-        RETURNING *`,
-        [
-          userId,
-          category,
-          notificationTitle,
-          body,
-          deepLink,
-          taskId || null,
-          JSON.stringify(notificationMetadata),
-          enabledChannels,
-          priority,
-          expiresAt || null,
-          groupId,
-          groupPosition,
-          policy.notificationClass,
-          objectRef.type,
-          objectRef.id,
-          dedupeKey,
-          supersessionKey,
-          availableAt,
-          quietHoursEnd ? 'deferred_quiet_hours' : 'pending',
-          policy.focusSuppression === 'defer_during_active_execution',
-          FOCUS_DEFERRED_UNTIL,
-        ]
-      );
-
-      if (result.rows.length === 0) {
-        const replay = await findMatchingReplay(dedupeKey, userId, category, objectRef);
-        if (!replay) {
+        const replay = await resolveNotificationReplay(dedupeKey, userId, category, objectRef);
+        if (replay.kind === 'match') return { success: true, data: replay.notification };
+        if (replay.kind === 'conflict') {
           return {
             success: false,
             error: {
@@ -646,46 +499,276 @@ export const NotificationService = {
             },
           };
         }
-        return { success: true, data: replay };
       }
       
-      // Send notification via channels (push, email, SMS, in-app)
-      // In-app: Already in notifications table (can be retrieved via API)
-      // External channels: Queue for delivery via outbox pattern (NO INLINE SENDS)
-      const notification = result.rows[0];
+      // PostgreSQL is the acceptance and frequency authority. Locking the
+      // recipient row serializes bounded notification decisions without a
+      // collision-prone application lock. The notification, delivery facts,
+      // and channel outbox rows commit together on the same connection.
+      const transactionResult = await db.transaction(async (query) => {
+        if (!await lockNotificationRecipientAndDedupe(userId, dedupeKey, query)) {
+          return { kind: 'recipient_missing' as const };
+        }
 
-      if (policy.supersedes.length > 0) {
-        await supersedePriorNotifications(
-          notification.id,
-          supersessionKey,
-          policy.supersedes,
+        const acceptedReplay = await resolveNotificationReplay(
+          dedupeKey,
+          userId,
+          category,
+          objectRef,
+          query,
         );
-      }
+        if (acceptedReplay.kind === 'match') {
+          return { kind: 'accepted' as const, notification: acceptedReplay.notification };
+        }
+        if (acceptedReplay.kind === 'conflict') {
+          return { kind: 'dedupe_conflict' as const };
+        }
 
-      // BUG 8 FIX: Increment frequency counter AFTER the INSERT succeeds.
-      // Moving the increment here ensures a failed DB write cannot consume a quota slot.
-      if (!bypassFrequency && (limits.perHour !== Infinity || limits.perDay !== Infinity)) {
-        await incrementFrequency(userId, category);
+        // Consent, quiet hours, channel eligibility, the frequency decision,
+        // and acceptance all share the recipient serialization boundary.
+        // updatePreferences obtains the same user-row lock, so a concurrent
+        // opt-out cannot race a notification created from stale preferences.
+        const preferences = await loadNotificationPreferences(userId, query);
+        const categoryPrefs = preferences.category_preferences[category];
+        if (categoryPrefs?.enabled === false) {
+          return {
+            kind: 'preference_disabled' as const,
+            message: `Notifications for category ${category} are disabled by user`,
+          };
+        }
+        if (policy.consent === 'explicit_opt_in' && categoryPrefs?.enabled !== true) {
+          return {
+            kind: 'preference_disabled' as const,
+            message: `Growth notification ${category} requires explicit opt-in`,
+          };
+        }
+
+        let enabledChannels = channels.filter((channel) => {
+          if (channel === 'push' && !preferences.push_enabled) return false;
+          if (channel === 'email' && !preferences.email_enabled) return false;
+          if (channel === 'sms' && !preferences.sms_enabled) return false;
+          return true;
+        });
+        if (enabledChannels.length === 0 && !channels.includes('in_app')) {
+          return {
+            kind: 'preference_disabled' as const,
+            message: 'All notification channels are disabled by user',
+          };
+        }
+        if (enabledChannels.length === 0) enabledChannels = ['in_app'];
+
+        const policyBypass = policy.quietHours === 'security_override'
+          || (policy.quietHours === 'active_task_override' && objectRef.type === 'task');
+        const quietHoursEnd = preferences.quiet_hours_enabled && !policyBypass
+          ? nextQuietHoursEnd(
+            new Date(),
+            preferences.quiet_hours_start,
+            preferences.quiet_hours_end,
+            preferences.quiet_hours_timezone || 'America/Los_Angeles',
+          )
+          : null;
+        const availableAt = quietHoursEnd ?? new Date();
+
+        if (!bypassFrequency && (limits.perHour !== Infinity || limits.perDay !== Infinity)) {
+          const counts = await query<{ hourly_count: string; daily_count: string }>(
+            `SELECT
+               COUNT(*) FILTER (
+                 WHERE created_at >= (
+                   date_trunc('hour', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+                 )
+               )::TEXT AS hourly_count,
+               COUNT(*)::TEXT AS daily_count
+             FROM notifications
+             WHERE user_id = $1
+               AND category = $2
+               AND created_at >= (
+                 date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+               )`,
+            [userId, category],
+          );
+          const hourlyCount = notificationFrequencyCount(counts.rows[0]?.hourly_count ?? '0');
+          const dailyCount = notificationFrequencyCount(counts.rows[0]?.daily_count ?? '0');
+          if (Number.isFinite(limits.perDay) && dailyCount >= limits.perDay) {
+            throw new NotificationFrequencyLimitError('day');
+          }
+          if (Number.isFinite(limits.perHour) && hourlyCount >= limits.perHour) {
+            throw new NotificationFrequencyLimitError('hour');
+          }
+        }
+
+        // Resolve grouping only after this transaction owns the recipient lock,
+        // so concurrent accepts cannot choose the same group position.
+        const groupingResult = await findGroupableNotification(
+          userId,
+          category,
+          taskId,
+          query,
+        );
+        let groupId: string | null = null;
+        let groupPosition: number | null = null;
+        if (groupingResult.success) {
+          if (groupingResult.data) {
+            groupId = groupingResult.data.groupId;
+            groupPosition = groupingResult.data.groupPosition;
+          } else {
+            groupId = randomUUID();
+            groupPosition = 1;
+          }
+        }
+
+        const result = await query<Notification>(
+          `WITH active_focus AS (
+            SELECT task.id
+            FROM tasks task
+            WHERE $20::BOOLEAN
+              AND task.worker_id = $1
+              AND task.state = 'ACCEPTED'
+              AND task.progress_state IN ('ACCEPTED','TRAVELING','WORKING')
+            ORDER BY COALESCE(task.accepted_at, task.updated_at) DESC, task.id
+            LIMIT 1
+          )
+          INSERT INTO notifications (
+            user_id, category, title, body, deep_link, task_id, metadata,
+            channels, priority, expires_at, group_id, group_position,
+            notification_class, object_type, object_id, dedupe_key, supersession_key,
+            available_at, delivery_state, focus_task_id, focus_deferred_at, created_at
+          )
+          SELECT
+            $1, $2, $3, $4, $5, $6, $7::JSONB, $8::TEXT[], $9, $10, $11, $12,
+            $13, $14, $15, $16, $17,
+            CASE WHEN focus.id IS NULL THEN $18::TIMESTAMPTZ ELSE $21::TIMESTAMPTZ END,
+            CASE WHEN focus.id IS NULL THEN $19 ELSE 'deferred_focus' END,
+            focus.id,
+            CASE WHEN focus.id IS NULL THEN NULL ELSE NOW() END,
+            NOW()
+          FROM (SELECT 1) seed
+          LEFT JOIN active_focus focus ON TRUE
+          ON CONFLICT (dedupe_key) DO NOTHING
+          RETURNING *`,
+          [
+            userId,
+            category,
+            notificationTitle,
+            body,
+            deepLink,
+            taskId || null,
+            JSON.stringify(notificationMetadata),
+            enabledChannels,
+            priority,
+            expiresAt || null,
+            groupId,
+            groupPosition,
+            policy.notificationClass,
+            objectRef.type,
+            objectRef.id,
+            dedupeKey,
+            supersessionKey,
+            availableAt,
+            quietHoursEnd ? 'deferred_quiet_hours' : 'pending',
+            policy.focusSuppression === 'defer_during_active_execution',
+            FOCUS_DEFERRED_UNTIL,
+          ],
+        );
+
+        if (result.rows.length === 0) {
+          const conflictReplay = await resolveNotificationReplay(
+            dedupeKey,
+            userId,
+            category,
+            objectRef,
+            query,
+          );
+          return conflictReplay.kind === 'match'
+            ? { kind: 'accepted' as const, notification: conflictReplay.notification }
+            : { kind: 'dedupe_conflict' as const };
+        }
+
+        const notification = result.rows[0];
+        if (policy.supersedes.length > 0) {
+          await supersedePriorNotifications(
+            notification.id,
+            supersessionKey,
+            policy.supersedes,
+            query,
+          );
+        }
+
+        const persistedAvailableAt = notification.available_at
+          ? new Date(notification.available_at)
+          : availableAt;
+        const canonicalNotification = await queueNotificationChannels(
+          notification,
+          enabledChannels,
+          persistedAvailableAt,
+          Boolean(quietHoursEnd),
+          notification.delivery_state === 'deferred_focus',
+          query,
+        );
+        return { kind: 'accepted' as const, notification: canonicalNotification };
+      });
+
+      if (transactionResult.kind === 'recipient_missing') {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.NOT_FOUND,
+            message: `Notification recipient ${userId} not found`,
+          },
+        };
       }
-      
-      // Persist all requested channels even in quiet hours. The outbox remains
-      // invisible until available_at, so deferred never means silently dropped.
-      const persistedAvailableAt = notification.available_at
-        ? new Date(notification.available_at)
-        : availableAt;
-      await queueNotificationChannels(
-        notification,
-        enabledChannels,
-        persistedAvailableAt,
-        Boolean(quietHoursEnd),
-        notification.delivery_state === 'deferred_focus',
-      );
-      
-      return {
-        success: true,
-        data: notification,
-      };
+      if (transactionResult.kind === 'dedupe_conflict') {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.INVALID_INPUT,
+            message: 'Notification deduplication key conflicts with a different event identity',
+          },
+        };
+      }
+      if (transactionResult.kind === 'preference_disabled') {
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.PREFERENCE_DISABLED,
+            message: transactionResult.message,
+          },
+        };
+      }
+      return { success: true, data: transactionResult.notification };
     } catch (error) {
+      if (error instanceof NotificationFrequencyLimitError) {
+        if (error.window === 'hour') {
+          const batchResult = await batchNotification(userId, category, {
+            title: notificationTitle,
+            body,
+            deepLink,
+            taskId,
+            metadata: notificationMetadata,
+            priority,
+            dedupeKey,
+            objectRef,
+          });
+          if (batchResult.success) return batchResult;
+          if (batchResult.error.code === 'DEDUPE_CONFLICT') {
+            return {
+              success: false,
+              error: {
+                code: ErrorCodes.INVALID_INPUT,
+                message: 'Notification deduplication key conflicts with a different event identity',
+              },
+            };
+          }
+        }
+        return {
+          success: false,
+          error: {
+            code: ErrorCodes.RATE_LIMIT_EXCEEDED,
+            message: error.window === 'day'
+              ? `Daily limit exceeded for category ${category}. Maximum ${limits.perDay} per day`
+              : `Frequency limit exceeded for category ${category}. Maximum ${limits.perHour} per hour`,
+          },
+        };
+      }
       if (isInvariantViolation(error)) {
         return {
           success: false,
@@ -714,6 +797,7 @@ export const NotificationService = {
   retryDelivery: async (
     notificationId: string,
     channel: Exclude<NotificationChannel, 'in_app'>,
+    recoveryClaimId?: string,
   ): Promise<ServiceResult<{ queued: boolean }>> => {
     try {
       const eligible = await db.query<Notification & { delivery_available_at: Date | string }>(
@@ -724,12 +808,21 @@ export const NotificationService = {
           AND delivery.channel = $2
          WHERE notification.id = $1
            AND notification.superseded_at IS NULL
+           AND (notification.expires_at IS NULL OR notification.expires_at > NOW())
            AND delivery.state = 'retry_pending'
+           AND (
+             ($3::UUID IS NULL AND delivery.recovery_claim_id IS NULL)
+             OR (
+               $3::UUID IS NOT NULL
+               AND delivery.recovery_claim_id=$3::UUID
+               AND delivery.recovery_claim_deadline_at > NOW()
+             )
+           )
            AND GREATEST(
              delivery.available_at,
              COALESCE(delivery.next_retry_at, delivery.available_at)
            ) <= NOW()`,
-        [notificationId, channel],
+        [notificationId, channel, recoveryClaimId ?? null],
       );
       const notification = eligible.rows[0];
       if (!notification) return { success: true, data: { queued: false } };
@@ -742,28 +835,42 @@ export const NotificationService = {
 
       const deferred = availableAt.getTime() > Date.now();
       const state = deferred ? 'deferred_quiet_hours' : 'queued';
-      await db.query(
+      const recovered = await db.query(
         `WITH recovered AS (
            UPDATE notification_deliveries
            SET state = $3,
                next_retry_at = NULL,
                last_error = NULL,
+               recovery_claim_id = NULL,
+               recovery_claimed_at = NULL,
+               recovery_claim_deadline_at = NULL,
                updated_at = NOW()
            WHERE notification_id = $1 AND channel = $2
              AND state = 'retry_pending'
+             AND (
+               ($4::UUID IS NULL AND recovery_claim_id IS NULL)
+               OR (
+                 $4::UUID IS NOT NULL
+                 AND recovery_claim_id=$4::UUID
+                 AND recovery_claim_deadline_at > NOW()
+               )
+             )
            RETURNING notification_id
          )
-         UPDATE notifications
-         SET delivery_state = CASE
-               WHEN delivery_state IN ('failed_terminal','delivered') THEN delivery_state
-               ELSE $3
-             END,
+          UPDATE notifications
+          SET delivery_state = CASE
+                WHEN delivery_state IN (
+                  'delivered','provider_accepted','provider_outcome_unknown',
+                  'provider_in_flight','failed_terminal','suppressed'
+                ) THEN delivery_state
+                ELSE $3
+              END,
              sent_at = COALESCE(sent_at, NOW()),
              updated_at = NOW()
          WHERE id IN (SELECT notification_id FROM recovered)`,
-        [notificationId, channel, state],
+        [notificationId, channel, state, recoveryClaimId ?? null],
       );
-      return { success: true, data: { queued: true } };
+      return { success: true, data: { queued: (recovered.rowCount ?? 0) > 0 } };
     } catch (error) {
       return {
         success: false,
@@ -1014,35 +1121,9 @@ export const NotificationService = {
     userId: string
   ): Promise<ServiceResult<NotificationPreferences>> => {
     try {
-      const result = await db.query<NotificationPreferences>(
-        `SELECT * FROM notification_preferences WHERE user_id = $1`,
-        [userId]
-      );
-      
-      if (result.rows.length === 0) {
-        // Return default preferences if none exist
-        return {
-          success: true,
-          data: {
-            id: '',
-            user_id: userId,
-            quiet_hours_enabled: true,
-            quiet_hours_start: '22:00:00',
-            quiet_hours_end: '07:00:00',
-            quiet_hours_timezone: 'America/Los_Angeles',
-            push_enabled: true,
-            email_enabled: false,
-            sms_enabled: false,
-            category_preferences: {},
-            created_at: new Date(),
-            updated_at: new Date(),
-          },
-        };
-      }
-      
       return {
         success: true,
-        data: result.rows[0],
+        data: await loadNotificationPreferences(userId),
       };
     } catch (error) {
       return {
@@ -1064,94 +1145,110 @@ export const NotificationService = {
     const { userId, ...updates } = params;
     
     try {
-      // Check if preferences exist
-      const existingResult = await NotificationService.getPreferences(userId);
-      
-      if (!existingResult.success || !existingResult.data.id) {
-        // Create new preferences
-        const createResult = await db.query<NotificationPreferences>(
-          `INSERT INTO notification_preferences (
-            user_id, quiet_hours_enabled, quiet_hours_start, quiet_hours_end, quiet_hours_timezone,
-            push_enabled, email_enabled, sms_enabled, category_preferences
-          )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::JSONB)
-          RETURNING *`,
-          [
-            userId,
-            updates.quietHoursEnabled ?? true,
-            updates.quietHoursStart || '22:00:00',
-            updates.quietHoursEnd || '07:00:00',
-            updates.quietHoursTimezone || 'America/Los_Angeles',
-            updates.pushEnabled ?? true,
-            updates.emailEnabled ?? false,
-            updates.smsEnabled ?? false,
-            JSON.stringify(updates.categoryPreferences || {}),
-          ]
+      if (updates.quietHoursTimezone !== undefined) {
+        new Intl.DateTimeFormat('en-US', { timeZone: updates.quietHoursTimezone }).format();
+      }
+
+      const transactionResult = await db.transaction(async (query) => {
+        // Preference mutation and notification acceptance serialize on the
+        // same recipient row. This closes the stale-consent race in which an
+        // opt-out could commit while acceptance used an earlier snapshot.
+        const recipient = await query<{ id: string }>(
+          'SELECT id FROM users WHERE id = $1 FOR UPDATE',
+          [userId],
         );
-        
+        if (recipient.rows.length === 0) {
+          return { kind: 'recipient_missing' as const };
+        }
+
+        const existing = await loadNotificationPreferences(userId, query);
+        if (!existing.id) {
+          const created = await query<NotificationPreferences>(
+            `INSERT INTO notification_preferences (
+              user_id, quiet_hours_enabled, quiet_hours_start, quiet_hours_end, quiet_hours_timezone,
+              push_enabled, email_enabled, sms_enabled, category_preferences
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::JSONB)
+            RETURNING *`,
+            [
+              userId,
+              updates.quietHoursEnabled ?? true,
+              updates.quietHoursStart || '22:00:00',
+              updates.quietHoursEnd || '07:00:00',
+              updates.quietHoursTimezone || 'America/Los_Angeles',
+              updates.pushEnabled ?? true,
+              updates.emailEnabled ?? false,
+              updates.smsEnabled ?? false,
+              JSON.stringify(updates.categoryPreferences || {}),
+            ],
+          );
+          if (!created.rows[0]) throw new Error('Notification preferences insert returned no row');
+          return { kind: 'accepted' as const, preferences: created.rows[0] };
+        }
+
+        const updateFields: string[] = [];
+        const updateValues: unknown[] = [];
+        let paramIndex = 1;
+        if (updates.quietHoursEnabled !== undefined) {
+          updateFields.push(`quiet_hours_enabled = $${paramIndex++}`);
+          updateValues.push(updates.quietHoursEnabled);
+        }
+        if (updates.quietHoursStart !== undefined) {
+          updateFields.push(`quiet_hours_start = $${paramIndex++}`);
+          updateValues.push(updates.quietHoursStart);
+        }
+        if (updates.quietHoursEnd !== undefined) {
+          updateFields.push(`quiet_hours_end = $${paramIndex++}`);
+          updateValues.push(updates.quietHoursEnd);
+        }
+        if (updates.quietHoursTimezone !== undefined) {
+          updateFields.push(`quiet_hours_timezone = $${paramIndex++}`);
+          updateValues.push(updates.quietHoursTimezone);
+        }
+        if (updates.pushEnabled !== undefined) {
+          updateFields.push(`push_enabled = $${paramIndex++}`);
+          updateValues.push(updates.pushEnabled);
+        }
+        if (updates.emailEnabled !== undefined) {
+          updateFields.push(`email_enabled = $${paramIndex++}`);
+          updateValues.push(updates.emailEnabled);
+        }
+        if (updates.smsEnabled !== undefined) {
+          updateFields.push(`sms_enabled = $${paramIndex++}`);
+          updateValues.push(updates.smsEnabled);
+        }
+        if (updates.categoryPreferences !== undefined) {
+          updateFields.push(`category_preferences = $${paramIndex++}::JSONB`);
+          updateValues.push(JSON.stringify(updates.categoryPreferences));
+        }
+        if (updateFields.length === 0) {
+          return { kind: 'accepted' as const, preferences: existing };
+        }
+
+        updateValues.push(userId);
+        const updated = await query<NotificationPreferences>(
+          `UPDATE notification_preferences
+           SET ${updateFields.join(', ')}, updated_at = NOW()
+           WHERE user_id = $${paramIndex}
+           RETURNING *`,
+          updateValues,
+        );
+        if (!updated.rows[0]) throw new Error('Notification preferences update returned no row');
+        return { kind: 'accepted' as const, preferences: updated.rows[0] };
+      });
+
+      if (transactionResult.kind === 'recipient_missing') {
         return {
-          success: true,
-          data: createResult.rows[0],
+          success: false,
+          error: {
+            code: ErrorCodes.NOT_FOUND,
+            message: `Notification preference owner ${userId} not found`,
+          },
         };
       }
-      
-      // Update existing preferences
-      const updateFields: string[] = [];
-      const updateValues: unknown[] = [];
-      let paramIndex = 1;
-      
-      if (updates.quietHoursEnabled !== undefined) {
-        updateFields.push(`quiet_hours_enabled = $${paramIndex++}`);
-        updateValues.push(updates.quietHoursEnabled);
-      }
-      if (updates.quietHoursStart !== undefined) {
-        updateFields.push(`quiet_hours_start = $${paramIndex++}`);
-        updateValues.push(updates.quietHoursStart);
-      }
-      if (updates.quietHoursEnd !== undefined) {
-        updateFields.push(`quiet_hours_end = $${paramIndex++}`);
-        updateValues.push(updates.quietHoursEnd);
-      }
-      if (updates.quietHoursTimezone !== undefined) {
-        // Intl performs the authoritative IANA validation before persistence.
-        new Intl.DateTimeFormat('en-US', { timeZone: updates.quietHoursTimezone }).format();
-        updateFields.push(`quiet_hours_timezone = $${paramIndex++}`);
-        updateValues.push(updates.quietHoursTimezone);
-      }
-      if (updates.pushEnabled !== undefined) {
-        updateFields.push(`push_enabled = $${paramIndex++}`);
-        updateValues.push(updates.pushEnabled);
-      }
-      if (updates.emailEnabled !== undefined) {
-        updateFields.push(`email_enabled = $${paramIndex++}`);
-        updateValues.push(updates.emailEnabled);
-      }
-      if (updates.smsEnabled !== undefined) {
-        updateFields.push(`sms_enabled = $${paramIndex++}`);
-        updateValues.push(updates.smsEnabled);
-      }
-      if (updates.categoryPreferences !== undefined) {
-        updateFields.push(`category_preferences = $${paramIndex++}::JSONB`);
-        updateValues.push(JSON.stringify(updates.categoryPreferences));
-      }
-      
-      if (updateFields.length === 0) {
-        // No updates provided
-        return existingResult;
-      }
-      
-      updateValues.push(userId);
-      const result = await db.query<NotificationPreferences>(
-        `UPDATE notification_preferences
-         SET ${updateFields.join(', ')}, updated_at = NOW()
-         WHERE user_id = $${paramIndex}
-         RETURNING *`,
-        updateValues
-      );
-      
       return {
         success: true,
-        data: result.rows[0],
+        data: transactionResult.preferences,
       };
     } catch (error) {
       return {
@@ -1213,6 +1310,9 @@ export const NotificationService = {
     category: NotificationCategory,
     minutes: number
   ): Promise<number> => {
+    if (!Number.isSafeInteger(minutes) || minutes <= 0) {
+      throw new Error('NOTIFICATION_FREQUENCY_WINDOW_INVALID');
+    }
     try {
       const result = await db.query<{ count: string }>(
         `SELECT COUNT(*) as count
@@ -1222,9 +1322,10 @@ export const NotificationService = {
         [userId, category, minutes]
       );
       
-      return parseInt(result.rows[0]?.count || '0', 10);
-    } catch (_error) {
-      return 0; // On error, allow notification (fail open)
+      return notificationFrequencyCount(result.rows[0]?.count ?? '0');
+    } catch (error) {
+      log.error({ error, userId, category }, 'Notification count read failed closed');
+      throw error;
     }
   },
 };
@@ -1237,19 +1338,84 @@ async function supersedePriorNotifications(
   notificationId: string,
   supersessionKey: string,
   categories: readonly NotificationCategory[],
+  query: QueryFn = db.query,
 ): Promise<void> {
-  await db.query(
-    `WITH superseded AS (
-       UPDATE notifications
-       SET superseded_at = NOW(),
-           superseded_by_notification_id = $1,
-           delivery_state = 'cancelled_superseded',
-           updated_at = NOW()
+  // Acquire target notification locks in a statement that completes before the
+  // state-recompute statement. A lock CTE inside the latter can wait while
+  // retaining a stale PostgreSQL statement snapshot, allowing an actual
+  // in-flight/accepted send to be mis-recorded as cancelled.
+  await query(
+    `SELECT id
+     FROM notifications
+     WHERE supersession_key=$2
+       AND id<>$1
+       AND category=ANY($3::TEXT[])
+       AND superseded_at IS NULL
+     ORDER BY id
+     FOR UPDATE`,
+    [notificationId, supersessionKey, categories],
+  );
+  await query(
+     `WITH supersession_targets AS MATERIALIZED (
+       SELECT notifications.id,
+          CASE
+             WHEN EXISTS (
+               SELECT 1 FROM notification_deliveries delivery
+               WHERE delivery.notification_id = notifications.id
+                 AND delivery.state = 'delivered'
+             ) THEN 'delivered'
+             WHEN EXISTS (
+               SELECT 1 FROM notification_deliveries delivery
+               WHERE delivery.notification_id = notifications.id
+                 AND delivery.state = 'provider_accepted'
+             ) THEN 'provider_accepted'
+             WHEN EXISTS (
+               SELECT 1 FROM notification_deliveries delivery
+               WHERE delivery.notification_id = notifications.id
+                 AND delivery.state = 'provider_outcome_unknown'
+             ) THEN 'provider_outcome_unknown'
+             WHEN EXISTS (
+               SELECT 1 FROM notification_deliveries delivery
+               WHERE delivery.notification_id = notifications.id
+                 AND delivery.state = 'provider_in_flight'
+             ) THEN 'provider_in_flight'
+             WHEN EXISTS (
+               SELECT 1 FROM notification_deliveries delivery
+               WHERE delivery.notification_id = notifications.id
+                 AND delivery.state = 'failed_terminal'
+             ) THEN 'failed_terminal'
+             WHEN EXISTS (
+               SELECT 1 FROM notification_deliveries delivery
+               WHERE delivery.notification_id = notifications.id
+                 AND delivery.state = 'suppressed'
+             ) THEN 'suppressed'
+            ELSE 'cancelled_superseded'
+          END AS preserved_delivery_state
+       FROM notifications
        WHERE supersession_key = $2
          AND id <> $1
          AND category = ANY($3::TEXT[])
          AND superseded_at IS NULL
-       RETURNING id
+       FOR UPDATE OF notifications
+     ), superseded AS (
+       UPDATE notifications notification
+       SET superseded_at = NOW(),
+           superseded_by_notification_id = $1,
+           delivery_state = target.preserved_delivery_state,
+           terminal_failure_at = CASE
+             WHEN target.preserved_delivery_state = 'failed_terminal'
+               THEN notification.terminal_failure_at
+             ELSE NULL
+           END,
+           terminal_failure_reason = CASE
+             WHEN target.preserved_delivery_state = 'failed_terminal'
+               THEN notification.terminal_failure_reason
+             ELSE NULL
+           END,
+           updated_at = NOW()
+       FROM supersession_targets target
+       WHERE notification.id = target.id
+       RETURNING notification.id
      ), cancelled_deliveries AS (
        UPDATE notification_deliveries
        SET state = 'cancelled_superseded', updated_at = NOW()
@@ -1297,6 +1463,8 @@ async function batchNotification(
     taskId?: string | null;
     metadata?: Record<string, unknown>;
     priority: NotificationPriority;
+    dedupeKey: string;
+    objectRef: NotificationObjectReference;
   }
 ): Promise<ServiceResult<Notification>> {
   try {
@@ -1306,9 +1474,34 @@ async function batchNotification(
     // update a stale older row. Fix: move the search inside the transaction and
     // lock the chosen row atomically with FOR UPDATE from the start.
     const updateResult = await db.transaction(async (txQuery) => {
+      // The same recipient lock used by the frequency decision serializes the
+      // rollback-and-batch path. A concurrent exact retry must observe either
+      // the committed batch marker or the state immediately before it.
+      if (!await lockNotificationRecipientAndDedupe(
+        userId,
+        notificationData.dedupeKey,
+        txQuery,
+      )) {
+        return { kind: 'recipient_missing' as const };
+      }
+
+      const replay = await resolveNotificationReplay(
+        notificationData.dedupeKey,
+        userId,
+        category,
+        notificationData.objectRef,
+        txQuery,
+      );
+      if (replay.kind === 'match') {
+        return { kind: 'accepted' as const, notification: replay.notification };
+      }
+      if (replay.kind === 'conflict') {
+        return { kind: 'dedupe_conflict' as const };
+      }
+
       // Find AND lock the most recent notification atomically
       const lockedResult = await txQuery<Notification>(
-        `SELECT id, title, body, metadata FROM notifications
+        `SELECT * FROM notifications
          WHERE user_id = $1 AND category = $2
            AND created_at > NOW() - INTERVAL '1 hour'
          ORDER BY created_at DESC LIMIT 1
@@ -1317,29 +1510,45 @@ async function batchNotification(
       );
 
       if (lockedResult.rows.length === 0) {
-        return null;
+        return { kind: 'missing_target' as const };
       }
 
       const existingNotification = lockedResult.rows[0];
 
       // Update existing notification metadata to include batched item
-      const existingMetadata = existingNotification.metadata || {};
-      const batchedItems = (existingMetadata.batched_items as Array<{
-        title: string;
-        body: string;
-        deepLink: string;
-        taskId?: string | null;
-        timestamp: string;
-      }>) || [];
+      const existingMetadata = existingNotification.metadata
+        && typeof existingNotification.metadata === 'object'
+        && !Array.isArray(existingNotification.metadata)
+        ? existingNotification.metadata
+        : {};
+      const storedBatchedItems = Array.isArray(existingMetadata.batched_items)
+        ? existingMetadata.batched_items.filter((item): item is Record<string, unknown> => (
+          Boolean(item) && typeof item === 'object' && !Array.isArray(item)
+        )).map((item) => ({ ...item }))
+        : [];
+      const storedEvent = storedBatchedItems.find(
+        (item) => item.dedupe_key === notificationData.dedupeKey,
+      );
+      if (storedEvent) {
+        return storedEvent.object_type === notificationData.objectRef.type
+          && storedEvent.object_id === notificationData.objectRef.id
+          ? { kind: 'accepted' as const, notification: existingNotification }
+          : { kind: 'dedupe_conflict' as const };
+      }
 
       // Add current notification to batched items
-      batchedItems.push({
+      const batchedItems = [...storedBatchedItems, {
+        dedupe_key: notificationData.dedupeKey,
+        object_type: notificationData.objectRef.type,
+        object_id: notificationData.objectRef.id,
         title: notificationData.title,
         body: notificationData.body,
         deepLink: notificationData.deepLink,
         taskId: notificationData.taskId || undefined,
+        metadata: notificationData.metadata || {},
+        priority: notificationData.priority,
         timestamp: new Date().toISOString(),
-      });
+      }];
 
       // Update notification with batched items
       const updatedMetadata = {
@@ -1354,21 +1563,52 @@ async function batchNotification(
       // batchedItems.length is the correct total. The previous code added +1
       // again, inflating the count by 1. Similarly, "Plus N more" must be
       // length-1 because the first item is represented by the base notification.
-      const baseTitle = existingNotification.title.replace(/ \(\d+ new\)$/, '');
+      const baseTitle = existingNotification.title.replace(/ [(]\d+ new[)]$/, '');
       const baseBody = existingNotification.body.replace(/\n\nPlus \d+ more notification.*$/s, '');
       const updatedTitle = `${baseTitle} (${batchedItems.length} new)`;
       const updatedBody = `${baseBody}\n\nPlus ${batchedItems.length - 1} more ${category} notification(s)`;
 
-      return txQuery<Notification>(
+      const updated = await txQuery<Notification>(
         `UPDATE notifications
          SET title = $1, body = $2, metadata = $3::JSONB, updated_at = NOW()
          WHERE id = $4
+           AND NOT EXISTS (
+             SELECT 1
+             FROM jsonb_array_elements(
+               CASE
+                 WHEN jsonb_typeof(metadata->'batched_items') = 'array'
+                   THEN metadata->'batched_items'
+                 ELSE '[]'::JSONB
+               END
+             ) AS batched_item
+             WHERE batched_item->>'dedupe_key' = $5
+           )
          RETURNING *`,
-        [updatedTitle, updatedBody, JSON.stringify(updatedMetadata), existingNotification.id]
+        [
+          updatedTitle,
+          updatedBody,
+          JSON.stringify(updatedMetadata),
+          existingNotification.id,
+          notificationData.dedupeKey,
+        ],
       );
+      if (updated.rows.length > 0) {
+        return { kind: 'accepted' as const, notification: updated.rows[0] };
+      }
+
+      const updateReplay = await resolveNotificationReplay(
+        notificationData.dedupeKey,
+        userId,
+        category,
+        notificationData.objectRef,
+        txQuery,
+      );
+      return updateReplay.kind === 'match'
+        ? { kind: 'accepted' as const, notification: updateReplay.notification }
+        : { kind: 'dedupe_conflict' as const };
     });
 
-    if (updateResult === null) {
+    if (updateResult.kind === 'recipient_missing' || updateResult.kind === 'missing_target') {
       // No recent notification found to batch with (detected inside transaction)
       return {
         success: false,
@@ -1378,10 +1618,19 @@ async function batchNotification(
         },
       };
     }
+    if (updateResult.kind === 'dedupe_conflict') {
+      return {
+        success: false,
+        error: {
+          code: 'DEDUPE_CONFLICT',
+          message: 'Notification deduplication key conflicts with a different batched event identity',
+        },
+      };
+    }
 
     return {
       success: true,
-      data: updateResult.rows[0],
+      data: updateResult.notification,
     };
   } catch (error) {
     return {
@@ -1404,7 +1653,8 @@ async function batchNotification(
 async function findGroupableNotification(
   userId: string,
   category: NotificationCategory,
-  taskId?: string | null
+  taskId?: string | null,
+  query: QueryFn = db.query,
 ): Promise<ServiceResult<{ groupId: string; groupPosition: number } | null>> {
   try {
     // Find notifications of the same category within the last 5 minutes
@@ -1428,7 +1678,7 @@ async function findGroupableNotification(
          LIMIT 1`;
     
     const params = taskId ? [userId, category, taskId] : [userId, category];
-    const groupResult = await db.query<{ group_id: string; max_position: number; group_size: string }>(
+    const groupResult = await query<{ group_id: string; max_position: number; group_size: string }>(
       groupQuery,
       params
     );
@@ -1485,13 +1735,14 @@ async function queueNotificationChannels(
   availableAt: Date,
   deferredForQuietHours: boolean,
   deferredForFocus: boolean,
-): Promise<void> {
+  query: QueryFn = db.query,
+): Promise<Notification> {
   const initialExternalState = deferredForFocus
     ? 'deferred_focus'
     : deferredForQuietHours
       ? 'deferred_quiet_hours'
       : 'pending';
-  await db.query(
+  await query(
     `INSERT INTO notification_deliveries (
        notification_id, channel, state, max_attempts, available_at,
        provider_accepted_at, delivered_at
@@ -1507,27 +1758,41 @@ async function queueNotificationChannels(
   );
 
   const externalChannels = channels.filter((channel) => channel !== 'in_app');
-  const queuePromises = externalChannels.map((channel) => {
-    if (channel === 'email') return queueEmailNotification(notification, availableAt);
-    if (channel === 'push') return queuePushNotification(notification, availableAt);
-    return queueSMSNotification(notification, availableAt);
-  });
-  const results = await Promise.allSettled(queuePromises);
   const failedChannels: NotificationChannel[] = [];
-  results.forEach((result, index) => {
-    if (result.status === 'rejected') {
-      const channel = externalChannels[index];
+  // One PostgreSQL transaction owns these writes. Run channel writers in a
+  // deterministic sequence rather than issuing concurrent commands on one client.
+  for (const channel of externalChannels) {
+    const savepoint = `notification_channel_${channel}`;
+    await query(`SAVEPOINT ${savepoint}`);
+    try {
+      if (channel === 'email') await queueEmailNotification(notification, availableAt, query);
+      else if (channel === 'push') await queuePushNotification(notification, availableAt, query);
+      else await queueSMSNotification(notification, availableAt, query);
+      await query(`RELEASE SAVEPOINT ${savepoint}`);
+    } catch (error) {
+      // A PostgreSQL statement error aborts work back to the nearest savepoint.
+      // Roll back that channel before recording its durable retry intent; if
+      // savepoint recovery itself fails, propagate and roll back acceptance.
+      try {
+        await query(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+        await query(`RELEASE SAVEPOINT ${savepoint}`);
+      } catch (savepointError) {
+        throw new AggregateError(
+          [error, savepointError],
+          `Notification channel ${channel} savepoint recovery failed`,
+        );
+      }
       failedChannels.push(channel);
       log.error({
-        err: result.reason instanceof Error ? result.reason.message : String(result.reason),
+        err: error instanceof Error ? error.message : String(error),
         notificationId: notification.id,
         channel,
       }, 'Failed to queue notification channel; persisted for bounded recovery');
     }
-  });
+  }
 
   for (const channel of failedChannels) {
-    await db.query(
+    await query(
       `UPDATE notification_deliveries
        SET state = 'retry_pending',
            attempt_count = LEAST(attempt_count + 1, max_attempts),
@@ -1551,16 +1816,22 @@ async function queueNotificationChannels(
         ? 'queued'
         : 'delivered';
 
-  await db.query(
+  const canonical = await query<Notification>(
     `UPDATE notifications
      SET sent_at = CASE WHEN $2::INTEGER > 0 OR $3::BOOLEAN THEN COALESCE(sent_at, NOW()) ELSE sent_at END,
          delivered_at = CASE WHEN $3::BOOLEAN THEN COALESCE(delivered_at, NOW()) ELSE delivered_at END,
          delivery_state = $4,
          delivery_attempts = LEAST(delivery_attempts + $5::INTEGER, 5),
          updated_at = NOW()
-     WHERE id = $1`,
+     WHERE id = $1
+     RETURNING *`,
     [notification.id, queuedCount, hasInApp, aggregateState, failedChannels.length],
   );
+  const persisted = canonical.rows[0];
+  if (!persisted) {
+    throw new Error(`Notification ${notification.id} disappeared before queue-state persistence`);
+  }
+  return persisted;
 }
 
 /**
@@ -1572,9 +1843,14 @@ async function queueNotificationChannels(
  * @param notification Notification to email
  * @returns email_id from email_outbox table
  */
-async function queueEmailNotification(notification: Notification, availableAt: Date): Promise<void> {
+async function queueEmailNotification(
+  notification: Notification,
+  availableAt: Date,
+  transactionQuery?: QueryFn,
+): Promise<void> {
+  const query = transactionQuery ?? db.query;
   // Get user's email address (required for email_outbox)
-  const userResult = await db.query<{ email: string }>(
+  const userResult = await query<{ email: string }>(
     `SELECT email FROM users WHERE id = $1`,
     [notification.user_id]
   );
@@ -1631,10 +1907,11 @@ async function queueEmailNotification(notification: Notification, availableAt: D
   // that share the same email template.
   const idempotencyKey = `email.send_requested:${template}:${userEmail}:${notification.id}:1`;
   
-  // Create email_outbox row + outbox_event in same transaction
-  await db.transaction(async (query) => {
+  // Create email_outbox row + outbox_event in the caller's transaction when
+  // notification acceptance is still pending; retries open their own one.
+  const writeEmailOutbox = async (writeQuery: QueryFn): Promise<void> => {
     // Create email_outbox row (status='pending')
-    const emailResult = await query<{ id: string }>(
+    const emailResult = await writeQuery<{ id: string }>(
       `INSERT INTO email_outbox (
         user_id, to_email, template, params_json, priority, status, idempotency_key,
         notification_id, available_at
@@ -1658,13 +1935,13 @@ async function queueEmailNotification(notification: Notification, availableAt: D
     
     // Write outbox_event (email.send_requested) in same transaction
     // Check for duplicate (idempotency key must be unique)
-    const existingOutbox = await query(
+    const existingOutbox = await writeQuery(
       `SELECT id FROM outbox_events WHERE idempotency_key = $1`,
       [idempotencyKey]
     );
     
     if (existingOutbox.rows.length === 0) {
-      await query(
+      await writeQuery(
         `INSERT INTO outbox_events (
           event_type, aggregate_type, aggregate_id, event_version,
           idempotency_key, payload, queue_name, status, available_at
@@ -1688,8 +1965,9 @@ async function queueEmailNotification(notification: Notification, availableAt: D
       );
     }
     
-    // Transaction commits automatically
-  });
+  };
+  if (transactionQuery) await writeEmailOutbox(transactionQuery);
+  else await db.transaction(writeEmailOutbox);
   
   // Email queued successfully (will be processed by email worker)
   log.info({ notificationId: notification.id, userId: notification.user_id, template, channel: 'email' }, 'Email notification queued');
@@ -1703,7 +1981,11 @@ async function queueEmailNotification(notification: Notification, availableAt: D
  *
  * @param notification Notification to push
  */
-async function queuePushNotification(notification: Notification, availableAt: Date): Promise<void> {
+async function queuePushNotification(
+  notification: Notification,
+  availableAt: Date,
+  query: QueryFn = db.query,
+): Promise<void> {
   // Build data payload from notification metadata
   const data: Record<string, string> = {
     notificationId: notification.id,
@@ -1728,7 +2010,7 @@ async function queuePushNotification(notification: Notification, availableAt: Da
   // A single atomic INSERT eliminates the racy SELECT+INSERT pattern: two concurrent
   // callers with the same idempotency_key will both attempt the INSERT but only one
   // will produce a row; the other gets rowCount === 0 and returns early.
-  const insertResult = await db.query(
+  const insertResult = await query(
     `INSERT INTO outbox_events (
       event_type, aggregate_type, aggregate_id, event_version,
       idempotency_key, payload, queue_name, status, available_at
@@ -1769,9 +2051,14 @@ async function queuePushNotification(notification: Notification, availableAt: Da
  *
  * @param notification Notification to SMS
  */
-async function queueSMSNotification(notification: Notification, availableAt: Date): Promise<void> {
+async function queueSMSNotification(
+  notification: Notification,
+  availableAt: Date,
+  transactionQuery?: QueryFn,
+): Promise<void> {
+  const query = transactionQuery ?? db.query;
   // Get user's phone number (required for sms_outbox)
-  const userResult = await db.query<{ phone: string }>(
+  const userResult = await query<{ phone: string }>(
     `SELECT phone FROM users WHERE id = $1`,
     [notification.user_id]
   );
@@ -1794,10 +2081,11 @@ async function queueSMSNotification(notification: Notification, availableAt: Dat
   // retries of this notification still converge on the same key.
   const idempotencyKey = `sms.send_requested:${notification.category}:${userPhone}:${notification.id}:1`;
 
-  // Create sms_outbox row + outbox_event in same transaction
-  await db.transaction(async (query) => {
+  // Create sms_outbox row + outbox_event in the caller's transaction when
+  // notification acceptance is still pending; retries open their own one.
+  const writeSmsOutbox = async (writeQuery: QueryFn): Promise<void> => {
     // Create sms_outbox row (status='pending')
-    const smsResult = await query<{ id: string }>(
+    const smsResult = await writeQuery<{ id: string }>(
       `INSERT INTO sms_outbox (
         user_id, to_phone, body, priority, status, idempotency_key,
         notification_id, available_at
@@ -1820,13 +2108,13 @@ async function queueSMSNotification(notification: Notification, availableAt: Dat
 
     // Write outbox_event (sms.send_requested) in same transaction
     // Check for duplicate (idempotency key must be unique)
-    const existingOutbox = await query(
+    const existingOutbox = await writeQuery(
       `SELECT id FROM outbox_events WHERE idempotency_key = $1`,
       [idempotencyKey]
     );
 
     if (existingOutbox.rows.length === 0) {
-      await query(
+      await writeQuery(
         `INSERT INTO outbox_events (
           event_type, aggregate_type, aggregate_id, event_version,
           idempotency_key, payload, queue_name, status, available_at
@@ -1850,8 +2138,9 @@ async function queueSMSNotification(notification: Notification, availableAt: Dat
       );
     }
 
-    // Transaction commits automatically
-  });
+  };
+  if (transactionQuery) await writeSmsOutbox(transactionQuery);
+  else await db.transaction(writeSmsOutbox);
 
   // SMS queued successfully (will be processed by SMS worker)
   log.info({ notificationId: notification.id, userId: notification.user_id, phone: userPhone.slice(0, 4) + '****', channel: 'sms' }, 'SMS notification queued');

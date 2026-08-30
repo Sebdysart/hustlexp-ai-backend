@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { db, type Database, type QueryFn } from '../db.js';
 import { commandHash, type HoldContext, type ProviderInterestContext, UniversalV1WorkOrderError, type WorkOrderContext } from './UniversalV1WorkOrderContracts.js';
-import type { UniversalV1FakeFinancialApplicationService } from './payment/UniversalV1FinancialApplicationService.js';
 
 export interface InterestResult { interest_application_id:string; eligibility_decision_id:string; eligibility_version:number; replayed:boolean }
 export interface HoldResult { conditional_hold_id:string; expires_at:string; replayed:boolean }
@@ -12,7 +11,8 @@ interface HoldReplay extends HoldResult { request_hash:string }
 interface InsertedHold { id:string; expires_at:string|Date }
 interface InsertedWorkOrder { id:string; materialized_at:string|Date }
 interface AssignmentRow { worker_id:string|null }
-interface WitnessRow { request_sha256:string; work_order_id:string|null; financial_security_event_id:string|null }
+interface WitnessRow { idempotency_key:string; request_sha256:string; work_order_id:string|null; financial_security_event_id:string|null }
+export type WorkOrderMaterializationPhase = {completed:true;result:WorkOrderResult}|{completed:false;context:WorkOrderContext;idempotencyKey:string;requestSha256:string;occurredAt:string};
 
 export function transactionBoundDatabase(query: QueryFn, outer: Database): Database {
   return { ...outer, query, readQuery:query, transaction:fn=>fn(query), serializableTransaction:fn=>fn(query) };
@@ -66,16 +66,21 @@ export class PostgresUniversalV1WorkOrderRepository {
       return {conditional_hold_id:inserted.rows[0].id,expires_at:new Date(inserted.rows[0].expires_at).toISOString(),replayed:false};
     });
   }
-  async materialize(c:WorkOrderContext,key:string,actor:string,financeFor:(database:Database)=>UniversalV1FakeFinancialApplicationService):Promise<WorkOrderResult>{
+  async prepareMaterialization(c:WorkOrderContext,key:string,actor:string):Promise<WorkOrderMaterializationPhase>{
     return this.database.serializableTransaction(async q=>{
       await q('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`work-order:${c.task_id}`]);
       await q('SELECT public.lock_universal_v1_estimate_authority($1,$2,$3,$4,$5)',[c.task_draft_id,c.provider_user_id,c.provider_organization_id,c.trade_credential_id,actor]);
       const authoritativeHash=commandHash({actor,hold:c.conditional_hold_id,task:c.task_id,draft:c.task_draft_id,estimate:c.provider_estimate_submission_id,route:c.routing_decision_id,scope:c.scope_version_id,provider:c.provider_user_id,organization:c.provider_organization_id,eligibility:c.eligibility_decision_id,eligibility_version:c.eligibility_version,amount:Number(c.customer_total_cents),currency:c.currency});
-      const prior=await q<WitnessRow>('SELECT request.request_sha256,work_order.id work_order_id,work_order.financial_security_event_id FROM task_work_order_command_requests request LEFT JOIN task_work_orders work_order ON work_order.idempotency_key=request.idempotency_key WHERE request.idempotency_key=$1 FOR UPDATE OF request',[key]);
+      const prior=await q<WitnessRow>(`SELECT request.idempotency_key,request.request_sha256,
+        work_order.id work_order_id,work_order.financial_security_event_id
+        FROM task_work_order_command_requests request
+        LEFT JOIN task_work_orders work_order ON work_order.idempotency_key=request.idempotency_key
+        WHERE request.idempotency_key=$1 OR request.task_id=$2 OR request.conditional_hold_id=$3
+        ORDER BY (request.idempotency_key=$1) DESC
+        LIMIT 1 FOR UPDATE OF request`,[key,c.task_id,c.conditional_hold_id]);
       if(prior.rows[0]) {
-        if(prior.rows[0].request_sha256!==authoritativeHash) throw new UniversalV1WorkOrderError('WORK_ORDER_IDEMPOTENCY_CONFLICT','Work Order command context changed.');
-        if(prior.rows[0].work_order_id&&prior.rows[0].financial_security_event_id)return {work_order_id:prior.rows[0].work_order_id,financial_security_event_id:prior.rows[0].financial_security_event_id,replayed:true,hard_assignment_created:false,payment_creation_performed:false};
-        throw new UniversalV1WorkOrderError('WORK_ORDER_MATERIALIZATION_FAILED','Incomplete Work Order witness cannot be replayed.');
+        if(prior.rows[0].idempotency_key!==key||prior.rows[0].request_sha256!==authoritativeHash) throw new UniversalV1WorkOrderError('WORK_ORDER_IDEMPOTENCY_CONFLICT','Work Order command context changed.');
+        if(prior.rows[0].work_order_id&&prior.rows[0].financial_security_event_id)return {completed:true,result:{work_order_id:prior.rows[0].work_order_id,financial_security_event_id:prior.rows[0].financial_security_event_id,replayed:true,hard_assignment_created:false,payment_creation_performed:false}};
       }
       const locked=await q<WorkOrderContext>(`SELECT t.id task_id,d.id task_draft_id,s.id scope_version_id,s.version scope_version,r.id routing_decision_id,
         p.provider_user_id,p.provider_organization_id,e.provider_class,e.trade_credential_id,e.id predecessor_eligibility_id,e.decision_version predecessor_eligibility_version,e.valid_until predecessor_valid_until,
@@ -98,13 +103,78 @@ export class PostgresUniversalV1WorkOrderRepository {
       if(!live)throw new UniversalV1WorkOrderError('WORK_ORDER_AUTHORITY_REVOKED','Current Work Order authority is unavailable.');
       const liveHash=commandHash({actor,hold:live.conditional_hold_id,task:live.task_id,draft:live.task_draft_id,estimate:live.provider_estimate_submission_id,route:live.routing_decision_id,scope:live.scope_version_id,provider:live.provider_user_id,organization:live.provider_organization_id,eligibility:live.eligibility_decision_id,eligibility_version:live.eligibility_version,amount:Number(live.customer_total_cents),currency:live.currency});
       if(liveHash!==authoritativeHash)throw new UniversalV1WorkOrderError('WORK_ORDER_IDEMPOTENCY_CONFLICT','Locked Work Order context changed.');
-      await q(`INSERT INTO task_work_order_command_requests(idempotency_key,request_sha256,actor_user_id,conditional_hold_id,task_id,task_draft_id,provider_estimate_submission_id,routing_decision_id,scope_version_id,provider_user_id,provider_organization_id,eligibility_decision_id,eligibility_version,amount_cents,currency) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,[key,liveHash,actor,live.conditional_hold_id,live.task_id,live.task_draft_id,live.provider_estimate_submission_id,live.routing_decision_id,live.scope_version_id,live.provider_user_id,live.provider_organization_id,live.eligibility_decision_id,live.eligibility_version,live.customer_total_cents,live.currency]);
-      await q("SELECT set_config('hustlexp.work_order_command_sha256',$1,true)",[liveHash]);
-      const f=financeFor(transactionBoundDatabase(q,this.database)); const occurred=new Date(live.hold_reserved_at).toISOString(); const base={providerKind:'FAKE' as const,providerExpectedVersion:0,taskDraftId:live.task_draft_id,taskId:live.task_id,eligibilityDecisionId:live.eligibility_decision_id,scopeVersionId:live.scope_version_id,recordedBy:actor,scenario:'SUCCESS' as const};
-      const prep=await f.executeFinancialEvent({...base,operationKind:'PREPARE_PAYMENT_METHOD',operationId:deterministicUuid(key,'prepare'),idempotencyKey:`${key}:prep`,lifecycleExpectedVersion:0,occurredAt:occurred,customerId:actor});
-      const auth=await f.executeFinancialEvent({...base,operationKind:'AUTHORIZE',operationId:deterministicUuid(key,'authorize'),idempotencyKey:`${key}:auth`,lifecycleExpectedVersion:1,occurredAt:new Date(Date.parse(occurred)+1).toISOString(),predecessorEventId:prep.id,relatedOperationId:prep.operationId,amountCents:Number(live.customer_total_cents),currency:live.currency.toLowerCase(),paymentMethodReference:prep.externalReference});
-      const secured=await f.executeFinancialEvent({...base,operationKind:'SECURE',operationId:deterministicUuid(key,'secure'),idempotencyKey:`${key}:secure`,lifecycleExpectedVersion:2,occurredAt:new Date(Date.parse(occurred)+2).toISOString(),predecessorEventId:auth.id,relatedOperationId:auth.operationId,amountCents:Number(live.customer_total_cents),currency:live.currency.toLowerCase(),authorizationOperationId:auth.operationId});
-      const w=await q<InsertedWorkOrder>(`INSERT INTO task_work_orders(task_draft_id,task_id,scope_version_id,routing_decision_id,provider_estimate_submission_id,interest_application_id,eligibility_decision_id,conditional_hold_id,financial_security_event_id,provider_user_id,provider_organization_id,materialization_version,idempotency_key,materialized_by,execution_contract_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,1,$12,$13,1) RETURNING id,materialized_at`,[live.task_draft_id,live.task_id,live.scope_version_id,live.routing_decision_id,live.provider_estimate_submission_id,live.interest_application_id,live.eligibility_decision_id,live.conditional_hold_id,secured.id,live.provider_user_id,live.provider_organization_id,key,actor]);
+      if(!prior.rows[0])await q(`INSERT INTO task_work_order_command_requests(idempotency_key,request_sha256,actor_user_id,conditional_hold_id,task_id,task_draft_id,provider_estimate_submission_id,routing_decision_id,scope_version_id,provider_user_id,provider_organization_id,eligibility_decision_id,eligibility_version,amount_cents,currency) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,[key,liveHash,actor,live.conditional_hold_id,live.task_id,live.task_draft_id,live.provider_estimate_submission_id,live.routing_decision_id,live.scope_version_id,live.provider_user_id,live.provider_organization_id,live.eligibility_decision_id,live.eligibility_version,live.customer_total_cents,live.currency]);
+      return {completed:false,context:live,idempotencyKey:key,requestSha256:liveHash,occurredAt:new Date(live.hold_reserved_at).toISOString()};
+    });
+  }
+  async finalizeMaterialization(phase:Extract<WorkOrderMaterializationPhase,{completed:false}>,securedEventId:string,actor:string):Promise<WorkOrderResult>{
+    return this.database.serializableTransaction(async q=>{
+      const live=phase.context,key=phase.idempotencyKey;
+      await q('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`work-order:${live.task_id}`]);
+      await q('SELECT public.lock_universal_v1_estimate_authority($1,$2,$3,$4,$5)',[live.task_draft_id,live.provider_user_id,live.provider_organization_id,live.trade_credential_id,actor]);
+      const witness=await q<WitnessRow>('SELECT request.idempotency_key,request.request_sha256,work_order.id work_order_id,work_order.financial_security_event_id FROM task_work_order_command_requests request LEFT JOIN task_work_orders work_order ON work_order.idempotency_key=request.idempotency_key WHERE request.idempotency_key=$1 FOR UPDATE OF request',[key]);
+      if(witness.rows[0]?.work_order_id&&witness.rows[0].financial_security_event_id)return {work_order_id:witness.rows[0].work_order_id,financial_security_event_id:witness.rows[0].financial_security_event_id,replayed:true,hard_assignment_created:false,payment_creation_performed:false};
+      if(witness.rows[0]?.request_sha256!==phase.requestSha256)throw new UniversalV1WorkOrderError('WORK_ORDER_IDEMPOTENCY_CONFLICT','Work Order witness changed.');
+      const authority=await q<WorkOrderContext>(`SELECT t.id task_id,d.id task_draft_id,s.id scope_version_id,s.version scope_version,r.id routing_decision_id,
+        p.provider_user_id,p.provider_organization_id,e.provider_class,e.trade_credential_id,e.id predecessor_eligibility_id,e.decision_version predecessor_eligibility_version,e.valid_until predecessor_valid_until,
+        t.poster_id poster_user_id,a.id interest_application_id,e.id eligibility_decision_id,e.decision_version eligibility_version,e.valid_until eligibility_valid_until,
+        h.id conditional_hold_id,h.reserved_at hold_reserved_at,h.expires_at hold_expires_at,m.provider_estimate_submission_id,s.customer_total_cents,s.currency
+        FROM tasks t JOIN task_drafts d ON d.task_id=t.id JOIN task_scope_versions s ON s.id=t.active_scope_version_id
+        JOIN task_routing_decisions r ON r.id=d.active_routing_decision_id JOIN task_estimate_acceptance_materializations m ON m.task_id=t.id AND m.scope_version_id=s.id
+        JOIN provider_estimate_submissions p ON p.id=m.provider_estimate_submission_id JOIN task_provider_eligibility_decisions e ON e.id=$2
+        JOIN task_applications a ON a.id=e.interest_application_id JOIN task_reservations h ON h.id=$3 AND h.eligibility_decision_id=e.id
+        JOIN users poster ON poster.id=t.poster_id JOIN users provider ON provider.id=e.provider_user_id
+        WHERE t.id=$1 AND t.poster_id=$4 AND t.universal_contract_version=1 AND t.automation_classification='CONTROLLED_TEST' AND t.worker_id IS NULL
+        AND poster.account_status='ACTIVE' AND poster.is_minor IS FALSE AND COALESCE(poster.is_banned,false)=false
+        AND provider.account_status='ACTIVE' AND provider.is_minor IS FALSE AND COALESCE(provider.is_banned,false)=false
+        AND r.outcome='FULFILLMENT_CANDIDATE' AND e.task_eligible AND e.processor_payment_eligible=false AND e.payout_funding_eligible=false
+        AND e.valid_until>clock_timestamp() AND a.status='pending' AND h.status='ACTIVE' AND h.expires_at>clock_timestamp()
+        AND universal_v1_invited_provider_authority_is_current(e.provider_user_id,e.provider_organization_id,e.provider_class,e.trade_credential_id,t.category,t.region_code)
+        AND NOT EXISTS(SELECT 1 FROM task_provider_eligibility_decisions n WHERE n.task_draft_id=e.task_draft_id AND n.provider_user_id=e.provider_user_id AND n.provider_organization_id IS NOT DISTINCT FROM e.provider_organization_id AND n.decision_version>e.decision_version)
+        FOR UPDATE OF t,d,s,r,m,p,e,a,h,poster,provider`,[live.task_id,live.eligibility_decision_id,live.conditional_hold_id,actor]);
+      const current=authority.rows[0];
+      if(!current)throw new UniversalV1WorkOrderError('WORK_ORDER_AUTHORITY_REVOKED','Current Work Order authority is unavailable.');
+      const currentHash=commandHash({actor,hold:current.conditional_hold_id,task:current.task_id,draft:current.task_draft_id,estimate:current.provider_estimate_submission_id,route:current.routing_decision_id,scope:current.scope_version_id,provider:current.provider_user_id,organization:current.provider_organization_id,eligibility:current.eligibility_decision_id,eligibility_version:current.eligibility_version,amount:Number(current.customer_total_cents),currency:current.currency});
+      if(currentHash!==phase.requestSha256)throw new UniversalV1WorkOrderError('WORK_ORDER_AUTHORITY_REVOKED','Work Order authority changed after financial dispatch.');
+      const secured=await q<{ok:boolean}>(`SELECT EXISTS(
+        SELECT 1
+        FROM public.universal_v1_fake_financial_lifecycle_bridges bridge
+        JOIN task_financial_security_events event
+          ON event.id=bridge.task_financial_security_event_id
+        JOIN financial_provider_command_journal command
+          ON command.command_id=bridge.command_id
+        JOIN financial_provider_command_outcome_facts outcome
+          ON outcome.outcome_fact_id=bridge.outcome_fact_id
+        WHERE bridge.task_financial_security_event_id=$1
+          AND bridge.fake_operation_id=$2::uuid
+          AND bridge.fake_operation_kind='SECURE'
+          AND bridge.lifecycle_event_kind='SECURED'
+          AND bridge.lifecycle_status='SUCCEEDED'
+          AND command.operation_id=bridge.fake_operation_id
+          AND command.operation_kind='SECURE'
+          AND command.provider_kind='FAKE'
+          AND command.provider_expected_version=0
+          AND outcome.command_id=command.command_id
+          AND outcome.outcome_kind='OUTCOME_OBSERVED'
+          AND outcome.retryable=FALSE
+          AND event.id=$1
+          AND event.operation_id=bridge.fake_operation_id::text
+          AND event.event_kind='SECURED'
+          AND event.status='SUCCEEDED'
+          AND event.provider_kind='FAKE'
+          AND event.expected_version=2
+          AND event.task_draft_id=$3
+          AND event.task_id=$4
+          AND event.eligibility_decision_id=$5
+          AND event.scope_version_id=$6
+          AND event.amount_cents=$7
+          AND event.currency=$8
+          AND outcome.provider_state=(event.evidence->>'providerState')
+          AND outcome.provider_result_version=(event.evidence->>'providerOperationVersion')::INTEGER
+      ) AS ok`,[securedEventId,deterministicUuid(key,'secure'),live.task_draft_id,live.task_id,live.eligibility_decision_id,live.scope_version_id,live.customer_total_cents,live.currency]);
+      if(!secured.rows[0]?.ok)throw new UniversalV1WorkOrderError('WORK_ORDER_MATERIALIZATION_FAILED','Exact secured event is unavailable.');
+      await q("SELECT set_config('hustlexp.work_order_command_sha256',$1,true)",[phase.requestSha256]);
+      const w=await q<InsertedWorkOrder>(`INSERT INTO task_work_orders(task_draft_id,task_id,scope_version_id,routing_decision_id,provider_estimate_submission_id,interest_application_id,eligibility_decision_id,conditional_hold_id,financial_security_event_id,provider_user_id,provider_organization_id,materialization_version,idempotency_key,materialized_by,execution_contract_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,1,$12,$13,1) RETURNING id,materialized_at`,[live.task_draft_id,live.task_id,live.scope_version_id,live.routing_decision_id,live.provider_estimate_submission_id,live.interest_application_id,live.eligibility_decision_id,live.conditional_hold_id,securedEventId,live.provider_user_id,live.provider_organization_id,key,actor]);
       const executionKey=`${key}:execution:materialized`;
       await q(`INSERT INTO task_work_order_execution_facts(
         work_order_id,task_id,scope_version_id,execution_version,supersedes_fact_id,
@@ -124,7 +194,7 @@ export class PostgresUniversalV1WorkOrderRepository {
       if(closed.rowCount!==1)throw new UniversalV1WorkOrderError('WORK_ORDER_AUTHORITY_REVOKED','Provider interest was not closed exactly once.');
       const check=await q<AssignmentRow>('SELECT worker_id FROM tasks WHERE id=$1',[live.task_id]);
       if(check.rows[0]?.worker_id)throw new UniversalV1WorkOrderError('WORK_ORDER_HARD_ASSIGNMENT_FORBIDDEN','Universal V1 Work Orders cannot create hard assignment.');
-      return {work_order_id:w.rows[0].id,financial_security_event_id:secured.id,replayed:false,hard_assignment_created:false,payment_creation_performed:false};
+      return {work_order_id:w.rows[0].id,financial_security_event_id:securedEventId,replayed:false,hard_assignment_created:false,payment_creation_performed:false};
     });
   }
 }

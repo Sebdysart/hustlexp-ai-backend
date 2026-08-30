@@ -148,7 +148,7 @@ describe('payment underwriting authority v7', () => {
       name: manifest.stack.migration.name,
       fileName: '20260823_quote_payment_recovery.sql',
     });
-    expect(REQUIRED_MIGRATION_FILES).toHaveLength(121);
+    expect(REQUIRED_MIGRATION_FILES).toHaveLength(128);
     expect(REQUIRED_MIGRATION_FILES.slice(manifest.stack.migration.requiredChainLength))
       .toEqual([
         {
@@ -219,6 +219,34 @@ describe('payment underwriting authority v7', () => {
           name: '20260913_universal_v1_completion_delivery_receipt',
           fileName: '20260913_universal_v1_completion_delivery_receipt.sql',
         },
+        {
+          name: '20260914_notification_provider_in_flight',
+          fileName: '20260914_notification_provider_in_flight.sql',
+        },
+        {
+          name: '20260915_ai_spend_attempt_ledger',
+          fileName: '20260915_ai_spend_attempt_ledger.sql',
+        },
+      {
+        name: '20260916_provider_event_inbox_v1',
+        fileName: '20260916_provider_event_inbox_v1.sql',
+      },
+      {
+        name: '20260917_financial_provider_command_journal_v1',
+        fileName: '20260917_financial_provider_command_journal_v1.sql',
+      },
+      {
+        name: '20260918_universal_v1_prepared_financial_command_v1',
+        fileName: '20260918_universal_v1_prepared_financial_command_v1.sql',
+      },
+      {
+        name: '20260919_provider_event_processing_v1',
+        fileName: '20260919_provider_event_processing_v1.sql',
+      },
+      {
+        name: '20260920_financial_provider_command_recovery_v1',
+        fileName: '20260920_financial_provider_command_recovery_v1.sql',
+      },
       ]);
     expect(existsSync(manifest.stack.migration.file)).toBe(true);
     expect(existsSync(manifest.stack.migration.registry)).toBe(true);

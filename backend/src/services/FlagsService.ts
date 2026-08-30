@@ -6,20 +6,17 @@
  * @see backend/database/constitutional-schema.sql
  */
 
-import { Redis } from '@upstash/redis';
 import { db } from '../db.js';
-import { config } from '../config.js';
+import { getRedisCommandClient, type RedisCommandPort } from '../redis/RedisCommandPort.js';
 
 
 // ============================================================================
 // REDIS CACHE
 // ============================================================================
 
-let flagsRedis: Redis | null = null;
-function getRedis(): Redis | null {
-  if (!flagsRedis && config.redis.restUrl && config.redis.restToken) {
-    flagsRedis = new Redis({ url: config.redis.restUrl, token: config.redis.restToken });
-  }
+let flagsRedis: RedisCommandPort | null = null;
+function getRedis(): RedisCommandPort | null {
+  if (!flagsRedis) flagsRedis = getRedisCommandClient();
   return flagsRedis;
 }
 
@@ -85,7 +82,7 @@ export const FlagsService = {
     // Try cache first
     if (redis) {
       try {
-        const cached = await redis.get<string>(cacheKey);
+        const cached = await redis.get(cacheKey);
         if (cached) {
           const flag: FeatureFlag = JSON.parse(cached);
           return evaluateFlag(flag, userId);
@@ -129,7 +126,7 @@ export const FlagsService = {
     // Try cache first
     if (redis) {
       try {
-        const cached = await redis.get<string>(cacheKey);
+        const cached = await redis.get(cacheKey);
         if (cached) {
           return JSON.parse(cached);
         }

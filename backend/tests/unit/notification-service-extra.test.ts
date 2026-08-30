@@ -2,7 +2,7 @@
  * NotificationService Extra Unit Tests
  *
  * Covers paths NOT already tested in notification-service.test.ts:
- * - createNotification with Redis-based frequency limiting (hourly/daily limits)
+ * - createNotification with PostgreSQL-authoritative frequency limiting
  * - createNotification with in_app channel fallback
  * - createNotification with quiet hours + DND bypass (HIGH priority, bypass categories)
  * - createNotification with worker participant check
@@ -37,29 +37,6 @@ vi.mock('../../src/logger', () => {
   return { logger: { child: childFn, info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() } };
 });
 
-// Redis mock with configurable incr results
-// Use vi.hoisted to ensure mock instances are available before module loading
-const { mockRedisIncr, mockRedisExpire, mockRedisGet } = vi.hoisted(() => ({
-  mockRedisIncr: vi.fn().mockResolvedValue(1),
-  mockRedisExpire: vi.fn().mockResolvedValue(1),
-  mockRedisGet: vi.fn().mockResolvedValue(null),
-}));
-
-vi.mock('@upstash/redis', () => ({
-  Redis: class MockRedis {
-    incr = mockRedisIncr;
-    expire = mockRedisExpire;
-    get = mockRedisGet;
-  },
-}));
-
-vi.mock('../../src/config', () => ({
-  config: {
-    // restUrl and restToken set so Redis gets instantiated (frequency limiting active)
-    redis: { restUrl: 'https://test-redis.upstash.io', restToken: 'test-token' },
-  },
-}));
-
 vi.mock('crypto', () => ({
   randomUUID: vi.fn(() => 'new-group-uuid-5678'),
 }));
@@ -79,6 +56,7 @@ const mockIsInvariantViolation = vi.mocked(isInvariantViolation);
 const USER_ID = 'user-extra-test';
 const NOTIF_ID = 'notif-extra-456';
 const TASK_ID = 'task-extra-789';
+let frequencyCounts = { hourly_count: '0', daily_count: '0' };
 
 function makeNotification(overrides: Record<string, unknown> = {}) {
   return {
@@ -121,6 +99,90 @@ function makePreferences(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function installFrequencyBatchHarness() {
+  let target = makeNotification({
+    category: 'new_matching_task',
+    title: 'Old Task',
+    body: 'Old body',
+    group_id: 'existing-group',
+    group_position: 7,
+    object_type: 'task',
+    object_id: 'existing-task',
+    dedupe_key: 'existing-event',
+    metadata: {},
+  });
+  let updateCount = 0;
+  const updateStatements: string[] = [];
+
+  const query = vi.fn(async (sql: string, params: unknown[] = []) => {
+    if (sql.includes('dedupe_identity_matches')) {
+      const items = Array.isArray(target.metadata?.batched_items)
+        ? target.metadata.batched_items as Array<Record<string, unknown>>
+        : [];
+      const item = items.find((candidate) => candidate.dedupe_key === params[0]);
+      return item
+        ? {
+            rows: [{
+              ...target,
+              dedupe_identity_matches: target.user_id === params[1]
+                && target.category === params[2]
+                && item.object_type === params[3]
+                && item.object_id === params[4],
+            }],
+            rowCount: 1,
+          }
+        : { rows: [], rowCount: 0 };
+    }
+    if (sql.includes('SELECT id FROM users') && sql.includes('FOR UPDATE')) {
+      return { rows: [{ id: USER_ID }], rowCount: 1 };
+    }
+    if (sql.includes('FROM notification_preferences')) {
+      return { rows: [makePreferences()], rowCount: 1 };
+    }
+    if (sql.includes('hourly_count')) {
+      return { rows: [{ hourly_count: '5', daily_count: '10' }], rowCount: 1 };
+    }
+    if (sql.includes('ORDER BY created_at DESC LIMIT 1') && sql.includes('FOR UPDATE')) {
+      return { rows: [target], rowCount: 1 };
+    }
+    if (sql.includes('UPDATE notifications') && sql.includes("batched_item->>'dedupe_key'")) {
+      updateCount += 1;
+      updateStatements.push(sql);
+      target = {
+        ...target,
+        title: String(params[0]),
+        body: String(params[1]),
+        metadata: JSON.parse(String(params[2])) as Record<string, unknown>,
+      };
+      return { rows: [target], rowCount: 1 };
+    }
+    throw new Error(`unexpected batching query: ${sql}`);
+  });
+
+  mockDb.query.mockImplementation(query as never);
+  let transactionTail = Promise.resolve();
+  mockDb.transaction.mockImplementation(async (callback) => {
+    const precedingTransaction = transactionTail;
+    let releaseTransaction!: () => void;
+    transactionTail = new Promise<void>((resolve) => {
+      releaseTransaction = resolve;
+    });
+    await precedingTransaction;
+    try {
+      return await callback(query as never);
+    } finally {
+      releaseTransaction();
+    }
+  });
+
+  return {
+    getTarget: () => target,
+    getUpdateCount: () => updateCount,
+    getUpdateStatements: () => updateStatements,
+    getQueries: () => query.mock.calls.map(([sql]) => String(sql)),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Setup
 // ---------------------------------------------------------------------------
@@ -128,9 +190,41 @@ beforeEach(() => {
   // Use resetAllMocks to also clear mockResolvedValueOnce queues
   // (clearAllMocks only clears call history, not the queued return values)
   vi.resetAllMocks();
-  // Re-setup default mock behaviors after reset
-  mockRedisIncr.mockResolvedValue(1);
-  mockRedisExpire.mockResolvedValue(1);
+  frequencyCounts = { hourly_count: '0', daily_count: '0' };
+  mockDb.transaction.mockImplementation(async (callback) => {
+    let insertedNotification: ReturnType<typeof makeNotification> | undefined;
+    return callback((async (sql: string, params?: unknown[]) => {
+      if (/^(?:SAVEPOINT|ROLLBACK TO SAVEPOINT|RELEASE SAVEPOINT)\b/u.test(sql.trim())) {
+        return { rows: [], rowCount: null };
+      }
+      if (sql.includes('SELECT id FROM users') && sql.includes('FOR UPDATE')) {
+        return { rows: [{ id: USER_ID }], rowCount: 1 };
+      }
+      if (sql.includes('FROM notifications') && sql.includes('hourly_count')) {
+        return { rows: [frequencyCounts], rowCount: 1 };
+      }
+      if (sql.includes('WHERE dedupe_key = $1')) {
+        return { rows: [], rowCount: 0 };
+      }
+      if (sql.includes('UPDATE notifications') && sql.includes('delivery_attempts = LEAST')) {
+        if (!insertedNotification) return { rows: [], rowCount: 0 };
+        return {
+          rows: [{
+            ...insertedNotification,
+            delivery_state: params?.[3],
+            sent_at: Number(params?.[1]) > 0 || params?.[2] === true ? new Date() : insertedNotification.sent_at,
+            delivered_at: params?.[2] === true ? new Date() : insertedNotification.delivered_at,
+          }],
+          rowCount: 1,
+        };
+      }
+      const result = await mockDb.query(sql, params);
+      if (sql.includes('INSERT INTO notifications') && result?.rows?.[0]) {
+        insertedNotification = result.rows[0] as ReturnType<typeof makeNotification>;
+      }
+      return result;
+    }) as never);
+  });
   mockIsInvariantViolation.mockReturnValue(false);
 });
 
@@ -141,14 +235,10 @@ beforeEach(() => {
 describe('NotificationService (extra coverage)', () => {
 
   // =========================================================================
-  // createNotification — frequency limit paths (Redis active)
+  // createNotification — PostgreSQL-authoritative frequency limits
   // =========================================================================
   describe('createNotification — frequency limiting', () => {
     it('returns an authorized explicit replay before exhausted frequency counters are read', async () => {
-      mockRedisGet
-        .mockResolvedValueOnce(5)
-        .mockResolvedValueOnce(20);
-
       const replay = makeNotification({
         category: 'new_matching_task',
         dedupe_key: 'matching-event:replay',
@@ -173,18 +263,14 @@ describe('NotificationService (extra coverage)', () => {
       });
 
       expect(result).toEqual({ success: true, data: replay });
-      expect(mockRedisGet).not.toHaveBeenCalled();
+      expect(mockDb.transaction).not.toHaveBeenCalled();
       expect(mockDb.query).toHaveBeenCalledTimes(2);
-      expect(String(mockDb.query.mock.calls[1]?.[0])).toContain('AND user_id = $2');
+      expect(String(mockDb.query.mock.calls[1]?.[0])).toContain('direct_notification.user_id = $2');
     });
 
     it('returns RATE_LIMIT_EXCEEDED when hourly limit exceeded and no batch target found', async () => {
       // Category 'new_matching_task' has perHour: 5
-      // checkFrequency uses redis.get() — return values >= limit to trigger enforcement.
-      // BUG 8 FIX: frequency is now read-only checked (get) before INSERT, then incremented after.
-      mockRedisGet
-        .mockResolvedValueOnce(5)   // hourly = 5 >= perHour(5) — triggers batch path
-        .mockResolvedValueOnce(10); // daily
+      frequencyCounts = { hourly_count: '5', daily_count: '10' };
 
       mockDb.query
         // getPreferences: no row -> default prefs
@@ -208,11 +294,7 @@ describe('NotificationService (extra coverage)', () => {
     });
 
     it('returns batched notification when hourly limit exceeded and batch target exists', async () => {
-      // checkFrequency uses redis.get(); incrementFrequency uses redis.incr() after INSERT.
-      // BUG 8 FIX: check is now read-only, so use mockRedisGet for the pre-INSERT check.
-      mockRedisGet
-        .mockResolvedValueOnce(5)   // hourly = 5 >= perHour(5) — triggers batch
-        .mockResolvedValueOnce(10); // daily
+      frequencyCounts = { hourly_count: '5', daily_count: '10' };
 
       const existingNotif = makeNotification({ title: 'Old Task', body: 'Old body', metadata: {} });
       const updatedNotif = makeNotification({ title: 'Old Task (2 new)', body: 'Updated body', metadata: { batched_count: 1 } });
@@ -220,17 +302,10 @@ describe('NotificationService (extra coverage)', () => {
       mockDb.query
         // getPreferences
         .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
-        // batchNotification: find recent notification (bare SELECT, before transaction)
-        .mockResolvedValueOnce({ rows: [existingNotif], rowCount: 1 } as never);
-
-      // batchNotification now wraps the SELECT FOR UPDATE + UPDATE in db.transaction().
-      // Mock transaction to call the callback with a txQuery fn that returns the expected results.
-      const txQuery = vi.fn()
         // SELECT ... FOR UPDATE inside transaction
         .mockResolvedValueOnce({ rows: [existingNotif], rowCount: 1 } as never)
         // UPDATE notification inside transaction
         .mockResolvedValueOnce({ rows: [updatedNotif], rowCount: 1 } as never);
-      mockDb.transaction.mockImplementationOnce(async (cb: (q: typeof txQuery) => Promise<unknown>) => cb(txQuery));
 
       const result = await NotificationService.createNotification({
         userId: USER_ID,
@@ -247,12 +322,89 @@ describe('NotificationService (extra coverage)', () => {
       }
     });
 
+    it('returns the same batch state on an exact producer-event replay', async () => {
+      const harness = installFrequencyBatchHarness();
+      const params = {
+        userId: USER_ID,
+        category: 'new_matching_task' as const,
+        title: 'New Task',
+        body: 'New body',
+        deepLink: 'hustlexp://tasks/replayed-task',
+        objectRef: { type: 'task', id: 'replayed-task' },
+        dedupeKey: 'matching-event:batched-replay',
+      };
+
+      const first = await NotificationService.createNotification(params);
+      const replay = await NotificationService.createNotification(params);
+
+      expect(first.success).toBe(true);
+      expect(replay).toEqual(first);
+      expect(harness.getUpdateCount()).toBe(1);
+      expect(harness.getTarget().metadata?.batched_count).toBe(1);
+      expect(harness.getTarget().group_position).toBe(7);
+      expect(harness.getUpdateStatements()[0]).not.toContain('group_position');
+    });
+
+    it('serializes concurrent exact retries and appends the producer event once', async () => {
+      const harness = installFrequencyBatchHarness();
+      const params = {
+        userId: USER_ID,
+        category: 'new_matching_task' as const,
+        title: 'Concurrent Task',
+        body: 'Concurrent body',
+        deepLink: 'hustlexp://tasks/concurrent-task',
+        objectRef: { type: 'task', id: 'concurrent-task' },
+        dedupeKey: 'matching-event:concurrent-batch',
+      };
+
+      const [first, retry] = await Promise.all([
+        NotificationService.createNotification(params),
+        NotificationService.createNotification(params),
+      ]);
+
+      expect(first.success).toBe(true);
+      expect(retry).toEqual(first);
+      expect(harness.getUpdateCount()).toBe(1);
+      expect(harness.getTarget().metadata?.batched_count).toBe(1);
+      expect(harness.getTarget().body.match(/Plus/g)).toHaveLength(1);
+      expect(harness.getTarget().group_position).toBe(7);
+      expect(harness.getQueries().some((sql) => (
+        sql.includes('pg_advisory_xact_lock(hashtextextended($2, 0))')
+      ))).toBe(true);
+    });
+
+    it('rejects reuse of a batched dedupe key for a different event identity', async () => {
+      const harness = installFrequencyBatchHarness();
+      const first = await NotificationService.createNotification({
+        userId: USER_ID,
+        category: 'new_matching_task',
+        title: 'First Task',
+        body: 'First body',
+        deepLink: 'hustlexp://tasks/first-task',
+        objectRef: { type: 'task', id: 'first-task' },
+        dedupeKey: 'matching-event:cross-identity',
+      });
+      const collision = await NotificationService.createNotification({
+        userId: USER_ID,
+        category: 'new_matching_task',
+        title: 'Other Task',
+        body: 'Other body',
+        deepLink: 'hustlexp://tasks/other-task',
+        objectRef: { type: 'task', id: 'other-task' },
+        dedupeKey: 'matching-event:cross-identity',
+      });
+
+      expect(first.success).toBe(true);
+      expect(collision).toMatchObject({ success: false, error: { code: 'INVALID_INPUT' } });
+      expect(harness.getUpdateCount()).toBe(1);
+      const replayQuery = harness.getQueries().find((sql) => sql.includes('dedupe_identity_matches'));
+      expect(replayQuery).toContain("WHERE batched_item->>'dedupe_key' = $1");
+      expect(replayQuery).not.toContain('WHERE batched_notification.user_id = $2');
+    });
+
     it('returns RATE_LIMIT_EXCEEDED when daily limit exceeded', async () => {
       // Category 'welcome' has perDay: 1
-      // checkFrequency uses redis.get(); BUG 8 FIX: check is read-only pre-INSERT.
-      mockRedisGet
-        .mockResolvedValueOnce(0)  // hourly OK (0 < 1)
-        .mockResolvedValueOnce(1); // daily = 1 >= perDay(1) — triggers daily limit
+      frequencyCounts = { hourly_count: '0', daily_count: '1' };
 
       mockDb.query
         // getPreferences
@@ -277,25 +429,55 @@ describe('NotificationService (extra coverage)', () => {
       }
     });
 
-    it('sets TTL on first Redis increment (hourly === 1)', async () => {
-      // 'badge_earned' has perHour: 3, perDay: 10
-      mockRedisIncr
-        .mockResolvedValueOnce(1)  // hourly = 1 (first, TTL should be set)
-        .mockResolvedValueOnce(1); // daily = 1 (first, TTL should be set)
+    it('fails closed when the database frequency transaction is unavailable', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      mockDb.transaction.mockRejectedValueOnce(new Error('frequency database unavailable'));
 
+      const result = await NotificationService.createNotification({
+        userId: USER_ID,
+        category: 'new_matching_task',
+        title: 'New Task',
+        body: 'Body',
+        deepLink: 'hustlexp://tasks/frequency-authority-missing',
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.code).toBe('DB_ERROR');
+        expect(result.error.message).toContain('frequency database unavailable');
+      }
+    });
+
+    it('fails closed on malformed authoritative database counters', async () => {
+      frequencyCounts = { hourly_count: '-1', daily_count: '0' };
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+      const result = await NotificationService.createNotification({
+        userId: USER_ID,
+        category: 'new_matching_task',
+        title: 'New Task',
+        body: 'Body',
+        deepLink: 'hustlexp://tasks/frequency-counter-malformed',
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.code).toBe('DB_ERROR');
+    });
+
+    it('persists a bounded notification and every delivery intent in one transaction', async () => {
       const notif = makeNotification({ category: 'badge_earned' });
       mockDb.query
         .mockResolvedValueOnce({
           rows: [makePreferences({ category_preferences: { badge_earned: { enabled: true } } })],
           rowCount: 1,
-        } as never)  // getPreferences
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)  // findGroupableNotification
-        .mockResolvedValueOnce({ rows: [notif], rowCount: 1 } as never) // INSERT
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)  // push outbox check
-        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)  // INSERT outbox
-        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE sent_at
+        } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+        .mockResolvedValueOnce({ rows: [notif], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
 
-      await NotificationService.createNotification({
+      const result = await NotificationService.createNotification({
         userId: USER_ID,
         category: 'badge_earned',
         title: 'Badge Earned',
@@ -303,8 +485,47 @@ describe('NotificationService (extra coverage)', () => {
         deepLink: 'hustlexp://badges/1',
       });
 
-      // expire should be called twice (once for hour key, once for day key)
-      expect(mockRedisExpire).toHaveBeenCalledTimes(2);
+      expect(result.success).toBe(true);
+      expect(mockDb.transaction).toHaveBeenCalledTimes(1);
+      expect(mockDb.query.mock.calls.some(([sql]) => (
+        String(sql).includes('INSERT INTO notification_deliveries')
+      ))).toBe(true);
+    });
+
+    it('resolves a derived-key replay under the recipient lock before mutable preferences', async () => {
+      const replay = makeNotification({
+        category: 'badge_earned',
+        object_type: 'badge',
+        object_id: 'badge-1',
+      });
+      mockDb.query.mockResolvedValueOnce({
+        rows: [makePreferences({ category_preferences: { badge_earned: { enabled: false } } })],
+        rowCount: 1,
+      } as never);
+      const txQuery = vi.fn(async (sql: string) => {
+        if (sql.includes('SELECT id FROM users')) {
+          return { rows: [{ id: USER_ID }], rowCount: 1 };
+        }
+        if (sql.includes('WHERE dedupe_key = $1')) {
+          return { rows: [replay], rowCount: 1 };
+        }
+        throw new Error(`unexpected transaction query: ${sql}`);
+      });
+      mockDb.transaction.mockImplementationOnce(async (callback) => callback(txQuery as never));
+
+      const result = await NotificationService.createNotification({
+        userId: USER_ID,
+        category: 'badge_earned',
+        title: 'Badge Earned',
+        body: 'Body',
+        deepLink: 'hustlexp://badges/badge-1',
+        objectRef: { type: 'badge', id: 'badge-1' },
+      });
+
+      expect(result).toEqual({ success: true, data: replay });
+      expect(mockDb.query).not.toHaveBeenCalled();
+      expect(txQuery.mock.calls.some(([sql]) => String(sql).includes('hourly_count'))).toBe(false);
+      expect(txQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO notifications'))).toBe(false);
     });
   });
 

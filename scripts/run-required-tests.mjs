@@ -139,6 +139,15 @@ export const FIXED_SYNTHETIC_TEST_PROVIDER_ENV = Object.freeze({
   HXOS_LOCAL_TEST_OFFER_REVIEW_SECRET: 'required-tests-offer-review-secret-v1',
 });
 
+// The required suite must never inherit ambient internal authority either.
+// Synthetic values explicitly added above (and the isolated database URL
+// supplied by policy) are the only credentials allowed into child processes.
+export const AMBIENT_AUTHORITY_VARIABLE_SUFFIX =
+  /(?:_API_KEY|_KEY|_SECRET|_TOKEN|_PASSWORD|_PRIVATE_KEY|_CREDENTIALS)$/u;
+export const AMBIENT_AUTHORITY_EXACT_VARIABLES = Object.freeze([
+  'HX_COMPLETION_DELIVERY_SINK_ACTOR_ID',
+]);
+
 const EXTERNAL_PROVIDER_PREFIX =
   /^(?:AI_ROUTE_|OPENAI_|DEEPSEEK_|GROQ_|ALIBABA_|ANTHROPIC_|GOOGLE_|GCP_|AZURE_|AWS_|R2_|S3_|BUCKET_NAME$|FIREBASE_|TWILIO_|SENDGRID_|MAILGUN_|POSTMARK_|RESEND_|SES_|SNS_|FCM_|APNS_|PUSHER_|ONESIGNAL_|CHECKR_|TURNSTILE_|STRIPE_|PLAID_|DWOLLA_|ADYEN_|BRAINTREE_|PAYPAL_|SQUARE_|BANK_|SENTRY_|DATADOG_|DD_|SMTP_URL$|HX_SMS_SINK_URL$|HX_(?:AI|MAPS|VISION|BIOMETRIC|IDENTITY|SCREENING|CREDENTIAL_VERIFICATION|OBJECT_STORAGE|FINANCIAL|OUTBOUND_COMMUNICATION|EMAIL_DELIVERY|SMS_DELIVERY|LIVE_DELIVERY|LIVE_PROVIDER_ACCESS|EXTERNAL_VALUE|TELEMETRY_EXPORT|FAKE_FINANCIAL|SYNTHETIC_OPERATOR_AUTH)_)/;
 
@@ -212,6 +221,8 @@ export function requiredTestEnvironments(env = process.env) {
     ...EXTERNAL_PROVIDER_CREDENTIAL_VARIABLES,
     ...EXTERNAL_PROVIDER_SELECTOR_VARIABLES,
     ...Object.keys(env).filter((name) => EXTERNAL_PROVIDER_PREFIX.test(name)),
+    ...Object.keys(env).filter((name) => AMBIENT_AUTHORITY_VARIABLE_SUFFIX.test(name)),
+    ...AMBIENT_AUTHORITY_EXACT_VARIABLES,
     ...Object.keys(env).filter((name) => name.startsWith('HXOS_')),
     ...Object.keys(env).filter((name) => name.startsWith('HX_ALLOW_')),
   ];
@@ -282,8 +293,11 @@ export async function main(env = process.env) {
       // Avoid esbuild config-discovery permission drift on locked-down Windows
       // workspaces while executing the same TypeScript config directly.
       '--configLoader=runner',
+      // Keep a console reporter so unhandled runtime errors remain visible while
+      // the JSON reporter supplies the exact machine-verifiable test accounting.
+      '--reporter=default',
       '--reporter=json',
-      `--outputFile=${reportPath}`,
+      `--outputFile.json=${reportPath}`,
     ],
     environments.vitest
   );

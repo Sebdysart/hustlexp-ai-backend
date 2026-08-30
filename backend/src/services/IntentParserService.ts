@@ -16,6 +16,7 @@
 
 import { ServiceResult } from '../types.js';
 import { AIClient } from './AIClient.js';
+import { aiOperationId } from '../ai/AIOperationIdentity.js';
 import { aiObservation } from './AIObservabilityPolicy.js';
 import { KnowledgeGraphService } from './KnowledgeGraphService.js';
 
@@ -58,6 +59,7 @@ export const IntentParserService = {
 
       try {
         const aiResponse = await AIClient.call({
+          operationId: aiOperationId('engineering-intent', description, knowledgeContext),
           observability: aiObservation('AI-ENGINEERING-INTENT', {
             affectedObjectType: 'ENGINEERING_REQUEST',
           }),

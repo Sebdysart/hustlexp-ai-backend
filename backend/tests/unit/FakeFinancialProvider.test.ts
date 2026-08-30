@@ -209,6 +209,33 @@ describe('FakeFinancialProvider', () => {
     expect(result.state).toBe(expectedState);
   });
 
+  it('rejects specialized scenarios on unrelated operation kinds', async () => {
+    const provider = new FakeFinancialProvider(new InMemoryFakeFinancialOperationRepository());
+
+    await expect(
+      provider.capture({
+        ...command(operationIds.capture, 'test:capture:invalid-reversal', 'REVERSAL'),
+        relatedOperationId: operationIds.authorize,
+      })
+    ).rejects.toThrow('FAKE_FINANCIAL_SCENARIO_OPERATION_INVALID');
+    await expect(
+      provider.authorize({
+        ...command(operationIds.authorize, 'test:authorize:invalid-refund', 'PARTIAL_REFUND'),
+        paymentMethodReference: 'pm-fake-1',
+      })
+    ).rejects.toThrow('FAKE_FINANCIAL_SCENARIO_OPERATION_INVALID');
+    await expect(
+      provider.reconcile({
+        ...command(
+          operationIds.reconciliation,
+          'test:reconcile:invalid-delay',
+          'DELAYED_SETTLEMENT'
+        ),
+        relatedOperationId: operationIds.settlement,
+      })
+    ).rejects.toThrow('FAKE_FINANCIAL_SCENARIO_OPERATION_INVALID');
+  });
+
   it('deduplicates authenticated fake webhook delivery without mutating prior evidence', async () => {
     const repository = new InMemoryFakeFinancialOperationRepository();
     const provider = new FakeFinancialProvider(repository);
@@ -294,12 +321,29 @@ describe('FakeFinancialProvider', () => {
       payoutsEnabled: false,
       requirementsDue: ['identity_verification'],
     });
+    const restricted = await provider.refreshProviderAccountState({
+      ...command(
+        '00000000-0000-4000-8000-000000000014',
+        'test:merchant-state:declined',
+        'DECLINE'
+      ),
+      providerId: 'provider-3',
+      providerAccountReference: 'merchant-fake-3',
+    });
+    expect(restricted).toMatchObject({
+      state: 'DECLINED',
+      accountState: 'RESTRICTED',
+      chargesEnabled: false,
+      payoutsEnabled: false,
+      requirementsDue: ['provider_account_restricted'],
+    });
     expect(repository.events().map(({ operationKind }) => operationKind)).toEqual([
       'ONBOARD_PROVIDER',
       'REFRESH_PROVIDER_ACCOUNT_STATE',
       'REFRESH_PROVIDER_ACCOUNT_STATE',
+      'REFRESH_PROVIDER_ACCOUNT_STATE',
     ]);
-    expect(repository.events()).toHaveLength(3);
+    expect(repository.events()).toHaveLength(4);
     expect(JSON.stringify(repository.events())).not.toMatch(
       /stripe|payment_intent|connect_account/iu
     );

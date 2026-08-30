@@ -22,7 +22,7 @@ unenrolled during the production hold. Enrolling either requires a separately
 reviewed protected source change. No private signing key belongs in a repository,
 image, Railway variable, or agent prompt.
 
-`backend/src/config.ts` is the runtime authority. [`.env.template`](../.env.template) is the copyable local-development template; Railway variables are the production source of truth. Never commit a populated `.env` file.
+`backend/src/config.ts` is the runtime authority. [`.env.template`](../.env.template) is the copyable backend-only host-diagnostics template; Railway variables are the production source of truth. Never commit a populated `.env` file. The repository's `docker-compose.yml` is an intentionally non-runnable pointer, not an environment definition. The sibling `hustlexp-platform` repository owns the complete synthetic local stack.
 
 Classification-only production inspection on `2026-08-25` found `NODE_ENV=production`, `HX_PAYMENT_CREATION_MODE=frozen`, `STRIPE_MODE=live`, live-classified Stripe secret and publishable keys present, `OPS_ADMIN_KEY` present, and `KILL_SWITCH=false`; no runtime use of `KILL_SWITCH` was found. Secret values were not read or recorded. Stale `HX_BUILD_REVISION`, `HX_BUILD_TIMESTAMP`, and `HX_BUILD_SOURCE_CLEAN` values cause `/health` to report revision `140ce19…` while Railway metadata identifies deployed source `ab4a76…`; those variables are not trustworthy release evidence.
 
@@ -60,9 +60,23 @@ the last legacy rate-limit window has elapsed.
 |---|---|
 | `FIREBASE_PROJECT_ID`, `FIREBASE_PRIVATE_KEY`, `FIREBASE_CLIENT_EMAIL` | Required for authenticated production traffic |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_CONNECT_WEBHOOK_SECRET` | Legacy/recovery and webhook compatibility in the current runtime; presence does not authorize new payment creation; webhook secrets must differ |
-| `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | Required for distributed cache and rate limits |
-| `UPSTASH_REDIS_URL` or `REDIS_URL` | Required for BullMQ workers |
+| `REDIS_URL` | Canonical provider-neutral `redis://` or `rediss://` TCP connection for cache, rate limits, BullMQ, and realtime |
+| `UPSTASH_REDIS_URL` | Legacy TCP alias accepted only when `REDIS_URL` is absent |
+| `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | Optional legacy HTTP alternate; configure both or neither; never inferred from TCP variables and never overrides `REDIS_URL` |
 | `QUEUE_HMAC_SECRET` | Required for signed queue payloads |
+
+`REDIS_URL` is the portable path used by the local stack and isolated Railway
+Redis. It takes precedence over `UPSTASH_REDIS_URL`. A `redis://` or `rediss://`
+value is never passed to `@upstash/redis`, and the ambiguous `REDIS_TOKEN` name
+is not accepted as a REST credential. Cache, rate-limit, AI-budget, flags,
+messaging, and realtime-registry commands share one normalized port. Notification
+acceptance and fixed-window frequency limits remain PostgreSQL-authoritative so
+the accepted row and every delivery intent commit atomically. The only direct
+`@upstash/redis` import is the reviewed legacy adapter.
+It is selected only when no TCP URL exists; it is intentionally not runtime
+failover, because switching Redis services after a command error would split
+locks, counters, revocation markers, and rate windows. Local and staging do not
+require this alternate.
 
 `HX_PAYMENT_CREATION_MODE` must remain `frozen` in every deployed environment. The public recovery base historically accepted both `enabled` and `frozen`; this working recovery candidate no longer treats configuration alone as authority. Its payment-creation guard can return `enabled` only inside an isolated Vitest worker with `NODE_ENV=test`, `ENGINE_API_MODE=test`, `STRIPE_MODE=test`, and an `sk_test_` credential. A normal deployed process remains frozen even if every variable is spoofed. That test-only seam is not an enablement mechanism, signed release evidence, processor approval, or production customer-money authority.
 

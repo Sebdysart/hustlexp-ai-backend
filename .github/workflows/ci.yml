@@ -20,6 +20,9 @@ on:
         description: "Build job result"
         value: ${{ jobs.build.result }}
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -33,6 +36,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -46,6 +51,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -86,6 +93,8 @@ jobs:
       FIREBASE_PROJECT_ID: test-project
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -141,7 +150,7 @@ jobs:
           TASK_LOCATION_ENCRYPTION_KEY_ID: hx-ci-location-v1
         run: |
           mkdir -p reports
-          npx vitest run --reporter=json --outputFile=reports/vitest.json
+          npx vitest run --reporter=default --reporter=json --outputFile.json=reports/vitest.json
           node scripts/verify-vitest-outcome.mjs reports/vitest.json
         timeout-minutes: 10
       - name: Preserve exact Vitest evidence
@@ -162,6 +171,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -190,6 +201,8 @@ jobs:
           --health-retries 12
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}

@@ -4,7 +4,7 @@ For general repository instructions, see [AGENTS.md](AGENTS.md). Business meanin
 
 ## Project boundary
 
-This Node.js 22 backend uses Hono, tRPC, PostgreSQL, Redis, and BullMQ. It owns the canonical HustleXP TaskDraft, routing, estimate/scope, provider, Work Order, evidence, completion, financial-event, and reconciliation facts. Supabase is a contained acquisition/read overlay, not a competing lifecycle writer.
+This Node.js 22 backend uses Hono, tRPC, PostgreSQL, Redis, and BullMQ. It owns the target canonical HustleXP TaskDraft, routing, estimate/scope, provider, Work Order, evidence, completion, financial-event, and reconciliation facts. Supabase is authorized only as a contained acquisition/read overlay; current competing writers and hosted disablement remain unproven until the inventory, parity, migration, and authenticated readback gates close.
 
 Production customer-money creation, hard assignment, real settlement/payout, database migration, and deployment remain held. No branch name, environment variable, green local run, or agent action can enable them.
 

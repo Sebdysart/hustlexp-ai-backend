@@ -8,13 +8,16 @@ import {
   UniversalV1FulfillmentError,
   universalV1FulfillmentCommandHash,
 } from './UniversalV1FulfillmentContracts.js';
-import {
-  deterministicUuid,
-  transactionBoundDatabase,
-} from './UniversalV1WorkOrderPostgresRepository.js';
+import { deterministicUuid } from './UniversalV1WorkOrderPostgresRepository.js';
 import type { UniversalV1FakeFinancialApplicationService } from './payment/UniversalV1FinancialApplicationService.js';
 
-type FinanceFactory = (database: Database) => UniversalV1FakeFinancialApplicationService;
+type FinancePort = Pick<
+  UniversalV1FakeFinancialApplicationService,
+  | 'executeFinancialEvent'
+  | 'onboardProvider'
+  | 'refreshProviderAccountState'
+  | 'reconcile'
+>;
 
 interface FulfillmentContext {
   work_order_id: string;
@@ -492,7 +495,7 @@ export class PostgresUniversalV1FulfillmentRepository {
         input.evidence_kind,
         requestHash
       );
-      return {
+    return {
         proof_id: proof.id,
         evidence_kind: input.evidence_kind,
         scope_version_id: context.scope_version_id,
@@ -832,9 +835,9 @@ export class PostgresUniversalV1FulfillmentRepository {
   async completeFakeFinancialLifecycle(
     actorId: string,
     input: CompleteFakeFinancialLifecyclePublic,
-    financeFactory: FinanceFactory
+    finance: FinancePort
   ): Promise<UniversalV1FakeLifecycleResult> {
-    return this.database.serializableTransaction(async (query) => {
+    const prepared = await this.database.serializableTransaction(async (query) => {
       await query(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, [
         `fulfillment:${input.work_order_id}`,
       ]);
@@ -904,20 +907,23 @@ export class PostgresUniversalV1FulfillmentRepository {
           );
         }
         return {
-          reconciliation_id: row.id,
-          reconciliation_version: Number(row.reconciliation_version),
-          capture_event_id: row.capture_event_id!,
-          settlement_event_id: row.settlement_event_id,
-          funding_event_id: row.funding_event_id,
-          provider_release_event_id: row.provider_release_event_id,
-          payout_event_id: row.payout_event_id,
-          bank_settlement_event_id: row.bank_settlement_event_id,
-          refund_event_id: row.refund_event_id,
-          path: input.path,
-          replayed: true,
-          provider_kind: 'FAKE',
-          payment_creation_performed: false,
-          hard_assignment_created: false,
+          completed: true as const,
+          result: {
+            reconciliation_id: row.id,
+            reconciliation_version: Number(row.reconciliation_version),
+            capture_event_id: row.capture_event_id!,
+            settlement_event_id: row.settlement_event_id,
+            funding_event_id: row.funding_event_id,
+            provider_release_event_id: row.provider_release_event_id,
+            payout_event_id: row.payout_event_id,
+            bank_settlement_event_id: row.bank_settlement_event_id,
+            refund_event_id: row.refund_event_id,
+            path: input.path,
+            replayed: true,
+            provider_kind: 'FAKE' as const,
+            payment_creation_performed: false as const,
+            hard_assignment_created: false as const,
+          },
         };
       }
 
@@ -990,8 +996,18 @@ export class PostgresUniversalV1FulfillmentRepository {
           'The reconciliation snapshot changed.'
         );
       }
+      return {
+        completed: false as const,
+        context,
+        completion,
+        predecessor,
+        prior,
+        priorVersion,
+      };
+    });
 
-      const finance = financeFactory(transactionBoundDatabase(query, this.database));
+    if (prepared.completed) return prepared.result;
+    const { context, completion, predecessor, prior, priorVersion } = prepared;
       const occurredAt = new Date().toISOString();
       const common = {
         providerKind: 'FAKE' as const,
@@ -1186,7 +1202,6 @@ export class PostgresUniversalV1FulfillmentRepository {
         provider_kind: 'FAKE',
         payment_creation_performed: false,
         hard_assignment_created: false,
-      };
-    });
+    };
   }
 }

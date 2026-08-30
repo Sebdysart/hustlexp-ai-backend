@@ -63,14 +63,18 @@ describe('SyntheticFinancialCommandAuthority', () => {
     })).toThrow('WEBHOOK_HMAC_INVALID');
   });
 
-  it('binds fake webhooks to an existing controlled-test operation recorded by a participant', async () => {
+  it('binds fake webhooks to a committed command or canonical operation recorded by a participant', async () => {
     query.mockResolvedValueOnce({ rows: [{ authorized: true }], rowCount: 1 });
     await authority.assertWebhookOperationBoundary(draftId, taskId, workOrderId);
     const [sql, parameters] = query.mock.calls[0] as [string, unknown[]];
     expect(sql).toContain('FROM task_financial_operations operation');
     expect(sql).toContain("operation.provider_kind = 'FAKE'");
-    expect(sql).toContain('FROM task_financial_security_events event');
+    expect(sql).toContain('JOIN task_financial_security_events event');
     expect(sql).toContain('event.recorded_by = draft.poster_user_id');
+    expect(sql).toContain('FROM financial_provider_command_journal command');
+    expect(sql).toContain("command.command_state = 'REQUESTED'");
+    expect(sql).toContain('command.task_draft_id = draft.id');
+    expect(sql).toContain('command.recorded_actor_id = draft.poster_user_id');
     expect(sql).toContain("task.automation_classification = 'CONTROLLED_TEST'");
     expect(parameters).toEqual([draftId, taskId, workOrderId]);
 

@@ -4,6 +4,8 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
+  AMBIENT_AUTHORITY_EXACT_VARIABLES,
+  AMBIENT_AUTHORITY_VARIABLE_SUFFIX,
   EXTERNAL_PROVIDER_CREDENTIAL_VARIABLES,
   EXTERNAL_PROVIDER_SELECTOR_VARIABLES,
   FIXED_SYNTHETIC_TEST_PROVIDER_ENV,
@@ -35,6 +37,13 @@ const requiredRunnerSource = readFileSync(
 
 test('required Vitest uses the cross-platform runner config loader', () => {
   assert.match(requiredRunnerSource, /'--configLoader=runner'/u);
+});
+
+test('required Vitest preserves console diagnostics alongside exact JSON accounting', () => {
+  assert.match(requiredRunnerSource, /'--reporter=default'/u);
+  assert.match(requiredRunnerSource, /'--reporter=json'/u);
+  assert.match(requiredRunnerSource, /`--outputFile\.json=\$\{reportPath\}`/u);
+  assert.doesNotMatch(requiredRunnerSource, /dangerouslyIgnoreUnhandledErrors/u);
 });
 
 test('direct-execution detection canonicalizes aliases and covers platform path semantics', () => {
@@ -199,6 +208,32 @@ test('required child environments scrub every external provider credential and s
     Object.keys(environments.vitest).filter((name) => name.startsWith('AI_ROUTE_')),
     []
   );
+});
+
+test('required child environments scrub ambient internal authority credentials and actors', () => {
+  const ambientAuthority = {
+    HX_COMPLETION_DELIVERY_WEBHOOK_SECRET: 'ambient-live-secret',
+    HX_COMPLETION_DELIVERY_SINK_ACTOR_ID: '00000000-0000-0000-0000-000000000001',
+    ENGINE_BRIDGE_WRITE_KEY: 'ambient-bridge-key',
+    INTERNAL_API_KEY: 'ambient-internal-key',
+    QUEUE_HMAC_SECRET: 'ambient-queue-key',
+    OPS_ADMIN_KEY: 'ambient-ops-key',
+    POSTGRES_PASSWORD: 'ambient-postgres-password',
+  };
+  const environments = requiredTestEnvironments({ ...safeEnv, ...ambientAuthority });
+
+  for (const [name, value] of Object.entries(ambientAuthority)) {
+    assert.equal(environments.prepare[name], undefined, `${name} leaked into preparation`);
+    assert.equal(environments.vitest[name], undefined, `${name} leaked into Vitest`);
+    assert.notEqual(environments.vitest[name], value);
+  }
+  assert.equal(
+    AMBIENT_AUTHORITY_VARIABLE_SUFFIX.test('ENGINE_BRIDGE_WRITE_KEY'),
+    true,
+  );
+  assert.deepEqual(AMBIENT_AUTHORITY_EXACT_VARIABLES, [
+    'HX_COMPLETION_DELIVERY_SINK_ACTOR_ID',
+  ]);
 });
 
 test('external provider scrub inventory covers every matching backend environment read', () => {

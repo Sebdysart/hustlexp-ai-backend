@@ -26,27 +26,20 @@ import { logger as rootLogger } from '../logger.js';
 const dlqLog = rootLogger.child({ subsystem: 'dlq-monitor' });
 
 // ============================================================================
-// REDIS CONNECTION (Upstash)
+// REDIS CONNECTION (provider-neutral TCP)
 // ============================================================================
 
 /**
  * Create Redis connection for BullMQ
  * BullMQ requires ioredis-compatible connection (TCP, not REST API)
  * 
- * Upstash provides both:
- * - REST API (UPSTASH_REDIS_REST_URL) - for @upstash/redis client (caching, rate limiting)
- * - Direct TCP (UPSTASH_REDIS_URL) - for ioredis/BullMQ (job queues)
- * 
- * Hard rule: Use direct TCP connection for BullMQ, REST API for caching
- * 
- * For Upstash: Get direct TCP connection string from Upstash dashboard
- * Format: redis://default:{password}@{endpoint}.upstash.io:{port}
- * 
- * Alternatively: Use separate Redis instance for BullMQ (recommended for production)
+ * REDIS_URL is the canonical portable connection. UPSTASH_REDIS_URL remains a
+ * legacy alias resolved centrally by config.ts. REST credentials are a
+ * separate compatibility transport and are never valid BullMQ inputs.
  */
 function createRedisConnection(): Redis {
   if (!config.redis.url) {
-    throw new Error('Redis configuration missing (UPSTASH_REDIS_URL or REDIS_URL required for BullMQ). Get direct TCP connection string from Upstash dashboard.');
+    throw new Error('Redis configuration missing (REDIS_URL or legacy UPSTASH_REDIS_URL required for BullMQ).');
   }
   
   const redisUrl = config.redis.url;
@@ -60,8 +53,9 @@ function createRedisConnection(): Redis {
     maxRetriesPerRequest: null,
     enableReadyCheck: true,
     lazyConnect: true,
-    // Upstash-specific settings: requires TLS for direct TCP connections
-    tls: redisUrl.includes('upstash.io') ? {} : undefined,
+    // TLS follows the explicit URI scheme; never infer transport security from
+    // a vendor hostname and silently rewrite a redis:// connection.
+    ...(redisUrl.startsWith('rediss://') ? { tls: {} } : {}),
   });
   
   return redis;
@@ -325,22 +319,107 @@ const queueInstances = new Map<QueueName, Queue>();
 // Tracks every ioredis connection created by getQueue / createWorker so they
 // can all be cleanly disconnected on graceful shutdown (W-06 fix).
 const connectionInstances = new Map<string, Redis>();
+export const BULLMQ_SHUTDOWN_TIMEOUT_MS = 5_000;
+
+let closeAllConnectionsPromise: Promise<void> | undefined;
+
+async function runWithShutdownDeadline(
+  operation: () => Promise<unknown> | unknown,
+  timeoutLabel: string,
+): Promise<void> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      reject(new Error(
+        `${timeoutLabel}: resource did not close within ${BULLMQ_SHUTDOWN_TIMEOUT_MS}ms`,
+      ));
+    }, BULLMQ_SHUTDOWN_TIMEOUT_MS);
+    timeout.unref();
+  });
+
+  try {
+    await Promise.race([
+      Promise.resolve().then(operation),
+      deadline,
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+async function quitRedisConnection(connectionKey: string, connection: Redis): Promise<void> {
+  try {
+    await runWithShutdownDeadline(
+      () => connection.quit(),
+      `BULLMQ_REDIS_QUIT_TIMEOUT:${connectionKey}`,
+    );
+  } catch (quitError) {
+    try {
+      // quit() can wait forever on an unhealthy network path. disconnect()
+      // synchronously tears down the local socket and prevents that client from
+      // keeping the process alive after the graceful deadline has expired.
+      connection.disconnect(false);
+    } catch (disconnectError) {
+      throw new AggregateError(
+        [quitError, disconnectError],
+        `Redis ${connectionKey} failed graceful quit and forced disconnect`,
+      );
+    }
+    throw quitError;
+  }
+}
+
+async function closeTrackedConnections(): Promise<void> {
+  // Snapshot and clear synchronously so concurrent/later close calls cannot
+  // operate on the same resources twice.
+  const queues = [...queueInstances.entries()];
+  const connections = [...connectionInstances.entries()];
+  queueInstances.clear();
+  connectionInstances.clear();
+
+  const errors: unknown[] = [];
+  const queueResults = await Promise.allSettled(
+    queues.map(([queueName, queue]) => runWithShutdownDeadline(
+      () => queue.close(),
+      `BULLMQ_QUEUE_CLOSE_TIMEOUT:${queueName}`,
+    )),
+  );
+  queueResults.forEach((result, index) => {
+    if (result.status === 'rejected') {
+      const [queueName] = queues[index];
+      rootLogger.warn({ err: result.reason, queueName }, 'Error closing BullMQ queue');
+      errors.push(result.reason);
+    }
+  });
+
+  const connectionResults = await Promise.allSettled(
+    connections.map(([connectionKey, connection]) => (
+      quitRedisConnection(connectionKey, connection)
+    )),
+  );
+  connectionResults.forEach((result, index) => {
+    if (result.status === 'rejected') {
+      const [connectionKey] = connections[index];
+      rootLogger.warn({ err: result.reason, connectionKey }, 'Error closing Redis connection');
+      errors.push(result.reason);
+    }
+  });
+
+  if (errors.length > 0) {
+    throw new AggregateError(errors, 'Failed to close one or more BullMQ queues or Redis connections');
+  }
+}
 
 /**
- * Close all tracked ioredis connections.
- * Call this during graceful shutdown before the process exits.
+ * Close all queue producers, then every tracked ioredis connection.
+ * Worker instances are drained by the worker lifecycle before this terminal
+ * queue boundary runs.
  */
-export async function closeAllConnections(): Promise<void> {
-  const closePromises: Promise<void>[] = [];
-  for (const [key, conn] of connectionInstances.entries()) {
-    closePromises.push(
-      conn.quit().then(() => undefined).catch((err: unknown) => {
-        rootLogger.warn({ err, connectionKey: key }, 'Error closing Redis connection');
-      })
-    );
+export function closeAllConnections(): Promise<void> {
+  if (!closeAllConnectionsPromise) {
+    closeAllConnectionsPromise = closeTrackedConnections();
   }
-  await Promise.all(closePromises);
-  connectionInstances.clear();
+  return closeAllConnectionsPromise;
 }
 
 /**
@@ -348,6 +427,9 @@ export async function closeAllConnections(): Promise<void> {
  * Singleton pattern to ensure one queue instance per name
  */
 function getQueue(queueName: QueueName): Queue {
+  if (closeAllConnectionsPromise) {
+    throw new Error('BULLMQ_RUNTIME_CLOSED: cannot create a queue after shutdown has started');
+  }
   if (queueInstances.has(queueName)) {
     return queueInstances.get(queueName)!;
   }
@@ -478,6 +560,9 @@ export function createWorker(
   processor: (job: Job) => Promise<void>,
   options?: Partial<WorkerOptions>
 ): Worker {
+  if (closeAllConnectionsPromise) {
+    throw new Error('BULLMQ_RUNTIME_CLOSED: cannot create a worker after shutdown has started');
+  }
   const queueConfig = QUEUE_CONFIGS[queueName];
   const connection = createRedisConnection();
   // Use a unique key per worker in case multiple workers share the same queue name
@@ -582,18 +667,6 @@ export function verifyJobSignature(payload: Record<string, unknown>, signature: 
   }
   return diff === 0;
 }
-
-// ============================================================================
-// GRACEFUL SHUTDOWN — close all tracked Redis connections
-// ============================================================================
-
-const shutdownHandler = async (signal: string) => {
-  rootLogger.info({ signal }, 'queues: received shutdown signal, closing Redis connections');
-  await closeAllConnections();
-};
-
-process.on('SIGTERM', () => { void shutdownHandler('SIGTERM'); });
-process.on('SIGINT',  () => { void shutdownHandler('SIGINT'); });
 
 // ============================================================================
 // EXPORTS

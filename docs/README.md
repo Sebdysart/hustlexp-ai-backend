@@ -94,6 +94,7 @@ The team is not fully aligned until one exact signed candidate contains the inte
 
 | Document                                                                                             | Status                                        | Rule                                                                              |
 | ---------------------------------------------------------------------------------------------------- | --------------------------------------------- | --------------------------------------------------------------------------------- |
+| [incidents/2026-08-28-release-authority-readback.md](incidents/2026-08-28-release-authority-readback.md) | `DRAFT_REVIEW_INPUT / SOURCE_DATED_PUBLIC_READBACK` | Current public evidence of protected-merge and production-auto-deploy failure; requires authenticated review before action |
 | [production-role-readiness-evidence-2026-07-22.md](production-role-readiness-evidence-2026-07-22.md) | `FROZEN_EVIDENCE`                             | Preserve bytes; dated `NO-GO` observation only                                    |
 | `../ops/runbooks/EPIC03_KILL_SWITCH_EVIDENCE.md`                                                     | `FROZEN_EVIDENCE`                             | Preserve bytes; dated observation only                                            |
 | `../ops/runbooks/BACKUP_RESTORE_EVIDENCE_TEMPLATE.md`                                                | `CURRENT_RUNBOOK_TEMPLATE`                    | Local template; completed, exact-revision receipts are separate evidence          |

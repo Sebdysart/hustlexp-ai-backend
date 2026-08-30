@@ -8,6 +8,7 @@ import {
   NONPRODUCTION_FAKE_FINANCIAL_BASE_MIGRATION,
   NONPRODUCTION_FAKE_FINANCIAL_MIGRATION,
   NONPRODUCTION_FAKE_FINANCIAL_MIGRATION_FILES,
+  NONPRODUCTION_FAKE_FINANCIAL_SETTLEMENT_COMPLETION_MIGRATION,
   runNonproductionFinancialDatabaseBootstrap,
   runNonproductionFinancialMigration,
   type NonproductionFinancialMigrationRuntime,
@@ -30,6 +31,8 @@ const BASE_MIGRATION_SQL = 'CREATE TABLE fake_financial_evidence(id UUID);';
 const REFRESH_MIGRATION_SQL = 'ALTER TABLE fake_financial_evidence ADD COLUMN refresh BOOLEAN;';
 const SETTLEMENT_COMPLETION_MIGRATION_SQL =
   'ALTER TABLE fake_financial_evidence ADD COLUMN settlement_completion BOOLEAN;';
+const LIFECYCLE_BRIDGE_MIGRATION_SQL =
+  'ALTER TABLE fake_financial_evidence ADD COLUMN lifecycle_bridge BOOLEAN;';
 const STAGING_DATABASE_URL =
   'postgresql://synthetic@postgres.railway.internal:5432/hustlexp_nonprod';
 const STAGING_DATABASE_IDENTITY = {
@@ -44,7 +47,11 @@ const STAGING_DATABASE_IDENTITY = {
 const MIGRATION_SQL_BY_NAME = new Map([
   [NONPRODUCTION_FAKE_FINANCIAL_BASE_MIGRATION, BASE_MIGRATION_SQL],
   [NONPRODUCTION_FAKE_FINANCIAL_ACCOUNT_REFRESH_MIGRATION, REFRESH_MIGRATION_SQL],
-  [NONPRODUCTION_FAKE_FINANCIAL_MIGRATION, SETTLEMENT_COMPLETION_MIGRATION_SQL],
+  [
+    NONPRODUCTION_FAKE_FINANCIAL_SETTLEMENT_COMPLETION_MIGRATION,
+    SETTLEMENT_COMPLETION_MIGRATION_SQL,
+  ],
+  [NONPRODUCTION_FAKE_FINANCIAL_MIGRATION, LIFECYCLE_BRIDGE_MIGRATION_SQL],
 ]);
 const MIGRATION_SHA_BY_NAME = new Map(
   [...MIGRATION_SQL_BY_NAME].map(([name, sql]) => [
@@ -346,7 +353,7 @@ describe('nonproduction financial database migration', () => {
     await expect(runNonproductionFinancialMigration(actualRuntime)).resolves.toEqual({
       status: 'applied',
       migration: NONPRODUCTION_FAKE_FINANCIAL_MIGRATION,
-      sourcePath: '/app/backend/database/migrations/20260910_fake_financial_settlement_completion_v3.sql',
+      sourcePath: '/app/backend/database/migrations/20260921_universal_v1_fake_financial_lifecycle_bridge_v1.sql',
       sha256: MIGRATION_SHA_BY_NAME.get(NONPRODUCTION_FAKE_FINANCIAL_MIGRATION),
       migrations: NONPRODUCTION_FAKE_FINANCIAL_MIGRATION_FILES.map(({ name, fileName }) => ({
         status: 'applied',
@@ -361,6 +368,7 @@ describe('nonproduction financial database migration', () => {
     expect(migrationClient.queries).toContain(BASE_MIGRATION_SQL);
     expect(migrationClient.queries).toContain(REFRESH_MIGRATION_SQL);
     expect(migrationClient.queries).toContain(SETTLEMENT_COMPLETION_MIGRATION_SQL);
+    expect(migrationClient.queries).toContain(LIFECYCLE_BRIDGE_MIGRATION_SQL);
     expect(migrationClient.queries.at(-1)).toBe('COMMIT');
     expect(migrationClient.end).toHaveBeenCalledOnce();
   });
@@ -373,9 +381,10 @@ describe('nonproduction financial database migration', () => {
     expect(migrationClient.queries).not.toContain(BASE_MIGRATION_SQL);
     expect(migrationClient.queries).not.toContain(REFRESH_MIGRATION_SQL);
     expect(migrationClient.queries).not.toContain(SETTLEMENT_COMPLETION_MIGRATION_SQL);
+    expect(migrationClient.queries).not.toContain(LIFECYCLE_BRIDGE_MIGRATION_SQL);
   });
 
-  it('upgrades an exact v1 installation by applying only the append-only refresh repair', async () => {
+  it('upgrades an exact v1 installation through the ordered append-only v4 bridge', async () => {
     const baseDigest = MIGRATION_SHA_BY_NAME.get(NONPRODUCTION_FAKE_FINANCIAL_BASE_MIGRATION);
     const migrationClient = client(false, {
       applied: { [NONPRODUCTION_FAKE_FINANCIAL_BASE_MIGRATION]: baseDigest },
@@ -396,6 +405,10 @@ describe('nonproduction financial database migration', () => {
         status: 'applied',
       },
       {
+        migration: NONPRODUCTION_FAKE_FINANCIAL_SETTLEMENT_COMPLETION_MIGRATION,
+        status: 'applied',
+      },
+      {
         migration: NONPRODUCTION_FAKE_FINANCIAL_MIGRATION,
         status: 'applied',
       },
@@ -403,6 +416,7 @@ describe('nonproduction financial database migration', () => {
     expect(migrationClient.queries).not.toContain(BASE_MIGRATION_SQL);
     expect(migrationClient.queries).toContain(REFRESH_MIGRATION_SQL);
     expect(migrationClient.queries).toContain(SETTLEMENT_COMPLETION_MIGRATION_SQL);
+    expect(migrationClient.queries).toContain(LIFECYCLE_BRIDGE_MIGRATION_SQL);
   });
 
   it('refuses an already-recorded migration without exact immutable SQL evidence', async () => {
@@ -555,6 +569,7 @@ describe('nonproduction financial database migration', () => {
     expect(migrationClient.queries).not.toContain(BASE_MIGRATION_SQL);
     expect(migrationClient.queries).not.toContain(REFRESH_MIGRATION_SQL);
     expect(migrationClient.queries).not.toContain(SETTLEMENT_COMPLETION_MIGRATION_SQL);
+    expect(migrationClient.queries).not.toContain(LIFECYCLE_BRIDGE_MIGRATION_SQL);
   });
 
   it('refuses an incomplete or reordered nonproduction migration chain before reading SQL', async () => {
@@ -641,7 +656,13 @@ describe('nonproduction financial database migration', () => {
         requiredMigrationCount: REQUIRED_OUTCOMES.length,
       }),
     }));
-    expect(order).toEqual(['required', 'financial', 'financial', 'financial']);
+    expect(order).toEqual([
+      'required',
+      'financial',
+      'financial',
+      'financial',
+      'financial',
+    ]);
     expect(financial.createClient).toHaveBeenCalledOnce();
     expect(migrationClient.connect).toHaveBeenCalledOnce();
     expect(migrationClient.end).toHaveBeenCalledOnce();
@@ -722,6 +743,9 @@ describe('nonproduction financial database migration', () => {
     );
     expect(REQUIRED_MIGRATION_FILES.map(({ name }) => name)).not.toContain(
       NONPRODUCTION_FAKE_FINANCIAL_ACCOUNT_REFRESH_MIGRATION,
+    );
+    expect(REQUIRED_MIGRATION_FILES.map(({ name }) => name)).not.toContain(
+      NONPRODUCTION_FAKE_FINANCIAL_SETTLEMENT_COMPLETION_MIGRATION,
     );
     expect(REQUIRED_MIGRATION_FILES.map(({ name }) => name)).not.toContain(
       NONPRODUCTION_FAKE_FINANCIAL_MIGRATION,

@@ -5,6 +5,7 @@
 
 import { getClient } from './redis.js';
 import { logger } from '../logger.js';
+import type { RedisCommandPort } from '../redis/RedisCommandPort.js';
 
 const cacheLog = logger.child({ module: 'query-cache' });
 
@@ -40,7 +41,7 @@ export async function cachedQuery<T>(
 
   try {
     if (client) {
-      const cached = await client.get<string>(cacheKey);
+      const cached = await client.get(cacheKey);
 
       if (cached) {
         const data = typeof cached === 'string' ? JSON.parse(cached) : cached;
@@ -98,7 +99,7 @@ async function refreshCache<T>(
 // Store in Cache
 // ============================================================================
 async function storeInCache<T>(
-  client: import('@upstash/redis').Redis,
+  client: RedisCommandPort,
   cacheKey: string,
   staleKey: string,
   data: T,
@@ -109,6 +110,7 @@ async function storeInCache<T>(
   const pipeline = client.pipeline();
   const fullTtl = ttl + staleWhileRevalidate;
   const payload = JSON.stringify(data);
+  if (payload === undefined) throw new Error('QUERY_CACHE_VALUE_NOT_SERIALIZABLE');
 
   pipeline.setex(cacheKey, fullTtl, payload);
   if (staleWhileRevalidate > 0) {
@@ -180,7 +182,7 @@ export async function clearAllCache(): Promise<void> {
   if (!client) return;
   let cursor: number | string = 0;
   do {
-    const result = await client.scan(cursor, { match: 'cache:*', count: 100 }) as unknown as { cursor: number; keys: string[] };
+    const result = await client.scan(cursor, { match: 'cache:*', count: 100 });
     cursor = result.cursor;
     const keys = result.keys ?? [];
     if (keys.length > 0) await client.del(...keys);

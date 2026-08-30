@@ -20,10 +20,12 @@ vi.mock('@upstash/redis', () => ({
   Redis: vi.fn().mockImplementation(() => ({ publish: vi.fn().mockResolvedValue(1) })),
 }));
 vi.mock('../../src/config', () => ({ config: { redis: { restUrl: null, restToken: null } } }));
+vi.mock('../../src/redis/RedisCommandPort', () => ({
+  getRedisCommandClient: vi.fn().mockReturnValue(null),
+}));
 // Stub out the cache/redis helpers used by sendMessage's rate limit
 vi.mock('../../src/cache/redis', () => ({
-  incr: vi.fn().mockResolvedValue(1),   // first message in window — always allowed
-  expire: vi.fn().mockResolvedValue(undefined),
+  incrWithTtl: vi.fn().mockResolvedValue(1), // first message in window — always allowed
   redis: {},
   checkRateLimit: vi.fn(),
 }));
@@ -71,6 +73,10 @@ function finalizedMedia(storageKey: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // A rejected request can intentionally leave later one-shot DB fixtures
+  // unused. Reset the queue so authorization outcomes cannot bleed between
+  // otherwise independent cases.
+  vi.mocked(db.query).mockReset();
   vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(db.query as any));
 });
 

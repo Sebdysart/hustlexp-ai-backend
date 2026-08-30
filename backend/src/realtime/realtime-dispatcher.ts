@@ -17,10 +17,17 @@
  */
 
 import { db } from '../db.js';
-import { getConnections, getAllConnections, forceDisconnectUser, type SSEConnection } from './connection-registry.js';
+import {
+  getConnections,
+  getAllConnections,
+  forceDisconnectUser,
+  teardownConnection,
+  type SSEConnection,
+} from './connection-registry.js';
 import { PlanService } from '../services/PlanService.js';
 import type { TaskProgressState } from '../types.js';
 import { logger } from '../logger.js';
+import { publishUserRealtimeEvent } from './redis-pubsub.js';
 
 const log = logger.child({ module: 'realtime-dispatcher' });
 
@@ -128,43 +135,28 @@ export async function dispatchTaskProgress(event: OutboxEvent): Promise<void> {
     }
   }
 
-  // Format SSE message
-  const sseMessage = formatSSEMessage(event.payload);
-
-  // Fan out to active connections
-  let fanoutCount = 0;
+  const authorizedRecipients: string[] = [];
   for (const userId of recipients) {
-    // Bug 1 fix: re-check ban status on every fanout so streams opened before
-    // a ban do not continue receiving events.
+    // Re-check ban status before publication so a stream opened before a ban
+    // cannot receive the next progress event.
     if (await checkAndEvictBannedUser(userId)) continue;
-
-    const conns = getConnections(userId);
-    if (!conns) continue;
-
-    for (const conn of conns) {
-      if (conn.closed) continue;
-
-      try {
-        await writeToConnection(conn, sseMessage);
-        fanoutCount++;
-      } catch (error) {
-        // Write failure → mark connection as closed (client will reconnect)
-        log.error({ err: error instanceof Error ? error.message : String(error), userId }, 'Failed to write to SSE connection');
-        conn.closed = true;
-      }
-    }
+    authorizedRecipients.push(userId);
   }
 
-  if (fanoutCount > 0) {
-    log.info({ taskId, recipientCount: recipients.size, connectionCount: fanoutCount }, 'task.progress_updated fanout complete');
-  }
-}
+  // The job may run in a dedicated worker with no process-local API
+  // connections. Publish canonical personal envelopes; every API instance
+  // receives its subscribed user rooms through Redis and performs local SSE
+  // fanout there. Task-room subscription remains disabled.
+  await Promise.all(authorizedRecipients.map((userId) => publishUserRealtimeEvent(
+    userId,
+    event.event_type,
+    event.payload as unknown as Record<string, unknown>,
+    event.payload.occurredAt,
+  )));
 
-/**
- * Format payload as SSE message
- */
-function formatSSEMessage(payload: TaskProgressUpdatedPayload): string {
-  return `event: task.progress_updated\ndata: ${JSON.stringify(payload)}\n\n`;
+  if (authorizedRecipients.length > 0) {
+    log.info({ taskId, recipientCount: authorizedRecipients.length }, 'task.progress_updated Redis fanout complete');
+  }
 }
 
 /**
@@ -192,10 +184,9 @@ export async function dispatchNewMessage(payload: {
   for (const conn of conns) {
     if (conn.closed) continue;
     try {
-      await writeToConnection(conn, sseMessage);
+      await writeToConnection(recipientId, conn, sseMessage);
     } catch (error) {
       log.error({ err: error instanceof Error ? error.message : String(error), recipientId }, 'Failed to write message.new to SSE');
-      conn.closed = true;
     }
   }
 }
@@ -205,7 +196,7 @@ export async function dispatchNewMessage(payload: {
  *
  * Uses the ReadableStream controller to enqueue the message
  */
-async function writeToConnection(conn: SSEConnection, message: string): Promise<void> {
+async function writeToConnection(userId: string, conn: SSEConnection, message: string): Promise<void> {
   if (conn.closed) {
     return; // Connection already closed
   }
@@ -214,8 +205,7 @@ async function writeToConnection(conn: SSEConnection, message: string): Promise<
     const encoder = new TextEncoder();
     conn.controller.enqueue(encoder.encode(message));
   } catch (error) {
-    // Controller closed or stream error - mark connection as closed
-    conn.closed = true;
+    teardownConnection(userId, conn);
     throw error;
   }
 }
@@ -232,11 +222,10 @@ export async function dispatchFlagChanged(flagName: string): Promise<void> {
     for (const conn of conns) {
       if (conn.closed) continue;
       try {
-        await writeToConnection(conn, message);
+        await writeToConnection(userId, conn, message);
         fanoutCount++;
       } catch (error) {
         log.error({ err: error instanceof Error ? error.message : String(error), userId }, 'Failed to write flag_changed to SSE connection');
-        conn.closed = true;
       }
     }
   }

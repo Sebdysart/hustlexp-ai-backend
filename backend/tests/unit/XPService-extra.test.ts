@@ -24,19 +24,6 @@ vi.mock('../../src/services/AlphaInstrumentation', () => ({
   AlphaInstrumentation: { emitTrustDeltaApplied: vi.fn().mockResolvedValue(undefined) },
 }));
 
-// No Redis configured — getXPRedis() returns null
-vi.mock('../../src/config', () => ({
-  config: { redis: { restUrl: '', restToken: '' } },
-}));
-
-vi.mock('@upstash/redis', () => ({
-  Redis: vi.fn().mockImplementation(() => ({
-    get: vi.fn().mockResolvedValue(null),
-    incrby: vi.fn().mockResolvedValue(1),
-    expire: vi.fn().mockResolvedValue(1),
-  })),
-}));
-
 // ── Imports ─────────────────────────────────────────────────────────────────
 
 import { XPService } from '../../src/services/XPService';
@@ -265,7 +252,6 @@ describe('XPService.awardXP', () => {
   }
 
   it('awards XP successfully when all checks pass', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] }); // checkDailyXPCap DB fallback
     mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // checkVelocity
 
     const ledgerRow = makeLedgerRow();
@@ -274,6 +260,7 @@ describe('XPService.awardXP', () => {
         .mockResolvedValueOnce({ rows: [{ xp_total: 0, current_level: 1, current_streak: 0, trust_tier: 1 }] })
         .mockResolvedValueOnce({ rows: [{ mode: 'STANDARD' }] })
         .mockResolvedValueOnce({ rows: [{ count: '0' }] }) // MM3: in-tx velocity re-check
+        .mockResolvedValueOnce({ rows: [{ total: '0' }] }) // authoritative in-tx daily ledger total
         .mockResolvedValueOnce({ rows: [ledgerRow] })
         .mockResolvedValueOnce({ rowCount: 1 });
       return fn(txQuery);
@@ -287,8 +274,67 @@ describe('XPService.awardXP', () => {
     }
   });
 
+  it('uses the locked transaction connection as the daily-cap authority', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // preflight velocity only
+    const txQuery = vi.fn()
+      .mockResolvedValueOnce({ rows: [{ xp_total: 9999, current_level: 8, current_streak: 0, trust_tier: 1 }] })
+      .mockResolvedValueOnce({ rows: [{ mode: 'STANDARD' }] })
+      .mockResolvedValueOnce({ rows: [{ count: '1' }] })
+      .mockResolvedValueOnce({ rows: [{ total: '10000' }] });
+    mockTx.mockImplementationOnce(async (fn: Function) => fn(txQuery));
+
+    const result = await XPService.awardXP(makeXPParams({ baseXP: 1 }));
+
+    expect(result).toMatchObject({ success: false, error: { code: 'XP_DAILY_CAP' } });
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(String(txQuery.mock.calls[0]?.[0])).toContain('FOR UPDATE');
+    expect(String(txQuery.mock.calls[3]?.[0])).toContain('SUM(effective_xp)');
+    expect(txQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO xp_ledger'))).toBe(false);
+  });
+
+  it('fails closed without inserting when the authoritative ledger read fails', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+    const txQuery = vi.fn()
+      .mockResolvedValueOnce({ rows: [{ xp_total: 0, current_level: 1, current_streak: 0, trust_tier: 1 }] })
+      .mockResolvedValueOnce({ rows: [{ mode: 'STANDARD' }] })
+      .mockResolvedValueOnce({ rows: [{ count: '0' }] })
+      .mockRejectedValueOnce(new Error('ledger authority unavailable'));
+    mockTx.mockImplementationOnce(async (fn: Function) => fn(txQuery));
+
+    const result = await XPService.awardXP(makeXPParams());
+
+    expect(result).toMatchObject({
+      success: false,
+      error: { code: 'DB_ERROR', message: 'ledger authority unavailable' },
+    });
+    expect(txQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO xp_ledger'))).toBe(false);
+  });
+
+  it('retries a PostgreSQL serialization conflict before issuing XP', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+    const serializationFailure = Object.assign(new Error('serialization conflict'), { code: '40001' });
+    const ledgerRow = makeLedgerRow({ base_xp: 1, effective_xp: 1 });
+    mockTx
+      .mockRejectedValueOnce(serializationFailure)
+      .mockImplementationOnce(async (fn: Function) => {
+        const txQuery = vi.fn()
+          .mockResolvedValueOnce({ rows: [{ xp_total: 9999, current_level: 8, current_streak: 0, trust_tier: 1 }] })
+          .mockResolvedValueOnce({ rows: [{ mode: 'STANDARD' }] })
+          .mockResolvedValueOnce({ rows: [{ count: '1' }] })
+          .mockResolvedValueOnce({ rows: [{ total: '9999' }] })
+          .mockResolvedValueOnce({ rows: [ledgerRow] })
+          .mockResolvedValueOnce({ rowCount: 1 });
+        return fn(txQuery);
+      });
+    mockQuery.mockResolvedValueOnce({ rows: [{ default_mode: 'worker' }] });
+
+    const result = await XPService.awardXP(makeXPParams({ baseXP: 1 }));
+
+    expect(result.success).toBe(true);
+    expect(mockTx).toHaveBeenCalledTimes(2);
+  });
+
   it('returns NOT_FOUND when user is missing inside transaction', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] }); // checkDailyXPCap DB fallback
     mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // checkVelocity
 
     mockTx.mockImplementationOnce(async (fn: Function) => {
@@ -305,7 +351,6 @@ describe('XPService.awardXP', () => {
   });
 
   it('returns HX101 (INV_1_VIOLATION) when escrow is not released', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] }); // checkDailyXPCap DB fallback
     mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // checkVelocity
     mockIsInvariant.mockReturnValue(true);
     mockTx.mockRejectedValueOnce({ code: 'HX101' });
@@ -319,7 +364,6 @@ describe('XPService.awardXP', () => {
   });
 
   it('returns 23505 (INV_5_VIOLATION) when XP already awarded for this escrow', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] }); // checkDailyXPCap DB fallback
     mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // checkVelocity
     mockIsUnique.mockReturnValue(true);
     mockTx.mockRejectedValueOnce(new Error('unique violation'));
@@ -334,7 +378,6 @@ describe('XPService.awardXP', () => {
   });
 
   it('returns DB_ERROR on unexpected transaction failure', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] }); // checkDailyXPCap DB fallback
     mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // checkVelocity
     mockTx.mockRejectedValueOnce(new Error('connection lost'));
 
@@ -347,7 +390,6 @@ describe('XPService.awardXP', () => {
   });
 
   it('causes a level-up from level 1 to level 2 (100 XP threshold)', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] }); // checkDailyXPCap DB fallback
     mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // checkVelocity
 
     // User has 50 XP, base 60 pushes to 110 > 100 threshold -> level 2
@@ -362,6 +404,7 @@ describe('XPService.awardXP', () => {
         .mockResolvedValueOnce({ rows: [{ xp_total: 50, current_level: 1, current_streak: 0, trust_tier: 1 }] })
         .mockResolvedValueOnce({ rows: [{ mode: 'STANDARD' }] })
         .mockResolvedValueOnce({ rows: [{ count: '0' }] }) // MM3: in-tx velocity re-check
+        .mockResolvedValueOnce({ rows: [{ total: '0' }] }) // authoritative in-tx daily ledger total
         .mockResolvedValueOnce({ rows: [ledgerRow] })
         .mockResolvedValueOnce({ rowCount: 1 });
       return fn(txQuery);
@@ -377,7 +420,6 @@ describe('XPService.awardXP', () => {
   });
 
   it('flags velocity as suspicious but still awards XP when baseXP <= 1000 (advisory)', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] }); // checkDailyXPCap DB fallback
     mockQuery.mockResolvedValueOnce({ rows: [{ count: '6' }] }); // suspicious: >5 but baseXP=100 (advisory)
 
     const ledgerRow = makeLedgerRow();
@@ -386,6 +428,7 @@ describe('XPService.awardXP', () => {
         .mockResolvedValueOnce({ rows: [{ xp_total: 0, current_level: 1, current_streak: 0, trust_tier: 1 }] })
         .mockResolvedValueOnce({ rows: [{ mode: 'STANDARD' }] })
         .mockResolvedValueOnce({ rows: [{ count: '0' }] }) // MM3: in-tx velocity re-check
+        .mockResolvedValueOnce({ rows: [{ total: '0' }] }) // authoritative in-tx daily ledger total
         .mockResolvedValueOnce({ rows: [ledgerRow] })
         .mockResolvedValueOnce({ rowCount: 1 });
       return fn(txQuery);
@@ -399,7 +442,6 @@ describe('XPService.awardXP', () => {
   it('emits trust delta with role=poster when user default_mode is poster', async () => {
     const emitSpy = AlphaInstrumentation.emitTrustDeltaApplied as ReturnType<typeof vi.fn>;
 
-    mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] }); // checkDailyXPCap DB fallback
     mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // checkVelocity
 
     const ledgerRow = makeLedgerRow();
@@ -408,6 +450,7 @@ describe('XPService.awardXP', () => {
         .mockResolvedValueOnce({ rows: [{ xp_total: 0, current_level: 1, current_streak: 0, trust_tier: 1 }] })
         .mockResolvedValueOnce({ rows: [{ mode: 'STANDARD' }] })
         .mockResolvedValueOnce({ rows: [{ count: '0' }] }) // MM3: in-tx velocity re-check
+        .mockResolvedValueOnce({ rows: [{ total: '0' }] }) // authoritative in-tx daily ledger total
         .mockResolvedValueOnce({ rows: [ledgerRow] })
         .mockResolvedValueOnce({ rowCount: 1 });
       return fn(txQuery);
@@ -424,7 +467,6 @@ describe('XPService.awardXP', () => {
     (AlphaInstrumentation.emitTrustDeltaApplied as ReturnType<typeof vi.fn>)
       .mockRejectedValueOnce(new Error('instrumentation down'));
 
-    mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] }); // checkDailyXPCap DB fallback
     mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] }); // checkVelocity
 
     const ledgerRow = makeLedgerRow();
@@ -433,6 +475,7 @@ describe('XPService.awardXP', () => {
         .mockResolvedValueOnce({ rows: [{ xp_total: 0, current_level: 1, current_streak: 0, trust_tier: 1 }] })
         .mockResolvedValueOnce({ rows: [{ mode: 'STANDARD' }] })
         .mockResolvedValueOnce({ rows: [{ count: '0' }] }) // MM3: in-tx velocity re-check
+        .mockResolvedValueOnce({ rows: [{ total: '0' }] }) // authoritative in-tx daily ledger total
         .mockResolvedValueOnce({ rows: [ledgerRow] })
         .mockResolvedValueOnce({ rowCount: 1 });
       return fn(txQuery);
@@ -530,8 +573,7 @@ describe('XPService.getByTask', () => {
 // checkDailyXPCap
 // ═══════════════════════════════════════════════════════════════════════════
 describe('XPService.checkDailyXPCap', () => {
-  it('falls back to DB query when redis not configured (FIX 1: cap always enforced)', async () => {
-    // With Redis unconfigured, checkDailyXPCap queries xp_ledger for today's total
+  it('reads the authoritative PostgreSQL ledger total', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] }); // 0 XP earned today
     const result = await XPService.checkDailyXPCap('user-1');
     expect(result.allowed).toBe(true); // 0 earned < 10000 cap
@@ -546,13 +588,24 @@ describe('XPService.checkDailyXPCap', () => {
     expect(result.allowed).toBe(false); // 10000 + 100 > 10000
     expect(result.earned).toBe(10000);
   });
+
+  it('fails closed when the PostgreSQL ledger cannot be read', async () => {
+    mockQuery.mockRejectedValueOnce(new Error('database unavailable'));
+
+    await expect(XPService.checkDailyXPCap('user-1', 100)).resolves.toEqual({
+      allowed: false,
+      earned: 0,
+      cap: 10000,
+      remaining: 0,
+    });
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
 // trackDailyXP
 // ═══════════════════════════════════════════════════════════════════════════
 describe('XPService.trackDailyXP', () => {
-  it('returns without error when redis not configured', async () => {
+  it('is a compatibility no-op because ledger inserts are authoritative', async () => {
     await expect(XPService.trackDailyXP('user-1', 100)).resolves.not.toThrow();
   });
 });

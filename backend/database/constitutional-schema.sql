@@ -24,6 +24,372 @@ VALUES ('1.0.0', 'system', 'INITIAL', 'Constitutional schema - INV-1 through INV
 ON CONFLICT (version) DO NOTHING;
 
 -- ============================================================================
+-- AI SPEND ATTEMPT AUTHORITY (20260915)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS public.ai_spend_attempt_events (
+  event_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  operation_id TEXT NOT NULL CHECK (length(operation_id) BETWEEN 1 AND 512),
+  attempt_id TEXT NOT NULL CHECK (length(attempt_id) BETWEEN 1 AND 512),
+  transition TEXT NOT NULL CHECK (transition IN ('RESERVED','UNKNOWN','SETTLED','RELEASED')),
+  agent_type TEXT NOT NULL CHECK (length(agent_type) BETWEEN 1 AND 512),
+  subject_ref_hash CHAR(64) NOT NULL CHECK (subject_ref_hash ~ '^[0-9a-f]{64}$'),
+  provider_kind TEXT NOT NULL CHECK (length(provider_kind) BETWEEN 1 AND 128),
+  provider_model TEXT NOT NULL CHECK (length(provider_model) BETWEEN 1 AND 256),
+  request_fingerprint TEXT NOT NULL CHECK (length(request_fingerprint) BETWEEN 1 AND 512),
+  budget_day BIGINT NOT NULL CHECK (budget_day >= 0),
+  reserved_cents INTEGER NOT NULL CHECK (reserved_cents > 0),
+  actual_cost_cents INTEGER,
+  detail_code TEXT CHECK (detail_code IS NULL OR length(detail_code) BETWEEN 1 AND 128),
+  recorded_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  CONSTRAINT ai_spend_attempt_transition_shape_chk CHECK (
+    (transition = 'SETTLED' AND actual_cost_cents BETWEEN 0 AND reserved_cents AND detail_code IS NULL)
+    OR (transition = 'UNKNOWN' AND actual_cost_cents IS NULL AND detail_code IS NOT NULL)
+    OR (transition = 'RELEASED' AND actual_cost_cents IS NULL AND detail_code IS NOT NULL)
+    OR (transition = 'RESERVED' AND actual_cost_cents IS NULL AND detail_code IS NULL)
+  ),
+  CONSTRAINT ai_spend_attempt_transition_uniq UNIQUE (operation_id, attempt_id, transition)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ai_spend_attempt_one_terminal_uniq
+  ON public.ai_spend_attempt_events(operation_id, attempt_id)
+  WHERE transition <> 'RESERVED';
+CREATE INDEX IF NOT EXISTS ai_spend_attempt_recorded_idx
+  ON public.ai_spend_attempt_events(recorded_at, operation_id, attempt_id);
+
+CREATE OR REPLACE FUNCTION public.enforce_ai_spend_attempt_event_insert()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE reserved_fact public.ai_spend_attempt_events%ROWTYPE;
+BEGIN
+  IF NEW.transition = 'RESERVED' THEN RETURN NEW; END IF;
+  SELECT * INTO reserved_fact FROM public.ai_spend_attempt_events
+   WHERE operation_id=NEW.operation_id AND attempt_id=NEW.attempt_id AND transition='RESERVED';
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'HXAI2: AI spend terminal fact requires its exact RESERVED predecessor'
+      USING ERRCODE='P0001';
+  END IF;
+  IF NEW.agent_type IS DISTINCT FROM reserved_fact.agent_type
+    OR NEW.subject_ref_hash IS DISTINCT FROM reserved_fact.subject_ref_hash
+    OR NEW.provider_kind IS DISTINCT FROM reserved_fact.provider_kind
+    OR NEW.provider_model IS DISTINCT FROM reserved_fact.provider_model
+    OR NEW.request_fingerprint IS DISTINCT FROM reserved_fact.request_fingerprint
+    OR NEW.budget_day IS DISTINCT FROM reserved_fact.budget_day
+    OR NEW.reserved_cents IS DISTINCT FROM reserved_fact.reserved_cents
+  THEN
+    RAISE EXCEPTION 'HXAI3: AI spend terminal fact identity differs from RESERVED predecessor'
+      USING ERRCODE='P0001';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.reject_ai_spend_attempt_event_mutation()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'HXAI4: AI spend attempt evidence is append-only' USING ERRCODE='P0001';
+END;
+$$;
+
+DROP TRIGGER IF EXISTS ai_spend_attempt_validate_insert ON public.ai_spend_attempt_events;
+CREATE TRIGGER ai_spend_attempt_validate_insert
+BEFORE INSERT ON public.ai_spend_attempt_events
+FOR EACH ROW EXECUTE FUNCTION public.enforce_ai_spend_attempt_event_insert();
+DROP TRIGGER IF EXISTS ai_spend_attempt_events_no_update_delete ON public.ai_spend_attempt_events;
+CREATE TRIGGER ai_spend_attempt_events_no_update_delete
+BEFORE UPDATE OR DELETE ON public.ai_spend_attempt_events
+FOR EACH ROW EXECUTE FUNCTION public.reject_ai_spend_attempt_event_mutation();
+DROP TRIGGER IF EXISTS ai_spend_attempt_events_no_truncate ON public.ai_spend_attempt_events;
+CREATE TRIGGER ai_spend_attempt_events_no_truncate
+BEFORE TRUNCATE ON public.ai_spend_attempt_events
+FOR EACH STATEMENT EXECUTE FUNCTION public.reject_ai_spend_attempt_event_mutation();
+
+COMMENT ON TABLE public.ai_spend_attempt_events IS
+  'Append-only AI spend attempt evidence. RESERVED commits before provider I/O; UNKNOWN, SETTLED, or RELEASED is the sole terminal fact.';
+COMMENT ON COLUMN public.ai_spend_attempt_events.budget_day IS
+  'UTC epoch-day selected atomically by Redis TIME during the ceiling reservation.';
+COMMENT ON COLUMN public.ai_spend_attempt_events.subject_ref_hash IS
+  'SHA-256 of the budget subject reference; raw prompts and provider output are prohibited here.';
+
+REVOKE UPDATE, DELETE, TRUNCATE ON TABLE public.ai_spend_attempt_events FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.enforce_ai_spend_attempt_event_insert() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.reject_ai_spend_attempt_event_mutation() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.enforce_ai_spend_attempt_event_insert() TO CURRENT_USER;
+GRANT EXECUTE ON FUNCTION public.reject_ai_spend_attempt_event_mutation() TO CURRENT_USER;
+
+
+-- ============================================================================
+-- PROVIDER EVENT INBOX AUTHORITY (20260916)
+-- ============================================================================
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE TABLE IF NOT EXISTS public.provider_event_inbox_observations (
+  observation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  provider_kind TEXT NOT NULL CHECK (provider_kind ~ '^[A-Z][A-Z0-9_]{1,63}$'),
+  provider_event_reference TEXT NOT NULL CHECK (
+    length(provider_event_reference) BETWEEN 1 AND 255
+    AND provider_event_reference = btrim(provider_event_reference)
+    AND provider_event_reference !~ '[[:cntrl:]]'
+  ),
+  provider_event_kind TEXT NOT NULL CHECK (
+    length(provider_event_kind) BETWEEN 1 AND 255
+    AND provider_event_kind = btrim(provider_event_kind)
+    AND provider_event_kind !~ '[[:cntrl:]]'
+  ),
+  operation_id UUID NOT NULL,
+  raw_payload BYTEA NOT NULL CHECK (octet_length(raw_payload) BETWEEN 1 AND 1048576),
+  raw_payload_sha256 CHAR(64) NOT NULL CHECK (
+    raw_payload_sha256 ~ '^[0-9a-f]{64}$'
+    AND raw_payload_sha256 = encode(digest(raw_payload, 'sha256'), 'hex')
+  ),
+  raw_payload_bytes INTEGER NOT NULL CHECK (raw_payload_bytes = octet_length(raw_payload)),
+  first_received_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  CONSTRAINT provider_event_inbox_provider_event_uniq
+    UNIQUE (provider_kind, provider_event_reference)
+);
+
+CREATE TABLE IF NOT EXISTS public.provider_event_inbox_receipts (
+  receipt_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  observation_id UUID NOT NULL REFERENCES public.provider_event_inbox_observations(observation_id)
+    ON DELETE RESTRICT,
+  ingress_idempotency_key TEXT NOT NULL CHECK (
+    ingress_idempotency_key ~ '^[A-Za-z0-9:_-]{16,128}$'
+  ),
+  request_sha256 CHAR(64) NOT NULL CHECK (request_sha256 ~ '^[0-9a-f]{64}$'),
+  authentication_status TEXT NOT NULL CHECK (
+    authentication_status = 'VERIFIED'
+  ),
+  authentication_scheme TEXT NOT NULL CHECK (
+    authentication_scheme ~ '^[A-Z][A-Z0-9_-]{1,63}$'
+  ),
+  authentication_evidence_sha256 CHAR(64) NOT NULL CHECK (
+    authentication_evidence_sha256 ~ '^[0-9a-f]{64}$'
+  ),
+  authenticated_at TIMESTAMPTZ NOT NULL,
+  received_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  CONSTRAINT provider_event_inbox_ingress_idempotency_uniq UNIQUE (ingress_idempotency_key),
+  CONSTRAINT provider_event_inbox_authentication_time_chk CHECK (
+    authenticated_at <= received_at + INTERVAL '5 minutes'
+  )
+);
+
+ALTER TABLE public.provider_event_inbox_receipts
+  ALTER COLUMN authentication_status DROP DEFAULT;
+
+CREATE INDEX IF NOT EXISTS provider_event_inbox_observations_operation_idx
+  ON public.provider_event_inbox_observations(operation_id, first_received_at);
+CREATE INDEX IF NOT EXISTS provider_event_inbox_receipts_observation_idx
+  ON public.provider_event_inbox_receipts(observation_id, received_at);
+
+CREATE OR REPLACE FUNCTION public.reject_provider_event_inbox_mutation()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'HXPEI1: provider event inbox evidence is append-only'
+    USING ERRCODE='P0001';
+END;
+$$;
+
+DROP TRIGGER IF EXISTS provider_event_inbox_observations_no_update_delete
+  ON public.provider_event_inbox_observations;
+CREATE TRIGGER provider_event_inbox_observations_no_update_delete
+BEFORE UPDATE OR DELETE ON public.provider_event_inbox_observations
+FOR EACH ROW EXECUTE FUNCTION public.reject_provider_event_inbox_mutation();
+DROP TRIGGER IF EXISTS provider_event_inbox_observations_no_truncate
+  ON public.provider_event_inbox_observations;
+CREATE TRIGGER provider_event_inbox_observations_no_truncate
+BEFORE TRUNCATE ON public.provider_event_inbox_observations
+FOR EACH STATEMENT EXECUTE FUNCTION public.reject_provider_event_inbox_mutation();
+DROP TRIGGER IF EXISTS provider_event_inbox_receipts_no_update_delete
+  ON public.provider_event_inbox_receipts;
+CREATE TRIGGER provider_event_inbox_receipts_no_update_delete
+BEFORE UPDATE OR DELETE ON public.provider_event_inbox_receipts
+FOR EACH ROW EXECUTE FUNCTION public.reject_provider_event_inbox_mutation();
+DROP TRIGGER IF EXISTS provider_event_inbox_receipts_no_truncate
+  ON public.provider_event_inbox_receipts;
+CREATE TRIGGER provider_event_inbox_receipts_no_truncate
+BEFORE TRUNCATE ON public.provider_event_inbox_receipts
+FOR EACH STATEMENT EXECUTE FUNCTION public.reject_provider_event_inbox_mutation();
+
+COMMENT ON TABLE public.provider_event_inbox_observations IS
+  'One append-only raw authenticated provider-event observation per provider kind and provider event reference. It grants no financial or lifecycle authority.';
+COMMENT ON TABLE public.provider_event_inbox_receipts IS
+  'Append-only verified delivery receipts. Multiple ingress idempotency keys may point to one provider-event observation without duplicating it.';
+COMMENT ON COLUMN public.provider_event_inbox_observations.operation_id IS
+  'HustleXP operation identity used only for later normalization and reconciliation correlation.';
+
+REVOKE ALL ON TABLE
+  public.provider_event_inbox_observations,
+  public.provider_event_inbox_receipts
+FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.reject_provider_event_inbox_mutation() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.reject_provider_event_inbox_mutation() TO CURRENT_USER;
+
+-- ============================================================================
+-- FINANCIAL PROVIDER COMMAND JOURNAL AUTHORITY (20260917)
+-- ============================================================================
+-- Provider-neutral financial provider command journal v1.
+--
+-- One immutable REQUESTED fact must be committed before any adapter invocation.
+-- The exact canonical request is represented only by its SHA-256 digest; raw
+-- payment-method and provider-account material is intentionally not persisted.
+-- Fixed domain bindings provide safe correlation evidence. A row records an
+-- intent only: it grants no provider, payment, deployment, or production
+-- capability and performs no provider I/O.
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE TABLE IF NOT EXISTS public.financial_provider_command_journal (
+  command_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  command_state TEXT NOT NULL DEFAULT 'REQUESTED' CHECK (
+    command_state = 'REQUESTED'
+  ),
+  operation_kind TEXT NOT NULL CHECK (operation_kind IN (
+    'PREPARE_PAYMENT_METHOD',
+    'AUTHORIZE',
+    'SECURE',
+    'VOID',
+    'ADJUST',
+    'CAPTURE',
+    'REFUND',
+    'REVERSAL',
+    'ONBOARD_PROVIDER',
+    'REFRESH_PROVIDER_ACCOUNT_STATE',
+    'SETTLE',
+    'FUND',
+    'PROVIDER_RELEASE',
+    'PAYOUT',
+    'OBSERVE_BANK_SETTLEMENT',
+    'INGEST_WEBHOOK',
+    'RECONCILE'
+  )),
+  operation_id UUID NOT NULL,
+  provider_kind TEXT NOT NULL CHECK (
+    provider_kind IN ('FAKE', 'APPROVED_PROVIDER')
+  ),
+  idempotency_key TEXT NOT NULL CHECK (
+    idempotency_key ~ '^[A-Za-z0-9:_-]{16,128}$'
+  ),
+  provider_expected_version BIGINT NOT NULL CHECK (
+    provider_expected_version BETWEEN 0 AND 9007199254740991
+  ),
+  request_sha256 CHAR(64) NOT NULL CHECK (
+    request_sha256 ~ '^[0-9a-f]{64}$'
+  ),
+  command_identity_sha256 CHAR(64) NOT NULL CHECK (
+    command_identity_sha256 ~ '^[0-9a-f]{64}$'
+  ),
+
+  -- Safe, fixed domain evidence only. Provider payment/account references and
+  -- arbitrary request payloads have no storage column in this table.
+  task_draft_id UUID,
+  task_id UUID,
+  work_order_id UUID,
+  related_operation_id UUID,
+  amount_cents BIGINT CHECK (
+    amount_cents IS NULL OR amount_cents BETWEEN 0 AND 9007199254740991
+  ),
+  currency CHAR(3) CHECK (
+    currency IS NULL OR currency ~ '^[A-Z]{3}$'
+  ),
+  CONSTRAINT financial_provider_command_amount_currency_pair_chk CHECK (
+    (amount_cents IS NULL) = (currency IS NULL)
+  ),
+
+  recorded_actor_id UUID,
+  recorded_actor_kind TEXT CHECK (
+    recorded_actor_kind IS NULL
+    OR recorded_actor_kind IN ('NAMED_OPERATOR', 'SERVICE_PRINCIPAL')
+  ),
+  CONSTRAINT financial_provider_command_actor_bundle_chk CHECK (
+    (recorded_actor_id IS NULL) = (recorded_actor_kind IS NULL)
+  ),
+
+  release_manifest_digest TEXT CHECK (
+    release_manifest_digest IS NULL
+    OR (
+      release_manifest_digest ~ '^sha256:[0-9a-f]{64}$'
+      AND release_manifest_digest <> ('sha256:' || repeat('0', 64))
+    )
+  ),
+  release_id TEXT CHECK (
+    release_id IS NULL
+    OR release_id ~ '^[a-z0-9][a-z0-9._-]{7,127}$'
+  ),
+  release_revision CHAR(40) CHECK (
+    release_revision IS NULL
+    OR (
+      release_revision ~ '^[0-9a-f]{40}$'
+      AND release_revision <> repeat('0', 40)
+    )
+  ),
+  release_environment TEXT CHECK (
+    release_environment IS NULL
+    OR release_environment IN ('local', 'preview', 'staging', 'production')
+  ),
+  release_authentication_status TEXT CHECK (
+    release_authentication_status IS NULL
+    OR release_authentication_status IN ('VERIFIED', 'MISSING', 'INVALID', 'UNTRUSTED_KEY')
+  ),
+  CONSTRAINT financial_provider_command_release_bundle_chk CHECK (
+    num_nonnulls(
+      release_manifest_digest,
+      release_id,
+      release_revision,
+      release_environment,
+      release_authentication_status
+    ) IN (0, 5)
+  ),
+  CONSTRAINT financial_provider_command_approved_provider_evidence_chk CHECK (
+    provider_kind <> 'APPROVED_PROVIDER'
+    OR (
+      recorded_actor_id IS NOT NULL
+      AND release_authentication_status = 'VERIFIED'
+    )
+  ),
+
+  recorded_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  CONSTRAINT financial_provider_command_idempotency_uniq UNIQUE (idempotency_key),
+  CONSTRAINT financial_provider_command_operation_version_uniq
+    UNIQUE (provider_kind, operation_kind, operation_id, provider_expected_version)
+);
+
+CREATE INDEX IF NOT EXISTS financial_provider_command_operation_time_idx
+  ON public.financial_provider_command_journal(operation_id, recorded_at);
+
+CREATE OR REPLACE FUNCTION public.reject_financial_provider_command_mutation()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION 'HXFPCJ1: financial provider command evidence is append-only'
+    USING ERRCODE = 'P0001';
+END;
+$$;
+
+DROP TRIGGER IF EXISTS financial_provider_command_no_update_delete
+  ON public.financial_provider_command_journal;
+CREATE TRIGGER financial_provider_command_no_update_delete
+BEFORE UPDATE OR DELETE ON public.financial_provider_command_journal
+FOR EACH ROW EXECUTE FUNCTION public.reject_financial_provider_command_mutation();
+
+DROP TRIGGER IF EXISTS financial_provider_command_no_truncate
+  ON public.financial_provider_command_journal;
+CREATE TRIGGER financial_provider_command_no_truncate
+BEFORE TRUNCATE ON public.financial_provider_command_journal
+FOR EACH STATEMENT EXECUTE FUNCTION public.reject_financial_provider_command_mutation();
+
+COMMENT ON TABLE public.financial_provider_command_journal IS
+  'Append-only provider-neutral REQUESTED facts committed before adapter I/O. A row is non-authorizing and proves no provider effect.';
+COMMENT ON COLUMN public.financial_provider_command_journal.request_sha256 IS
+  'SHA-256 of the exact deterministic canonical provider request; raw payment and provider-account material is never stored here.';
+COMMENT ON COLUMN public.financial_provider_command_journal.command_identity_sha256 IS
+  'SHA-256 binding operation, provider, idempotency, expected version, request digest, safe domain evidence, actor, and release evidence.';
+
+REVOKE ALL ON TABLE public.financial_provider_command_journal FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.reject_financial_provider_command_mutation() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.reject_financial_provider_command_mutation() TO CURRENT_USER;
+
+
+
+-- ============================================================================
 -- SECTION 1: CORE DOMAIN TABLES
 -- ============================================================================
 
@@ -1743,7 +2109,8 @@ CREATE TABLE IF NOT EXISTS notifications (
   available_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   delivery_state TEXT NOT NULL DEFAULT 'pending' CONSTRAINT notifications_delivery_state_chk CHECK (
     delivery_state IN ('pending','deferred_quiet_hours','deferred_focus','queued','partially_queued',
-      'provider_accepted','delivered','retry_pending','failed_terminal','suppressed','cancelled_superseded')
+      'provider_in_flight','provider_outcome_unknown','provider_accepted','delivered','retry_pending','failed_terminal',
+      'suppressed','cancelled_superseded')
   ),
   delivery_attempts INTEGER NOT NULL DEFAULT 0 CONSTRAINT notifications_delivery_attempts_chk
     CHECK (delivery_attempts BETWEEN 0 AND 5),
@@ -2415,6 +2782,13 @@ CREATE TABLE IF NOT EXISTS outbox_events (
     
     -- BullMQ job tracking (for idempotency and debugging)
     bullmq_job_id VARCHAR(255),  -- Store BullMQ job ID after enqueueing (for tracking and idempotency)
+    dispatch_attempt_id UUID,
+    dispatch_claimed_at TIMESTAMPTZ,
+    dispatch_deadline_at TIMESTAMPTZ,
+    pre_provider_claim_id UUID,
+    pre_provider_claimed_at TIMESTAMPTZ,
+    pre_provider_claim_deadline_at TIMESTAMPTZ,
+    provider_io_started_at TIMESTAMPTZ,
     
     -- Timestamps
     created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
@@ -2428,6 +2802,11 @@ CREATE INDEX IF NOT EXISTS idx_outbox_idempotency ON outbox_events(idempotency_k
 CREATE INDEX IF NOT EXISTS idx_outbox_aggregate ON outbox_events(aggregate_type, aggregate_id, event_version);
 CREATE INDEX IF NOT EXISTS idx_outbox_delivery_due
   ON outbox_events(status, available_at, created_at) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_outbox_dispatch_deadline
+  ON outbox_events(dispatch_deadline_at, id) WHERE status = 'enqueued';
+CREATE INDEX IF NOT EXISTS idx_outbox_pre_provider_deadline
+  ON outbox_events(pre_provider_claim_deadline_at, id)
+  WHERE status = 'processing' AND provider_io_started_at IS NULL;
 
 -- ----------------------------------------------------------------------------
 -- EXPORTS TABLE (GDPR Export State Machine)
@@ -2509,11 +2888,66 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_exports_object_key ON exports(object_key)
 -- Pattern: Service writes to email_outbox → worker sends → updates row
 -- ----------------------------------------------------------------------------
 
+-- Canonical anonymous lead intake authority. Keep this clean-install baseline
+-- converged with 010_web_platform_tables.sql and the Universal V1 ingress port.
+CREATE TABLE IF NOT EXISTS leads (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  submission_id UUID NOT NULL UNIQUE,
+  lead_type TEXT NOT NULL CHECK (lead_type IN ('poster','hustler','business','founder')),
+  email TEXT NOT NULL,
+  name TEXT,
+  phone TEXT,
+  region TEXT,
+  zip TEXT,
+  answers JSONB NOT NULL DEFAULT '{}',
+  utm JSONB,
+  status TEXT NOT NULL DEFAULT 'new',
+  notes TEXT,
+  assigned_to TEXT,
+  source TEXT NOT NULL DEFAULT 'website',
+  consent_version TEXT NOT NULL DEFAULT 'v1',
+  ip_hash TEXT,
+  user_agent_hash TEXT,
+  correlation_id TEXT,
+  home_zip TEXT,
+  radius_miles INTEGER,
+  vehicle TEXT NOT NULL DEFAULT 'none',
+  max_lift_lbs INTEGER,
+  trust_tier INTEGER NOT NULL DEFAULT 0,
+  checkr_status TEXT NOT NULL DEFAULT 'none',
+  available BOOLEAN NOT NULL DEFAULT TRUE,
+  availability_note TEXT,
+  skills TEXT[] NOT NULL DEFAULT '{}',
+  completed_jobs INTEGER NOT NULL DEFAULT 0,
+  cancel_count INTEGER NOT NULL DEFAULT 0,
+  rating_avg NUMERIC,
+  response_minutes INTEGER,
+  user_id UUID REFERENCES users(id),
+  ingress_request_hash TEXT CONSTRAINT leads_ingress_request_hash_shape
+    CHECK (ingress_request_hash IS NULL OR ingress_request_hash ~ '^[0-9a-f]{64}$'),
+  ingress_contract_version INTEGER NOT NULL DEFAULT 0
+    CONSTRAINT leads_ingress_contract_version_shape CHECK (ingress_contract_version IN (0, 1)),
+  execution_environment TEXT,
+  turnstile_action TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  status_changed_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email);
+CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status);
+CREATE INDEX IF NOT EXISTS idx_leads_lead_type ON leads(lead_type);
+CREATE INDEX IF NOT EXISTS idx_leads_user_id ON leads(user_id);
+CREATE INDEX IF NOT EXISTS idx_leads_created ON leads(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_leads_ingress_rate_window
+  ON leads(ip_hash, lead_type, created_at DESC) WHERE ip_hash IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS email_outbox (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     
     -- Recipient
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    lead_id UUID REFERENCES leads(id) ON DELETE RESTRICT,
     to_email VARCHAR(255) NOT NULL,
     
     -- Template
@@ -2532,7 +2966,8 @@ CREATE TABLE IF NOT EXISTS email_outbox (
     idempotency_key VARCHAR(255) UNIQUE NOT NULL,  -- Format: email.send_requested:{template}:{to_email}:{aggregate_id}:{version}
     
     -- Status
-    status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sending', 'sent', 'failed', 'suppressed')),
+    status VARCHAR(32) NOT NULL DEFAULT 'pending' CONSTRAINT email_outbox_status_check
+      CHECK (status IN ('pending', 'sending', 'sent', 'failed', 'suppressed', 'provider_outcome_unknown')),
     attempts INTEGER DEFAULT 0,
     max_attempts INTEGER DEFAULT 3,
     last_error TEXT,
@@ -2554,6 +2989,12 @@ CREATE TABLE IF NOT EXISTS email_outbox (
       REFERENCES notifications(id) ON DELETE SET NULL
     ,available_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     ,updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    ,pre_provider_claim_id UUID
+    ,pre_provider_claimed_at TIMESTAMPTZ
+    ,pre_provider_claim_deadline_at TIMESTAMPTZ
+    ,provider_io_started_at TIMESTAMPTZ
+    ,notification_provider_attempt_id UUID
+    ,CONSTRAINT email_outbox_exactly_one_owner CHECK (num_nonnulls(user_id, lead_id) = 1)
 );
 
 CREATE INDEX IF NOT EXISTS idx_email_outbox_status ON email_outbox(status, created_at) WHERE status = 'pending';
@@ -2561,6 +3002,9 @@ CREATE INDEX IF NOT EXISTS idx_email_outbox_retry ON email_outbox(next_retry_at)
 CREATE INDEX IF NOT EXISTS idx_email_outbox_user ON email_outbox(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_email_outbox_template ON email_outbox(template, status);
 CREATE INDEX IF NOT EXISTS idx_email_outbox_suppressed ON email_outbox(to_email, suppressed_at) WHERE status = 'suppressed';
+CREATE INDEX IF NOT EXISTS idx_email_outbox_lead ON email_outbox(lead_id, created_at DESC) WHERE lead_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_email_outbox_provider_receipt
+  ON email_outbox(provider_name, provider_msg_id) WHERE provider_msg_id IS NOT NULL;
 
 -- UNIQUE constraint: Ensure idempotency key uniqueness (prevents duplicate email sends)
 -- CRITICAL: This ensures deterministic idempotency keys don't allow duplicate sends
@@ -2569,6 +3013,9 @@ CREATE INDEX IF NOT EXISTS idx_email_outbox_notification
   ON email_outbox(notification_id) WHERE notification_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_email_outbox_available
   ON email_outbox(status, available_at, created_at) WHERE status IN ('pending','failed');
+CREATE INDEX IF NOT EXISTS idx_email_outbox_pre_provider_deadline
+  ON email_outbox(pre_provider_claim_deadline_at, id)
+  WHERE status = 'sending' AND provider_io_started_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS device_tokens (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -2591,9 +3038,11 @@ CREATE TABLE IF NOT EXISTS sms_outbox (
   to_phone VARCHAR(20) NOT NULL,
   body TEXT NOT NULL,
   priority VARCHAR(10) NOT NULL DEFAULT 'MEDIUM',
-  status VARCHAR(20) NOT NULL DEFAULT 'pending' CONSTRAINT sms_outbox_status_chk
-    CHECK (status IN ('pending','sending','sent','failed','suppressed')),
+  status VARCHAR(32) NOT NULL DEFAULT 'pending' CONSTRAINT sms_outbox_status_chk
+    CHECK (status IN ('pending','sending','sent','failed','suppressed','provider_outcome_unknown')),
   twilio_sid VARCHAR(100),
+  provider_name TEXT,
+  provider_message_id TEXT,
   error_message TEXT,
   retry_count INTEGER NOT NULL DEFAULT 0 CONSTRAINT sms_outbox_retry_count_chk
     CHECK (retry_count BETWEEN 0 AND 5),
@@ -2611,7 +3060,12 @@ CREATE TABLE IF NOT EXISTS sms_outbox (
   available_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  sent_at TIMESTAMPTZ
+  sent_at TIMESTAMPTZ,
+  pre_provider_claim_id UUID,
+  pre_provider_claimed_at TIMESTAMPTZ,
+  pre_provider_claim_deadline_at TIMESTAMPTZ,
+  provider_io_started_at TIMESTAMPTZ,
+  notification_provider_attempt_id UUID
 );
 CREATE INDEX IF NOT EXISTS idx_sms_outbox_status
   ON sms_outbox(status) WHERE status IN ('pending','failed');
@@ -2619,14 +3073,20 @@ CREATE INDEX IF NOT EXISTS idx_sms_outbox_notification
   ON sms_outbox(notification_id) WHERE notification_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_sms_outbox_available
   ON sms_outbox(status, available_at, created_at) WHERE status IN ('pending','failed');
+CREATE INDEX IF NOT EXISTS idx_sms_outbox_provider_receipt
+  ON sms_outbox(provider_name, provider_message_id) WHERE provider_message_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sms_outbox_pre_provider_deadline
+  ON sms_outbox(pre_provider_claim_deadline_at, id)
+  WHERE status = 'sending' AND provider_io_started_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS notification_deliveries (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   notification_id UUID NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
   channel TEXT NOT NULL CHECK (channel IN ('in_app','push','email','sms')),
   state TEXT NOT NULL CONSTRAINT notification_deliveries_state_chk CHECK (state IN (
-    'pending','deferred_quiet_hours','deferred_focus','queued','provider_accepted','delivered',
-    'retry_pending','failed_terminal','suppressed','cancelled_superseded'
+    'pending','deferred_quiet_hours','deferred_focus','queued','provider_in_flight',
+    'provider_outcome_unknown','provider_accepted','delivered','retry_pending','failed_terminal','suppressed',
+    'cancelled_superseded'
   )),
   provider_name TEXT,
   provider_message_id TEXT,
@@ -2639,6 +3099,12 @@ CREATE TABLE IF NOT EXISTS notification_deliveries (
   terminal_visibility TEXT NOT NULL DEFAULT 'operator_exception'
     CHECK (terminal_visibility = 'operator_exception'),
   provider_accepted_at TIMESTAMPTZ,
+  provider_attempt_id UUID,
+  provider_attempt_started_at TIMESTAMPTZ,
+  provider_attempt_deadline_at TIMESTAMPTZ,
+  recovery_claim_id UUID,
+  recovery_claimed_at TIMESTAMPTZ,
+  recovery_claim_deadline_at TIMESTAMPTZ,
   delivered_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -2646,6 +3112,15 @@ CREATE TABLE IF NOT EXISTS notification_deliveries (
   CHECK (
     (state = 'failed_terminal' AND terminal_failure_at IS NOT NULL AND last_error IS NOT NULL)
     OR (state <> 'failed_terminal' AND terminal_failure_at IS NULL)
+  ),
+  CONSTRAINT notification_deliveries_provider_attempt_truth_chk CHECK (
+    state NOT IN ('provider_in_flight','provider_outcome_unknown')
+    OR (
+      provider_attempt_id IS NOT NULL
+      AND provider_attempt_started_at IS NOT NULL
+      AND provider_attempt_deadline_at IS NOT NULL
+      AND provider_attempt_deadline_at > provider_attempt_started_at
+    )
   )
 );
 CREATE INDEX IF NOT EXISTS idx_notification_deliveries_due
@@ -2656,6 +3131,12 @@ CREATE INDEX IF NOT EXISTS idx_notification_deliveries_provider
 CREATE INDEX IF NOT EXISTS idx_notification_deliveries_terminal
   ON notification_deliveries(terminal_failure_at DESC)
   WHERE state = 'failed_terminal' AND terminal_visibility = 'operator_exception';
+CREATE INDEX IF NOT EXISTS idx_notification_deliveries_in_flight_deadline
+  ON notification_deliveries(provider_attempt_deadline_at, notification_id)
+  WHERE state = 'provider_in_flight';
+CREATE INDEX IF NOT EXISTS idx_notification_deliveries_recovery_claim_deadline
+  ON notification_deliveries(recovery_claim_deadline_at, notification_id)
+  WHERE state = 'retry_pending' AND recovery_claim_id IS NOT NULL;
 
 -- ----------------------------------------------------------------------------
 -- TRIGGERS

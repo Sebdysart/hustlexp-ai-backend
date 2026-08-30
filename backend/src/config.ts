@@ -22,17 +22,19 @@ export const config = {
     pgbouncer: process.env.DB_PGBOUNCER === 'true',
   },
 
-  // Cache (Upstash Redis)
+  // Redis transports. The provider-neutral TCP URL is the canonical portable
+  // path for every Redis command consumer, BullMQ, and realtime pub/sub. The
+  // Upstash REST pair is an explicit legacy alternate transport. It is not
+  // runtime failover. Never
+  // infer one transport's credentials from the other: redis:// is not an HTTP
+  // endpoint and an ambiguous REDIS_TOKEN is not an Upstash REST bearer token.
   redis: {
-    // REST API (for @upstash/redis client - caching, rate limiting)
-    restUrl: process.env.UPSTASH_REDIS_REST_URL || process.env.REDIS_URL || '',
-    restToken: process.env.UPSTASH_REDIS_REST_TOKEN || process.env.REDIS_TOKEN || '',
-    // Direct TCP (for BullMQ/ioredis - job queues)
-    // Upstash provides both REST and direct TCP endpoints
-    // Use UPSTASH_REDIS_URL (direct TCP connection string) for BullMQ
-    // Format: redis://default:{password}@{endpoint}:6379
-    // OR use separate Redis instance: REDIS_URL=redis://localhost:6379
-    url: process.env.UPSTASH_REDIS_URL || process.env.REDIS_URL || '', // Direct TCP connection string
+    // Explicit REST-only compatibility credentials.
+    restUrl: process.env.UPSTASH_REDIS_REST_URL || '',
+    restToken: process.env.UPSTASH_REDIS_REST_TOKEN || '',
+    // Direct TCP connection string. REDIS_URL is canonical; the vendor-named
+    // alias remains accepted only for backwards-compatible deployments.
+    url: process.env.REDIS_URL || process.env.UPSTASH_REDIS_URL || '',
   },
 
   // Payments (Stripe)
@@ -298,10 +300,40 @@ function stripeConfigurationErrors(): string[] {
 
 function redisConfigurationErrors(): string[] {
   const errors: string[] = [];
-  if (!config.redis.restUrl)
-    errors.push('UPSTASH_REDIS_REST_URL is required for caching/rate limiting');
+  if (Boolean(config.redis.restUrl) !== Boolean(config.redis.restToken)) {
+    errors.push(
+      'UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN must be configured together when using the legacy REST alternate',
+    );
+  }
   if (!config.redis.url)
-    errors.push('UPSTASH_REDIS_URL or REDIS_URL is required for BullMQ job queues');
+    errors.push('REDIS_URL (or legacy UPSTASH_REDIS_URL) is required for Redis commands, BullMQ, and realtime');
+  else {
+    try {
+      const redisUrl = new URL(config.redis.url);
+      if (!['redis:', 'rediss:'].includes(redisUrl.protocol) || !redisUrl.hostname) {
+        errors.push('REDIS_URL (or legacy UPSTASH_REDIS_URL) must use redis: or rediss: with a hostname');
+      }
+    } catch {
+      errors.push('REDIS_URL (or legacy UPSTASH_REDIS_URL) must be a valid Redis URL');
+    }
+  }
+  if (config.redis.restUrl) {
+    try {
+      const restUrl = new URL(config.redis.restUrl);
+      if (
+        restUrl.protocol !== 'https:'
+        || !restUrl.hostname
+        || restUrl.username
+        || restUrl.password
+        || restUrl.search
+        || restUrl.hash
+      ) {
+        errors.push('UPSTASH_REDIS_REST_URL must be an HTTPS URL without embedded credentials, query, or fragment');
+      }
+    } catch {
+      errors.push('UPSTASH_REDIS_REST_URL must be a valid HTTPS URL');
+    }
+  }
   return errors;
 }
 

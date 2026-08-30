@@ -32,15 +32,13 @@ vi.mock('../../src/logger', () => {
   return { logger: { child } };
 });
 
-// Controllable Redis incr/expire stubs for rate-limit testing
-const { mockIncr, mockExpire } = vi.hoisted(() => ({
-  mockIncr: vi.fn<[], Promise<number>>(),
-  mockExpire: vi.fn<[], Promise<void>>().mockResolvedValue(undefined),
+// Controllable atomic Redis counter stub for rate-limit testing
+const { mockIncrWithTtl } = vi.hoisted(() => ({
+  mockIncrWithTtl: vi.fn<[string, number], Promise<number>>(),
 }));
 
 vi.mock('../../src/cache/redis', () => ({
-  incr: mockIncr,
-  expire: mockExpire,
+  incrWithTtl: mockIncrWithTtl,
   redis: {},
   checkRateLimit: vi.fn(),
 }));
@@ -82,9 +80,8 @@ const msg = {
 beforeEach(() => {
   vi.clearAllMocks();
   (db.query as ReturnType<typeof vi.fn>).mockReset();
-  // Default: Redis incr returns 1 (first message in window) — allow
-  mockIncr.mockResolvedValue(1);
-  mockExpire.mockResolvedValue(undefined);
+  // Default: Redis atomic counter returns 1 (first message in window) — allow
+  mockIncrWithTtl.mockResolvedValue(1);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -93,7 +90,7 @@ beforeEach(() => {
 
 describe('MessagingService.sendMessage — per-sender-per-task rate limit', () => {
   it('allows sending when Redis counter is at limit (30)', async () => {
-    mockIncr.mockResolvedValue(30); // exactly at the limit — still allowed
+    mockIncrWithTtl.mockResolvedValue(30); // exactly at the limit — still allowed
     (db.query as any)
       .mockResolvedValueOnce({ rows: [taskRow] })
       .mockResolvedValueOnce({ rows: [msg] });
@@ -108,7 +105,7 @@ describe('MessagingService.sendMessage — per-sender-per-task rate limit', () =
   });
 
   it('rejects sendMessage when Redis counter exceeds 30 (message flooding)', async () => {
-    mockIncr.mockResolvedValue(31); // 31st message in the window — rejected
+    mockIncrWithTtl.mockResolvedValue(31); // 31st message in the window — rejected
     (db.query as any).mockResolvedValueOnce({ rows: [taskRow] });
 
     const result = await MessagingService.sendMessage({
@@ -125,7 +122,7 @@ describe('MessagingService.sendMessage — per-sender-per-task rate limit', () =
   });
 
   it('rejects at 100 messages (well above limit)', async () => {
-    mockIncr.mockResolvedValue(100);
+    mockIncrWithTtl.mockResolvedValue(100);
     (db.query as any).mockResolvedValueOnce({ rows: [taskRow] });
 
     const result = await MessagingService.sendMessage({
@@ -140,8 +137,8 @@ describe('MessagingService.sendMessage — per-sender-per-task rate limit', () =
     }
   });
 
-  it('calls redis.incr with the correct key pattern (msg_rate:{senderId}:{taskId})', async () => {
-    mockIncr.mockResolvedValue(1);
+  it('atomically increments the correct key with a 60-second first-write TTL', async () => {
+    mockIncrWithTtl.mockResolvedValue(1);
     (db.query as any)
       .mockResolvedValueOnce({ rows: [taskRow] })
       .mockResolvedValueOnce({ rows: [msg] });
@@ -153,46 +150,31 @@ describe('MessagingService.sendMessage — per-sender-per-task rate limit', () =
       content: 'Hello',
     });
 
-    expect(mockIncr).toHaveBeenCalledWith('msg_rate:poster-1:task-1');
+    expect(mockIncrWithTtl).toHaveBeenCalledWith('msg_rate:poster-1:task-1', 60);
   });
 
-  it('sets 60-second TTL on the rate-limit key when count is 1 (first message)', async () => {
-    mockIncr.mockResolvedValue(1);
-    (db.query as any)
-      .mockResolvedValueOnce({ rows: [taskRow] })
-      .mockResolvedValueOnce({ rows: [msg] });
+  it('fails closed when the Redis rate-limit authority errors', async () => {
+    mockIncrWithTtl.mockRejectedValue(new Error('redis unavailable'));
+    (db.query as any).mockResolvedValueOnce({ rows: [taskRow] });
 
-    await MessagingService.sendMessage({
+    const result = await MessagingService.sendMessage({
       taskId: 'task-1',
       senderId: 'poster-1',
       messageType: 'TEXT',
-      content: 'First message',
+      content: 'Do not bypass the guard',
     });
 
-    expect(mockExpire).toHaveBeenCalledWith('msg_rate:poster-1:task-1', 60);
-  });
-
-  it('does NOT reset TTL when count > 1 (subsequent messages in same window)', async () => {
-    mockIncr.mockResolvedValue(5); // 5th message — key already has TTL
-    (db.query as any)
-      .mockResolvedValueOnce({ rows: [taskRow] })
-      .mockResolvedValueOnce({ rows: [msg] });
-
-    await MessagingService.sendMessage({
-      taskId: 'task-1',
-      senderId: 'poster-1',
-      messageType: 'TEXT',
-      content: 'Fifth message',
+    expect(result).toMatchObject({
+      success: false,
+      error: { code: 'SERVICE_UNAVAILABLE' },
     });
-
-    // expire should NOT be called for count > 1
-    expect(mockExpire).not.toHaveBeenCalled();
+    expect(db.query).toHaveBeenCalledTimes(1);
   });
 
   it('rate-limit key is sender+task scoped — different senders get independent buckets', async () => {
     // Both senders at count=1 (first message each) — both should be allowed.
     // task-1 has poster-1 and worker-1 as participants — both can send.
-    mockIncr.mockResolvedValue(1);
+    mockIncrWithTtl.mockResolvedValue(1);
     (db.query as any)
       // First call: poster-1 sends to worker-1
       .mockResolvedValueOnce({ rows: [taskRow] })
@@ -212,7 +194,7 @@ describe('MessagingService.sendMessage — per-sender-per-task rate limit', () =
     expect(r2.success).toBe(true);
 
     // Each sender produces a distinct Redis key
-    const incrKeys = (mockIncr as any).mock.calls.map((c: string[]) => c[0]);
+    const incrKeys = (mockIncrWithTtl as any).mock.calls.map((c: string[]) => c[0]);
     expect(incrKeys).toContain('msg_rate:poster-1:task-1');
     expect(incrKeys).toContain('msg_rate:worker-1:task-1');
   });
@@ -230,7 +212,7 @@ describe('MessagingService.sendMessage — per-sender-per-task rate limit', () =
       expect(result.error.code).toBe('INVALID_STATE');
     }
     // incr should not have been called (request rejected before rate limit check)
-    expect(mockIncr).not.toHaveBeenCalled();
+    expect(mockIncrWithTtl).not.toHaveBeenCalled();
   });
 });
 

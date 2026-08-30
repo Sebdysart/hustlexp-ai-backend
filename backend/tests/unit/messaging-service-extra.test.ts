@@ -36,10 +36,12 @@ vi.mock('@upstash/redis', () => ({
     publish = mockRedisPublish;
   },
 }));
+vi.mock('../../src/redis/RedisCommandPort', () => ({
+  getRedisCommandClient: vi.fn(() => ({ publish: mockRedisPublish })),
+}));
 // Stub out the cache/redis helpers used by sendMessage's rate limit
 vi.mock('../../src/cache/redis', () => ({
-  incr: vi.fn().mockResolvedValue(1),   // first message in window — always allowed
-  expire: vi.fn().mockResolvedValue(undefined),
+  incrWithTtl: vi.fn().mockResolvedValue(1), // first message in window — always allowed
   redis: {},
   checkRateLimit: vi.fn(),
 }));
@@ -416,7 +418,7 @@ describe('MessagingService.sendMessage (extra)', () => {
     }
   });
 
-  it('publishes to Redis realtime channel when config has restUrl', async () => {
+  it('publishes the canonical versioned user realtime envelope', async () => {
     mockDb.query
       .mockResolvedValueOnce({ rows: [taskRow] })
       .mockResolvedValueOnce({ rows: [msg] });
@@ -425,11 +427,19 @@ describe('MessagingService.sendMessage (extra)', () => {
       taskId: 'task-1', senderId: 'poster-1', messageType: 'TEXT', content: 'Hello',
     });
 
-    // Redis publish should have been called for realtime delivery
-    expect(mockRedisPublish).toHaveBeenCalledWith(
-      expect.stringContaining('realtime:user:'),
-      expect.stringContaining('message.new')
-    );
+    expect(mockRedisPublish).toHaveBeenCalledTimes(1);
+    const [channel, rawEnvelope] = mockRedisPublish.mock.calls[0] as [string, string];
+    expect(channel).toBe('room:user:worker-1');
+    expect(JSON.parse(rawEnvelope)).toEqual(expect.objectContaining({
+      schemaVersion: 1,
+      type: 'message.new',
+      room: channel,
+      payload: expect.objectContaining({
+        messageId: 'msg-1',
+        taskId: 'task-1',
+        senderId: 'poster-1',
+      }),
+    }));
   });
 
   it('allows messaging in PROOF_SUBMITTED task state', async () => {

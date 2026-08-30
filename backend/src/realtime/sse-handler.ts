@@ -16,7 +16,7 @@
 
 import { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { addConnection, removeConnection, type SSEConnection } from './connection-registry.js';
+import { addConnection, teardownConnection, type SSEConnection } from './connection-registry.js';
 import { firebaseAuth } from '../auth/firebase.js';
 import { db } from '../db.js';
 import type { User } from '../types.js';
@@ -24,7 +24,7 @@ import { logger } from '../logger.js';
 import { 
   initializePubSub, 
   subscribeToRoom, 
-  unsubscribeAllRooms,
+  unsubscribeFromRoom,
   getUserRoomKey 
 } from './redis-pubsub.js';
 
@@ -81,6 +81,16 @@ export async function sseHandler(c: Context): Promise<Response> {
   // Create connection object (controller will be set in stream start)
   let conn: SSEConnection | null = null;
 
+  const cleanupConnection = (
+    reason: 'disconnect' | 'cancel' | 'initialization_error',
+    controller?: ReadableStreamDefaultController<Uint8Array>,
+  ): void => {
+    if (!conn || conn.teardownComplete) return;
+    teardownConnection(user.id, conn, controller !== undefined);
+
+    log.info({ userId: user.id, reason }, 'SSE connection cleaned up');
+  };
+
   // Create ReadableStream for SSE
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -101,6 +111,7 @@ export async function sseHandler(c: Context): Promise<Response> {
         addConnection(user.id, conn);
       } catch (limitErr) {
         conn.closed = true;
+        conn.teardownComplete = true;
         log.warn({ userId: user.id, err: limitErr instanceof Error ? limitErr.message : String(limitErr) }, 'SSE connection limit reached; closing stream gracefully');
         const encoder = new TextEncoder();
         try {
@@ -118,7 +129,15 @@ export async function sseHandler(c: Context): Promise<Response> {
       }
 
       // Subscribe to user's personal room (for direct messages)
-      subscribeToRoom(user.id, getUserRoomKey(user.id));
+      const personalRoom = getUserRoomKey(user.id);
+      try {
+        subscribeToRoom(user.id, personalRoom);
+        conn.releasePersonalRoom = () => unsubscribeFromRoom(user.id, personalRoom);
+      } catch (subscriptionError) {
+        log.error({ err: subscriptionError, userId: user.id }, 'Failed to acquire personal realtime room');
+        cleanupConnection('initialization_error', controller);
+        return;
+      }
 
       // Send initial connection message with connection ID
       const encoder = new TextEncoder();
@@ -131,39 +150,24 @@ export async function sseHandler(c: Context): Promise<Response> {
         controller.enqueue(encoder.encode(`data: ${initMessage}\n\n`));
       } catch (_error) {
         // Controller already closed or error
-        if (conn) {
-          conn.closed = true;
-          removeConnection(user.id, conn);
-          unsubscribeAllRooms(user.id);
-        }
+        cleanupConnection('initialization_error', controller);
       }
 
       // Handle client disconnect via request signal
       if (c.req.raw.signal) {
-        c.req.raw.signal.addEventListener('abort', () => {
-          if (conn) {
-            conn.closed = true;
-            removeConnection(user.id, conn);
-            // Unsubscribe from all rooms on disconnect
-            unsubscribeAllRooms(user.id);
-            log.info({ userId: user.id }, 'SSE disconnected');
-            try {
-              controller.close();
-            } catch (_error) {
-              // Controller already closed
-            }
-          }
-        });
+        const handleAbort = (): void => {
+          cleanupConnection('disconnect', controller);
+        };
+        if (c.req.raw.signal.aborted) {
+          handleAbort();
+        } else {
+          c.req.raw.signal.addEventListener('abort', handleAbort, { once: true });
+        }
       }
     },
     cancel() {
       // Stream cancelled - remove connection and unsubscribe
-      if (conn) {
-        conn.closed = true;
-        removeConnection(user.id, conn);
-        unsubscribeAllRooms(user.id);
-        log.info({ userId: user.id }, 'SSE stream cancelled');
-      }
+      cleanupConnection('cancel');
     },
   });
 

@@ -4,7 +4,7 @@ Status: `CURRENT_IMPLEMENTATION_REFERENCE / NOT_DEPLOYMENT_AUTHORITY`
 
 Production launch: `NO-GO`
 
-Evidence refreshed: `2026-08-26`. Mutable GitHub and Railway state must be read again before any release decision.
+Evidence refreshed through a public read-only observation on `2026-08-28`. Mutable GitHub and Railway administrator state must be authenticated and read again before any release decision.
 
 Read [the Team Goal and Execution Contract](HUSTLEXP_TEAM_ALIGNMENT.md). A workflow definition or green run proves only the named check on one exact SHA. It does not authorize merge, deployment, provider configuration, database mutation, or production effects.
 
@@ -20,7 +20,20 @@ The checked-in production workflow contains no Railway token, CLI command, deplo
 
 The complete test context provisions disposable PostgreSQL and Redis service containers in GitHub Actions. It runs `scripts/prepare-test-databases.mjs` against the allowlisted loopback administrator database and then rejects any failed, skipped, pending, or todo Vitest result. No Neon, Supabase, or production database secret is part of that gate.
 
-## Current GitHub readback
+## Critical public readback — 2026-08-28
+
+The source-dated [release-authority incident readback](incidents/2026-08-28-release-authority-readback.md) supersedes the older default-branch and production-trigger facts below:
+
+- public `main` is unsigned `d42975be9691c6dbe99f7580fac1b0d8258a3f7a`, seven commits ahead of `73c44eee…`, and includes a merge commit;
+- PR #281 reached `main` with no approving review while lint and tests failed and Build Validation was skipped;
+- the current default-branch tree contains 3,248 `.local-tools` entries;
+- Railway created GitHub deployment `6142799813` for `d42975be…` in `authentic-compassion / production`, and its latest public status is `success`;
+- the public ruleset payload still describes the intended protections but omits administrator-only bypass fields, so zero bypass actors cannot be re-proven without approved authentication; and
+- the direct mainline-parent-1 revert now conflicts in 36 paths and was aborted without a commit, activating the reconstruction branch of the recovery plan.
+
+Release authority must therefore be treated as compromised until an authenticated readback explains and removes the bypass path, production Git auto-deployment is detached, and one new signed forward-repair candidate passes every exact gate. No merge—including documentation—is safe while the production trigger remains attached.
+
+## Prior authenticated GitHub readback — 2026-08-26
 
 Repository and pull-request state was read without mutation on `2026-08-26`. A least-privilege authenticated ruleset readback observed ruleset `20840525` at `2026-08-26T23:58:53-07:00`:
 
@@ -48,9 +61,9 @@ Green results on recovery SHA `90b92c…` do not cover later uncommitted alignme
 
 ## Railway authority boundary
 
-Railway is the intended hosting platform, but current Railway administrative state was inaccessible on `2026-08-26`: no approved Railway session or project credential was available, and no current readback proved production Git auto-deploy disabled or an isolated `hustlexp-nonprod` project provisioned.
+Railway is the intended hosting platform, but Railway administrative state remains inaccessible: no approved Railway session or project credential is available, and no authenticated readback proves an isolated `hustlexp-nonprod` project provisioned.
 
-A source-dated `2026-08-25` incident observation associated Railway project `authentic-compassion` with an automatic deployment after a push to `main`. That evidence remains a blocker and must be preserved, but it is not proof of the current switch state. Before any protected merge, an authorized administrator must disable production Git auto-deployment and re-read the setting. Production promotion must then be an explicit exact-manifest action behind environment approval and runtime provenance checks.
+The public `2026-08-28` GitHub deployment record binds current `main` SHA `d42975be…` to a successful `authentic-compassion / production` deployment. This is current evidence that the production Git trigger remained operative for that commit, although only an authenticated Railway readback can prove the present switch state. Before any protected merge, an authorized administrator must disable production Git auto-deployment and re-read the setting. Production promotion must then be an explicit exact-manifest action behind environment approval and runtime provenance checks.
 
 The local `hustlexp-platform` candidate defines the desired nonproduction project, immutable-image promotion, manifest verification, and staging/preview isolation. Configuration-as-code is not proof that Railway resources exist.
 

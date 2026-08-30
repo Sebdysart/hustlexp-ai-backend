@@ -27,8 +27,9 @@ const {
   mockDbQuery,
   mockAddConnection,
   mockRemoveConnection,
+  mockTeardownConnection,
   mockSubscribeToRoom,
-  mockUnsubscribeAllRooms,
+  mockUnsubscribeFromRoom,
   mockGetUserRoomKey,
   mockInitializePubSub,
 } = vi.hoisted(() => ({
@@ -36,8 +37,9 @@ const {
   mockDbQuery: vi.fn(),
   mockAddConnection: vi.fn(),
   mockRemoveConnection: vi.fn(),
+  mockTeardownConnection: vi.fn(),
   mockSubscribeToRoom: vi.fn(),
-  mockUnsubscribeAllRooms: vi.fn(),
+  mockUnsubscribeFromRoom: vi.fn(),
   mockGetUserRoomKey: vi.fn((userId: string) => `room:user:${userId}`),
   mockInitializePubSub: vi.fn(),
 }));
@@ -53,6 +55,7 @@ vi.mock('../../src/db', () => ({
 vi.mock('../../src/realtime/connection-registry', () => ({
   addConnection: mockAddConnection,
   removeConnection: mockRemoveConnection,
+  teardownConnection: mockTeardownConnection,
   getConnections: vi.fn().mockReturnValue(undefined),
   getAllConnections: vi.fn().mockReturnValue(new Map()),
 }));
@@ -60,7 +63,7 @@ vi.mock('../../src/realtime/connection-registry', () => ({
 vi.mock('../../src/realtime/redis-pubsub', () => ({
   initializePubSub: mockInitializePubSub,
   subscribeToRoom: mockSubscribeToRoom,
-  unsubscribeAllRooms: mockUnsubscribeAllRooms,
+  unsubscribeFromRoom: mockUnsubscribeFromRoom,
   getUserRoomKey: mockGetUserRoomKey,
   // other exports unused by sseHandler
   getTaskRoomKey: vi.fn((id: string) => `room:task:${id}`),
@@ -118,6 +121,23 @@ function makeContext(authHeader?: string, signal?: AbortSignal): any {
 beforeEach(() => {
   vi.clearAllMocks();
   mockInitializePubSub.mockImplementation(() => { /* no-op */ });
+  mockTeardownConnection.mockImplementation((userId: string, conn: {
+    closed: boolean;
+    teardownComplete?: boolean;
+    releasePersonalRoom?: () => void;
+    controller: { close?: () => void };
+  }, closeController = true) => {
+    if (conn.teardownComplete) return;
+    conn.teardownComplete = true;
+    conn.closed = true;
+    mockRemoveConnection(userId, conn);
+    const release = conn.releasePersonalRoom;
+    conn.releasePersonalRoom = undefined;
+    release?.();
+    if (closeController) {
+      try { conn.controller.close?.(); } catch { /* already closed */ }
+    }
+  });
 });
 
 // ============================================================================
@@ -237,7 +257,7 @@ describe('sseHandler', () => {
   // Disconnect / abort signal
   // =========================================================================
   describe('disconnect handling', () => {
-    it('removes connection and unsubscribes all rooms on abort signal', async () => {
+    it('removes the exact connection and releases its personal room on abort signal', async () => {
       mockVerifyIdToken.mockResolvedValueOnce({ uid: 'firebase-uid-1' });
       mockDbQuery.mockResolvedValueOnce({ rows: [mockUser] });
 
@@ -259,9 +279,13 @@ describe('sseHandler', () => {
         mockUser.id,
         expect.objectContaining({ userId: mockUser.id })
       );
-      expect(mockUnsubscribeAllRooms).toHaveBeenCalledWith(mockUser.id);
+      expect(mockUnsubscribeFromRoom).toHaveBeenCalledWith(
+        mockUser.id,
+        `room:user:${mockUser.id}`,
+      );
 
-      reader.cancel();
+      await reader.cancel();
+      expect(mockUnsubscribeFromRoom).toHaveBeenCalledTimes(1);
     });
 
     it('cleans up on stream cancel', async () => {
@@ -279,6 +303,55 @@ describe('sseHandler', () => {
       // cleanup may happen synchronously or after cancel
       // Just verify no error is thrown
       expect(true).toBe(true);
+    });
+
+    it('cleans up two same-user connections independently and only once each', async () => {
+      mockVerifyIdToken
+        .mockResolvedValueOnce({ uid: 'firebase-uid-1' })
+        .mockResolvedValueOnce({ uid: 'firebase-uid-1' });
+      mockDbQuery
+        .mockResolvedValueOnce({ rows: [mockUser] })
+        .mockResolvedValueOnce({ rows: [mockUser] });
+
+      const firstAbort = new AbortController();
+      const secondAbort = new AbortController();
+      const firstResponse = await sseHandler(makeContext('Bearer valid-token', firstAbort.signal));
+      const secondResponse = await sseHandler(makeContext('Bearer valid-token', secondAbort.signal));
+      const firstReader = firstResponse.body!.getReader();
+      const secondReader = secondResponse.body!.getReader();
+      await firstReader.read();
+      await secondReader.read();
+
+      await firstReader.cancel();
+      firstAbort.abort();
+
+      expect(mockSubscribeToRoom).toHaveBeenCalledTimes(2);
+      expect(mockRemoveConnection).toHaveBeenCalledTimes(1);
+      expect(mockUnsubscribeFromRoom).toHaveBeenCalledTimes(1);
+
+      await secondReader.cancel();
+      secondAbort.abort();
+
+      expect(mockRemoveConnection).toHaveBeenCalledTimes(2);
+      expect(mockUnsubscribeFromRoom).toHaveBeenCalledTimes(2);
+    });
+
+    it('immediately tears down a connection created with an already-aborted signal', async () => {
+      mockVerifyIdToken.mockResolvedValueOnce({ uid: 'firebase-uid-1' });
+      mockDbQuery.mockResolvedValueOnce({ rows: [mockUser] });
+      const abortController = new AbortController();
+      abortController.abort();
+
+      const response = await sseHandler(makeContext('Bearer valid-token', abortController.signal));
+      const reader = response.body!.getReader();
+      await reader.read();
+
+      expect(mockAddConnection).toHaveBeenCalledOnce();
+      expect(mockTeardownConnection).toHaveBeenCalledOnce();
+      expect(mockRemoveConnection).toHaveBeenCalledOnce();
+      expect(mockUnsubscribeFromRoom).toHaveBeenCalledOnce();
+      await reader.cancel();
+      expect(mockTeardownConnection).toHaveBeenCalledOnce();
     });
   });
 

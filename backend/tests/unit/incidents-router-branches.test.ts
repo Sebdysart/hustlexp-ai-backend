@@ -143,12 +143,15 @@ describe('incidents.diagnose', () => {
   it('throws with error message on failure', async () => {
     mockDiagnosis.diagnoseIncident.mockResolvedValueOnce({
       success: false,
-      error: { message: 'AI unavailable' },
+      error: {
+        code: 'AI_INCIDENT_DIAGNOSIS_DORMANT',
+        message: 'AI_INCIDENT_DIAGNOSIS_DORMANT',
+      },
     } as any);
 
     await expect(
       makeCaller().diagnose({ id: '550e8400-e29b-41d4-a716-446655440000' }),
-    ).rejects.toThrow('AI unavailable');
+    ).rejects.toThrow('AI_INCIDENT_DIAGNOSIS_DORMANT');
   });
 
   it('throws "Diagnosis failed" when error message is missing', async () => {

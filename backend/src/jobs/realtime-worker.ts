@@ -6,7 +6,9 @@
  * Consumes: task.progress_updated events from user_notifications queue
  * 
  * Responsibility:
- * - Dispatch task.progress_updated events to SSE connections
+ * - Resolve authorized task.progress_updated recipients
+ * - Publish canonical personal-user envelopes through Redis
+ * - API instances fan out Redis messages to their process-local SSE connections
  * - Fan out to authorized recipients (poster + worker)
  * 
  * Hard rules:
@@ -47,7 +49,7 @@ interface TaskProgressJobData {
 /**
  * Process task.progress_updated job
  * 
- * Dispatches the event to SSE connections for authorized recipients
+ * Publishes the event for API-instance SSE fanout to authorized recipients
  */
 export async function processRealtimeJob(job: Job<TaskProgressJobData>): Promise<void> {
   const { payload } = job.data;
@@ -60,6 +62,7 @@ export async function processRealtimeJob(job: Job<TaskProgressJobData>): Promise
     payload: payload,
   };
 
-  // Dispatch to SSE connections
+  // Dispatch through canonical personal Redis rooms. Dedicated workers have no
+  // process-local API connections, so direct in-memory fanout would drop this.
   await dispatchTaskProgress(outboxEvent);
 }

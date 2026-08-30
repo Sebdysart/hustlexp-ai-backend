@@ -15,7 +15,16 @@
 import { Redis } from 'ioredis';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
-import { getConnections } from './connection-registry.js';
+import { getConnections, teardownConnection } from './connection-registry.js';
+import {
+  createUserRealtimeEnvelope,
+  getCanonicalUserRoomKey,
+  getUserIdFromCanonicalRoomKey,
+  isCanonicalUserRoomKey,
+  parseUserRealtimeEnvelope,
+  USER_REALTIME_SCHEMA_VERSION,
+  type UserRealtimeEnvelope,
+} from './user-realtime-contract.js';
 
 const log = logger.child({ module: 'redis-pubsub' });
 
@@ -25,6 +34,9 @@ const log = logger.child({ module: 'redis-pubsub' });
 
 let publisher: Redis | null = null;
 let subscriber: Redis | null = null;
+let pubSubInitialized = false;
+
+export const PUBSUB_QUIT_TIMEOUT_MS = 5_000;
 
 export function getPublisher(): Redis {
   if (!publisher) {
@@ -58,7 +70,7 @@ function onRedisError(err: unknown, role: string): void {
   const replyErr = err as { message?: string; type?: string };
   if (replyErr?.type === 'ReplyError' && replyErr?.message?.includes('WRONGPASS')) {
     log.error(
-      'Redis %s: WRONGPASS — invalid username/password for TCP connection. Use the Redis URL from Upstash Dashboard (not the REST token). Check UPSTASH_REDIS_URL or REDIS_URL.',
+      'Redis %s: WRONGPASS — invalid username/password for TCP connection. Use REDIS_URL (or the legacy UPSTASH_REDIS_URL alias), never a REST token.',
       role
     );
     return;
@@ -74,8 +86,21 @@ function onRedisError(err: unknown, role: string): void {
 // Map: roomKey → Set<userId>
 const roomSubscriptions = new Map<string, Set<string>>();
 
-// Map: userId → Set<roomKey>
-const userRooms = new Map<string, Set<string>>();
+// Map: userId → (roomKey → local connection reference count)
+//
+// A user can have several SSE connections (for example, two browser tabs).
+// Redis subscriptions are process-scoped, so each connection owns one local
+// reference while the process subscribes to the channel only once.
+const userRoomRefCounts = new Map<string, Map<string, number>>();
+
+type RedisRoomSubscriptionState = {
+  status: 'pending' | 'confirmed';
+  releaseRequested: boolean;
+};
+
+// A local room reference and a confirmed Redis SUBSCRIBE are different facts.
+// Failed SUBSCRIBE attempts are removed so a later tab/reconnect can retry.
+const redisRoomSubscriptions = new Map<string, RedisRoomSubscriptionState>();
 
 /**
  * Generate room key for a task
@@ -88,7 +113,32 @@ export function getTaskRoomKey(taskId: string): string {
  * Generate room key for a user (personal updates)
  */
 export function getUserRoomKey(userId: string): string {
-  return `room:user:${userId}`;
+  return getCanonicalUserRoomKey(userId);
+}
+
+function ensureRedisRoomSubscription(userId: string, roomKey: string): void {
+  if (redisRoomSubscriptions.has(roomKey)) return;
+
+  const state: RedisRoomSubscriptionState = { status: 'pending', releaseRequested: false };
+  redisRoomSubscriptions.set(roomKey, state);
+  const subscriberClient = getSubscriber();
+
+  subscriberClient.subscribe(roomKey).then(() => {
+    // The final local reference may have been released while SUBSCRIBE was in
+    // flight. Do not turn a stale completion into an unowned subscription.
+    if (redisRoomSubscriptions.get(roomKey) !== state || !roomSubscriptions.has(roomKey)) {
+      if (state.releaseRequested) return undefined;
+      return subscriberClient.unsubscribe(roomKey).then(() => undefined);
+    }
+    state.status = 'confirmed';
+    log.debug({ userId, roomKey }, 'Confirmed Redis room subscription');
+  }).catch((err) => {
+    // Only clear this exact attempt. A later retry may already own the room.
+    if (redisRoomSubscriptions.get(roomKey) === state) {
+      redisRoomSubscriptions.delete(roomKey);
+    }
+    log.error({ err, userId, roomKey }, 'Failed to subscribe to Redis channel');
+  });
 }
 
 /**
@@ -103,70 +153,95 @@ export function subscribeToRoom(userId: string, roomKey: string): void {
   if (roomKey !== getUserRoomKey(userId)) {
     throw new Error('SSE_ROOM_FORBIDDEN: users may subscribe only to their personal room');
   }
+
+  let roomRefCounts = userRoomRefCounts.get(userId);
+  if (!roomRefCounts) {
+    roomRefCounts = new Map();
+    userRoomRefCounts.set(userId, roomRefCounts);
+  }
+
+  const currentRefCount = roomRefCounts.get(roomKey) ?? 0;
+  roomRefCounts.set(roomKey, currentRefCount + 1);
+
+  const isFirstLocalSubscriber = !roomSubscriptions.has(roomKey);
+
   // Add to room subscriptions
-  if (!roomSubscriptions.has(roomKey)) {
+  if (isFirstLocalSubscriber) {
     roomSubscriptions.set(roomKey, new Set());
   }
   roomSubscriptions.get(roomKey)!.add(userId);
+
+  // Subscribe on 0 → 1, or retry if a previous asynchronous SUBSCRIBE
+  // failed while an earlier connection reference remained locally active.
+  ensureRedisRoomSubscription(userId, roomKey);
   
-  // Add to user's room list
-  if (!userRooms.has(userId)) {
-    userRooms.set(userId, new Set());
-  }
-  userRooms.get(userId)!.add(roomKey);
-  
-  // Subscribe to Redis channel for this room
-  getSubscriber().subscribe(roomKey).catch((err) => {
-    log.error({ err, userId, roomKey }, 'Failed to subscribe to Redis channel');
-  });
-  
-  log.debug({ userId, roomKey }, 'Subscribed to room');
+  log.debug({ userId, roomKey, refCount: currentRefCount + 1 }, 'Retained local room reference');
 }
 
 /**
  * Unsubscribe a user from a room
  */
 export function unsubscribeFromRoom(userId: string, roomKey: string): void {
+  const roomRefCounts = userRoomRefCounts.get(userId);
+  const currentRefCount = roomRefCounts?.get(roomKey) ?? 0;
+
+  // Idempotent cleanup: a duplicate abort/cancel or mismatched user cannot
+  // consume another connection's subscription reference.
+  if (currentRefCount === 0 || !roomRefCounts) {
+    log.debug({ userId, roomKey }, 'Room subscription already released');
+    return;
+  }
+
+  if (currentRefCount > 1) {
+    roomRefCounts.set(roomKey, currentRefCount - 1);
+    log.debug({ userId, roomKey, refCount: currentRefCount - 1 }, 'Released room subscription reference');
+    return;
+  }
+
+  roomRefCounts.delete(roomKey);
+  if (roomRefCounts.size === 0) {
+    userRoomRefCounts.delete(userId);
+  }
+
   // Remove from room subscriptions
   const room = roomSubscriptions.get(roomKey);
   if (room) {
     room.delete(userId);
     if (room.size === 0) {
       roomSubscriptions.delete(roomKey);
-      // Unsubscribe from Redis channel when no local users
-      getSubscriber().unsubscribe(roomKey).catch((err) => {
-        log.error({ err, roomKey }, 'Failed to unsubscribe from Redis channel');
-      });
+      const redisSubscription = redisRoomSubscriptions.get(roomKey);
+      redisRoomSubscriptions.delete(roomKey);
+      // Redis preserves command order on one subscriber connection, so an
+      // immediate UNSUBSCRIBE safely compensates even while SUBSCRIBE is
+      // pending. Mark it to prevent a second compensation on resolution.
+      if (redisSubscription) {
+        redisSubscription.releaseRequested = true;
+        getSubscriber().unsubscribe(roomKey).catch((err) => {
+          log.error({ err, roomKey }, 'Failed to unsubscribe from Redis channel');
+        });
+      }
     }
   }
   
-  // Remove from user's room list
-  const userRoomList = userRooms.get(userId);
-  if (userRoomList) {
-    userRoomList.delete(roomKey);
-    if (userRoomList.size === 0) {
-      userRooms.delete(userId);
-    }
-  }
-  
-  log.debug({ userId, roomKey }, 'Unsubscribed from room');
+  log.debug({ userId, roomKey, refCount: 0 }, 'Unsubscribed from room');
 }
 
 /**
- * Unsubscribe a user from all rooms (on disconnect)
+ * Release one connection's references to all of its rooms (on disconnect).
  */
 export function unsubscribeAllRooms(userId: string): void {
-  const userRoomList = userRooms.get(userId);
-  if (!userRoomList) return;
+  const roomRefCounts = userRoomRefCounts.get(userId);
+  if (!roomRefCounts) return;
   
-  // Copy to avoid mutation during iteration
-  const rooms = Array.from(userRoomList);
+  // Each SSE connection acquires one reference to each of its rooms. Release
+  // one reference per room for this connection without disturbing other tabs.
+  // Copy keys to avoid mutation during iteration when a count reaches zero.
+  const rooms = Array.from(roomRefCounts.keys());
   for (const roomKey of rooms) {
     unsubscribeFromRoom(userId, roomKey);
   }
-  
-  userRooms.delete(userId);
-  log.debug({ userId }, 'Unsubscribed from all rooms');
+
+  log.debug({ userId }, 'Released connection room subscriptions');
 }
 
 /**
@@ -181,28 +256,61 @@ export function getRoomSubscribers(roomKey: string): Set<string> | undefined {
 // ============================================================================
 
 export interface SSEMessage {
+  schemaVersion: typeof USER_REALTIME_SCHEMA_VERSION;
   type: string;
   payload: Record<string, unknown>;
   timestamp: string;
-  room?: string;
+  room: string;
+}
+
+type SSEMessageInput = Pick<SSEMessage, 'type' | 'payload'> & {
+  timestamp?: string;
+};
+
+/**
+ * Publish one canonical personal event to Redis.
+ *
+ * Delivery is intentionally performed only by API subscribers. Publishing
+ * must not also enqueue into process-local connections, otherwise an API
+ * instance receives its own Redis echo and delivers every event twice.
+ */
+export async function publishUserRealtimeEvent(
+  userId: string,
+  type: string,
+  payload: Record<string, unknown>,
+  timestamp?: string,
+): Promise<void> {
+  const roomKey = getUserRoomKey(userId);
+  const envelope = createUserRealtimeEnvelope(userId, type, payload, timestamp);
+  await getPublisher().publish(roomKey, JSON.stringify(envelope));
+  log.debug({ roomKey, type }, 'Published personal realtime event');
 }
 
 /**
  * Publish message to a room (cross-instance)
  */
-export async function publishToRoom(roomKey: string, message: Omit<SSEMessage, 'room'>): Promise<void> {
-  const fullMessage: SSEMessage = {
-    ...message,
-    room: roomKey,
-    timestamp: new Date().toISOString(),
-  };
+export async function publishToRoom(roomKey: string, message: SSEMessageInput): Promise<void> {
+  const timestamp = message.timestamp ?? new Date().toISOString();
+  const fullMessage: SSEMessage = isCanonicalUserRoomKey(roomKey)
+    ? createUserRealtimeEnvelope(
+      getUserIdFromCanonicalRoomKey(roomKey),
+      message.type,
+      message.payload,
+      timestamp,
+    )
+    : {
+      schemaVersion: USER_REALTIME_SCHEMA_VERSION,
+      type: message.type,
+      payload: message.payload,
+      timestamp,
+      room: roomKey,
+    };
   
   // Publish to Redis for other instances
   await getPublisher().publish(roomKey, JSON.stringify(fullMessage));
-  
-  // Also deliver to local subscribers immediately
-  deliverToLocalSubscribers(roomKey, fullMessage);
-  
+
+  // The shared Redis subscription is the sole local-delivery path. This
+  // prevents publisher-origin echo from enqueuing the same event twice.
   log.debug({ roomKey, type: message.type }, 'Published message to room');
 }
 
@@ -227,8 +335,7 @@ function deliverToLocalSubscribers(roomKey: string, message: SSEMessage): void {
       try {
         conn.controller.enqueue(encoded);
       } catch (_error) {
-        // Connection closed
-        conn.closed = true;
+        teardownConnection(userId, conn);
       }
     }
   }
@@ -242,11 +349,13 @@ function deliverToLocalSubscribers(roomKey: string, message: SSEMessage): void {
  * Initialize Redis subscriber message handler
  */
 export function initializePubSub(): void {
+  if (pubSubInitialized) return;
   const sub = getSubscriber();
+  pubSubInitialized = true;
   
   sub.on('message', (channel: string, message: string) => {
     try {
-      const parsed: SSEMessage = JSON.parse(message);
+      const parsed: UserRealtimeEnvelope = parseUserRealtimeEnvelope(channel, message);
       log.debug({ channel, type: parsed.type }, 'Received Redis message');
       
       // Deliver to local subscribers
@@ -262,16 +371,58 @@ export function initializePubSub(): void {
 /**
  * Graceful shutdown
  */
-export async function shutdownPubSub(): Promise<void> {
-  if (publisher) {
-    await publisher.quit();
-    publisher = null;
+async function closeRedisClient(client: Redis, role: 'publisher' | 'subscriber'): Promise<void> {
+  let timeout: NodeJS.Timeout | undefined;
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      reject(new Error(`Redis ${role} quit timed out after ${PUBSUB_QUIT_TIMEOUT_MS}ms`));
+    }, PUBSUB_QUIT_TIMEOUT_MS);
+    timeout.unref();
+  });
+
+  try {
+    await Promise.race([client.quit(), timeoutPromise]);
+  } catch (error) {
+    // QUIT can hang behind an unavailable network. Force-close the socket so
+    // process shutdown remains bounded; preserve the original error.
+    try {
+      client.disconnect(false);
+    } catch (disconnectError) {
+      throw new AggregateError(
+        [error, disconnectError],
+        `Redis ${role} failed graceful quit and forced disconnect`,
+      );
+    }
+    throw error;
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
-  if (subscriber) {
-    await subscriber.quit();
-    subscriber = null;
+}
+
+export async function shutdownPubSub(): Promise<void> {
+  const publisherToClose = publisher;
+  const subscriberToClose = subscriber;
+  const errors: unknown[] = [];
+
+  // Detach both roles before awaiting I/O so a failed publisher close cannot
+  // strand the subscriber or make a later idempotent shutdown close it twice.
+  publisher = null;
+  subscriber = null;
+  pubSubInitialized = false;
+  redisRoomSubscriptions.clear();
+
+  const closeResults = await Promise.allSettled([
+    ...(publisherToClose ? [closeRedisClient(publisherToClose, 'publisher')] : []),
+    ...(subscriberToClose ? [closeRedisClient(subscriberToClose, 'subscriber')] : []),
+  ]);
+  for (const result of closeResults) {
+    if (result.status === 'rejected') errors.push(result.reason);
   }
   log.info('Redis pub/sub shut down');
+
+  if (errors.length > 0) {
+    throw new AggregateError(errors, 'Failed to close one or more Redis pub/sub clients');
+  }
 }
 
 // ============================================================================
@@ -325,6 +476,7 @@ export default {
   unsubscribeFromRoom,
   unsubscribeAllRooms,
   publishToRoom,
+  publishUserRealtimeEvent,
   broadcastToTask,
   broadcastToUser,
   subscribeToTask,

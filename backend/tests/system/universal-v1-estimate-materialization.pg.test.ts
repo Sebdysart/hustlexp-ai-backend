@@ -40,7 +40,7 @@ import {
   claimUniversalV1TaskDraft,
   type UniversalV1TaskDraftClaimDependencies,
 } from '../../src/services/UniversalV1TaskDraftClaim.js';
-import { authorizeUniversalV1FakeFinancialTransaction } from '../../src/services/payment/UniversalV1FinancialApplicationService.js';
+import { createUniversalV1FakeFinancialApplicationService } from '../../src/services/payment/UniversalV1FinancialApplicationService.js';
 import { createCompletionDeliveryWebhook } from '../../src/serverCompletionDeliveryWebhook.js';
 
 const enabled = process.env.HX_ALLOW_TASK_DRAFT_INGRESS_PG === '1';
@@ -812,7 +812,8 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
       new PostgresUniversalV1WorkOrderPublicFactReader(query),
       new PostgresUniversalV1WorkOrderRepository(databaseOverride),
       () =>
-        authorizeUniversalV1FakeFinancialTransaction(
+        createUniversalV1FakeFinancialApplicationService(
+          databaseOverride,
           authority.env,
           authority.release,
           authority.identity
@@ -827,7 +828,8 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
     return new UniversalV1FulfillmentApplication(
       new PostgresUniversalV1FulfillmentRepository(databaseOverride),
       () =>
-        authorizeUniversalV1FakeFinancialTransaction(
+        createUniversalV1FakeFinancialApplicationService(
+          databaseOverride,
           authority.env,
           authority.release,
           authority.identity
@@ -2094,7 +2096,7 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
     ).toEqual(committed);
   });
 
-  it('rolls fake finance and the command witness back when terminal Work Order insertion fails', async () => {
+  it('preserves committed fake-finance evidence when terminal Work Order insertion fails', async () => {
     const lane = await heldWorkOrderLane('yard');
     const idempotencyKey = `workorder-rollback:${randomUUID()}`;
     const failingApplication = workOrderService(databaseRejectingWorkOrderInsert());
@@ -2122,10 +2124,10 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
       worker_id: null,
       task_work_order_id: null,
       work_orders: 0,
-      witnesses: 0,
-      security_events: 0,
-      fake_operations: 0,
-      fake_operation_events: 0,
+      witnesses: 1,
+      security_events: 3,
+      fake_operations: 3,
+      fake_operation_events: 3,
       approved_provider_operations: 0,
       non_fake_security_events: 0,
       non_fake_external_references: 0,
@@ -2133,8 +2135,12 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
       quote_payments: 0,
       interest_status: 'pending',
       hold_status: 'ACTIVE',
-      security_event_kinds: null,
-      security_event_providers: null,
+      security_event_kinds: [
+        'PAYMENT_METHOD_PREPARED',
+        'AUTHORIZED',
+        'SECURED',
+      ],
+      security_event_providers: ['FAKE'],
     });
   });
 

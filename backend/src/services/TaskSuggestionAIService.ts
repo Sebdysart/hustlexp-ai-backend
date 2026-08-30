@@ -17,6 +17,7 @@ import {
 } from './TaskDiscoveryService.js';
 import { WorkerSkillService } from './WorkerSkillService.js';
 import { AIClient } from './AIClient.js';
+import { aiOperationId } from '../ai/AIOperationIdentity.js';
 import { aiObservation } from './AIObservabilityPolicy.js';
 import { TaskSuggestionsSchema, type TaskSuggestionItemParsed } from '../lib/ai-response-schemas.js';
 import { scrubPII } from '../lib/pii-scrubber.js';
@@ -159,6 +160,7 @@ async function loadSuggestions(
   if (!AIClient.isConfigured()) return recordedFallback(userId, feedItems, limit, input);
 
   const result = await AIClient.callJSON<{ suggestions: TaskSuggestionItemParsed[] }>({
+    operationId: aiOperationId('task-suggestions', userId, feedItems.map((item) => item.task.id), limit, input),
     observability: aiObservation('AI-TASK-SUGGESTION-PROPOSAL', {
       actorUserId: userId,
       affectedObjectType: 'USER_OPPORTUNITY_FEED',

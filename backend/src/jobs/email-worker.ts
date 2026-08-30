@@ -23,12 +23,15 @@ import { config } from '../config.js';
 import { markOutboxEventProcessed, markOutboxEventFailed } from './outbox-worker.js';
 import { workerLogger } from '../logger.js';
 import type { Job } from 'bullmq';
+import { randomUUID } from 'node:crypto';
 import { notifyAdmins } from '../services/AdminNotificationHelper.js';
 import { createOutboundEmailPort } from '../services/OutboundCommunicationService.js';
 import {
   authorizeNotificationDelivery,
+  claimNotificationDelivery,
   markNotificationCancelled,
   markNotificationDeliveryFailure,
+  markNotificationProviderOutcomeUnknown,
   markNotificationProviderAccepted,
   markNotificationSuppressed,
 } from '../services/NotificationDeliveryState.js';
@@ -43,6 +46,9 @@ interface EmailJobData {
   aggregate_type: string;
   aggregate_id: string;
   event_version: number;
+  outbox_idempotency_key?: string;
+  outbox_dispatch_attempt_id: string;
+  outbox_bullmq_job_id: string;
   payload: {
     emailId: string;
     userId?: string;
@@ -50,6 +56,48 @@ interface EmailJobData {
     template: string;
     params: Record<string, unknown>;
   };
+}
+
+type CanonicalEmailAuthority = {
+  id: string;
+  user_id: string | null;
+  lead_id: string | null;
+  to_email: string;
+  template: string;
+  params_json: Record<string, unknown>;
+  status: string;
+  attempts: number;
+  max_attempts: number;
+  suppressed_reason: string | null;
+  idempotency_key: string;
+  notification_id: string | null;
+  provider_msg_id: string | null;
+  provider_name: string | null;
+  notification_provider_attempt_id: string | null;
+  pre_provider_claim_id: string | null;
+  outbox_id: string;
+  outbox_event_version: number;
+  outbox_payload: EmailJobData['payload'];
+  outbox_dispatch_attempt_id: string;
+  outbox_bullmq_job_id: string;
+};
+
+const PRE_PROVIDER_LEASE_SECONDS = 300;
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, nested]) => `${JSON.stringify(key)}:${stableJson(nested)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function nonEmptyProviderMessageId(value: string | null | undefined): string | null {
+  const normalized = value?.trim();
+  return normalized ? normalized : null;
 }
 
 // ============================================================================
@@ -219,18 +267,144 @@ function renderEmailTemplate(
  * @param job BullMQ job containing email data
  */
 export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
-  // Extract data from job payload (structured as outbox event)
-  const { emailId, toEmail, template, params } = job.data.payload;
-  let userId = job.data.payload.userId;
-  const idempotencyKey = job.id || `email:${emailId}`;
-  const notificationId = typeof params?.notificationId === 'string' ? params.notificationId : null;
+  // Redis is transport only. Resolve and validate the immutable PostgreSQL
+  // envelope before any delivery-state or outbox mutation, then use only the
+  // canonical row for recipient and content.
+  const hintedEmailId = job.data.payload.emailId;
+  const hintedOutboxKey = job.data.outbox_idempotency_key
+    || (job.id && !job.id.includes(':dispatch:') ? job.id : null);
+  if (!hintedOutboxKey) throw new Error('Email job lacks durable outbox identity');
+  const authorityResult = await db.query<CanonicalEmailAuthority>(
+    `SELECT email.id,email.user_id,email.lead_id,email.to_email,email.template,email.params_json,
+            email.status,email.attempts,email.max_attempts,email.suppressed_reason,
+            email.idempotency_key,email.notification_id,email.provider_msg_id,
+            email.provider_name,email.notification_provider_attempt_id,
+            email.pre_provider_claim_id,outbox.id AS outbox_id,
+            outbox.event_version AS outbox_event_version,outbox.payload AS outbox_payload,
+            outbox.dispatch_attempt_id AS outbox_dispatch_attempt_id,
+            outbox.bullmq_job_id AS outbox_bullmq_job_id
+     FROM email_outbox email
+     JOIN outbox_events outbox
+       ON outbox.idempotency_key=email.idempotency_key
+      AND outbox.event_type='email.send_requested'
+      AND (
+        (
+          outbox.aggregate_type='email'
+          AND outbox.aggregate_id=email.id
+          AND email.user_id IS NOT NULL
+          AND email.lead_id IS NULL
+        )
+        OR (
+          outbox.aggregate_type='lead'
+          AND outbox.aggregate_id=email.lead_id
+          AND email.user_id IS NULL
+          AND email.lead_id IS NOT NULL
+          AND outbox.payload->>'emailId'=email.id::TEXT
+        )
+      )
+     WHERE email.id=$1 AND outbox.idempotency_key=$2`,
+    [hintedEmailId, hintedOutboxKey],
+  );
+  const authority = authorityResult.rows[0];
+  const expectedPayload: EmailJobData['payload'] | null = authority
+    ? {
+        emailId: authority.id,
+        ...(authority.user_id ? { userId: authority.user_id } : {}),
+        toEmail: authority.to_email,
+        template: authority.template,
+        params: authority.params_json,
+      }
+    : null;
+  const expectedAggregateType = authority?.lead_id ? 'lead' : 'email';
+  const expectedAggregateId = authority?.lead_id ?? authority?.id;
+  if (
+    !authority
+    || job.data.aggregate_type !== expectedAggregateType
+    || job.data.aggregate_id !== expectedAggregateId
+    || job.data.event_version !== authority.outbox_event_version
+    || job.data.outbox_idempotency_key !== authority.idempotency_key
+    || !authority.outbox_dispatch_attempt_id
+    || !authority.outbox_bullmq_job_id
+    || job.data.outbox_dispatch_attempt_id !== authority.outbox_dispatch_attempt_id
+    || job.data.outbox_bullmq_job_id !== authority.outbox_bullmq_job_id
+    || job.id !== authority.outbox_bullmq_job_id
+    || stableJson(authority.outbox_payload) !== stableJson(expectedPayload)
+    || stableJson(job.data.payload) !== stableJson(authority.outbox_payload)
+  ) {
+    throw new Error('Email job does not match canonical outbox authority');
+  }
+
+  const emailId = authority.id;
+  const idempotencyKey = authority.idempotency_key;
+  const notificationId = authority.notification_id;
+  let userId = authority.user_id ?? undefined;
+  let providerClaimToken: string | null = null;
+  const preProviderClaimToken = randomUUID();
+  const directProviderAttemptToken = randomUUID();
+  const dispatchAuthority = {
+    dispatchAttemptId: authority.outbox_dispatch_attempt_id,
+    bullmqJobId: authority.outbox_bullmq_job_id,
+  };
+
+  const reconcilePersistedReceipt = async (
+    record: CanonicalEmailAuthority,
+  ): Promise<boolean> => {
+    const providerMessageId = nonEmptyProviderMessageId(record.provider_msg_id);
+    if (!providerMessageId) return false;
+    if (record.notification_id) {
+      if (!record.notification_provider_attempt_id) return false;
+      await markNotificationProviderAccepted(
+        record.notification_id,
+        'email',
+        record.provider_name || 'unknown',
+        providerMessageId,
+        record.notification_provider_attempt_id,
+      );
+    }
+    const finalized = await db.query<{ id: string }>(
+      `UPDATE email_outbox email
+       SET status='sent',sent_at=COALESCE(sent_at,NOW()),updated_at=NOW()
+       WHERE email.id=$1
+         AND NULLIF(BTRIM(email.provider_msg_id),'')=$2
+         AND email.notification_provider_attempt_id IS NOT DISTINCT FROM $3::UUID
+         AND (
+           $4::UUID IS NULL
+           OR EXISTS (
+             SELECT 1 FROM notification_deliveries delivery
+             WHERE delivery.notification_id=$4::UUID
+               AND delivery.channel='email'
+               AND delivery.provider_attempt_id=$3::UUID
+               AND delivery.state IN ('provider_accepted','delivered')
+           )
+         )
+       RETURNING email.id`,
+      [
+        record.id,
+        providerMessageId,
+        record.notification_provider_attempt_id,
+        record.notification_id,
+      ],
+    );
+    return Boolean(finalized.rows[0]);
+  };
 
   try {
+    // A provider receipt written with the exact notification claim token is
+    // authoritative crash evidence. Reconcile it before generic in-flight or
+    // outcome-unknown authorization can short-circuit the retry.
+    const persistedProviderMessageId = nonEmptyProviderMessageId(authority.provider_msg_id);
+    if (persistedProviderMessageId) {
+      if (await reconcilePersistedReceipt(authority)) {
+        await markOutboxEventProcessed(idempotencyKey, dispatchAuthority);
+      }
+      return;
+    }
+
     if (notificationId) {
       const authorization = await authorizeNotificationDelivery(notificationId, 'email');
       if (!authorization.allowed) {
         if (authorization.reason === 'not_due') {
-          await markOutboxEventFailed(idempotencyKey, 'notification_not_due');
+          await markOutboxEventFailed(idempotencyKey, 'notification_not_due', dispatchAuthority);
           return;
         }
         if (
@@ -240,16 +414,13 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
           await markNotificationCancelled(notificationId, 'email', authorization.reason);
         }
         if (
-          [
-            'superseded',
-            'cancelled_superseded',
-            'provider_accepted',
-            'delivered',
-            'suppressed',
-            'failed_terminal',
-          ].includes(authorization.reason)
+          authorization.reason === 'provider_in_flight'
+          || authorization.reason === 'provider_outcome_unknown'
         ) {
-          await markOutboxEventProcessed(idempotencyKey);
+          return;
+        }
+        if (['superseded', 'cancelled_superseded', 'provider_accepted', 'delivered', 'suppressed', 'failed_terminal'].includes(authorization.reason)) {
+          await markOutboxEventProcessed(idempotencyKey, dispatchAuthority);
           return;
         }
         throw new Error(`Email delivery refused: ${authorization.reason}`);
@@ -265,20 +436,7 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
     // The row lock is held for the entire transaction, preventing concurrent workers from
     // reading the same 'pending' status and both attempting to claim the same email.
     type EmailClaimResult = {
-      emailRecord: {
-        id: string;
-        user_id: string | null;
-        to_email: string;
-        template: string;
-        params_json: Record<string, unknown>;
-        status: string;
-        attempts: number;
-        max_attempts: number;
-        suppressed_reason: string | null;
-        idempotency_key: string;
-        provider_msg_id: string | null;
-        provider_name: string | null;
-      };
+      emailRecord: CanonicalEmailAuthority;
       claimed: boolean;
       shouldReturn: boolean;
       outboxKey?: string;
@@ -286,25 +444,37 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
 
     const claimResult = await db.transaction(async (txQuery) => {
       // Get email record from email_outbox table with FOR UPDATE lock (prevents concurrent processing)
-      const emailResult = await txQuery<{
-        id: string;
-        user_id: string | null;
-        to_email: string;
-        template: string;
-        params_json: Record<string, unknown>;
-        status: string;
-        attempts: number;
-        max_attempts: number;
-        suppressed_reason: string | null;
-        idempotency_key: string;
-        provider_msg_id: string | null;
-        provider_name: string | null;
-      }>(
-        `SELECT id, user_id, to_email, template, params_json, status, attempts, max_attempts, suppressed_reason, idempotency_key, provider_msg_id, provider_name
-         FROM email_outbox
-         WHERE id = $1
-         FOR UPDATE`, // Lock row for update (prevents concurrent processing)
-        [emailId]
+      const emailResult = await txQuery<CanonicalEmailAuthority>(
+        `SELECT email.id,email.user_id,email.lead_id,email.to_email,email.template,email.params_json,
+                email.status,email.attempts,email.max_attempts,email.suppressed_reason,
+                email.idempotency_key,email.notification_id,email.provider_msg_id,
+                email.provider_name,email.notification_provider_attempt_id,email.pre_provider_claim_id,
+                outbox.id::TEXT AS outbox_id,outbox.event_version AS outbox_event_version,
+                outbox.payload AS outbox_payload,
+                outbox.dispatch_attempt_id::TEXT AS outbox_dispatch_attempt_id,
+                outbox.bullmq_job_id AS outbox_bullmq_job_id
+         FROM email_outbox email
+         JOIN outbox_events outbox
+           ON outbox.idempotency_key=email.idempotency_key
+          AND outbox.event_type='email.send_requested'
+          AND (
+            (outbox.aggregate_type='email' AND outbox.aggregate_id=email.id
+              AND email.user_id IS NOT NULL AND email.lead_id IS NULL)
+            OR (outbox.aggregate_type='lead' AND outbox.aggregate_id=email.lead_id
+              AND email.user_id IS NULL AND email.lead_id IS NOT NULL
+              AND outbox.payload->>'emailId'=email.id::TEXT)
+          )
+         WHERE email.id = $1
+           AND outbox.idempotency_key=$2
+           AND outbox.dispatch_attempt_id=$3::UUID
+           AND outbox.bullmq_job_id=$4
+         FOR UPDATE OF email,outbox`,
+        [
+          emailId,
+          idempotencyKey,
+          dispatchAuthority.dispatchAttemptId,
+          dispatchAuthority.bullmqJobId,
+        ]
       );
 
       if (emailResult.rows.length === 0) {
@@ -312,6 +482,19 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
       }
 
       const emailRecord = emailResult.rows[0];
+      const lockedExpectedPayload: EmailJobData['payload'] = {
+        emailId: emailRecord.id,
+        ...(emailRecord.user_id ? { userId: emailRecord.user_id } : {}),
+        toEmail: emailRecord.to_email,
+        template: emailRecord.template,
+        params: emailRecord.params_json,
+      };
+      if (
+        stableJson(emailRecord.outbox_payload) !== stableJson(lockedExpectedPayload)
+        || stableJson(job.data.payload) !== stableJson(emailRecord.outbox_payload)
+      ) {
+        throw new Error('Email claim no longer matches canonical outbox authority');
+      }
 
       // Structured log: job started
       log.info(
@@ -347,22 +530,14 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
       }
 
       // Crash recovery check: If provider_msg_id exists, email was already sent (SendGrid succeeded but DB update failed)
-      if (emailRecord.provider_msg_id && emailRecord.status !== 'sent') {
-        await txQuery(
-          `UPDATE email_outbox
-           SET status = 'sent',
-               sent_at = COALESCE(sent_at, NOW()),
-               updated_at = NOW()
-           WHERE id = $1`,
-          [emailId]
-        );
-
+      const persistedRecordMessageId = nonEmptyProviderMessageId(emailRecord.provider_msg_id);
+      if (persistedRecordMessageId && emailRecord.status !== 'sent') {
         log.warn(
           {
             emailId,
             jobId: job.id,
             idempotencyKey: emailRecord.idempotency_key,
-            providerMsgId: emailRecord.provider_msg_id,
+            providerMsgId: persistedRecordMessageId,
           },
           'Email crash recovery: provider_msg_id exists but status not sent'
         );
@@ -391,7 +566,10 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
       }
 
       // Check if max attempts exceeded (poison message)
-      if (emailRecord.attempts >= emailRecord.max_attempts) {
+      if (
+        emailRecord.attempts >= emailRecord.max_attempts
+        && emailRecord.status !== 'sending'
+      ) {
         log.warn(
           {
             emailId,
@@ -422,14 +600,41 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
         `UPDATE email_outbox
          SET status = 'sending',
              attempts = CASE WHEN status = 'sending' THEN attempts ELSE attempts + 1 END,
+             pre_provider_claim_id = $2::UUID,
+             pre_provider_claimed_at = NOW(),
+             pre_provider_claim_deadline_at = NOW() + make_interval(secs => $3::INTEGER),
+             provider_io_started_at = NULL,
+             notification_provider_attempt_id = NULL,
              updated_at = NOW()
          WHERE id = $1
            AND (
              status IN ('pending', 'failed')
-             OR (status = 'sending' AND updated_at < NOW() - INTERVAL '5 minutes')
+             OR (
+               status = 'sending'
+               AND provider_io_started_at IS NULL
+               AND provider_msg_id IS NULL
+               AND (
+                 pre_provider_claim_deadline_at <= NOW()
+                 OR (pre_provider_claim_deadline_at IS NULL AND updated_at < NOW() - INTERVAL '5 minutes')
+               )
+             )
+           )
+           AND EXISTS (
+             SELECT 1 FROM outbox_events outbox
+             WHERE outbox.idempotency_key=$4
+               AND outbox.dispatch_attempt_id=$5::UUID
+               AND outbox.bullmq_job_id=$6
+               AND outbox.status IN ('enqueued','processing')
            )
          RETURNING id, status, attempts`,
-        [emailId]
+        [
+          emailId,
+          preProviderClaimToken,
+          PRE_PROVIDER_LEASE_SECONDS,
+          idempotencyKey,
+          dispatchAuthority.dispatchAttemptId,
+          dispatchAuthority.bullmqJobId,
+        ]
       );
 
       // If no row returned, another worker already claimed this email (or status changed)
@@ -444,12 +649,10 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
           },
           'Email claim failed: already claimed or invalid status'
         );
-        const outboxKey = emailRecord.idempotency_key || idempotencyKey;
         return {
           emailRecord,
           claimed: false,
           shouldReturn: true,
-          outboxKey,
         } satisfies EmailClaimResult;
       }
 
@@ -472,16 +675,12 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
 
     // Handle early-return cases from the transaction (already-sent, crash-recovery, claim-lost)
     if (claimResult.shouldReturn) {
-      if (notificationId && claimResult.emailRecord.provider_msg_id) {
-        await markNotificationProviderAccepted(
-          notificationId,
-          'email',
-          claimResult.emailRecord.provider_name || deliveryPort.providerKind,
-          claimResult.emailRecord.provider_msg_id
-        );
-      }
-      if (claimResult.outboxKey) {
-        await markOutboxEventProcessed(claimResult.outboxKey);
+      const persistedReceipt = nonEmptyProviderMessageId(claimResult.emailRecord.provider_msg_id);
+      const finalized = persistedReceipt
+        ? await reconcilePersistedReceipt(claimResult.emailRecord)
+        : claimResult.emailRecord.status === 'sent';
+      if (finalized && claimResult.outboxKey) {
+        await markOutboxEventProcessed(claimResult.outboxKey, dispatchAuthority);
       }
       return;
     }
@@ -498,16 +697,27 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
       );
 
       if (userCheck.rows.length > 0 && userCheck.rows[0].do_not_email === true) {
-        // User is suppressed - mark as suppressed and exit
-        await db.query(
+        // User is suppressed. Only the worker that still owns the bounded
+        // pre-provider lease may close the immutable event or notification
+        // state. A paused claimant can otherwise resume after recovery handed
+        // the row to a new worker and suppress that worker's active delivery.
+        const suppressed = await db.query<{ id: string }>(
           `UPDATE email_outbox
            SET status = 'suppressed',
                suppressed_reason = 'user_do_not_email',
                suppressed_at = NOW(),
+               pre_provider_claim_id = NULL,
+               pre_provider_claimed_at = NULL,
+               pre_provider_claim_deadline_at = NULL,
                updated_at = NOW()
-           WHERE id = $1`,
-          [emailId]
+           WHERE id = $1
+             AND status='sending'
+             AND pre_provider_claim_id=$2::UUID
+             AND provider_io_started_at IS NULL
+           RETURNING id`,
+          [emailId, preProviderClaimToken]
         );
+        if (!suppressed.rows[0]) return;
 
         log.info(
           {
@@ -523,7 +733,7 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
         // 'enqueued' and the poller never re-enqueues this suppressed email.
         const suppressionOutboxKey = emailRecord.idempotency_key || idempotencyKey;
         if (suppressionOutboxKey) {
-          await markOutboxEventProcessed(suppressionOutboxKey);
+          await markOutboxEventProcessed(suppressionOutboxKey, dispatchAuthority);
         }
 
         if (notificationId) {
@@ -535,17 +745,17 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
     }
 
     // Render email template
-    const emailContent = renderEmailTemplate(template, params || emailRecord.params_json);
+    const emailContent = renderEmailTemplate(emailRecord.template, emailRecord.params_json);
 
     const outboundMessage = {
       idempotencyKey: emailRecord.idempotency_key || idempotencyKey,
-      to: toEmail || emailRecord.to_email,
+      to: emailRecord.to_email,
       from: config.identity.sendgrid.fromEmail,
       subject: emailContent.subject,
       text: emailContent.text,
       html: emailContent.html,
       emailId,
-      userId: userId || emailRecord.user_id || undefined,
+      userId: emailRecord.user_id || undefined,
     };
 
     // Structured log: sending attempt
@@ -555,25 +765,120 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
         jobId: job.id,
         idempotencyKey: emailRecord.idempotency_key,
         attempt: emailRecord.attempts + 1,
-        toEmail: toEmail || emailRecord.to_email,
-        template,
+        toEmail: emailRecord.to_email,
+        template: emailRecord.template,
       },
       'Email sending'
     );
 
+    const providerBoundary = await db.transaction(async (query) => {
+      if (notificationId) {
+        await query('SELECT id FROM notifications WHERE id=$1 FOR UPDATE', [notificationId]);
+      }
+      const owned = await query<{ id: string }>(
+        `UPDATE email_outbox
+         SET pre_provider_claim_deadline_at=NOW()+make_interval(secs => $3::INTEGER),
+             updated_at=NOW()
+         WHERE id=$1 AND status='sending'
+           AND pre_provider_claim_id=$2::UUID
+           AND provider_io_started_at IS NULL
+           AND pre_provider_claim_deadline_at > NOW()
+         RETURNING id`,
+        [emailId, preProviderClaimToken, PRE_PROVIDER_LEASE_SECONDS],
+      );
+      if (!owned.rows[0]) {
+        return { allowed: false as const, reason: 'pre_provider_claim_lost' as const };
+      }
+
+      const notificationClaim = notificationId
+        ? await claimNotificationDelivery(notificationId, 'email', undefined, query)
+        : { allowed: true as const, claimToken: directProviderAttemptToken };
+      if (!notificationClaim.allowed) return notificationClaim;
+
+      const started = await query<{ id: string }>(
+        `UPDATE email_outbox
+         SET provider_io_started_at=NOW(),
+             notification_provider_attempt_id=$3::UUID,
+             updated_at=NOW()
+         WHERE id=$1 AND status='sending'
+           AND pre_provider_claim_id=$2::UUID
+           AND provider_io_started_at IS NULL
+         RETURNING id`,
+        [emailId, preProviderClaimToken, notificationClaim.claimToken],
+      );
+      return started.rows[0]
+        ? notificationClaim
+        : { allowed: false as const, reason: 'pre_provider_claim_lost' as const };
+    });
+
+    if (!providerBoundary.allowed) {
+      const reason = providerBoundary.reason;
+      if (
+        reason === 'provider_in_flight'
+        || reason === 'provider_outcome_unknown'
+        || reason === 'claim_lost'
+        || reason === 'pre_provider_claim_lost'
+      ) {
+        return;
+      }
+      if (reason === 'not_due') {
+        await db.query(
+          `UPDATE email_outbox
+           SET status='pending',attempts=GREATEST(attempts-1,0),
+               pre_provider_claim_id=NULL,pre_provider_claimed_at=NULL,
+               pre_provider_claim_deadline_at=NULL,updated_at=NOW()
+           WHERE id=$1 AND pre_provider_claim_id=$2::UUID
+             AND provider_io_started_at IS NULL`,
+          [emailId, preProviderClaimToken],
+        );
+        await markOutboxEventFailed(idempotencyKey, 'notification_not_due', dispatchAuthority);
+        return;
+      }
+      if (reason === 'superseded' || reason === 'cancelled_superseded') {
+        await markNotificationCancelled(notificationId!, 'email', reason);
+      }
+      if (['superseded', 'cancelled_superseded', 'provider_accepted', 'delivered', 'suppressed', 'failed_terminal'].includes(reason)) {
+        await db.query(
+          `UPDATE email_outbox
+           SET status=CASE WHEN $3 IN ('provider_accepted','delivered') THEN 'sent' ELSE 'suppressed' END,
+               suppressed_reason=CASE WHEN $3 IN ('provider_accepted','delivered') THEN suppressed_reason ELSE $3 END,
+               suppressed_at=CASE WHEN $3 IN ('provider_accepted','delivered') THEN suppressed_at ELSE NOW() END,
+               pre_provider_claim_id=NULL,pre_provider_claimed_at=NULL,
+               pre_provider_claim_deadline_at=NULL,updated_at=NOW()
+           WHERE id=$1 AND pre_provider_claim_id=$2::UUID
+             AND provider_io_started_at IS NULL`,
+          [emailId, preProviderClaimToken, reason],
+        );
+        await markOutboxEventProcessed(idempotencyKey, dispatchAuthority);
+        return;
+      }
+      throw new Error(`Email delivery claim refused: ${reason}`);
+    }
+    providerClaimToken = providerBoundary.claimToken;
+
     const receipt = await deliveryPort.deliver(outboundMessage);
-    const providerMsgId = receipt.providerMessageId;
+    const providerMsgId = nonEmptyProviderMessageId(receipt.providerMessageId);
+    if (!providerMsgId) throw new Error('Email provider returned no message receipt ID');
 
     // Store provider_msg_id IMMEDIATELY after SendGrid success (for crash recovery)
     // This allows us to detect "already sent" even if DB update fails
-    await db.query(
+    const receiptPersistResult = await db.query<{ id: string }>(
       `UPDATE email_outbox
        SET provider_msg_id = $1,
            provider_name = $2,
+           notification_provider_attempt_id = $4::UUID,
            updated_at = NOW()
-       WHERE id = $3`,
-      [providerMsgId, receipt.providerKind, emailId]
+       WHERE id = $3
+         AND status='sending'
+         AND pre_provider_claim_id=$5::UUID
+         AND provider_io_started_at IS NOT NULL
+         AND notification_provider_attempt_id IS NOT DISTINCT FROM $4::UUID
+       RETURNING id`,
+      [providerMsgId, receipt.providerKind, emailId, providerClaimToken, preProviderClaimToken]
     );
+    if (!receiptPersistResult.rows[0]) {
+      throw new Error('Email provider receipt could not be bound to the active claim');
+    }
 
     // Update email_outbox table (status=sent)
     // CRITICAL: Update only if still in 'sending' state (prevents overwriting if another worker completed)
@@ -588,9 +893,11 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
            sent_at = NOW(),
            updated_at = NOW()
        WHERE id = $1
-         AND status = 'sending'  -- Only update if still sending (prevents race condition)
+         AND status = 'sending'
+         AND pre_provider_claim_id=$2::UUID
+         AND notification_provider_attempt_id IS NOT DISTINCT FROM $3::UUID
        RETURNING id, status, provider_msg_id`,
-      [emailId]
+      [emailId, preProviderClaimToken, providerClaimToken]
     );
 
     // If update affected 0 rows, another worker already marked this as sent
@@ -609,7 +916,8 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
         notificationId,
         'email',
         receipt.providerKind,
-        finalEmail.provider_msg_id || providerMsgId || null
+        finalEmail.provider_msg_id || providerMsgId || null,
+        providerClaimToken,
       );
     }
 
@@ -617,7 +925,7 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
     // Use idempotency_key from email_outbox record (deterministic)
     const outboxKey = emailRecord.idempotency_key || idempotencyKey;
     if (outboxKey) {
-      await markOutboxEventProcessed(outboxKey);
+      await markOutboxEventProcessed(outboxKey, dispatchAuthority);
     }
 
     // Structured log: email sent successfully
@@ -629,8 +937,8 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
         outboxEventId: outboxKey,
         attempt: emailRecord.attempts + 1,
         providerMsgId: finalEmail.provider_msg_id || providerMsgId,
-        toEmail: toEmail || emailRecord.to_email,
-        template,
+        toEmail: emailRecord.to_email,
+        template: emailRecord.template,
       },
       'Email sent successfully'
     );
@@ -689,28 +997,11 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
         { emailId, jobId: job.id, idempotencyKey: outboxKey, error: errorMessage },
         'Email suppressed, skipping retry'
       );
-      // Mark the outbox row as suppressed so the poller never re-enqueues it
-      try {
-        await db.query(
-          `UPDATE email_outbox
-              SET status = 'suppressed',
-                  suppressed_at = NOW(),
-                  suppressed_reason = COALESCE(suppressed_reason, 'detected_on_send')
-            WHERE id = $1
-              AND status != 'suppressed'`,
-          [emailId]
-        );
-      } catch (dbErr) {
-        log.error({ emailId, err: dbErr }, 'Failed to mark email as suppressed');
-      }
-      // BUG FIX: mark the outbox_events row done so the poller never re-enqueues
-      // this email. Without this call the row stays 'enqueued' indefinitely,
-      // causing an infinite re-enqueue storm.
+      // The durable row was already terminal before this claimant acquired a
+      // lease. Reconcile only this exact dispatch; do not apply user or
+      // notification side effects without local/provider ownership.
       if (outboxKey) {
-        await markOutboxEventFailed(outboxKey, errorMessage);
-      }
-      if (notificationId) {
-        await markNotificationSuppressed(notificationId, 'email', errorMessage);
+        await markOutboxEventProcessed(outboxKey, dispatchAuthority);
       }
       return;
     }
@@ -761,59 +1052,131 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
     // Truncate suppressed_reason to 500 chars before storing — prevent oversized DB writes
     const suppressedReason = errorMessage.substring(0, 500);
 
-    if (isSuppressionError) {
-      // Always update email_outbox status to suppressed regardless of whether we have a userId
-      await db.query(
-        `UPDATE email_outbox
-         SET status = 'suppressed',
-             suppressed_reason = $1,
-             suppressed_at = NOW(),
-             updated_at = NOW()
-         WHERE id = $2`,
-        [suppressedReason, emailId]
-      );
-
-      // Only set do_not_email flag if we can resolve a user ID.
-      // Note: userId was already updated above in the currentState fetch block
-      // (userId = userId || currentState.rows[0].user_id || undefined), so it
-      // already incorporates any user_id resolved from the email_outbox record.
-      if (userId) {
-        await db
-          .query(
-            `UPDATE users
-           SET do_not_email = true,
+    if (providerClaimToken && !isSuppressionError) {
+      await db.transaction(async (query) => {
+        if (notificationId) {
+          await query('SELECT id FROM notifications WHERE id=$1 FOR UPDATE', [notificationId]);
+        }
+        const outcomeUnknown = await query<{ id: string }>(
+          `UPDATE email_outbox
+           SET status = 'provider_outcome_unknown',
+               last_error = $1,
                updated_at = NOW()
-           WHERE id = $1`,
-            [userId]
-          )
-          .catch((dbError) => {
-            log.error(
-              { userId, err: dbError instanceof Error ? dbError.message : 'Unknown error' },
-              'Suppression user update failed'
-            );
-          });
-      }
+           WHERE id = $2 AND status = 'sending'
+             AND notification_provider_attempt_id=$3::UUID
+             AND provider_io_started_at IS NOT NULL
+           RETURNING id`,
+          [errorMessage, emailId, providerClaimToken],
+        );
+        if (!outcomeUnknown.rows[0]) return;
+        if (notificationId) {
+          await markNotificationProviderOutcomeUnknown(
+            notificationId,
+            'email',
+            errorMessage,
+            providerClaimToken!,
+            query,
+          );
+        }
+        if (outboxKey) {
+          await markOutboxEventProcessed(outboxKey, dispatchAuthority, { query });
+        }
+      });
+      return;
+    }
+
+    if (isSuppressionError) {
+      const suppressionCommitted = await db.transaction(async (query) => {
+        if (notificationId) {
+          await query('SELECT id FROM notifications WHERE id=$1 FOR UPDATE', [notificationId]);
+        }
+        const suppressed = await query<{ id: string }>(
+          `UPDATE email_outbox
+           SET status = 'suppressed',
+               suppressed_reason = $1,
+               suppressed_at = NOW(),
+               updated_at = NOW()
+           WHERE id = $2
+             AND (
+               ($3::UUID IS NOT NULL AND notification_provider_attempt_id=$3::UUID
+                 AND provider_io_started_at IS NOT NULL)
+               OR ($3::UUID IS NULL AND pre_provider_claim_id=$4::UUID
+                 AND provider_io_started_at IS NULL)
+             )
+           RETURNING id`,
+          [suppressedReason, emailId, providerClaimToken, preProviderClaimToken],
+        );
+        if (!suppressed.rows[0]) return false;
+        if (userId) {
+          await query(
+            `UPDATE users SET do_not_email=true,updated_at=NOW() WHERE id=$1`,
+            [userId],
+          );
+        }
+        if (notificationId) {
+          await markNotificationSuppressed(
+            notificationId,
+            'email',
+            suppressedReason,
+            providerClaimToken,
+            query,
+          );
+        }
+        if (outboxKey) {
+          await markOutboxEventProcessed(outboxKey, dispatchAuthority, { query });
+        }
+        return true;
+      });
+      if (!suppressionCommitted) return;
 
       log.info(
         { emailId, jobId: job.id, idempotencyKey: outboxKey, suppressedReason, userId, sgCode },
         'Email suppressed due to hard bounce/complaint'
       );
-      if (notificationId) {
-        await markNotificationSuppressed(notificationId, 'email', suppressedReason);
-      }
+      return;
     } else {
       // Update email_outbox with error (for retry)
       // Check current attempts to determine if we should mark as failed (poison message)
       const shouldMarkFailed = currentAttempts >= maxAttempts;
 
-      await db.query(
-        `UPDATE email_outbox
-         SET status = $1,
-             last_error = $2,
-             updated_at = NOW()
-         WHERE id = $3`,
-        [shouldMarkFailed ? 'failed' : 'pending', errorMessage, emailId]
-      );
+      const retryOwned = await db.transaction(async (query) => {
+        if (notificationId) {
+          await query('SELECT id FROM notifications WHERE id=$1 FOR UPDATE', [notificationId]);
+        }
+        const owned = await query<{ id: string }>(
+          `UPDATE email_outbox
+           SET status = $1,
+               last_error = $2,
+               pre_provider_claim_id = NULL,
+               pre_provider_claimed_at = NULL,
+               pre_provider_claim_deadline_at = NULL,
+               updated_at = NOW()
+           WHERE id = $3
+             AND pre_provider_claim_id=$4::UUID
+             AND provider_io_started_at IS NULL
+           RETURNING id`,
+          [shouldMarkFailed ? 'failed' : 'pending', errorMessage, emailId, preProviderClaimToken],
+        );
+        if (!owned.rows[0]) return false;
+        if (notificationId) {
+          await markNotificationDeliveryFailure(
+            notificationId,
+            'email',
+            errorMessage,
+            null,
+            query,
+            null,
+            shouldMarkFailed,
+          );
+        } else if (outboxKey) {
+          await markOutboxEventFailed(outboxKey, errorMessage, dispatchAuthority, {
+            terminal: shouldMarkFailed,
+            query,
+          });
+        }
+        return true;
+      });
+      if (!retryOwned) return;
 
       if (shouldMarkFailed) {
         log.error(
@@ -851,14 +1214,6 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
           log.error({ alertErr }, 'Failed to send dead-letter admin alert');
         }
       }
-      if (notificationId) {
-        await markNotificationDeliveryFailure(notificationId, 'email', errorMessage);
-      }
-    }
-
-    // Mark outbox event as failed (if processing from outbox)
-    if (outboxKey) {
-      await markOutboxEventFailed(outboxKey, errorMessage);
     }
 
     // Re-throw error for BullMQ retry logic (unless max attempts exceeded - then don't retry)

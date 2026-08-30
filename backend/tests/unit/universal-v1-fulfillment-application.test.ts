@@ -119,9 +119,9 @@ describe('UniversalV1FulfillmentApplication', () => {
     expect(repository.recordExecutionEvidence).not.toHaveBeenCalled();
   });
 
-  it('authorizes exact-manifest fake finance before repository delegation', async () => {
-    const financeFactory = vi.fn();
-    const authorizeFinance = vi.fn().mockReturnValue(financeFactory);
+  it('creates exact-manifest fake finance before repository delegation', async () => {
+    const finance = { executeFinancialEvent: vi.fn() };
+    const createFinance = vi.fn().mockReturnValue(finance);
     const repository = {
       completeFakeFinancialLifecycle: vi.fn().mockResolvedValue({
         path: 'SETTLED',
@@ -131,7 +131,7 @@ describe('UniversalV1FulfillmentApplication', () => {
     };
     const application = new UniversalV1FulfillmentApplication(
       repository as never,
-      authorizeFinance
+      createFinance as never
     );
     const input = {
       work_order_id: ids.workOrder,
@@ -144,11 +144,11 @@ describe('UniversalV1FulfillmentApplication', () => {
       client_ts: new Date().toISOString(),
     };
     await application.completeFakeFinancialLifecycle('actor', input);
-    expect(authorizeFinance).toHaveBeenCalledOnce();
+    expect(createFinance).toHaveBeenCalledOnce();
     expect(repository.completeFakeFinancialLifecycle).toHaveBeenCalledWith(
       'actor',
       input,
-      financeFactory
+      finance
     );
   });
 

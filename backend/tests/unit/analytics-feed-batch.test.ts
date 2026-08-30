@@ -79,12 +79,32 @@ vi.mock('../../src/services/AIClient', () => ({
 }));
 
 const mockAIObservationRecord = vi.hoisted(() => vi.fn());
+const mockKnowledgeSpend = vi.hoisted(() => ({
+  reserve: vi.fn(),
+  settle: vi.fn(),
+  unknown: vi.fn(),
+  release: vi.fn(),
+}));
 
 vi.mock('../../src/services/AIObservabilityService', () => ({
   AIObservabilityService: {
     record: mockAIObservationRecord,
   },
   aiObservationHash: vi.fn(() => 'a'.repeat(64)),
+}));
+
+// These tests exercise the KnowledgeGraph provider boundary with an in-memory
+// OpenAI double. Keep both release authority and the durable spend ledger
+// explicit so the production fail-closed guards are never weakened.
+vi.mock('../../src/ai/ExternalAIProviderAuthority', () => ({
+  assertExternalAIProviderIOAuthorized: vi.fn(),
+}));
+
+vi.mock('../../src/ai/AISpendAttemptLedger', () => ({
+  reserveAIProviderAttempt: mockKnowledgeSpend.reserve,
+  settleAIProviderAttempt: mockKnowledgeSpend.settle,
+  markAIProviderAttemptUnknown: mockKnowledgeSpend.unknown,
+  releaseAIProviderAttempt: mockKnowledgeSpend.release,
 }));
 
 vi.mock('../../src/services/StripeService', () => ({
@@ -151,6 +171,10 @@ beforeEach(() => {
     success: true,
     data: { observationId: '11111111-1111-4111-8111-111111111111' },
   });
+  mockKnowledgeSpend.reserve.mockResolvedValue({ status: 'reserved', reservedCents: 1 });
+  mockKnowledgeSpend.settle.mockResolvedValue(undefined);
+  mockKnowledgeSpend.unknown.mockResolvedValue(undefined);
+  mockKnowledgeSpend.release.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -1673,6 +1697,8 @@ describe('KnowledgeGraphService.queryDocs', () => {
     expect(result[0].filePath).toBe('docs/API_CONTRACT.md');
     expect(result[0].similarity).toBeCloseTo(0.92);
     expect(result[0].isLocked).toBe(true);
+    expect(mockKnowledgeSpend.reserve).toHaveBeenCalledTimes(1);
+    expect(mockKnowledgeSpend.settle).toHaveBeenCalledTimes(1);
   });
 
   it('returns empty array when no docs match', async () => {

@@ -165,7 +165,7 @@ describe('PostgresUniversalV1FulfillmentRepository', () => {
     ],
     ['FULL_REFUND', ['CAPTURE', 'REFUND'], null, ids.refund, 'CLOSED', 0, 0],
   ] as const)(
-    'executes capture then the %s fake path and reconciles in one outer transaction',
+    'executes capture then the %s fake path after a committed authority snapshot',
     async (
       path,
       expectedOperations,
@@ -253,12 +253,12 @@ describe('PostgresUniversalV1FulfillmentRepository', () => {
         reconciliationState: expectedReconciliationState,
         mismatchCodes: [],
       });
-      const financeFactory = vi.fn().mockReturnValue({
+      const finance = {
         executeFinancialEvent,
         onboardProvider,
         refreshProviderAccountState,
         reconcile,
-      });
+      };
       const repository = new PostgresUniversalV1FulfillmentRepository(databaseFor(query));
       const result = await repository.completeFakeFinancialLifecycle(
         ids.poster,
@@ -272,7 +272,7 @@ describe('PostgresUniversalV1FulfillmentRepository', () => {
           idempotency_key: `fulfillment:test:${path.toLowerCase()}:0001`,
           client_ts: new Date().toISOString(),
         },
-        financeFactory
+        finance as never
       );
 
       expect(executeFinancialEvent.mock.calls.map(([command]) => command.operationKind)).toEqual(
@@ -319,7 +319,6 @@ describe('PostgresUniversalV1FulfillmentRepository', () => {
       });
       expect(onboardProvider).toHaveBeenCalledTimes(path === 'SETTLED' ? 1 : 0);
       expect(refreshProviderAccountState).toHaveBeenCalledTimes(path === 'SETTLED' ? 1 : 0);
-      expect(financeFactory).toHaveBeenCalledOnce();
     }
   );
 });

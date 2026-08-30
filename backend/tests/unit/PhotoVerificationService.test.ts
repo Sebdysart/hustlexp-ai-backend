@@ -12,6 +12,10 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
+const spendMocks = vi.hoisted(() => ({
+  reserve: vi.fn(), settle: vi.fn(), unknown: vi.fn(), release: vi.fn(),
+}));
+
 // ---------------------------------------------------------------------------
 // Mocks — must appear before any import that triggers module evaluation
 // ---------------------------------------------------------------------------
@@ -31,6 +35,13 @@ vi.mock('../../src/middleware/circuit-breaker', () => ({
   openaiBreaker: {
     execute: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   },
+}));
+
+vi.mock('../../src/ai/AISpendAttemptLedger', () => ({
+  reserveAIProviderAttempt: spendMocks.reserve,
+  settleAIProviderAttempt: spendMocks.settle,
+  markAIProviderAttemptUnknown: spendMocks.unknown,
+  releaseAIProviderAttempt: spendMocks.release,
 }));
 
 // ---------------------------------------------------------------------------
@@ -65,6 +76,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   // Default: db.query succeeds (the UPDATE to proof_submissions)
   mockDb.query.mockResolvedValue({ rows: [{ id: 'signal-1' }], rowCount: 1 } as never);
+  spendMocks.reserve.mockResolvedValue({ status: 'reserved', reservedCents: 50 });
+  spendMocks.settle.mockResolvedValue(undefined);
+  spendMocks.unknown.mockResolvedValue(undefined);
+  spendMocks.release.mockResolvedValue(undefined);
 });
 
 // ===========================================================================
@@ -327,13 +342,9 @@ describe('PhotoVerificationService', () => {
   });
 
   // -------------------------------------------------------------------------
-  // compareBeforeAfter — recommendation thresholds
-  // COMPLETION_THRESHOLD = 0.65, REVIEW_THRESHOLD = 0.40
-  // approve: completion_score >= 0.65 AND confidence >= 0.6
-  // reject:  completion_score < 0.40
-  // manual:  otherwise
+  // compareBeforeAfter — provider lane is structurally dormant
   // -------------------------------------------------------------------------
-  describe('compareBeforeAfter — recommendation thresholds', () => {
+  describe('compareBeforeAfter — deterministic manual review', () => {
     function mockOpenAIResponse(payload: {
       similarity_score: number;
       completion_score: number;
@@ -362,7 +373,7 @@ describe('PhotoVerificationService', () => {
       delete process.env.OPENAI_API_KEY;
     });
 
-    it('recommends "approve" when completion_score >= 0.65 and confidence >= 0.6', async () => {
+    it('does not execute a configured provider even for an apparent high-confidence completion', async () => {
       mockOpenAIResponse({
         similarity_score: 0.9,
         completion_score: 0.8,
@@ -379,11 +390,13 @@ describe('PhotoVerificationService', () => {
       );
 
       expect(result.success).toBe(true);
-      expect(result.data!.recommendation).toBe('approve');
-      expect(result.data!.completion_score).toBe(0.8);
+      expect(result.data!.recommendation).toBe('manual_review');
+      expect(result.data!.completion_score).toBe(0.5);
+      expect(mockBreaker.execute).not.toHaveBeenCalled();
+      expect(spendMocks.reserve).not.toHaveBeenCalled();
     });
 
-    it('recommends "reject" when completion_score < 0.40', async () => {
+    it('does not derive a rejection from dormant provider output', async () => {
       mockOpenAIResponse({
         similarity_score: 0.8,
         completion_score: 0.2,
@@ -400,7 +413,7 @@ describe('PhotoVerificationService', () => {
       );
 
       expect(result.success).toBe(true);
-      expect(result.data!.recommendation).toBe('reject');
+      expect(result.data!.recommendation).toBe('manual_review');
     });
 
     it('recommends "manual_review" when completion_score is between 0.40 and 0.65', async () => {

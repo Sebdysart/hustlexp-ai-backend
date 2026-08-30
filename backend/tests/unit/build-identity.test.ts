@@ -70,6 +70,29 @@ describe('engine build identity', () => {
     expect(isTrustedBuildIdentity(identity)).toBe(false);
   });
 
+  it('never trusts an empty executable artifact tree', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'hx-build-'));
+    directories.push(directory);
+    const path = join(directory, 'identity.json');
+    const artifactRoot = join(directory, 'dist');
+    mkdirSync(artifactRoot);
+    writeFileSync(path, JSON.stringify({
+      schema_version: 1,
+      service: 'hustlexp-engine',
+      revision: 'e'.repeat(40),
+      built_at: '2026-07-21T20:00:00.000Z',
+      environment: 'production',
+      clean_source: true,
+      source: 'RAILWAY_GIT_COMMIT_SHA',
+      artifact_digest: compiledArtifactDigest(artifactRoot),
+      artifact_verified: true,
+    }));
+
+    const identity = readBuildIdentity(path, artifactRoot);
+    expect(identity.artifact_verified).toBe(false);
+    expect(isTrustedBuildIdentity(identity)).toBe(false);
+  });
+
   it('fails closed for missing, malformed, or dirty identity data', () => {
     const directory = mkdtempSync(join(tmpdir(), 'hx-build-'));
     directories.push(directory);

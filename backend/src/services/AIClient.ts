@@ -17,6 +17,7 @@ import OpenAI from 'openai';
 import Groq from 'groq-sdk';
 import type { ZodSchema } from 'zod';
 import { config } from '../config.js';
+import { db } from '../db.js';
 import { redis, CACHE_KEYS, CACHE_TTL } from '../cache/redis.js';
 import crypto from 'crypto';
 import { aiLogger } from '../logger.js';
@@ -27,7 +28,24 @@ import {
   groqBreaker,
   deepseekBreaker,
   anthropicBreaker,
+  alibabaBreaker,
+  CircuitOpenError,
 } from '../middleware/circuit-breaker.js';
+import {
+  assertExternalAIProviderIOAuthorized,
+  isExternalAIProviderConfigured,
+} from '../ai/ExternalAIProviderAuthority.js';
+import {
+  failAIOperation,
+  type AIReservationRequest,
+} from '../ai/UserAIBudget.js';
+import {
+  markAIProviderAttemptUnknown,
+  releaseAIProviderAttempt,
+  reserveAIProviderAttempt,
+  settleAIProviderAttempt,
+  type AIProviderAttempt,
+} from '../ai/AISpendAttemptLedger.js';
 import { validateAIOutput } from '../middleware/ai-guard.js';
 import type { AIObservationContext } from './AIObservabilityPolicy.js';
 import {
@@ -40,6 +58,8 @@ import {
 export type AIRoute = 'primary' | 'fast' | 'reasoning' | 'safety' | 'backup';
 
 export interface AICallOptions {
+  /** Stable domain-operation identity; never reuse for an independent call. */
+  operationId: string;
   route: AIRoute;
   systemPrompt?: string;
   prompt: string;
@@ -72,46 +92,54 @@ let anthropicClient: OpenAI | null = null; // OpenAI-compatible API (Anthropic M
 let alibabaClient: OpenAI | null = null;   // OpenAI-compatible API
 
 function getOpenAIClient(): OpenAI | null {
+  assertExternalAIProviderIOAuthorized('AIClient:openai:construct');
   if (openaiClient) return openaiClient;
   if (!config.ai.openai.apiKey) return null;
-  openaiClient = new OpenAI({ apiKey: config.ai.openai.apiKey });
+  openaiClient = new OpenAI({ apiKey: config.ai.openai.apiKey, maxRetries: 0 });
   return openaiClient;
 }
 
 function getGroqClient(): Groq | null {
+  assertExternalAIProviderIOAuthorized('AIClient:groq:construct');
   if (groqClient) return groqClient;
   if (!config.ai.groq.apiKey) return null;
-  groqClient = new Groq({ apiKey: config.ai.groq.apiKey });
+  groqClient = new Groq({ apiKey: config.ai.groq.apiKey, maxRetries: 0 });
   return groqClient;
 }
 
 function getDeepSeekClient(): OpenAI | null {
+  assertExternalAIProviderIOAuthorized('AIClient:deepseek:construct');
   if (deepseekClient) return deepseekClient;
   if (!config.ai.deepseek.apiKey) return null;
   deepseekClient = new OpenAI({
     apiKey: config.ai.deepseek.apiKey,
     baseURL: 'https://api.deepseek.com/v1',
+    maxRetries: 0,
   });
   return deepseekClient;
 }
 
 function getAnthropicClient(): OpenAI | null {
+  assertExternalAIProviderIOAuthorized('AIClient:anthropic:construct');
   if (anthropicClient) return anthropicClient;
   if (!config.ai.anthropic.apiKey) return null;
   anthropicClient = new OpenAI({
     apiKey: config.ai.anthropic.apiKey,
     baseURL: 'https://api.anthropic.com/v1/',
     defaultHeaders: { 'anthropic-version': '2023-06-01' },
+    maxRetries: 0,
   });
   return anthropicClient;
 }
 
 function getAlibabaClient(): OpenAI | null {
+  assertExternalAIProviderIOAuthorized('AIClient:alibaba:construct');
   if (alibabaClient) return alibabaClient;
   if (!config.ai.alibaba.apiKey) return null;
   alibabaClient = new OpenAI({
     apiKey: config.ai.alibaba.apiKey,
     baseURL: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
+    maxRetries: 0,
   });
   return alibabaClient;
 }
@@ -123,6 +151,20 @@ interface ProviderConfig {
   model: string;
   name: string;
 }
+
+type MeteredProvider = 'openai' | 'groq' | 'deepseek' | 'anthropic' | 'alibaba';
+
+const PROVIDER_COSTS: Record<MeteredProvider, { input: number; output: number }> = {
+  openai: { input: 2.5, output: 10 },
+  groq: { input: 0.5, output: 0.8 },
+  deepseek: { input: 1.4, output: 5.6 },
+  anthropic: { input: 3, output: 15 },
+  alibaba: { input: 1, output: 4 },
+};
+
+// Product-tuning default: one governed surface may reserve at most $1/day per
+// user/system identity, while the cross-agent user ceiling remains $5/day.
+const AI_CLIENT_AGENT_DAILY_CEILING_CENTS = 100;
 
 const ROUTE_CONFIG: Record<AIRoute, ProviderConfig> = {
   primary: {
@@ -163,13 +205,48 @@ const FALLBACK_CHAINS: Record<AIRoute, AIRoute[]> = {
 
 // ─── Cache Helpers ─────────────────────────────────────────────────────────
 
-function hashPrompt(systemPrompt: string | undefined, prompt: string, model: string, userId?: string): string {
-  // Namespace by userId to prevent cross-user cache poisoning.
-  // Use the full 64-char SHA-256 hex (no truncation) to prevent collision attacks.
-  const input = userId
-    ? `${userId}|${systemPrompt || ''}|${prompt}|${model}`
-    : `${systemPrompt || ''}|${prompt}|${model}`;
-  return crypto.createHash('sha256').update(input).digest('hex');
+interface BoundAICacheEntry {
+  version: 1;
+  operationId: string;
+  fingerprint: string;
+  userId: string;
+  provider: string;
+  model: string;
+  content: string;
+}
+
+function cacheBinding(identity: ReturnType<typeof spendIdentity>, provider: string, model: string): string {
+  return crypto.createHash('sha256').update(JSON.stringify({
+    version: 1,
+    operationId: identity.operationId,
+    fingerprint: identity.fingerprint,
+    userId: identity.userId,
+    provider,
+    model,
+  })).digest('hex');
+}
+
+function parseBoundCacheEntry(
+  raw: string,
+  identity: ReturnType<typeof spendIdentity>,
+  provider: string,
+  model: string,
+): BoundAICacheEntry | null {
+  try {
+    const value = JSON.parse(raw) as Partial<BoundAICacheEntry>;
+    if (
+      value.version !== 1
+      || value.operationId !== identity.operationId
+      || value.fingerprint !== identity.fingerprint
+      || value.userId !== identity.userId
+      || value.provider !== provider
+      || value.model !== model
+      || typeof value.content !== 'string'
+    ) return null;
+    return value as BoundAICacheEntry;
+  } catch {
+    return null;
+  }
 }
 
 // ─── Circuit Breaker Mapping ─────────────────────────────────────────────
@@ -181,20 +258,17 @@ const PROVIDER_BREAKERS: Record<string, CircuitBreaker> = {
   groq: groqBreaker,
   deepseek: deepseekBreaker,
   anthropic: anthropicBreaker,
-  alibaba: openaiBreaker, // Alibaba shares OpenAI-compat; reuse primary breaker
+  alibaba: alibabaBreaker,
 };
 
 // ─── Core Call Function ────────────────────────────────────────────────────
 
 async function callProvider(
   providerConfig: ProviderConfig,
+  client: OpenAI | Groq,
   options: AICallOptions,
-): Promise<string> {
-  const client = providerConfig.getClient();
-  if (!client) {
-    throw new Error(`${providerConfig.name} client not configured (missing API key)`);
-  }
-
+): Promise<{ content: string; promptTokens: number; completionTokens: number; totalTokens: number; usageReliable: boolean }> {
+  assertExternalAIProviderIOAuthorized(`AIClient:${providerConfig.name}:io`);
   const messages: Array<{ role: 'system' | 'user'; content: string }> = [];
   if (options.systemPrompt) {
     messages.push({ role: 'system', content: options.systemPrompt });
@@ -205,28 +279,48 @@ async function callProvider(
   const breaker = PROVIDER_BREAKERS[providerConfig.name];
 
   // Wrap the API call with circuit breaker protection
-  const apiCall = () => Promise.race([
-    (client as unknown as { chat: { completions: { create: (opts: Record<string, unknown>) => Promise<unknown> } } }).chat.completions.create({
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => controller.abort(), timeout);
+  const apiCall = () => (client as unknown as {
+    chat: { completions: { create: (opts: Record<string, unknown>, request?: { signal?: AbortSignal }) => Promise<unknown> } };
+  }).chat.completions.create({
       model: providerConfig.model,
       messages,
       temperature: options.temperature ?? 0.7,
       max_tokens: options.maxTokens ?? 1024,
       ...(options.responseFormat === 'json' ? { response_format: { type: 'json_object' } } : {}),
-    }),
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`${providerConfig.name} timeout after ${timeout}ms`)), timeout)
-    ),
-  ]);
+    }, { signal: controller.signal });
 
-  const rawResponse = breaker ? await breaker.execute(apiCall) : await apiCall();
-  const response = rawResponse as { choices?: { message?: { content?: string } }[] };
+  let rawResponse: unknown;
+  try {
+    rawResponse = breaker ? await breaker.execute(apiCall) : await apiCall();
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+  const response = rawResponse as {
+    choices?: { message?: { content?: string } }[];
+    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+  };
 
   const content = response.choices?.[0]?.message?.content;
   if (!content) {
     throw new Error(`${providerConfig.name} returned empty response`);
   }
 
-  return content;
+  const promptTokens = response.usage?.prompt_tokens;
+  const completionTokens = response.usage?.completion_tokens;
+  const totalTokens = response.usage?.total_tokens;
+  const usageReliable = [promptTokens, completionTokens, totalTokens].every(
+    (value) => Number.isSafeInteger(value) && (value as number) >= 0,
+  ) && totalTokens === (promptTokens as number) + (completionTokens as number);
+
+  return {
+    content,
+    promptTokens: usageReliable ? promptTokens as number : 0,
+    completionTokens: usageReliable ? completionTokens as number : 0,
+    totalTokens: usageReliable ? totalTokens as number : 0,
+    usageReliable,
+  };
 }
 
 // ─── Public API ────────────────────────────────────────────────────────────
@@ -256,6 +350,138 @@ async function recordObservation(
   return recorded.data;
 }
 
+type MeteredProviderResult = {
+  content: string;
+  provider: MeteredProvider;
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  costCents: number;
+};
+
+function spendIdentity(options: AICallOptions): {
+  operationId: string;
+  fingerprint: string;
+  agent: string;
+  userId: string;
+  auditUserId: string | null;
+} {
+  const actorUserId = options.observability?.actorUserId ?? options.userId ?? null;
+  const userId = actorUserId ?? `system:ai-client:${options.observability?.surfaceId ?? options.route}`;
+  const material = {
+    operationId: options.operationId,
+    route: options.route,
+    systemPrompt: options.systemPrompt ?? '',
+    prompt: options.prompt,
+    observability: options.observability ?? null,
+    userId,
+  };
+  if (!options.operationId || options.operationId.trim() !== options.operationId || options.operationId.length > 256) {
+    throw new Error('AI_SPEND_OPERATION_ID_REQUIRED');
+  }
+  const operationId = `ai-client:${crypto.createHash('sha256').update(JSON.stringify({
+    operationId: options.operationId,
+    userId,
+    surfaceId: options.observability?.surfaceId ?? options.route,
+  })).digest('hex')}`;
+  const fingerprint = crypto.createHash('sha256').update(JSON.stringify({
+    envelopeVersion: 1,
+    ...material,
+    temperature: options.temperature ?? 0.7,
+    maxTokens: options.maxTokens ?? 1024,
+    responseFormat: options.responseFormat ?? 'text',
+    timeoutMs: options.timeoutMs ?? 30_000,
+    fallbackChain: options.fallbackChain ?? FALLBACK_CHAINS[options.route],
+    routeProvidersAndModels: Object.fromEntries(
+      [options.route, ...(options.fallbackChain ?? FALLBACK_CHAINS[options.route])]
+        .map((route) => [route, {
+          provider: ROUTE_CONFIG[route].name,
+          model: ROUTE_CONFIG[route].model,
+        }]),
+    ),
+  })).digest('hex');
+  return {
+    operationId,
+    fingerprint,
+    agent: options.observability?.surfaceId ?? `AI-CLIENT-${options.route.toUpperCase()}`,
+    userId,
+    auditUserId: actorUserId,
+  };
+}
+
+function worstCaseCost(provider: MeteredProvider, options: AICallOptions): number {
+  const rates = PROVIDER_COSTS[provider];
+  const inputBytes = Buffer.byteLength(options.systemPrompt ?? '', 'utf8')
+    + Buffer.byteLength(options.prompt, 'utf8')
+    + 512;
+  return Math.max(1, Math.ceil(
+    (inputBytes / 1000) * rates.input
+      + ((options.maxTokens ?? 1024) / 1000) * rates.output,
+  ));
+}
+
+function actualCost(provider: MeteredProvider, result: Awaited<ReturnType<typeof callProvider>>, reserved: number): number {
+  if (!result.usageReliable) return reserved;
+  const rates = PROVIDER_COSTS[provider];
+  return Math.ceil(
+    (result.promptTokens / 1000) * rates.input
+      + (result.completionTokens / 1000) * rates.output,
+  );
+}
+
+function parseMeteredReplay(resultJson: string): MeteredProviderResult {
+  const parsed = JSON.parse(resultJson) as Partial<MeteredProviderResult>;
+  if (
+    typeof parsed.content !== 'string'
+    || !['openai', 'groq', 'deepseek', 'anthropic', 'alibaba'].includes(parsed.provider ?? '')
+    || typeof parsed.model !== 'string'
+    || !Number.isSafeInteger(parsed.promptTokens)
+    || !Number.isSafeInteger(parsed.completionTokens)
+    || !Number.isSafeInteger(parsed.totalTokens)
+    || !Number.isSafeInteger(parsed.costCents)
+  ) throw new Error('AI_SPEND_CACHED_RESULT_INVALID');
+  return parsed as MeteredProviderResult;
+}
+
+async function auditProviderCost(
+  identity: ReturnType<typeof spendIdentity>,
+  result: MeteredProviderResult,
+): Promise<void> {
+  await db.query(
+    `INSERT INTO ai_cost_logs (
+       agent_type, user_id, provider, model, tokens_used, prompt_tokens,
+       completion_tokens, estimated_cost_cents, request_hash, created_at
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())`,
+    [
+      identity.agent,
+      identity.auditUserId,
+      result.provider,
+      result.model,
+      result.totalTokens,
+      result.promptTokens,
+      result.completionTokens,
+      result.costCents,
+      identity.fingerprint,
+    ],
+  );
+}
+
+async function auditUnknownProviderCost(
+  identity: ReturnType<typeof spendIdentity>,
+  provider: MeteredProvider,
+  model: string,
+  reservation: AIReservationRequest,
+): Promise<void> {
+  await db.query(
+    `INSERT INTO ai_cost_logs (
+       agent_type, user_id, provider, model, tokens_used,
+       estimated_cost_cents, request_hash, error_code, created_at
+     ) VALUES ($1, $2, $3, $4, 0, $5, $6, $7, NOW())`,
+    [identity.agent, identity.auditUserId, provider, model, reservation.reserveCents, identity.fingerprint, 'HX_AI_UNKNOWN'],
+  );
+}
+
 /**
  * Call an AI model with automatic routing, caching, and fallback.
  *
@@ -272,23 +498,30 @@ export async function call(options: AICallOptions): Promise<AICallResult> {
   const startTime = Date.now();
   const routeConfig = ROUTE_CONFIG[options.route];
   const enableCache = options.enableCache !== false;
+  // Validate and bind spend authority before cache access: cached calls still
+  // need an attributable operation identity for observation and replay safety.
+  const identity = spendIdentity(options);
+  assertExternalAIProviderIOAuthorized(`AIClient:${options.route}`);
 
   // 1. Check cache
   if (enableCache) {
-    const cacheHash = hashPrompt(options.systemPrompt, options.prompt, routeConfig.model, options.userId);
+    const cacheHash = cacheBinding(identity, routeConfig.name, routeConfig.model);
     const cacheKey = CACHE_KEYS.aiCache(cacheHash);
     const cached = await redis.get<string>(cacheKey);
-    if (cached) {
+    const boundCache = cached
+      ? parseBoundCacheEntry(cached, identity, routeConfig.name, routeConfig.model)
+      : null;
+    if (boundCache) {
       const latencyMs = Date.now() - startTime;
       const observation = await recordObservation(options, {
         provider: routeConfig.name,
         model: routeConfig.model,
         executionResult: 'CACHED',
-        output: cached,
+        output: boundCache.content,
         latencyMs,
       });
       return {
-        content: cached,
+        content: boundCache.content,
         provider: routeConfig.name,
         model: routeConfig.model,
         cached: true,
@@ -301,11 +534,77 @@ export async function call(options: AICallOptions): Promise<AICallResult> {
   // 2. Try primary route, then fallback chain
   const chain = [options.route, ...(options.fallbackChain || FALLBACK_CHAINS[options.route])];
   let lastError: Error | null = null;
+  const ownerToken = crypto.randomUUID();
+  let lastReservation: AIReservationRequest | null = null;
 
-  for (const route of chain) {
+  for (let routeIndex = 0; routeIndex < chain.length; routeIndex++) {
+    const route = chain[routeIndex];
     const cfg = ROUTE_CONFIG[route];
+    const provider = cfg.name as MeteredProvider;
+    const client = cfg.getClient();
+    if (!client) {
+      lastError = new Error(`${cfg.name} client not configured (missing API key)`);
+      continue;
+    }
+
+    // The window is intentionally recalculated immediately before every
+    // possible provider I/O so a fallback crossing midnight charges the new
+    // UTC day rather than the first attempt's stale day.
+    const reservation: AIReservationRequest = {
+      agent: identity.agent,
+      userId: identity.userId,
+      operationId: identity.operationId,
+      fingerprint: identity.fingerprint,
+      ownerToken,
+      attemptId: `${routeIndex}:${route}:${provider}`,
+      reserveCents: worstCaseCost(provider, options),
+      agentLimitCents: AI_CLIENT_AGENT_DAILY_CEILING_CENTS,
+    };
+    const providerAttempt: AIProviderAttempt = {
+      reservation,
+      providerKind: provider,
+      providerModel: cfg.model,
+    };
+    lastReservation = reservation;
+
+    let authority;
     try {
-      let content = await callProvider(cfg, options);
+      authority = await reserveAIProviderAttempt(providerAttempt);
+    } catch (error) {
+      throw new Error(`AI_SPEND_AUTHORITY_REQUIRED:${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    let metered: MeteredProviderResult;
+    let replayed = false;
+    if (authority.status === 'completed') {
+      metered = parseMeteredReplay(authority.resultJson);
+      replayed = true;
+    } else {
+      if (authority.status === 'failed') throw new Error(`AI_SPEND_OPERATION_FAILED:${authority.message}`);
+      if (authority.status === 'in_progress') throw new Error('AI_SPEND_OPERATION_IN_PROGRESS');
+      if (authority.status === 'conflict') throw new Error('AI_SPEND_OPERATION_CONFLICT');
+      if (authority.status === 'limit') throw new Error(`AI_SPEND_LIMIT:${authority.scope}`);
+
+      let providerResult: Awaited<ReturnType<typeof callProvider>>;
+      try {
+        providerResult = await callProvider(cfg, client, options);
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        try {
+          if (error instanceof CircuitOpenError) {
+            await releaseAIProviderAttempt(providerAttempt);
+          } else {
+            await markAIProviderAttemptUnknown(providerAttempt);
+            await auditUnknownProviderCost(identity, provider, cfg.model, reservation);
+          }
+        } catch (meteringError) {
+          throw new Error(`AI_SPEND_AUTHORITY_REQUIRED:${meteringError instanceof Error ? meteringError.message : String(meteringError)}`);
+        }
+        log.warn({ err: lastError.message, provider: cfg.name, model: cfg.model, route }, 'Provider failed, trying next in fallback chain');
+        continue;
+      }
+
+      let content = providerResult.content;
 
       // 3. Validate and sanitize AI output before caching or returning
       const validation = validateAIOutput(content);
@@ -314,35 +613,68 @@ export async function call(options: AICallOptions): Promise<AICallResult> {
         content = validation.sanitized ?? content;
       }
 
-      // 4. Cache successful response
-      if (enableCache) {
-        const cacheHash = hashPrompt(options.systemPrompt, options.prompt, cfg.model, options.userId);
-        const cacheKey = CACHE_KEYS.aiCache(cacheHash);
-        await redis.set(cacheKey, content, CACHE_TTL.aiCache);
+      const costCents = actualCost(provider, providerResult, reservation.reserveCents);
+      if (costCents > reservation.reserveCents) {
+        await markAIProviderAttemptUnknown(providerAttempt, 'USAGE_EXCEEDED_RESERVATION');
+        throw new Error('AI_SPEND_USAGE_EXCEEDED_RESERVATION');
       }
-
-      const latencyMs = Date.now() - startTime;
-      const observation = await recordObservation(options, {
-        provider: cfg.name,
-        model: cfg.model,
-        executionResult: 'GENERATED',
-        output: content,
-        latencyMs,
-      });
-
-      return {
+      metered = {
         content,
-        provider: cfg.name,
+        provider,
         model: cfg.model,
-        cached: false,
-        latencyMs,
-        observation,
+        promptTokens: providerResult.promptTokens,
+        completionTokens: providerResult.completionTokens,
+        totalTokens: providerResult.totalTokens,
+        costCents,
       };
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
-      if (lastError.message.startsWith('AI_OBSERVABILITY_REQUIRED:')) throw lastError;
-      log.warn({ err: lastError.message, provider: cfg.name, model: cfg.model, route }, 'Provider failed, trying next in fallback chain');
+
+      // Provider success is terminal: audit and Redis settlement errors are
+      // surfaced and can never fall through to another paid provider.
+      await auditProviderCost(identity, metered);
+      await settleAIProviderAttempt({
+        ...providerAttempt,
+        actualCostCents: costCents,
+        resultJson: JSON.stringify(metered),
+      });
     }
+
+    // 4. Cache successful response, including idempotent spend replays.
+    if (enableCache) {
+      const cacheHash = cacheBinding(identity, metered.provider, metered.model);
+      const cacheKey = CACHE_KEYS.aiCache(cacheHash);
+      const cacheEntry: BoundAICacheEntry = {
+        version: 1,
+        operationId: identity.operationId,
+        fingerprint: identity.fingerprint,
+        userId: identity.userId,
+        provider: metered.provider,
+        model: metered.model,
+        content: metered.content,
+      };
+      await redis.set(cacheKey, JSON.stringify(cacheEntry), CACHE_TTL.aiCache);
+    }
+
+    const latencyMs = Date.now() - startTime;
+    const observation = await recordObservation(options, {
+      provider: metered.provider,
+      model: metered.model,
+      executionResult: replayed ? 'CACHED' : 'GENERATED',
+      output: metered.content,
+      latencyMs,
+    });
+
+    return {
+      content: metered.content,
+      provider: metered.provider,
+      model: metered.model,
+      cached: replayed,
+      latencyMs,
+      observation,
+    };
+  }
+
+  if (lastReservation) {
+    await failAIOperation(lastReservation, `All AI providers exhausted for ${options.route}`);
   }
 
   if (options.observability) {
@@ -412,13 +744,7 @@ export async function callJSON<T = unknown>(
  * Check if any AI provider is configured
  */
 export function isConfigured(): boolean {
-  return !!(
-    config.ai.openai.apiKey ||
-    config.ai.groq.apiKey ||
-    config.ai.deepseek.apiKey ||
-    config.ai.anthropic.apiKey ||
-    config.ai.alibaba.apiKey
-  );
+  return isExternalAIProviderConfigured();
 }
 
 // ─── Exported Module ───────────────────────────────────────────────────────

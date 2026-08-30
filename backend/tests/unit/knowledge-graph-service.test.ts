@@ -1,16 +1,22 @@
 // backend/tests/unit/knowledge-graph-service.test.ts
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+vi.mock('../../src/ai/ExternalAIProviderAuthority.js', () => ({
+  assertExternalAIProviderIOAuthorized: vi.fn(),
+}));
+
 const mockRecordObservation = vi.hoisted(() => vi.fn());
+const mockEmbeddingCreate = vi.hoisted(() => vi.fn());
+const spendMocks = vi.hoisted(() => ({
+  reserve: vi.fn(), settle: vi.fn(), unknown: vi.fn(), release: vi.fn(),
+}));
 
 // Mock OpenAI before any imports — use a plain constructor so the singleton works
 vi.mock('openai', () => {
   return {
     default: class MockOpenAI {
       embeddings = {
-        create: vi.fn().mockResolvedValue({
-          data: [{ embedding: Array(1536).fill(0.01) }],
-        }),
+        create: mockEmbeddingCreate,
       };
     },
   };
@@ -26,6 +32,12 @@ vi.mock('../../src/db.js', () => ({
 vi.mock('../../src/services/AIObservabilityService.js', () => ({
   AIObservabilityService: { record: mockRecordObservation },
   aiObservationHash: (value: unknown) => `test-hash-${String(value).length}`,
+}));
+vi.mock('../../src/ai/AISpendAttemptLedger.js', () => ({
+  reserveAIProviderAttempt: spendMocks.reserve,
+  settleAIProviderAttempt: spendMocks.settle,
+  markAIProviderAttemptUnknown: spendMocks.unknown,
+  releaseAIProviderAttempt: spendMocks.release,
 }));
 
 import { db } from '../../src/db.js';
@@ -45,7 +57,15 @@ const makeDocRow = (overrides = {}) => ({
 describe('KnowledgeGraphService.queryDocs', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockEmbeddingCreate.mockResolvedValue({
+      data: [{ embedding: Array(1536).fill(0.01) }],
+      usage: { total_tokens: 10 },
+    });
     mockRecordObservation.mockResolvedValue({ success: true, data: { observationId: 'observation-1' } });
+    spendMocks.reserve.mockResolvedValue({ status: 'reserved', reservedCents: 1 });
+    spendMocks.settle.mockResolvedValue(undefined);
+    spendMocks.unknown.mockResolvedValue(undefined);
+    spendMocks.release.mockResolvedValue(undefined);
   });
 
   it('returns mapped doc sections on success', async () => {
@@ -61,6 +81,18 @@ describe('KnowledgeGraphService.queryDocs', () => {
     expect(results[0].similarity).toBe(0.92);
     expect(results[0].isLocked).toBe(true);
     expect(results[1].sectionHeader).toBe('task.accept');
+    expect(mockEmbeddingCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'text-embedding-3-small', dimensions: 1536 }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it('rejects oversized input before spend reservation or provider I/O', async () => {
+    await expect(KnowledgeGraphService.queryDocs('x'.repeat(32 * 1024 + 1))).rejects.toThrow(
+      'AI_KNOWLEDGE_EMBEDDING_INPUT_SIZE_INVALID',
+    );
+    expect(spendMocks.reserve).not.toHaveBeenCalled();
+    expect(mockEmbeddingCreate).not.toHaveBeenCalled();
   });
 
   it('returns empty array when no results', async () => {
@@ -105,6 +137,8 @@ describe('KnowledgeGraphService.getRelatedInvariants', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockRecordObservation.mockResolvedValue({ success: true, data: { observationId: 'observation-1' } });
+    spendMocks.reserve.mockResolvedValue({ status: 'reserved', reservedCents: 1 });
+    spendMocks.settle.mockResolvedValue(undefined);
   });
 
   it('returns invariant sections', async () => {
@@ -134,6 +168,8 @@ describe('KnowledgeGraphService.getContractForProcedure', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockRecordObservation.mockResolvedValue({ success: true, data: { observationId: 'observation-1' } });
+    spendMocks.reserve.mockResolvedValue({ status: 'reserved', reservedCents: 1 });
+    spendMocks.settle.mockResolvedValue(undefined);
   });
 
   it('returns contract sections for a procedure', async () => {

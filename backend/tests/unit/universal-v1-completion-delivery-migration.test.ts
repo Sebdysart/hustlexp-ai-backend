@@ -10,7 +10,16 @@ const sql = readFileSync(resolve(process.cwd(), 'backend/database/migrations', f
 
 describe('Universal V1 completion delivery receipt migration', () => {
   it('is an append-only engine migration after execution facts', () => {
-    expect(REQUIRED_MIGRATION_FILES.at(-1)).toEqual({
+    const executionFactsIndex = REQUIRED_MIGRATION_FILES.findIndex(
+      ({ name }) => name === '20260912_universal_v1_work_order_execution_facts',
+    );
+    const completionDeliveryIndex = REQUIRED_MIGRATION_FILES.findIndex(
+      ({ name }) => name === '20260913_universal_v1_completion_delivery_receipt',
+    );
+
+    expect(executionFactsIndex).toBeGreaterThanOrEqual(0);
+    expect(completionDeliveryIndex).toBe(executionFactsIndex + 1);
+    expect(REQUIRED_MIGRATION_FILES[completionDeliveryIndex]).toEqual({
       name: '20260913_universal_v1_completion_delivery_receipt',
       fileName,
     });

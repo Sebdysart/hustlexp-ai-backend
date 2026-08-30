@@ -40,6 +40,15 @@ export const NONPRODUCTION_TEST_FINANCIAL_MIGRATIONS = Object.freeze([
     evidenceTable: 'hxos_fake_financial_schema_evidence_v3',
     requiredMarker: 'OBSERVE_BANK_SETTLEMENT',
   }),
+  Object.freeze({
+    name: '20260921_universal_v1_fake_financial_lifecycle_bridge_v1',
+    path: resolve(
+      scriptDirectory,
+      '../backend/database/migrations/20260921_universal_v1_fake_financial_lifecycle_bridge_v1.sql'
+    ),
+    evidenceTable: 'hxos_fake_financial_schema_evidence_v4',
+    requiredMarker: 'universal_v1_fake_financial_lifecycle_bridges',
+  }),
 ]);
 export const NONPRODUCTION_TEST_FINANCIAL_MIGRATION =
   NONPRODUCTION_TEST_FINANCIAL_MIGRATIONS.at(-1).name;

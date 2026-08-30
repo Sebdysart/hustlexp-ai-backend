@@ -1,250 +1,148 @@
-/**
- * UserAIBudget Unit Tests (backend/src/ai/UserAIBudget.ts)
- *
- * Tests per-user and global AI spending limits with mocked Redis.
- */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-
-// ---------------------------------------------------------------------------
-// Mocks — hoisted before imports
-// ---------------------------------------------------------------------------
-
-const mockGet    = vi.fn();
-const mockIncrby = vi.fn();
-const mockExpire = vi.fn();
-
-vi.mock('@upstash/redis', () => ({
-  Redis: class MockRedis {
-    get    = mockGet;
-    incrby = mockIncrby;
-    expire = mockExpire;
-    constructor(_opts: unknown) {}
-  },
+const { mockEval } = vi.hoisted(() => ({
+  mockEval: vi.fn(),
 }));
 
-vi.mock('../../src/config', () => ({
-  config: {
-    redis: {
-      restUrl:   'https://redis.upstash.io',
-      restToken: 'test-token',
-    },
-  },
+vi.mock('../../src/redis/RedisCommandPort', () => ({
+  getRedisCommandClient: () => ({ transport: 'tcp', eval: mockEval }),
 }));
-
-// ---------------------------------------------------------------------------
-// System-under-test
-// ---------------------------------------------------------------------------
 
 import {
-  checkUserBudget,
-  trackUserCost,
+  abortAIProviderSpendBeforeIO,
+  aiBudgetTestOnly,
+  checkAgentBudget,
   checkGlobalBudget,
-  trackGlobalCost,
+  checkUserBudget,
+  failAIOperation,
+  markAIProviderSpendUnknown,
+  releaseAIProviderSpend,
+  reserveAIProviderSpend,
+  settleAIProviderSpend,
+  type AIReservationRequest,
 } from '../../src/ai/UserAIBudget';
 
-// ---------------------------------------------------------------------------
-// beforeEach — reset mocks
-// ---------------------------------------------------------------------------
+const request: AIReservationRequest = {
+  agent: 'judge',
+  userId: 'user-1',
+  operationId: 'operation-1',
+  fingerprint: 'fingerprint-1',
+  ownerToken: 'owner-1',
+  attemptId: '0:groq:0',
+  reserveCents: 9,
+  agentLimitCents: 50,
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
 });
 
-// ---------------------------------------------------------------------------
-// checkUserBudget
-// ---------------------------------------------------------------------------
+describe('atomic AI spend reservations', () => {
+  it('reserves all three ceilings in one Lua operation', async () => {
+    mockEval.mockResolvedValue(['RESERVED', '9', '20700', '3601']);
 
-describe('checkUserBudget', () => {
-  it('returns allowed=true when nothing spent yet (null from Redis)', async () => {
-    mockGet.mockResolvedValue(null);
+    await expect(reserveAIProviderSpend(request)).resolves.toEqual({ status: 'reserved', reservedCents: 9, budgetDay: '20700' });
 
-    const result = await checkUserBudget('user-1');
-
-    expect(result.allowed).toBe(true);
-    expect(result.spent).toBe(0);
-    expect(result.limit).toBe(500); // USER_DAILY_CEILING_CENTS = 500 ($5.00)
+    const [script, keys, args] = mockEval.mock.calls[0] as [string, string[], string[]];
+    expect(keys).toHaveLength(2);
+    expect(keys.every((key) => key.includes('{spend-authority}'))).toBe(true);
+    expect(args.slice(0, 4)).toEqual(['9', '50000', '500', '50']);
+    expect(args).toContain('fingerprint-1');
+    expect(args).toContain('owner-1');
+    expect(args.at(-1)).toBe('');
+    expect(script).toContain("redis.call('TIME')");
   });
 
-  it('returns allowed=true when spent is below the ceiling', async () => {
-    mockGet.mockResolvedValue('499');
-
-    const result = await checkUserBudget('user-1');
-
-    expect(result.allowed).toBe(true);
-    expect(result.spent).toBe(499);
+  it.each([
+    [['LIMIT', 'global', '49999', '50000'], { status: 'limit', scope: 'global', spent: 49999, limit: 50000 }],
+    [['LIMIT', 'user', '499', '500'], { status: 'limit', scope: 'user', spent: 499, limit: 500 }],
+    [['LIMIT', 'agent', '49', '50'], { status: 'limit', scope: 'agent', spent: 49, limit: 50 }],
+  ])('maps an atomic ceiling rejection without a partial increment', async (redisResult, expected) => {
+    mockEval.mockResolvedValue(redisResult);
+    await expect(reserveAIProviderSpend(request)).resolves.toEqual(expected);
   });
 
-  it('returns allowed=false when spent equals or exceeds the ceiling', async () => {
-    mockGet.mockResolvedValue('500');
-
-    const result = await checkUserBudget('user-1');
-
-    expect(result.allowed).toBe(false);
-    expect(result.spent).toBe(500);
+  it('returns a completed operation for idempotent replay', async () => {
+    const result = { text: 'cached', provider: 'groq', model: 'm', tokensUsed: 3, estimatedCostCents: 1, attempts: 1 };
+    mockEval.mockResolvedValue(['COMPLETED', JSON.stringify(result)]);
+    await expect(reserveAIProviderSpend(request)).resolves.toEqual({ status: 'completed', resultJson: JSON.stringify(result) });
   });
 
-  it('returns allowed=false when heavily over budget', async () => {
-    mockGet.mockResolvedValue('9999');
-
-    const result = await checkUserBudget('user-1');
-
-    expect(result.allowed).toBe(false);
+  it('fails closed when Redis reservation is unavailable', async () => {
+    mockEval.mockRejectedValue(new Error('Redis unavailable'));
+    await expect(reserveAIProviderSpend(request)).rejects.toThrow('Redis unavailable');
   });
 
-  it('fails-closed (allowed=false) when Redis throws', async () => {
-    mockGet.mockRejectedValue(new Error('Redis down'));
+  it('settles only at or below the reserved amount', async () => {
+    mockEval.mockResolvedValue(['SETTLED', '7']);
+    await expect(settleAIProviderSpend({
+      ...request,
+      actualCostCents: 2,
+      resultJson: JSON.stringify({ ok: true }),
+    })).resolves.toBeUndefined();
+    expect(mockEval.mock.calls[0][2][0]).toBe('2');
 
-    const result = await checkUserBudget('user-1');
-
-    expect(result.allowed).toBe(false);
-    expect(result.spent).toBe(0);
+    await expect(settleAIProviderSpend({
+      ...request,
+      actualCostCents: 10,
+      resultJson: JSON.stringify({ ok: true }),
+    })).rejects.toThrow('AI_BUDGET_ACTUAL_EXCEEDS_RESERVATION');
   });
 
-  it('uses a date-scoped Redis key (contains today in YYYY-MM-DD)', async () => {
-    mockGet.mockResolvedValue(null);
+  it('retains unknown spend, releases proven no-I/O spend, and finalizes failure via Lua', async () => {
+    mockEval
+      .mockResolvedValueOnce(['MARKED_UNKNOWN'])
+      .mockResolvedValueOnce(['RELEASED'])
+      .mockResolvedValueOnce(['FAILED']);
 
-    await checkUserBudget('user-abc');
+    await markAIProviderSpendUnknown(request);
+    await releaseAIProviderSpend(request);
+    await failAIOperation(request, 'providers exhausted');
 
-    const calledKey = mockGet.mock.calls[0][0] as string;
-    const today = new Date().toISOString().split('T')[0];
-    expect(calledKey).toContain('user-abc');
-    expect(calledKey).toContain(today);
-    expect(calledKey).toMatch(/^ai:user_spend:/);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// trackUserCost
-// ---------------------------------------------------------------------------
-
-describe('trackUserCost', () => {
-  it('increments the Redis key by costCents and sets TTL', async () => {
-    mockIncrby.mockResolvedValue(50);
-    mockExpire.mockResolvedValue(1);
-
-    await trackUserCost('user-1', 50);
-
-    expect(mockIncrby).toHaveBeenCalledTimes(1);
-    const [key, amount] = mockIncrby.mock.calls[0];
-    expect(key).toContain('user-1');
-    expect(amount).toBe(50);
-
-    expect(mockExpire).toHaveBeenCalledTimes(1);
-    const [expKey, ttl] = mockExpire.mock.calls[0];
-    expect(expKey).toContain('user-1');
-    expect(ttl).toBe(86400);
+    expect(mockEval).toHaveBeenCalledTimes(3);
   });
 
-  it('is non-fatal when Redis throws (does not throw)', async () => {
-    mockIncrby.mockRejectedValue(new Error('Redis connection refused'));
-
-    // Should not throw
-    await expect(trackUserCost('user-1', 10)).resolves.toBeUndefined();
+  it('atomically rolls back counters and removes the poisoned operation after proven pre-I/O failure', async () => {
+    mockEval.mockResolvedValueOnce(['ABORTED', '20700']);
+    await expect(abortAIProviderSpendBeforeIO(request)).resolves.toBeUndefined();
+    const [script, keys] = mockEval.mock.calls[0] as [string, string[]];
+    expect(keys).toHaveLength(2);
+    expect(keys.every((key) => key.includes('{spend-authority}'))).toBe(true);
+    expect(script).toContain("redis.call('DECRBY', global_key, amount)");
+    expect(script).toContain("redis.call('DEL', attempt_key)");
+    expect(script).toContain("redis.call('DEL', operation_key)");
   });
 
-  it('correctly accumulates cost increments', async () => {
-    mockIncrby
-      .mockResolvedValueOnce(30)
-      .mockResolvedValueOnce(60)
-      .mockResolvedValueOnce(90);
-    mockExpire.mockResolvedValue(1);
-
-    await trackUserCost('user-1', 30);
-    await trackUserCost('user-1', 30);
-    await trackUserCost('user-1', 30);
-
-    expect(mockIncrby).toHaveBeenCalledTimes(3);
-    const amounts = mockIncrby.mock.calls.map(c => c[1]);
-    expect(amounts).toEqual([30, 30, 30]);
+  it('rejects corrupt or unexpected Redis state instead of proceeding', async () => {
+    mockEval.mockResolvedValue(['ATTEMPT_EXISTS']);
+    await expect(reserveAIProviderSpend(request)).rejects.toThrow('AI_BUDGET_RESERVATION_REJECTED:ATTEMPT_EXISTS');
   });
 });
 
-// ---------------------------------------------------------------------------
-// checkGlobalBudget
-// ---------------------------------------------------------------------------
-
-describe('checkGlobalBudget', () => {
-  it('returns allowed=true when nothing spent globally', async () => {
-    mockGet.mockResolvedValue(null);
-
-    const result = await checkGlobalBudget();
-
-    expect(result.allowed).toBe(true);
-    expect(result.spent).toBe(0);
-    expect(result.limit).toBe(50000); // GLOBAL_DAILY_CEILING_CENTS = 50000 ($500)
+describe('budget status reads', () => {
+  it('uses the reservation counters for global, user, and agent status', async () => {
+    mockEval
+      .mockResolvedValueOnce(['SPEND', '12', '20700'])
+      .mockResolvedValueOnce(['SPEND', '13', '20700'])
+      .mockResolvedValueOnce(['SPEND', '14', '20700']);
+    await expect(checkGlobalBudget()).resolves.toEqual({ allowed: true, spent: 12, limit: 50000 });
+    await expect(checkUserBudget('user-1')).resolves.toEqual({ allowed: true, spent: 13, limit: 500 });
+    await expect(checkAgentBudget('judge', 'user-1', 50)).resolves.toEqual({ allowed: true, spent: 14, limit: 50 });
   });
 
-  it('returns allowed=true when global spend is below ceiling', async () => {
-    mockGet.mockResolvedValue('49999');
-
-    const result = await checkGlobalBudget();
-
-    expect(result.allowed).toBe(true);
-    expect(result.spent).toBe(49999);
+  it('fails closed on missing or corrupt metering', async () => {
+    mockEval.mockRejectedValue(new Error('down'));
+    await expect(checkGlobalBudget()).resolves.toMatchObject({ allowed: false });
+    await expect(checkUserBudget('user-1')).resolves.toMatchObject({ allowed: false });
+    await expect(checkAgentBudget('judge', 'user-1', 50)).resolves.toMatchObject({ allowed: false });
   });
 
-  it('returns allowed=false when global spend meets or exceeds ceiling', async () => {
-    mockGet.mockResolvedValue('50000');
-
-    const result = await checkGlobalBudget();
-
-    expect(result.allowed).toBe(false);
-    expect(result.spent).toBe(50000);
-  });
-
-  it('uses a date-scoped global key', async () => {
-    mockGet.mockResolvedValue(null);
-
-    await checkGlobalBudget();
-
-    const calledKey = mockGet.mock.calls[0][0] as string;
-    const today = new Date().toISOString().split('T')[0];
-    expect(calledKey).toMatch(/^ai:global_spend:/);
-    expect(calledKey).toContain(today);
-  });
-
-  it('fails-closed (allowed=false) when Redis throws', async () => {
-    mockGet.mockRejectedValue(new Error('Redis down'));
-
-    const result = await checkGlobalBudget();
-
-    expect(result.allowed).toBe(false);
-    expect(result.spent).toBe(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// trackGlobalCost
-// ---------------------------------------------------------------------------
-
-describe('trackGlobalCost', () => {
-  it('increments the global spend key and sets TTL', async () => {
-    mockIncrby.mockResolvedValue(200);
-    mockExpire.mockResolvedValue(1);
-
-    await trackGlobalCost(200);
-
-    expect(mockIncrby).toHaveBeenCalledTimes(1);
-    const [key, amount] = mockIncrby.mock.calls[0];
-    expect(key).toMatch(/^ai:global_spend:/);
-    expect(amount).toBe(200);
-
-    expect(mockExpire).toHaveBeenCalledTimes(1);
-    expect(mockExpire.mock.calls[0][1]).toBe(86400);
-  });
-
-  it('is non-fatal when Redis throws', async () => {
-    mockIncrby.mockRejectedValue(new Error('Redis down'));
-
-    await expect(trackGlobalCost(100)).resolves.toBeUndefined();
-  });
-
-  it('tracks zero-cost calls without error', async () => {
-    mockIncrby.mockResolvedValue(0);
-    mockExpire.mockResolvedValue(1);
-
-    await expect(trackGlobalCost(0)).resolves.toBeUndefined();
-    expect(mockIncrby).toHaveBeenCalledWith(expect.any(String), 0);
+  it('permits clock injection only through the test-only wrapper', async () => {
+    mockEval.mockResolvedValue(['RESERVED', '9', '47481', '3601']);
+    await expect(aiBudgetTestOnly.reserveAtEpoch(request, 4_102_444_799)).resolves.toMatchObject({
+      status: 'reserved',
+      budgetDay: '47481',
+    });
+    expect(mockEval.mock.calls[0][2].at(-1)).toBe('4102444799');
   });
 });

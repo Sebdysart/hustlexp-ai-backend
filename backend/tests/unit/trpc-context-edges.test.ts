@@ -90,6 +90,7 @@ describe('tRPC context edge behavior', () => {
     expect(result.user).toMatchObject({ id: 'user-1' });
     expect(result.ip).toBe('192.0.2.5');
     expect(mocks.verify).toHaveBeenCalledWith('token', true);
+    expect(mocks.redisGet).toHaveBeenCalledWith('auth:revoked:uid-1', 'authority');
     expect(mocks.warn).toHaveBeenCalled();
   });
 

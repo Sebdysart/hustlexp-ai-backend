@@ -19,8 +19,8 @@ const executionSql = readFileSync(executionPath, 'utf8');
 
 describe('Universal V1 change-order and execution migration chain', () => {
   it('is one exact, ordered, runner-owned transaction tail', () => {
-    expect(REQUIRED_MIGRATION_FILES).toHaveLength(121);
-    expect(REQUIRED_MIGRATION_FILES.slice(-3)).toEqual([
+    expect(REQUIRED_MIGRATION_FILES).toHaveLength(128);
+    expect(REQUIRED_MIGRATION_FILES.slice(-10)).toEqual([
       {
         name: '20260911_universal_v1_change_order_application',
         fileName: '20260911_universal_v1_change_order_application.sql',
@@ -32,6 +32,34 @@ describe('Universal V1 change-order and execution migration chain', () => {
       {
         name: '20260913_universal_v1_completion_delivery_receipt',
         fileName: '20260913_universal_v1_completion_delivery_receipt.sql',
+      },
+      {
+        name: '20260914_notification_provider_in_flight',
+        fileName: '20260914_notification_provider_in_flight.sql',
+      },
+      {
+        name: '20260915_ai_spend_attempt_ledger',
+        fileName: '20260915_ai_spend_attempt_ledger.sql',
+      },
+      {
+        name: '20260916_provider_event_inbox_v1',
+        fileName: '20260916_provider_event_inbox_v1.sql',
+      },
+      {
+        name: '20260917_financial_provider_command_journal_v1',
+        fileName: '20260917_financial_provider_command_journal_v1.sql',
+      },
+      {
+        name: '20260918_universal_v1_prepared_financial_command_v1',
+        fileName: '20260918_universal_v1_prepared_financial_command_v1.sql',
+      },
+      {
+        name: '20260919_provider_event_processing_v1',
+        fileName: '20260919_provider_event_processing_v1.sql',
+      },
+      {
+        name: '20260920_financial_provider_command_recovery_v1',
+        fileName: '20260920_financial_provider_command_recovery_v1.sql',
       },
     ]);
     for (const sql of [changeOrderSql, executionSql]) {

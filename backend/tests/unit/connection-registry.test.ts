@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   addConnection,
   removeConnection,
+  teardownConnection,
   getConnections,
   getAllConnections,
   getConnectionCount,
@@ -110,6 +111,44 @@ describe('Connection Registry', () => {
     });
   });
 
+  describe('teardownConnection', () => {
+    it('removes and releases one exact connection idempotently', () => {
+      const release = vi.fn();
+      const close = vi.fn();
+      const conn: SSEConnection = {
+        userId: 'teardown-user',
+        controller: { enqueue: vi.fn(), close } as unknown as ReadableStreamDefaultController<Uint8Array>,
+        closed: false,
+        releasePersonalRoom: release,
+      };
+      addConnection('teardown-user', conn);
+
+      teardownConnection('teardown-user', conn);
+      teardownConnection('teardown-user', conn);
+
+      expect(getConnections('teardown-user')).toBeUndefined();
+      expect(release).toHaveBeenCalledOnce();
+      expect(close).toHaveBeenCalledOnce();
+    });
+
+    it('does not remove or release a sibling tab', () => {
+      const firstRelease = vi.fn();
+      const secondRelease = vi.fn();
+      const first = createMockConnection('teardown-tabs');
+      const second = createMockConnection('teardown-tabs');
+      first.releasePersonalRoom = firstRelease;
+      second.releasePersonalRoom = secondRelease;
+      addConnection('teardown-tabs', first);
+      addConnection('teardown-tabs', second);
+
+      teardownConnection('teardown-tabs', first);
+
+      expect(firstRelease).toHaveBeenCalledOnce();
+      expect(secondRelease).not.toHaveBeenCalled();
+      expect(getConnections('teardown-tabs')).toEqual(new Set([second]));
+    });
+  });
+
   // ===========================================================================
   // getConnections
   // ===========================================================================
@@ -185,16 +224,20 @@ describe('Connection Registry', () => {
     it('closes all controllers for a user and removes them from the registry', () => {
       const closeSpy1 = vi.fn();
       const closeSpy2 = vi.fn();
+      const releaseSpy1 = vi.fn();
+      const releaseSpy2 = vi.fn();
 
       const conn1: SSEConnection = {
         userId: 'ban-user',
         controller: { enqueue: vi.fn(), close: closeSpy1, desiredSize: 1, error: vi.fn() } as unknown as ReadableStreamDefaultController<Uint8Array>,
         closed: false,
+        releasePersonalRoom: releaseSpy1,
       };
       const conn2: SSEConnection = {
         userId: 'ban-user',
         controller: { enqueue: vi.fn(), close: closeSpy2, desiredSize: 1, error: vi.fn() } as unknown as ReadableStreamDefaultController<Uint8Array>,
         closed: false,
+        releasePersonalRoom: releaseSpy2,
       };
 
       addConnection('ban-user', conn1);
@@ -206,6 +249,8 @@ describe('Connection Registry', () => {
       expect(conn2.closed).toBe(true);
       expect(closeSpy1).toHaveBeenCalledOnce();
       expect(closeSpy2).toHaveBeenCalledOnce();
+      expect(releaseSpy1).toHaveBeenCalledOnce();
+      expect(releaseSpy2).toHaveBeenCalledOnce();
       expect(getConnections('ban-user')).toBeUndefined();
     });
 

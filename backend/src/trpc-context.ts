@@ -108,7 +108,7 @@ async function cachedContext(
   const cached = authCacheGet(token);
   if (!cached) return null;
   try {
-    const revokedAt = await redis.get<string>(revokedKey(cached.firebaseUid));
+    const revokedAt = await redis.get<string>(revokedKey(cached.firebaseUid), 'authority');
     if (!revokedAt) {
       return {
         user: cached.user,

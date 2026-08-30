@@ -2,52 +2,27 @@
  * AI Endpoint Rate Limiting
  */
 
-import { Ratelimit } from '@upstash/ratelimit';
-import { Redis } from '@upstash/redis';
+import { randomUUID } from 'crypto';
 import { TRPCError } from '@trpc/server';
-import { config } from '../config.js';
+import {
+  getRedisCommandClient,
+  takeSlidingWindow,
+} from '../redis/RedisCommandPort.js';
 
 interface RateLimitConfig {
   requests: number;
-  window: string;
+  windowMs: number;
 }
 
 const AGENT_RATE_LIMITS: Record<string, RateLimitConfig> = {
-  judge: { requests: 10, window: '1 m' },
-  matchmaker: { requests: 30, window: '1 m' },
-  dispute: { requests: 5, window: '1 m' },
-  reputation: { requests: 20, window: '1 m' },
-  onboarding: { requests: 5, window: '1 h' },
-  moderation: { requests: 50, window: '1 m' },
-  default: { requests: 20, window: '1 m' },
+  judge: { requests: 10, windowMs: 60_000 },
+  matchmaker: { requests: 30, windowMs: 60_000 },
+  dispute: { requests: 5, windowMs: 60_000 },
+  reputation: { requests: 20, windowMs: 60_000 },
+  onboarding: { requests: 5, windowMs: 60 * 60_000 },
+  moderation: { requests: 50, windowMs: 60_000 },
+  default: { requests: 20, windowMs: 60_000 },
 };
-
-let redis: Redis | null = null;
-const ratelimits: Map<string, Ratelimit> = new Map();
-
-function getRedis(): Redis {
-  if (!redis) {
-    if (!config.redis.restUrl || !config.redis.restToken) {
-      throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'HX003: Redis not configured for rate limiting' });
-    }
-    redis = new Redis({ url: config.redis.restUrl, token: config.redis.restToken });
-  }
-  return redis;
-}
-
-function getRatelimit(agent: string): Ratelimit {
-  if (!ratelimits.has(agent)) {
-    const limitConfig = AGENT_RATE_LIMITS[agent] || AGENT_RATE_LIMITS.default;
-    const ratelimit = new Ratelimit({
-      redis: getRedis(),
-      limiter: Ratelimit.slidingWindow(limitConfig.requests, limitConfig.window as `${number} s` | `${number} ms` | `${number} m` | `${number} h` | `${number} d`),
-      analytics: true,
-      prefix: `ratelimit:ai:${agent}`,
-    });
-    ratelimits.set(agent, ratelimit);
-  }
-  return ratelimits.get(agent)!;
-}
 
 export interface RateLimitResult {
   allowed: boolean;
@@ -58,9 +33,23 @@ export interface RateLimitResult {
 
 export async function checkRateLimit(agent: string, userId: string): Promise<RateLimitResult> {
   try {
-    const ratelimit = getRatelimit(agent);
-    const { success, limit, remaining, reset } = await ratelimit.limit(`${agent}:${userId}`);
-    return { allowed: success, limit, remaining, reset };
+    const redis = getRedisCommandClient();
+    if (!redis) {
+      throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'HX003: Redis not configured for rate limiting' });
+    }
+    const limitConfig = AGENT_RATE_LIMITS[agent] || AGENT_RATE_LIMITS.default;
+    const result = await takeSlidingWindow(redis, {
+      key: `ratelimit:ai:${agent}:${userId}`,
+      limit: limitConfig.requests,
+      windowMs: limitConfig.windowMs,
+      member: randomUUID(),
+    });
+    return {
+      allowed: result.allowed,
+      limit: result.limit,
+      remaining: result.remaining,
+      reset: result.resetAt,
+    };
   } catch (error) {
     // Intentional fail-CLOSED: consistent with UserAIBudget and AIRouter budget guards.
     // A Redis failure or connection exhaustion must not silently bypass per-user limits.

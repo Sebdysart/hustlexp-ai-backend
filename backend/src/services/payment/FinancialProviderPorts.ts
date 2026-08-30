@@ -4,7 +4,14 @@
  * These contracts deliberately use HustleXP operation identifiers and states.
  * Processor-specific identifiers may only appear as opaque external references.
  */
-export type FinancialProviderKind = 'FAKE' | 'EXTERNAL';
+/**
+ * Canonical provider vocabulary shared with the database lifecycle contract.
+ *
+ * `APPROVED_PROVIDER` is deliberately an authority state rather than a vendor
+ * name. No approved-provider adapter is currently registered; the type exists
+ * so adding one does not require rewriting the domain application layer.
+ */
+export type FinancialProviderKind = 'FAKE' | 'APPROVED_PROVIDER';
 
 export type FinancialOperationKind =
   | 'PREPARE_PAYMENT_METHOD'

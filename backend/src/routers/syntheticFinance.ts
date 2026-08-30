@@ -5,7 +5,6 @@ import {
   enqueueSyntheticReconciliation,
 } from '../jobs/synthetic-financial-worker.js';
 import {
-  assertSyntheticFinancialWebhookHmac,
   SyntheticFinancialAuthorityError,
   syntheticFinancialCommandAuthority,
 } from '../services/payment/SyntheticFinancialCommandAuthority.js';
@@ -15,8 +14,12 @@ import {
   syntheticProviderOnboardingCommandSchema,
   syntheticReconciliationCommandSchema,
   signedSyntheticWebhookIngressSchema,
-  syntheticWebhookIngressCommandSchema,
 } from '../services/payment/SyntheticFinancialCommandSchemas.js';
+import { ProviderEventInboxError } from '../services/payment/ProviderEventInbox.js';
+import {
+  authenticateAndRecordSyntheticFinancialWebhook,
+  SyntheticFinancialWebhookIngressError,
+} from '../services/payment/SyntheticFinancialWebhookInbox.js';
 import {
   createUniversalV1FakeFinancialApplicationService,
   type ExecuteUniversalV1FinancialEventCommand,
@@ -25,6 +28,30 @@ import {
 import { protectedProcedure, router } from '../trpc.js';
 
 function routeError(error: unknown): never {
+  if (error instanceof SyntheticFinancialWebhookIngressError) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: 'Invalid synthetic webhook payload.',
+    });
+  }
+  if (error instanceof ProviderEventInboxError) {
+    if (error.reason === 'PERSISTENCE_INCOMPLETE') {
+      throw new TRPCError({
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Synthetic webhook evidence is temporarily unavailable.',
+      });
+    }
+    if (error.reason === 'EVENT_CONFLICT' || error.reason === 'IDEMPOTENCY_CONFLICT') {
+      throw new TRPCError({
+        code: 'CONFLICT',
+        message: 'Synthetic webhook evidence conflicts with a prior receipt.',
+      });
+    }
+    throw new TRPCError({
+      code: 'PRECONDITION_FAILED',
+      message: 'Synthetic webhook evidence failed its ingress contract.',
+    });
+  }
   if (
     error instanceof SyntheticFinancialAuthorityError
     || (error instanceof Error && error.message.startsWith('NONPRODUCTION_FAKE_FINANCE_REFUSED:'))
@@ -47,20 +74,6 @@ function routeError(error: unknown): never {
     });
   }
   throw error;
-}
-
-function parseSignedWebhook(rawBody: string) {
-  let input: unknown;
-  try {
-    input = JSON.parse(rawBody);
-  } catch {
-    throw new TRPCError({ code: 'BAD_REQUEST', message: 'Invalid synthetic webhook payload.' });
-  }
-  const parsed = syntheticWebhookIngressCommandSchema.safeParse(input);
-  if (!parsed.success) {
-    throw new TRPCError({ code: 'BAD_REQUEST', message: 'Invalid synthetic webhook payload.' });
-  }
-  return parsed.data;
 }
 
 /**
@@ -140,6 +153,7 @@ export const universalFinanceRouter = router({
         return await service.onboardProvider({
           ...input,
           providerId: ctx.user.id,
+          recordedBy: ctx.user.id,
         });
       } catch (error) {
         return routeError(error);
@@ -154,6 +168,7 @@ export const universalFinanceRouter = router({
         return await service.refreshProviderAccountState({
           ...input,
           providerId: ctx.user.id,
+          recordedBy: ctx.user.id,
         });
       } catch (error) {
         return routeError(error);
@@ -164,8 +179,8 @@ export const universalFinanceRouter = router({
     .input(signedSyntheticWebhookIngressSchema)
     .mutation(async ({ ctx, input }) => {
       try {
-        assertSyntheticFinancialWebhookHmac(input.rawBody, input.signature);
-        const command = parseSignedWebhook(input.rawBody);
+        const authenticated = await authenticateAndRecordSyntheticFinancialWebhook(input);
+        const command = authenticated.command;
         await syntheticFinancialCommandAuthority.assertTaskParticipant(
           ctx.user.id,
           command.taskDraftId,
@@ -180,7 +195,7 @@ export const universalFinanceRouter = router({
         return await service.ingestWebhook({
           providerKind: command.providerKind,
           operationId: command.operationId,
-          idempotencyKey: command.idempotencyKey,
+          idempotencyKey: authenticated.normalizationIdempotencyKey,
           providerExpectedVersion: command.providerExpectedVersion,
           providerEventReference: command.providerEventReference,
           scenario: command.scenario,

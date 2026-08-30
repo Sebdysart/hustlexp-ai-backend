@@ -34,6 +34,10 @@ vi.mock('../../src/jobs/outbox-worker', () => ({
   startOutboxWorker: vi.fn(),
 }));
 
+vi.mock('../../src/lib/redis-runtime-shutdown', () => ({
+  closeRedisRuntime: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock('../../src/serverStartupMigrations', () => ({
   runStartupMigrations: vi.fn().mockResolvedValue(undefined),
 }));

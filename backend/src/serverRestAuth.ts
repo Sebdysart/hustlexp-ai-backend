@@ -10,7 +10,14 @@ export async function getAuthUser(context: Context): Promise<User | null> {
   if (!header?.startsWith('Bearer ')) return null;
   try {
     const decoded = await firebaseAuth.verifyIdToken(header.slice(7), true);
-    if (await redis.get(`auth:revoked:${decoded.uid}`)) return null;
+    const revocationMarker = await redis.get<unknown>(
+      `auth:revoked:${decoded.uid}`,
+      'authority',
+    );
+    // A strict authority read has exactly one safe absence value. Treat any
+    // malformed response (including falsy values such as an empty string or
+    // undefined) as a present/invalid marker and fail closed.
+    if (revocationMarker !== null) return null;
     const result = await db.query<User>(
       'SELECT id, firebase_uid, email, full_name, is_banned, account_status, default_mode, role, trust_tier, stripe_connect_id FROM users WHERE firebase_uid = $1',
       [decoded.uid],

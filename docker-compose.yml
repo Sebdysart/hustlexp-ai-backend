@@ -1,46 +1,27 @@
-version: '3.8'
+# This repository does not own a runnable Docker Compose application stack.
+# Use the sibling HustleXP-LLC/hustlexp-platform repository for the complete,
+# synthetic, payment-frozen local environment. Keeping this file as a guarded
+# pointer prevents `docker compose up` here from being mistaken for production,
+# staging, or complete local orchestration.
+name: hustlexp-backend-compose-pointer
 
 services:
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - "3000:3000"
-    environment:
-      - NODE_ENV=production
-      - PORT=3000
-      - DATABASE_URL=${DATABASE_URL}
-      - UPSTASH_REDIS_REST_URL=${UPSTASH_REDIS_REST_URL}
-      - UPSTASH_REDIS_REST_TOKEN=${UPSTASH_REDIS_REST_TOKEN}
-      - UPSTASH_REDIS_URL=${UPSTASH_REDIS_URL}
-      - FIREBASE_PROJECT_ID=${FIREBASE_PROJECT_ID}
-      - FIREBASE_PRIVATE_KEY=${FIREBASE_PRIVATE_KEY}
-      - FIREBASE_CLIENT_EMAIL=${FIREBASE_CLIENT_EMAIL}
-      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
-      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
-      - STRIPE_CONNECT_WEBHOOK_SECRET=${STRIPE_CONNECT_WEBHOOK_SECRET}
-      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
-    healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
-      interval: 30s
-      timeout: 3s
-      retries: 3
-    restart: unless-stopped
-
-  worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: node dist/backend/src/jobs/workers.js
-    environment:
-      - NODE_ENV=production
-      - DATABASE_URL=${DATABASE_URL}
-      - UPSTASH_REDIS_URL=${UPSTASH_REDIS_URL}
-      - FIREBASE_PROJECT_ID=${FIREBASE_PROJECT_ID}
-      - FIREBASE_PRIVATE_KEY=${FIREBASE_PRIVATE_KEY}
-      - FIREBASE_CLIENT_EMAIL=${FIREBASE_CLIENT_EMAIL}
-      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
-    restart: unless-stopped
-    depends_on:
-      - app
+  use-canonical-platform-stack:
+    image: busybox:1.36.1
+    pull_policy: never
+    profiles:
+      - backend-compose-pointer
+    command:
+      - sh
+      - -c
+      - >-
+        echo 'Backend-only Compose is intentionally disabled. Use the sibling
+        hustlexp-platform repository for the complete synthetic local stack.' >&2;
+        exit 64
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"

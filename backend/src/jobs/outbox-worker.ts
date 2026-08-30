@@ -17,8 +17,8 @@
  * @see ARCHITECTURE.md §2.4 (Outbox pattern)
  */
 
-import { randomUUID } from 'crypto';
-import { db } from '../db.js';
+import { createHash, randomUUID } from 'crypto';
+import { db, type QueryFn } from '../db.js';
 import { enqueueJob, signJobPayload, type QueueName } from './queues.js';
 import { getClient as getRedisClient } from '../cache/redis.js';
 import { workerLogger } from '../logger.js';
@@ -61,13 +61,218 @@ interface OutboxEvent {
   idempotency_key: string;
   payload: Record<string, unknown>;
   queue_name: QueueName;
-  status: 'pending' | 'enqueued' | 'processed' | 'failed';
+  status: 'pending' | 'enqueued' | 'processing' | 'processed' | 'failed';
   enqueued_at: Date | null;
   processed_at: Date | null;
   error_message: string | null;
   attempts: number;
   bullmq_job_id: string | null; // BullMQ job ID (for tracking and idempotency)
+  dispatch_attempt_id: string | null;
+  dispatch_claimed_at: Date | null;
+  dispatch_deadline_at: Date | null;
+  pre_provider_claim_id: string | null;
+  pre_provider_claim_deadline_at: Date | null;
+  provider_io_started_at: Date | null;
   created_at: Date;
+}
+
+type ClaimedOutboxEvent = OutboxEvent & {
+  dispatch_attempt_id: string;
+  bullmq_job_id: string;
+  /** True only when this poll re-added the exact ID from an expired enqueued lease. */
+  recovered_retained_dispatch: boolean;
+};
+
+export interface OutboxDispatchAuthority {
+  dispatchAttemptId: string;
+  bullmqJobId: string;
+}
+
+export interface OutboxTransitionOptions {
+  /** Close the outbox row even when its transport-attempt budget is not exhausted. */
+  terminal?: boolean;
+  /** Participate in the caller's transaction with channel-local ownership checks. */
+  query?: QueryFn;
+}
+
+const DISPATCH_LEASE_SECONDS = 300;
+
+function deterministicBullMqJobId(idempotencyKey: string, attempt: number): string {
+  // BullMQ rejects ':' in custom job IDs while HustleXP's immutable outbox
+  // keys intentionally use colon-delimited domain identities. Keep that key in
+  // the signed/job payload and derive a compact transport-only identity here.
+  const digest = createHash('sha256').update(idempotencyKey).digest('hex');
+  return attempt === 1
+    ? `outbox-${digest}`
+    : `outbox-${digest}-dispatch-${attempt}`;
+}
+
+function createJobData(event: ClaimedOutboxEvent): Record<string, unknown> {
+  let payload: Record<string, unknown> = event.payload;
+  if (FINANCIAL_EVENT_TYPES.has(event.event_type)) {
+    payload = { ...event.payload, _sig: signJobPayload(event.payload) };
+  }
+
+  return {
+    aggregate_type: event.aggregate_type,
+    aggregate_id: event.aggregate_id,
+    event_version: event.event_version,
+    // Immutable provider idempotency and mutable queue-dispatch authority are
+    // deliberately separate. Workers must bind callbacks to all three values.
+    outbox_idempotency_key: event.idempotency_key,
+    outbox_dispatch_attempt_id: event.dispatch_attempt_id,
+    outbox_bullmq_job_id: event.bullmq_job_id,
+    payload,
+  };
+}
+
+type RetainedTerminalResolution =
+  | { kind: 'rotated'; event: ClaimedOutboxEvent }
+  | { kind: 'exhausted' }
+  | { kind: 'unsafe' };
+
+/**
+ * Rotate a retained completed/failed BullMQ identity only when the database
+ * still proves that the exact recovered dispatch owns an enqueued row and no
+ * notification channel has acquired local/provider authority or a receipt.
+ *
+ * This intentionally fails closed for non-notification event types: there is
+ * no generic proof here that their worker did not commit an external effect.
+ */
+async function rotateRetainedTerminalDispatch(
+  event: ClaimedOutboxEvent,
+): Promise<RetainedTerminalResolution> {
+  const nextAttempt = event.attempts + 1;
+  const nextDispatchAttemptId = randomUUID();
+  const nextBullMqJobId = deterministicBullMqJobId(event.idempotency_key, nextAttempt);
+
+  const result = await db.query<OutboxEvent>(
+    `UPDATE outbox_events AS outbox
+     SET status = CASE WHEN outbox.attempts < $7 THEN 'enqueued' ELSE 'failed' END,
+         attempts = CASE WHEN outbox.attempts < $7 THEN $4 ELSE outbox.attempts END,
+         dispatch_attempt_id = CASE WHEN outbox.attempts < $7 THEN $5::UUID ELSE outbox.dispatch_attempt_id END,
+         bullmq_job_id = CASE WHEN outbox.attempts < $7 THEN $6 ELSE outbox.bullmq_job_id END,
+         dispatch_claimed_at = CASE WHEN outbox.attempts < $7 THEN NOW() ELSE outbox.dispatch_claimed_at END,
+         dispatch_deadline_at = CASE
+           WHEN outbox.attempts < $7 THEN NOW() + make_interval(secs => $8::INTEGER)
+           ELSE NULL
+         END,
+         error_message = CASE
+           WHEN outbox.attempts < $7 THEN NULL
+           ELSE 'retained_terminal_dispatch_attempts_exhausted'
+         END,
+         updated_at = NOW()
+     WHERE outbox.id = $1
+       AND outbox.status = 'enqueued'
+       AND outbox.processed_at IS NULL
+       AND outbox.dispatch_attempt_id = $2::UUID
+       AND outbox.bullmq_job_id = $3
+       AND outbox.attempts = $9
+       AND outbox.dispatch_deadline_at > NOW()
+       AND outbox.pre_provider_claim_id IS NULL
+       AND outbox.provider_io_started_at IS NULL
+       AND CASE outbox.event_type
+         WHEN 'email.send_requested' THEN EXISTS (
+           SELECT 1
+           FROM email_outbox AS email
+           WHERE email.id::TEXT = COALESCE(
+             outbox.payload->>'emailId',
+             CASE WHEN outbox.aggregate_type = 'email' THEN outbox.aggregate_id::TEXT END
+           )
+             AND email.status IN ('pending', 'failed')
+             AND email.pre_provider_claim_id IS NULL
+             AND email.provider_io_started_at IS NULL
+             AND email.notification_provider_attempt_id IS NULL
+             AND email.provider_msg_id IS NULL
+             AND email.sent_at IS NULL
+             AND email.delivered_at IS NULL
+             AND NOT EXISTS (
+               SELECT 1
+               FROM notification_deliveries AS delivery
+               WHERE delivery.notification_id = email.notification_id
+                 AND delivery.channel = 'email'
+                 AND (
+                   delivery.provider_attempt_id IS NOT NULL
+                   OR delivery.provider_message_id IS NOT NULL
+                   OR delivery.state NOT IN (
+                     'pending','deferred_quiet_hours','deferred_focus','queued','retry_pending'
+                   )
+                 )
+             )
+         )
+         WHEN 'sms.send_requested' THEN EXISTS (
+           SELECT 1
+           FROM sms_outbox AS sms
+           WHERE sms.id::TEXT = COALESCE(
+             outbox.payload->>'smsId',
+             CASE WHEN outbox.aggregate_type = 'sms' THEN outbox.aggregate_id::TEXT END
+           )
+             AND sms.status IN ('pending', 'failed')
+             AND sms.pre_provider_claim_id IS NULL
+             AND sms.provider_io_started_at IS NULL
+             AND sms.notification_provider_attempt_id IS NULL
+             AND sms.provider_message_id IS NULL
+             AND sms.twilio_sid IS NULL
+             AND sms.provider_status IS NULL
+             AND sms.sent_at IS NULL
+             AND sms.delivered_at IS NULL
+             AND NOT EXISTS (
+               SELECT 1
+               FROM notification_deliveries AS delivery
+               WHERE delivery.notification_id = sms.notification_id
+                 AND delivery.channel = 'sms'
+                 AND (
+                   delivery.provider_attempt_id IS NOT NULL
+                   OR delivery.provider_message_id IS NOT NULL
+                   OR delivery.state NOT IN (
+                     'pending','deferred_quiet_hours','deferred_focus','queued','retry_pending'
+                   )
+                 )
+             )
+         )
+         WHEN 'push.send_requested' THEN EXISTS (
+           SELECT 1
+           FROM notification_deliveries AS delivery
+           WHERE delivery.notification_id::TEXT = COALESCE(
+             outbox.payload->>'notificationId',
+             CASE WHEN outbox.aggregate_type = 'push' THEN outbox.aggregate_id::TEXT END
+           )
+             AND delivery.channel = 'push'
+             AND delivery.state IN (
+               'pending','deferred_quiet_hours','deferred_focus','queued','retry_pending'
+             )
+             AND delivery.provider_attempt_id IS NULL
+             AND delivery.provider_message_id IS NULL
+         )
+         ELSE FALSE
+       END
+     RETURNING outbox.*`,
+    [
+      event.id,
+      event.dispatch_attempt_id,
+      event.bullmq_job_id,
+      nextAttempt,
+      nextDispatchAttemptId,
+      nextBullMqJobId,
+      MAX_OUTBOX_ATTEMPTS,
+      DISPATCH_LEASE_SECONDS,
+      event.attempts,
+    ],
+  );
+
+  const resolved = result.rows[0];
+  if (!resolved) return { kind: 'unsafe' };
+  if (resolved.status === 'failed') return { kind: 'exhausted' };
+
+  return {
+    kind: 'rotated',
+    event: {
+      ...resolved,
+      dispatch_attempt_id: nextDispatchAttemptId,
+      bullmq_job_id: nextBullMqJobId,
+      recovered_retained_dispatch: false,
+    },
+  };
 }
 
 // ============================================================================
@@ -90,7 +295,8 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
   let failed = 0;
   
   try {
-    // Fetch pending outbox events and mark them as 'enqueued' inside a single
+    // Fetch due outbox events and durably claim a deterministic BullMQ dispatch
+    // inside a single
     // transaction so that the FOR UPDATE SKIP LOCKED lock is held for the
     // entire SELECT + UPDATE pair.  Without this, the lock is released
     // immediately after the SELECT, leaving a window where two workers can read
@@ -99,8 +305,11 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
     //
     // Strategy:
     //   1. SELECT … FOR UPDATE SKIP LOCKED  — lock the batch
-    //   2. For each event: UPDATE status='enqueued' (CAS on status='pending')
-    //      inside the same transaction so the lock covers both statements.
+    //   2. For each new event, persist status, dispatch token, deadline, attempt,
+    //      and the exact BullMQ job ID before queue I/O. For an expired enqueued
+    //      lease, retain that exact job ID: queue.add may have succeeded before
+    //      the prior process crashed, and BullMQ job-ID deduplication is the
+    //      authority that makes the ambiguous retry safe.
     //   3. COMMIT — release the locks.
     //   4. Enqueue to BullMQ outside the transaction (network I/O must not
     //      hold a DB lock — that would risk long-held locks and deadlocks).
@@ -108,29 +317,136 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
     // The CAS WHERE clause remains as a belt-and-suspenders guard for workers
     // that crashed mid-flight between SELECT and UPDATE on a prior cycle.
     const claimedEvents = await db.transaction(async (txQuery) => {
+      // A worker that died after acquiring only the bounded pre-provider lease
+      // is known not to have started provider I/O. Once that lease expires the
+      // old token is barred, so exhausting the durable dispatch budget is a
+      // terminal local failure rather than an outcome-unknown provider effect.
+      await txQuery(
+        `UPDATE outbox_events
+         SET status='failed',
+             error_message='pre_provider_dispatch_attempts_exhausted',
+             pre_provider_claim_id=NULL,
+             pre_provider_claimed_at=NULL,
+             pre_provider_claim_deadline_at=NULL,
+             updated_at=NOW()
+         WHERE status='processing'
+           AND provider_io_started_at IS NULL
+           AND attempts >= $1
+           AND (
+             pre_provider_claim_deadline_at <= NOW()
+             OR (pre_provider_claim_deadline_at IS NULL AND updated_at <= NOW() - INTERVAL '5 minutes')
+           )`,
+        [MAX_OUTBOX_ATTEMPTS],
+      );
+
       const selectResult = await txQuery<OutboxEvent>(
         `SELECT * FROM outbox_events
-         WHERE status = 'pending'
-           AND available_at <= NOW()
+         WHERE (
+           (status = 'pending' AND available_at <= NOW() AND attempts < $2)
+           OR (
+             status = 'enqueued'
+             AND processed_at IS NULL
+             AND pre_provider_claim_id IS NULL
+             AND provider_io_started_at IS NULL
+             AND (
+               dispatch_deadline_at <= NOW()
+               OR (dispatch_deadline_at IS NULL AND updated_at <= NOW() - INTERVAL '5 minutes')
+             )
+           )
+           OR (
+             status = 'processing'
+             AND provider_io_started_at IS NULL
+             AND attempts < $2
+             AND (
+               pre_provider_claim_deadline_at <= NOW()
+               OR (pre_provider_claim_deadline_at IS NULL AND updated_at <= NOW() - INTERVAL '5 minutes')
+             )
+           )
+         )
          ORDER BY created_at ASC
          LIMIT $1
          FOR UPDATE SKIP LOCKED`,
-        [batchSize]
+        [batchSize, MAX_OUTBOX_ATTEMPTS]
       );
 
-      const claimed: OutboxEvent[] = [];
+      const claimed: ClaimedOutboxEvent[] = [];
       for (const event of selectResult.rows) {
-        const updateResult = await txQuery(
+        const staleDispatch = event.status === 'enqueued';
+        const dispatchAttemptId = staleDispatch && event.dispatch_attempt_id
+          ? event.dispatch_attempt_id
+          : randomUUID();
+        const persistedAttempt = staleDispatch
+          ? Math.max(1, event.attempts)
+          : event.attempts + 1;
+        // Preserve a valid ambiguous DB->queue attempt exactly. Legacy rows
+        // can contain the colon-delimited idempotency key, which BullMQ rejects
+        // before enqueue, so those are safely repaired to the deterministic
+        // colon-free transport ID.
+        const dispatchJobId = staleDispatch
+          && event.bullmq_job_id
+          && !event.bullmq_job_id.includes(':')
+          ? event.bullmq_job_id
+          : deterministicBullMqJobId(event.idempotency_key, persistedAttempt);
+        const updateResult = await txQuery<ClaimedOutboxEvent>(
           `UPDATE outbox_events
            SET status = 'enqueued',
-               enqueued_at = NOW(),
-               attempts = attempts + 1
+               enqueued_at = COALESCE(enqueued_at, NOW()),
+               attempts = $2,
+               bullmq_job_id = $3,
+               dispatch_attempt_id = $4::UUID,
+               dispatch_claimed_at = NOW(),
+               dispatch_deadline_at = NOW() + make_interval(secs => $5::INTEGER),
+               pre_provider_claim_id = NULL,
+               pre_provider_claimed_at = NULL,
+               pre_provider_claim_deadline_at = NULL,
+               provider_io_started_at = NULL,
+               updated_at = NOW()
            WHERE id = $1
-             AND status = 'pending'`, // CAS guard (belt-and-suspenders)
-          [event.id]
+             AND (
+               (status = 'pending' AND available_at <= NOW() AND attempts < $6)
+               OR (
+                 status = 'enqueued'
+                 AND processed_at IS NULL
+                 AND pre_provider_claim_id IS NULL
+                 AND provider_io_started_at IS NULL
+                 AND (
+                   dispatch_deadline_at <= NOW()
+                   OR (dispatch_deadline_at IS NULL AND updated_at <= NOW() - INTERVAL '5 minutes')
+                 )
+               )
+               OR (
+                 status = 'processing'
+                 AND provider_io_started_at IS NULL
+                 AND attempts < $6
+                 AND (
+                   pre_provider_claim_deadline_at <= NOW()
+                   OR (pre_provider_claim_deadline_at IS NULL AND updated_at <= NOW() - INTERVAL '5 minutes')
+                 )
+               )
+             )
+           RETURNING *`,
+          [
+            event.id,
+            persistedAttempt,
+            dispatchJobId,
+            dispatchAttemptId,
+            DISPATCH_LEASE_SECONDS,
+            MAX_OUTBOX_ATTEMPTS,
+          ]
         );
-        if (updateResult.rowCount > 0) {
-          claimed.push(event);
+        if (updateResult.rows[0]) {
+          claimed.push({
+            ...updateResult.rows[0],
+            // Inspect BullMQ state only when queue.add is reconciling the exact
+            // valid ID retained from an expired enqueued attempt. A repaired
+            // legacy ID and a recovered pre-provider claim are fresh dispatches.
+            recovered_retained_dispatch: Boolean(
+              staleDispatch
+              && event.bullmq_job_id
+              && event.bullmq_job_id === dispatchJobId
+              && !event.bullmq_job_id.includes(':'),
+            ),
+          });
         } else {
           log.warn({ eventId: event.id }, 'Outbox event already processed by another worker, skipping');
         }
@@ -139,73 +455,106 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
     });
 
     for (const event of claimedEvents) {
+      let activeEvent = event;
       try {
-        // Sign financial job payloads to prevent Redis injection (Attack 12)
-        let jobPayload: Record<string, unknown> = event.payload;
-        if (FINANCIAL_EVENT_TYPES.has(event.event_type)) {
-          const signature = signJobPayload(event.payload);
-          jobPayload = { ...event.payload, _sig: signature };
-        }
-
         // Enqueue job with idempotency key (outside the transaction — no DB lock held)
-        const job = await enqueueJob(
-          event.queue_name,
-          event.event_type,
+        let job = await enqueueJob(
+          activeEvent.queue_name,
+          activeEvent.event_type,
+          createJobData(activeEvent),
           {
-            aggregate_type: event.aggregate_type,
-            aggregate_id: event.aggregate_id,
-            event_version: event.event_version,
-            payload: jobPayload,
+            jobId: activeEvent.bullmq_job_id,
           },
-          { jobId: event.idempotency_key } // Use idempotency key as job ID (prevents duplicates)
         );
 
-        // Persist the BullMQ job ID now that we have it (row already 'enqueued').
-        // BUG 6 FIX: Wrap in try/catch — bullmq_job_id is an audit field, not a
-        // control field. If this write fails (transient DB error, connection blip),
-        // the BullMQ job is already enqueued and will process normally. Blocking
-        // event processing on an audit-field write would silently strand events.
-        try {
-          await db.query(
-            `UPDATE outbox_events
-             SET bullmq_job_id = $1
-             WHERE id = $2`,
-            [job.id || event.idempotency_key, event.id]
-          );
-        } catch (err) {
-          log.warn({ err, eventId: event.id }, '[outbox-worker] Failed to record bullmq_job_id — event processing continues');
+        if (job.id && job.id !== activeEvent.bullmq_job_id) {
+          throw new Error('BullMQ returned a job ID that does not match durable dispatch authority');
         }
+
+        if (activeEvent.recovered_retained_dispatch) {
+          const retainedState = await job.getState();
+          if (retainedState === 'completed' || retainedState === 'failed') {
+            const resolution = await rotateRetainedTerminalDispatch(activeEvent);
+            if (resolution.kind === 'unsafe') {
+              failed++;
+              const errorMessage = 'retained_terminal_dispatch_not_safely_rotated';
+              errors.push({ eventId: activeEvent.id, error: errorMessage });
+              log.warn(
+                {
+                  eventId: activeEvent.id,
+                  jobId: activeEvent.bullmq_job_id,
+                  retainedState,
+                },
+                'Retained terminal BullMQ job has local/provider evidence or lost DB ownership; rotation refused',
+              );
+              continue;
+            }
+            if (resolution.kind === 'exhausted') {
+              failed++;
+              errors.push({
+                eventId: activeEvent.id,
+                error: 'retained_terminal_dispatch_attempts_exhausted',
+              });
+              continue;
+            }
+
+            activeEvent = resolution.event;
+            job = await enqueueJob(
+              activeEvent.queue_name,
+              activeEvent.event_type,
+              createJobData(activeEvent),
+              { jobId: activeEvent.bullmq_job_id },
+            );
+            if (job.id && job.id !== activeEvent.bullmq_job_id) {
+              throw new Error('BullMQ returned a job ID that does not match rotated dispatch authority');
+            }
+          }
+          // waiting/active/delayed/prioritized/unknown (and any newer
+          // nonterminal BullMQ state) retain the exact ambiguous job identity.
+        }
+
+        await db.query(
+          `UPDATE outbox_events
+           SET enqueued_at = COALESCE(enqueued_at, NOW()), updated_at = NOW()
+           WHERE id = $1
+             AND status = 'enqueued'
+             AND dispatch_attempt_id = $2::UUID
+             AND bullmq_job_id = $3`,
+          [activeEvent.id, activeEvent.dispatch_attempt_id, activeEvent.bullmq_job_id],
+        );
 
         processed++;
       } catch (error) {
         failed++;
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        errors.push({ eventId: event.id, error: errorMessage });
+        errors.push({ eventId: activeEvent.id, error: errorMessage });
 
-        // The transaction already incremented attempts and set status='enqueued'.
-        // queue.add() failed, so roll back the status: if still below the max,
-        // reset to 'pending' so the next poll will retry; otherwise mark 'failed'.
-        // Note: `event.attempts` reflects the value at SELECT time (before the +1
-        // the transaction applied), so after the transaction attempts = event.attempts + 1.
+        // Queue I/O is outcome-ambiguous. Keep the same durable dispatch token
+        // and BullMQ job ID; after the lease expires the dispatcher re-adds that
+        // exact job ID, which is safe whether queue.add committed or not.
         await db.query(
           `UPDATE outbox_events
-           SET status = CASE WHEN attempts < $1 THEN 'pending' ELSE 'failed' END,
-               error_message = $2
-           WHERE id = $3`,
-          [MAX_OUTBOX_ATTEMPTS, errorMessage, event.id]
+           SET error_message = $1, updated_at = NOW()
+           WHERE id = $2
+             AND status = 'enqueued'
+             AND dispatch_attempt_id = $3::UUID
+             AND bullmq_job_id = $4`,
+          [
+            errorMessage,
+            activeEvent.id,
+            activeEvent.dispatch_attempt_id,
+            activeEvent.bullmq_job_id,
+          ],
         );
 
-        if (event.attempts + 1 >= MAX_OUTBOX_ATTEMPTS) {
-          log.error(
-            { eventId: event.id, eventType: event.event_type, attempts: event.attempts + 1 },
-            'Outbox event permanently failed after max attempts — requires ops intervention'
-          );
-        } else {
-          log.warn(
-            { eventId: event.id, eventType: event.event_type, attempts: event.attempts + 1 },
-            'Outbox event queuing failed, will retry'
-          );
-        }
+        log.warn(
+          {
+            eventId: activeEvent.id,
+            eventType: activeEvent.event_type,
+            jobId: activeEvent.bullmq_job_id,
+          },
+          'Outbox dispatch outcome ambiguous; exact job ID will be reconciled after lease',
+        );
       }
     }
 
@@ -220,15 +569,25 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
  * Mark outbox event as processed (called by job processor after successful execution)
  */
 export async function markOutboxEventProcessed(
-  idempotencyKey: string
-): Promise<void> {
-  await db.query(
+  idempotencyKey: string,
+  authority: OutboxDispatchAuthority,
+  options: Pick<OutboxTransitionOptions, 'query'> = {},
+): Promise<boolean> {
+  const query = options.query ?? db.query;
+  const result = await query(
     `UPDATE outbox_events
      SET status = 'processed',
-         processed_at = NOW()
-     WHERE idempotency_key = $1`,
-    [idempotencyKey]
+          processed_at = NOW(),
+          dispatch_deadline_at = NULL,
+          pre_provider_claim_deadline_at = NULL,
+          updated_at = NOW()
+     WHERE idempotency_key = $1
+       AND dispatch_attempt_id = $2::UUID
+       AND bullmq_job_id = $3
+       AND status IN ('enqueued', 'processing')`,
+    [idempotencyKey, authority.dispatchAttemptId, authority.bullmqJobId],
   );
+  return result.rowCount === 1;
 }
 
 /**
@@ -245,16 +604,38 @@ export async function markOutboxEventProcessed(
  */
 export async function markOutboxEventFailed(
   idempotencyKey: string,
-  errorMessage: string
-): Promise<void> {
-  await db.query(
+  errorMessage: string,
+  authority: OutboxDispatchAuthority,
+  options: OutboxTransitionOptions = {},
+): Promise<boolean> {
+  const query = options.query ?? db.query;
+  const result = await query(
     `UPDATE outbox_events
-     SET status = CASE WHEN attempts < $3 THEN 'pending' ELSE 'failed' END,
+     SET status = CASE
+           WHEN $4::BOOLEAN OR attempts >= $3 THEN 'failed'
+           ELSE 'pending'
+         END,
          error_message = $1,
+         dispatch_deadline_at = NULL,
+         pre_provider_claim_id = NULL,
+         pre_provider_claimed_at = NULL,
+         pre_provider_claim_deadline_at = NULL,
          updated_at = NOW()
-     WHERE idempotency_key = $2`,
-    [errorMessage, idempotencyKey, MAX_OUTBOX_ATTEMPTS]
+     WHERE idempotency_key = $2
+       AND dispatch_attempt_id = $5::UUID
+       AND bullmq_job_id = $6
+       AND status IN ('enqueued', 'processing')
+       AND provider_io_started_at IS NULL`,
+    [
+      errorMessage,
+      idempotencyKey,
+      MAX_OUTBOX_ATTEMPTS,
+      options.terminal === true,
+      authority.dispatchAttemptId,
+      authority.bullmqJobId,
+    ],
   );
+  return result.rowCount === 1;
 }
 
 export interface OutboxWorkerHandles {

@@ -36,7 +36,7 @@ const {
   mockRedisExpire,
   mockRedisZadd,
   mockRedisZrange,
-  mockRatelimitLimit,
+  mockRedisEval,
   mockConfig,
 } = vi.hoisted(() => {
   const mockConfig = {
@@ -58,7 +58,7 @@ const {
     mockRedisExpire: vi.fn().mockResolvedValue(1),
     mockRedisZadd: vi.fn().mockResolvedValue(1),
     mockRedisZrange: vi.fn().mockResolvedValue([]),
-    mockRatelimitLimit: vi.fn(),
+    mockRedisEval: vi.fn(),
     mockConfig,
   };
 });
@@ -77,14 +77,7 @@ vi.mock('@upstash/redis', () => ({
     this.expire = mockRedisExpire;
     this.zadd = mockRedisZadd;
     this.zrange = mockRedisZrange;
-  },
-}));
-
-vi.mock('@upstash/ratelimit', () => ({
-  Ratelimit: class MockRatelimit {
-    limit = mockRatelimitLimit;
-    static slidingWindow = vi.fn().mockReturnValue({});
-    constructor(public opts: unknown) {}
+    this.eval = mockRedisEval;
   },
 }));
 
@@ -144,7 +137,7 @@ beforeEach(() => {
   mockRedisExpire.mockResolvedValue(1);
   mockRedisZadd.mockResolvedValue(1);
   mockRedisZrange.mockResolvedValue([]);
-  mockRatelimitLimit.mockResolvedValue({ success: true, remaining: 99, reset: Date.now() + 60000 });
+  mockRedisEval.mockResolvedValue([1, 99, Date.now() + 60000]);
 });
 
 // ===========================================================================
@@ -254,10 +247,11 @@ describe('get', () => {
   });
 
   it('supports generic type parameter for typed return', async () => {
-    mockRedisGet.mockResolvedValue({ id: 1, name: 'Test' });
-    const result = await get<{ id: number; name: string }>('typed-key');
+    mockRedisGet.mockResolvedValue('hx:typed-cache:v1:{"id":1,"name":"Test"}');
+    const result = await get<{ id: number; name: string }>('geocode:addr:typed-key');
     expect(result?.id).toBe(1);
     expect(result?.name).toBe('Test');
+    expect(mockRedisGet).toHaveBeenCalledWith('cache:typed:v1:geocode:addr:typed-key');
   });
 });
 
@@ -277,13 +271,21 @@ describe('set', () => {
   });
 
   it('accepts an object value', async () => {
-    await set('obj-key', { data: 42 }, 60);
-    expect(mockRedisSet).toHaveBeenCalledWith('obj-key', { data: 42 }, { ex: 60 });
+    await set('geocode:addr:obj-key', { data: 42 }, 60);
+    expect(mockRedisSet).toHaveBeenCalledWith(
+      'cache:typed:v1:geocode:addr:obj-key',
+      'hx:typed-cache:v1:{"data":42}',
+      { ex: 60 },
+    );
   });
 
   it('accepts a numeric value', async () => {
-    await set('count-key', 999);
-    expect(mockRedisSet).toHaveBeenCalledWith('count-key', 999);
+    await set('ai:cache:count-key', 999, 60);
+    expect(mockRedisSet).toHaveBeenCalledWith(
+      'cache:typed:v1:ai:cache:count-key',
+      'hx:typed-cache:v1:999',
+      { ex: 60 },
+    );
   });
 
   it('does not throw on Redis error in development (non-production)', async () => {
@@ -435,7 +437,7 @@ describe('zrevrange', () => {
 
 describe('checkRateLimit', () => {
   it('returns allowed:true with remaining count on success', async () => {
-    mockRatelimitLimit.mockResolvedValue({ success: true, remaining: 49, reset: 1700000060 });
+    mockRedisEval.mockResolvedValue([1, 49, 1700000060]);
     const result = await checkRateLimit('user-1', 'submit', 50, 60);
     expect(result.allowed).toBe(true);
     expect(result.remaining).toBe(49);
@@ -443,7 +445,7 @@ describe('checkRateLimit', () => {
   });
 
   it('returns allowed:false when rate limited', async () => {
-    mockRatelimitLimit.mockResolvedValue({ success: false, remaining: 0, reset: 1700000120 });
+    mockRedisEval.mockResolvedValue([0, 0, 1700000120]);
     const result = await checkRateLimit('user-1', 'submit', 50, 60);
     expect(result.allowed).toBe(false);
     expect(result.remaining).toBe(0);
@@ -451,7 +453,7 @@ describe('checkRateLimit', () => {
 
   it('fails closed in production when Redis rate limiter errors', async () => {
     mockConfig.app.isProduction = true;
-    mockRatelimitLimit.mockRejectedValue(new Error('Redis down'));
+    mockRedisEval.mockRejectedValue(new Error('Redis down'));
 
     const result = await checkRateLimit('user-1', 'submit', 10, 60);
     expect(result.allowed).toBe(false);
@@ -460,7 +462,7 @@ describe('checkRateLimit', () => {
 
   it('allows in development when Redis rate limiter errors', async () => {
     mockConfig.app.isProduction = false;
-    mockRatelimitLimit.mockRejectedValue(new Error('Redis down'));
+    mockRedisEval.mockRejectedValue(new Error('Redis down'));
 
     const result = await checkRateLimit('user-1', 'submit', 10, 60);
     expect(result.allowed).toBe(true);
@@ -492,7 +494,7 @@ describe('redis export', () => {
   });
 
   it('redis.checkRateLimit delegates to the module-level checkRateLimit', async () => {
-    mockRatelimitLimit.mockResolvedValue({ success: true, remaining: 9, reset: Date.now() + 1000 });
+    mockRedisEval.mockResolvedValue([1, 9, Date.now() + 1000]);
     const result = await redis.checkRateLimit('u', 'action', 10, 60);
     expect(result.allowed).toBe(true);
   });

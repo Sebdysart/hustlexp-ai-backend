@@ -13,6 +13,7 @@
 import { db } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { AIClient } from './AIClient.js';
+import { aiOperationId } from '../ai/AIOperationIdentity.js';
 import { aiObservation } from './AIObservabilityPolicy.js';
 import {
   AIObservabilityService,
@@ -125,6 +126,7 @@ export const ScoperAIService = {
       } else if (AIClient.isConfigured() && injectionDecision.decision !== 'BLOCK') {
         try {
           const aiResult = await AIClient.callJSON<ScoperProposal>({
+            operationId: aiOperationId('scoper-proposal', input.userId, input),
             observability: aiObservation('AI-SCOPER-PROPOSAL', {
               actorUserId: input.userId,
               affectedObjectType: 'TASK_DRAFT',
@@ -285,6 +287,7 @@ ${input.location ? `Location: ${input.location.city}, ${input.location.state}` :
       try {
         const truncatedInput = [...rawDescription].slice(0, MAX_INPUT_CHARS).join('');
         const result = await AIClient.call({
+          operationId: aiOperationId('task-description-refinement', truncatedInput),
           observability: aiObservation('AI-SCOPER-PROPOSAL', {
             affectedObjectType: 'TASK_DRAFT_DESCRIPTION',
           }),

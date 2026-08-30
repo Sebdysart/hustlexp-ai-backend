@@ -12,12 +12,28 @@ import {
   releaseManifestEvidence,
 } from './releaseManifest.js';
 import { newPaymentCreationHealth } from './services/NewPaymentCreationGuard.js';
+import { readNonproductionFinancialBootstrapReadiness } from './services/payment/NonproductionFinancialBootstrapReadiness.js';
 
 export function runtimeHealthEnvironment(
   env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
 ): string {
-  return env.HX_ENVIRONMENT?.trim().toLowerCase()
-    || env.NODE_ENV?.trim().toLowerCase()
+  const hxEnvironment = env.HX_ENVIRONMENT?.trim().toLowerCase();
+  const nodeEnvironment = env.NODE_ENV?.trim().toLowerCase();
+  if (
+    hxEnvironment === 'production'
+    && nodeEnvironment
+    && nodeEnvironment !== 'production'
+  ) {
+    return 'unknown';
+  }
+  if (
+    (hxEnvironment === 'preview' || hxEnvironment === 'staging')
+    && nodeEnvironment !== 'production'
+  ) {
+    return 'unknown';
+  }
+  return hxEnvironment
+    || nodeEnvironment
     || config.app.env;
 }
 
@@ -39,6 +55,17 @@ function exactReleaseReady(environment: string): boolean {
     && runtimeReleaseManifest(environment).status === 'compatible';
 }
 
+function runtimeFinancialBootstrap(environment: string) {
+  return readNonproductionFinancialBootstrapReadiness({
+    environment,
+    component: 'backend',
+    env: process.env,
+    release: releaseManifestEvidence,
+    identity: buildIdentity,
+    database: db,
+  });
+}
+
 function secretMatches(provided: string | null, expected: string): boolean {
   const rawProvided = Buffer.from(provided || '', 'utf8');
   const rawExpected = Buffer.from(expected, 'utf8');
@@ -50,7 +77,7 @@ function secretMatches(provided: string | null, expected: string): boolean {
   return Boolean(provided) && timingSafeEqual(paddedProvided, paddedExpected);
 }
 
-async function dependencyChecks() {
+async function dependencyChecks(paymentCreationMode: 'enabled' | 'frozen') {
   const checks: Record<string, { status: string; latency?: number; error?: string }> = {};
   const dbStart = Date.now();
   try {
@@ -72,8 +99,9 @@ async function dependencyChecks() {
   }
   checks.firebase = { status: config.firebase.projectId ? 'configured' : 'missing' };
   checks.stripe = {
-    status:
-      config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder')
+    status: paymentCreationMode === 'frozen'
+      ? 'disabled_by_policy'
+      : config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder')
         ? 'configured'
         : 'placeholder',
   };
@@ -110,11 +138,16 @@ async function detailedHealth(context: Context) {
   if (!secretMatches(provided, internalApiKey)) {
     return context.json({ error: 'Unauthorized' }, 401);
   }
-  const checks = await dependencyChecks();
+  const paymentCreation = newPaymentCreationHealth();
+  const checks = await dependencyChecks(paymentCreation.mode);
+  const environment = runtimeHealthEnvironment();
+  const financialBootstrap = await runtimeFinancialBootstrap(environment);
   const pool = db.getPool();
-  const allHealthy = Object.values(checks).every(
-    (check) => check.status === 'ok' || check.status === 'configured'
-  );
+  const allHealthy = exactReleaseReady(environment)
+    && financialBootstrap.ready
+    && Object.values(checks).every(
+      (check) => ['ok', 'configured', 'disabled_by_policy'].includes(check.status)
+    );
   return context.json(
     {
       status: allHealthy ? 'healthy' : 'degraded',
@@ -127,8 +160,9 @@ async function detailedHealth(context: Context) {
       },
       circuitBreakers: await circuitBreakerStates(),
       build: buildIdentity,
-      releaseManifest: runtimeReleaseManifest(runtimeHealthEnvironment()),
-      paymentCreation: newPaymentCreationHealth(),
+      releaseManifest: runtimeReleaseManifest(environment),
+      paymentCreation,
+      nonproductionFinancialBootstrap: financialBootstrap,
       uptime: process.uptime(),
       memory: process.memoryUsage(),
     },
@@ -139,10 +173,11 @@ async function detailedHealth(context: Context) {
 export function registerHealthRoutes(app: HustleApp): void {
   app.use('/health*', publicIpRateLimitMiddleware());
   app.get('/health', async (context) => {
+    const environment = runtimeHealthEnvironment();
+    const financialBootstrap = await runtimeFinancialBootstrap(environment);
     try {
       await db.query('SELECT 1');
-      const environment = runtimeHealthEnvironment();
-      const releaseReady = exactReleaseReady(environment);
+      const releaseReady = exactReleaseReady(environment) && financialBootstrap.ready;
       return context.json(
         {
           status: releaseReady ? 'healthy' : 'unhealthy',
@@ -150,6 +185,7 @@ export function registerHealthRoutes(app: HustleApp): void {
           build: buildIdentity,
           releaseManifest: runtimeReleaseManifest(environment),
           paymentCreation: newPaymentCreationHealth(),
+          nonproductionFinancialBootstrap: financialBootstrap,
         },
         releaseReady ? 200 : 503
       );
@@ -161,21 +197,24 @@ export function registerHealthRoutes(app: HustleApp): void {
           build: buildIdentity,
           releaseManifest: runtimeReleaseManifest(runtimeHealthEnvironment()),
           paymentCreation: newPaymentCreationHealth(),
+          nonproductionFinancialBootstrap: financialBootstrap,
         },
         503
       );
     }
   });
   app.get('/health/readiness', async (context) => {
+    const environment = runtimeHealthEnvironment();
+    const financialBootstrap = await runtimeFinancialBootstrap(environment);
     try {
       await db.query('SELECT 1');
-      const environment = runtimeHealthEnvironment();
-      const ready = exactReleaseReady(environment);
+      const ready = exactReleaseReady(environment) && financialBootstrap.ready;
       return context.json({
         ready,
         build: buildIdentity,
         releaseManifest: runtimeReleaseManifest(environment),
         paymentCreation: newPaymentCreationHealth(),
+        nonproductionFinancialBootstrap: financialBootstrap,
       }, ready ? 200 : 503);
     } catch {
       return context.json({
@@ -183,17 +222,19 @@ export function registerHealthRoutes(app: HustleApp): void {
         build: buildIdentity,
         releaseManifest: runtimeReleaseManifest(runtimeHealthEnvironment()),
         paymentCreation: newPaymentCreationHealth(),
+        nonproductionFinancialBootstrap: financialBootstrap,
       }, 503);
     }
   });
-  app.get('/health/liveness', (context) =>
-    context.json({
+  app.get('/health/liveness', (context) => {
+    const environment = runtimeHealthEnvironment();
+    return context.json({
       alive: true,
       uptime: process.uptime(),
       build: buildIdentity,
-      releaseManifest: runtimeReleaseManifest(runtimeHealthEnvironment()),
+      releaseManifest: runtimeReleaseManifest(environment),
       paymentCreation: newPaymentCreationHealth(),
-    })
-  );
+    });
+  });
   app.get('/health/detailed', rateLimitMiddleware('auth'), detailedHealth);
 }

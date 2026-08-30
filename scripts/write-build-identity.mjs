@@ -31,6 +31,10 @@ function artifactEntries(root, directory = root) {
   return entries;
 }
 
+function hasExecutableArtifacts(root) {
+  return artifactEntries(root).length > 0;
+}
+
 export function compiledArtifactDigest(root) {
   const entries = artifactEntries(root).sort((left, right) => left.path.localeCompare(right.path));
   return `sha256:${createHash('sha256').update(JSON.stringify(entries), 'utf8').digest('hex')}`;
@@ -103,12 +107,18 @@ export function writeBuildIdentity({
   output = resolve(process.cwd(), 'dist/hx-build-identity.json'),
   ...options
 } = {}) {
+  const artifactRoot = dirname(output);
+  // Clean verification images may run TypeScript with `--noEmit`, leaving no
+  // dist directory. Create the empty root before measuring it so provenance
+  // never depends on stale compiler output.
+  mkdirSync(artifactRoot, { recursive: true });
   const identity = {
     ...resolveBuildIdentity(options),
-    artifact_digest: compiledArtifactDigest(dirname(output)),
-    artifact_verified: true,
+    artifact_digest: compiledArtifactDigest(artifactRoot),
+    // Empty trees are measurable for no-emit test runs, but never constitute
+    // a trusted executable artifact.
+    artifact_verified: hasExecutableArtifacts(artifactRoot),
   };
-  mkdirSync(dirname(output), { recursive: true });
   writeFileSync(output, `${JSON.stringify(identity, null, 2)}\n`, 'utf8');
   return identity;
 }

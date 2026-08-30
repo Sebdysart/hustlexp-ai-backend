@@ -2,13 +2,13 @@
 
 **Repository role:** canonical backend API, worker, PostgreSQL lifecycle, policy enforcement, and provider-adapter boundary for HustleXP Universal V1.
 
-**Lifecycle status:** `ACTIVE_DEVELOPMENT / NO_IMMUTABLE_CANDIDATE / NOT_PRODUCTION_APPROVED`.
+**Lifecycle status:** `ACTIVE_DEVELOPMENT / PUBLIC_MAIN_INCIDENT / NO_IMMUTABLE_CANDIDATE / NOT_PRODUCTION_APPROVED`.
 
 **Canonical authority:** [HustleXP Business and Universal V1 Charter v1.1.0](https://github.com/Sebdysart/HUSTLEXP-DOCS/blob/0b80c71e118d7cab70474bbbf6df778811fe4fe8/governance/HUSTLEXP_BUSINESS_AND_UNIVERSAL_V1_CHARTER.md)
 
 **Supported runtime:** Node.js 22, Hono/tRPC, PostgreSQL, Redis/BullMQ, API and worker roles.
 
-**Local start:** use the commands below for this repository alone or the company `hustlexp-platform` repository for the complete synthetic stack.
+**Local start:** use the company `hustlexp-platform` repository for the canonical one-command synthetic stack. The host commands below are backend-only diagnostics against explicitly disposable PostgreSQL and Redis services; they are not a complete product stack.
 
 **Staging path:** signed PR branch -> required CI -> immutable artifacts -> synthetic PR preview -> exact compatible manifest promotion to the isolated `hustlexp-nonprod` Railway project.
 
@@ -16,7 +16,7 @@
 
 **Deployment authority:** no Git push, branch name, environment variable, historical receipt, or repository document authorizes production. A release requires the exact signed manifest, protected approvals, required green checks, environment approval, and matching API/worker runtime provenance.
 
-**Known limitations:** legacy Stripe-specific projections and Supabase writers remain under controlled migration; database-dependent cohorts require disposable PostgreSQL; the [Work Order database command boundary](docs/architecture/HUSTLEXP_WORK_ORDER_DATABASE_AUTHORITY_BOUNDARY.md) remains `EXTERNAL_DECISION_REQUIRED / RELEASE_BLOCKING`, so a successful disposable-database journey does not establish least-privilege release authority; no real processor adapter is certified; production intake/estimate promotion remains separately held.
+**Known limitations:** public `main` is in an active release-authority incident and contains bundled `.local-tools`; this aligned local tree is not the default branch or an exact signed candidate. Legacy Stripe-specific projections and Supabase writers remain under controlled migration; database-dependent cohorts require disposable PostgreSQL; the [Work Order database command boundary](docs/architecture/HUSTLEXP_WORK_ORDER_DATABASE_AUTHORITY_BOUNDARY.md) remains `EXTERNAL_DECISION_REQUIRED / RELEASE_BLOCKING`, so a successful disposable-database journey does not establish least-privilege release authority; no real processor adapter is certified; production intake/estimate promotion remains separately held.
 
 The Charter is the sole authority for business promises, categories, lifecycle meaning, and production posture. [The Team Goal and Execution Contract](docs/HUSTLEXP_TEAM_ALIGNMENT.md), [the Current Backend Checkpoint](docs/HUSTLEXP_CURRENT_BACKEND_CHECKPOINT.md), [AGENTS.md](AGENTS.md), and Governor evidence govern engineering execution only and cannot create competing business strategy or authorize external effects.
 
@@ -81,6 +81,13 @@ The runtime uses the standard `pg` driver and must not depend on Supabase- or Ne
 
 Requirements: Node 22, PostgreSQL, and Redis.
 
+The checked-in `docker-compose.yml` is deliberately a non-runnable pointer. It
+does not define an API, worker, PostgreSQL, or Redis runtime and cannot be used
+as production, staging, or local-stack evidence. Start the complete local system
+from the sibling `hustlexp-platform` repository. The commands in this section
+are useful only when developing this repository directly and you have supplied
+explicitly disposable local dependencies.
+
 ```bash
 npm ci
 test -e .env || cp .env.template .env
@@ -118,7 +125,7 @@ Railway is the only maintained target backend platform, but this document does n
 
 The checked-in `deploy.yml` is verification-only hold evidence: it compiles the dispatched SHA and proves customer-money creation remains frozen, but contains no Railway credential or deployment command. Production promotion automation is intentionally absent until staging acceptance and the separate release decision are complete.
 
-Railway Git auto-deployment must be treated as enabled until an authenticated readback proves it disabled. Merging even documentation is production-consequential until the integration is detached or placed behind the accepted exact-manifest release transaction. API and worker health expose both build identity and release-manifest evidence; preview, staging, and production fail readiness unless the manifest has a valid detached signature from a public key pinned in protected source and the signed component digest matches the runtime-measured compiled artifact. API and worker startup are read-only migration attestors; only the explicit one-shot migration role may write schema after exact environment approval.
+The [2026-08-28 public incident readback](docs/incidents/2026-08-28-release-authority-readback.md) proves Railway Git auto-deployment acted on the current default-branch SHA. Merging even documentation is production-consequential until an authenticated administrator detaches the integration and proves the readback. API and worker health expose both build identity and release-manifest evidence; preview, staging, and production fail readiness unless the manifest has a valid detached signature from a public key pinned in protected source and the signed component digest matches the runtime-measured compiled artifact. API and worker startup are read-only migration attestors; only the explicit one-shot migration role may write schema after exact environment approval.
 
 Never infer authority from an environment variable, a green check, a historical receipt, a provider test-mode success, or code presence. Preserve refund, void, recovery, webhook, and reconciliation lanes while positive production creation remains frozen.
 

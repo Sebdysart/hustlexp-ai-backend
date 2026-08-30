@@ -1,14 +1,25 @@
 import type { Context } from 'hono';
 
-import { syntheticWebhookIngressCommandSchema } from './services/payment/SyntheticFinancialCommandSchemas.js';
 import { assertNonproductionFakeFinanceAuthorized } from './services/payment/NonproductionFinancialAuthorization.js';
+import { ProviderEventInboxError } from './services/payment/ProviderEventInbox.js';
+import {
+  authenticateAndRecordSyntheticFinancialWebhook,
+  SyntheticFinancialWebhookIngressError,
+} from './services/payment/SyntheticFinancialWebhookInbox.js';
 import { createUniversalV1FakeFinancialApplicationService } from './services/payment/UniversalV1FinancialApplicationService.js';
 import {
-  assertSyntheticFinancialWebhookHmac,
   SYNTHETIC_FINANCIAL_WEBHOOK_MAX_BODY_BYTES,
   syntheticFinancialCommandAuthority,
   SyntheticFinancialAuthorityError,
 } from './services/payment/SyntheticFinancialCommandAuthority.js';
+
+function isFinancialLifecycleRefusal(error: unknown): boolean {
+  return error instanceof Error
+    && (
+      error.message.startsWith('UNIVERSAL_FINANCE_')
+      || error.message.startsWith('FAKE_FINANCIAL_')
+    );
+}
 
 /**
  * HMAC-authenticated fake-provider webhook for local, preview, and staging.
@@ -32,39 +43,27 @@ export async function syntheticFinancialWebhook(context: Context): Promise<Respo
   if (Buffer.byteLength(rawBody, 'utf8') > SYNTHETIC_FINANCIAL_WEBHOOK_MAX_BODY_BYTES) {
     return context.json({ error: 'Payload too large' }, 413);
   }
-  try {
-    assertSyntheticFinancialWebhookHmac(rawBody, signature);
-  } catch (error) {
-    const unavailable = error instanceof SyntheticFinancialAuthorityError
-      && error.reason === 'WEBHOOK_SECRET_UNAVAILABLE';
-    return context.json(
-      { error: unavailable ? 'Synthetic webhook unavailable' : 'Invalid signature' },
-      unavailable ? 503 : 401,
-    );
-  }
-
-  let input: unknown;
-  try {
-    input = JSON.parse(rawBody);
-  } catch {
-    return context.json({ error: 'Invalid JSON payload' }, 400);
-  }
-  const parsed = syntheticWebhookIngressCommandSchema.safeParse(input);
-  if (!parsed.success) return context.json({ error: 'Invalid synthetic webhook payload' }, 400);
+  const ingressIdempotencyHeader = context.req.header('x-hustlexp-ingress-idempotency-key');
 
   try {
+    const authenticated = await authenticateAndRecordSyntheticFinancialWebhook({
+      rawBody,
+      signature,
+      ingressIdempotencyKey: ingressIdempotencyHeader,
+    });
+    const command = authenticated.command;
     await syntheticFinancialCommandAuthority.assertWebhookOperationBoundary(
-      parsed.data.taskDraftId,
-      parsed.data.taskId,
-      parsed.data.operationId,
+      command.taskDraftId,
+      command.taskId,
+      command.operationId,
     );
     const result = await createUniversalV1FakeFinancialApplicationService().ingestWebhook({
-      providerKind: parsed.data.providerKind,
-      operationId: parsed.data.operationId,
-      idempotencyKey: parsed.data.idempotencyKey,
-      providerExpectedVersion: parsed.data.providerExpectedVersion,
-      providerEventReference: parsed.data.providerEventReference,
-      scenario: parsed.data.scenario,
+      providerKind: command.providerKind,
+      operationId: command.operationId,
+      idempotencyKey: authenticated.normalizationIdempotencyKey,
+      providerExpectedVersion: command.providerExpectedVersion,
+      providerEventReference: command.providerEventReference,
+      scenario: command.scenario,
       authenticated: true,
     });
     return context.json({
@@ -75,7 +74,38 @@ export async function syntheticFinancialWebhook(context: Context): Promise<Respo
       state: result.state,
       idempotencyReplayed: result.idempotencyReplayed,
     }, 200);
-  } catch {
-    return context.json({ error: 'Synthetic webhook command refused' }, 422);
+  } catch (error) {
+    if (error instanceof SyntheticFinancialWebhookIngressError) {
+      return context.json({
+        error: error.reason === 'INGRESS_IDEMPOTENCY_KEY_INVALID'
+          ? 'Invalid ingress idempotency key'
+          : 'Invalid synthetic webhook payload',
+      }, 400);
+    }
+    if (error instanceof SyntheticFinancialAuthorityError) {
+      if (error.reason === 'WEBHOOK_SECRET_UNAVAILABLE') {
+        return context.json({ error: 'Synthetic webhook unavailable' }, 503);
+      }
+      if (error.reason === 'WEBHOOK_PAYLOAD_TOO_LARGE') {
+        return context.json({ error: 'Payload too large' }, 413);
+      }
+      if (error.reason === 'WEBHOOK_HMAC_INVALID') {
+        return context.json({ error: 'Invalid signature' }, 401);
+      }
+      return context.json({ error: 'Synthetic webhook command refused' }, 422);
+    }
+    if (error instanceof ProviderEventInboxError) {
+      if (error.reason === 'PERSISTENCE_INCOMPLETE') {
+        return context.json({ error: 'Synthetic webhook temporarily unavailable' }, 503);
+      }
+      if (error.reason === 'EVENT_CONFLICT' || error.reason === 'IDEMPOTENCY_CONFLICT') {
+        return context.json({ error: 'Synthetic webhook evidence conflict' }, 409);
+      }
+      return context.json({ error: 'Synthetic webhook command refused' }, 422);
+    }
+    if (isFinancialLifecycleRefusal(error)) {
+      return context.json({ error: 'Synthetic webhook command refused' }, 422);
+    }
+    return context.json({ error: 'Synthetic webhook temporarily unavailable' }, 503);
   }
 }

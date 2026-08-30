@@ -76,7 +76,9 @@ export function readBuildIdentity(
       const measuredDigest = compiledArtifactDigest(artifactRoot);
       return {
         ...parsed,
-        artifact_verified: measuredDigest === parsed.artifact_digest,
+        artifact_verified:
+          artifactEntries(artifactRoot).length > 0
+          && measuredDigest === parsed.artifact_digest,
       };
     }
   } catch {

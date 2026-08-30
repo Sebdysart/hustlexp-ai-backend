@@ -91,25 +91,52 @@ const mockWriteToOutbox = vi.mocked(writeToOutbox);
 const mockMarkProcessed = vi.mocked(markOutboxEventProcessed);
 const mockMarkFailed = vi.mocked(markOutboxEventFailed);
 
+const OUTBOX_IDEMPOTENCY_KEY = 'export.requested:export-1:1';
+const OUTBOX_DISPATCH_ATTEMPT_ID = '00000000-0000-4000-8000-000000000301';
+const OUTBOX_BULLMQ_JOB_ID = 'export-job-001';
+const OUTBOX_AUTHORITY = {
+  dispatchAttemptId: OUTBOX_DISPATCH_ATTEMPT_ID,
+  bullmqJobId: OUTBOX_BULLMQ_JOB_ID,
+};
+
 // ────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ────────────────────────────────────────────────────────────────────────────
 
+function makePayload(overrides: Record<string, unknown> = {}) {
+  return {
+    exportId: 'export-1',
+    userId: 'user-1',
+    format: 'json',
+    ...overrides,
+  };
+}
+
 function makeJob(overrides: Record<string, unknown> = {}): Job<any> {
   return {
-    id: 'bullmq-job-001',
+    id: OUTBOX_BULLMQ_JOB_ID,
     data: {
       aggregate_type: 'export',
       aggregate_id: 'export-1',
       event_version: 1,
-      payload: {
-        exportId: 'export-1',
-        userId: 'user-1',
-        format: 'json',
-        ...overrides,
-      },
+      outbox_idempotency_key: OUTBOX_IDEMPOTENCY_KEY,
+      outbox_dispatch_attempt_id: OUTBOX_DISPATCH_ATTEMPT_ID,
+      outbox_bullmq_job_id: OUTBOX_BULLMQ_JOB_ID,
+      payload: makePayload(overrides),
     },
   } as unknown as Job<any>;
+}
+
+function primeCanonicalAuthority(overrides: Record<string, unknown> = {}) {
+  mockDb.query.mockResolvedValueOnce({
+    rows: [{
+      aggregate_id: 'export-1',
+      aggregate_type: 'export',
+      event_version: 1,
+      payload: makePayload(overrides),
+    }],
+    rowCount: 1,
+  } as any);
 }
 
 function makeExportRow(overrides: Record<string, unknown> = {}) {
@@ -165,6 +192,7 @@ describe('processExportJob', () => {
     vi.resetAllMocks();
     mockDb.transaction = mockTransaction;
     mockR2.generateExportKey.mockReturnValue('exports/user-1/export-1/data.json');
+    primeCanonicalAuthority();
   });
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -231,9 +259,9 @@ describe('processExportJob', () => {
 
       await processExportJob(makeJob());
 
-      // db.query should NOT contain the SELECT or the generating CAS UPDATE —
-      // those went through txQuery.  Calls should only be for object_key persist
-      // and final status=ready update.
+      // db.query should NOT contain the export-row SELECT or generating CAS
+      // UPDATE — those went through txQuery. The canonical outbox authority
+      // lookup intentionally remains a separate pre-claim db.query call.
       const queryCalls: string[] = mockDb.query.mock.calls.map((c) => c[0] as string);
       for (const sql of queryCalls) {
         expect(sql).not.toContain('FOR UPDATE');
@@ -263,7 +291,10 @@ describe('processExportJob', () => {
 
       await processExportJob(makeJob());
 
-      expect(mockMarkProcessed).toHaveBeenCalledWith('bullmq-job-001');
+      expect(mockMarkProcessed).toHaveBeenCalledWith(
+        OUTBOX_IDEMPOTENCY_KEY,
+        OUTBOX_AUTHORITY,
+      );
       expect(mockR2.uploadFile).not.toHaveBeenCalled();
       expect(mockWriteToOutbox).not.toHaveBeenCalled();
     });
@@ -347,7 +378,10 @@ describe('processExportJob', () => {
       expect(mockWriteToOutbox).toHaveBeenCalledWith(
         expect.objectContaining({ eventType: 'export.ready' })
       );
-      expect(mockMarkProcessed).toHaveBeenCalledWith('bullmq-job-001');
+      expect(mockMarkProcessed).toHaveBeenCalledWith(
+        OUTBOX_IDEMPOTENCY_KEY,
+        OUTBOX_AUTHORITY,
+      );
 
       // Final DB update must set status='ready'
       const finalUpdateCall = mockDb.query.mock.calls.find(
@@ -382,6 +416,8 @@ describe('processExportJob', () => {
     });
 
     it('updates GDPR request when gdprRequestId is provided', async () => {
+      mockDb.query.mockReset();
+      primeCanonicalAuthority({ gdprRequestId: 'gdpr-req-1' });
       setupTransactionClaim(makeExportRow());
       setupR2ForUpload();
 
@@ -440,7 +476,11 @@ describe('processExportJob', () => {
         ([sql]) => (sql as string).includes("status = 'failed'")
       );
       expect(failedUpdateCall).toBeDefined();
-      expect(mockMarkFailed).toHaveBeenCalledWith('bullmq-job-001', 'R2 upload failed');
+      expect(mockMarkFailed).toHaveBeenCalledWith(
+        OUTBOX_IDEMPOTENCY_KEY,
+        'R2 upload failed',
+        OUTBOX_AUTHORITY,
+      );
     });
 
     it('gracefully handles DB failure during status=failed update (does not swallow original error)', async () => {
@@ -456,6 +496,31 @@ describe('processExportJob', () => {
 
       // Original error should still propagate
       await expect(processExportJob(makeJob())).rejects.toThrow('R2 timeout');
+    });
+  });
+
+  describe('exact durable dispatch authority', () => {
+    it('rejects a job whose BullMQ identity does not match its durable authority', async () => {
+      const job = makeJob();
+      job.id = 'stale-export-job';
+
+      await expect(processExportJob(job)).rejects.toThrow(
+        'Export job lacks exact durable dispatch authority',
+      );
+
+      expect(mockDb.query).not.toHaveBeenCalled();
+      expect(mockTransaction).not.toHaveBeenCalled();
+      expect(mockR2.uploadFile).not.toHaveBeenCalled();
+    });
+
+    it('rejects a payload that differs from the canonical outbox envelope', async () => {
+      await expect(processExportJob(makeJob({ format: 'csv' }))).rejects.toThrow(
+        'Export job does not match canonical outbox authority',
+      );
+
+      expect(mockTransaction).not.toHaveBeenCalled();
+      expect(mockR2.uploadFile).not.toHaveBeenCalled();
+      expect(mockMarkFailed).not.toHaveBeenCalled();
     });
   });
 });

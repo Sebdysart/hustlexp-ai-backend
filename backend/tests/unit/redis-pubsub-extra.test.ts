@@ -26,6 +26,7 @@ type MockRedisInstance = {
   unsubscribe: ReturnType<typeof vi.fn>;
   on: ReturnType<typeof vi.fn>;
   quit: ReturnType<typeof vi.fn>;
+  disconnect: ReturnType<typeof vi.fn>;
   _messageHandler?: (channel: string, message: string) => void;
 };
 
@@ -43,6 +44,7 @@ vi.mock('ioredis', () => {
     subscribe = vi.fn().mockResolvedValue(1);
     unsubscribe = vi.fn().mockResolvedValue(1);
     quit = vi.fn().mockResolvedValue('OK');
+    disconnect = vi.fn();
     _messageHandler?: (channel: string, message: string) => void;
     on = vi.fn().mockImplementation((event: string, handler: any) => {
       if (event === 'message') {
@@ -73,11 +75,13 @@ vi.mock('../../src/logger', () => ({
 
 // connection-registry mock for deliverToLocalSubscribers
 // vi.hoisted() required because vi.mock() is hoisted above variable declarations
-const { mockGetConnections } = vi.hoisted(() => ({
+const { mockGetConnections, mockTeardownConnection } = vi.hoisted(() => ({
   mockGetConnections: vi.fn().mockReturnValue(undefined),
+  mockTeardownConnection: vi.fn(),
 }));
 vi.mock('../../src/realtime/connection-registry', () => ({
   getConnections: mockGetConnections,
+  teardownConnection: mockTeardownConnection,
   addConnection: vi.fn(),
   removeConnection: vi.fn(),
   getAllConnections: vi.fn().mockReturnValue(new Map()),
@@ -126,7 +130,7 @@ afterEach(async () => {
 // publishToRoom
 // ============================================================================
 describe('publishToRoom', () => {
-  it('publishes message to Redis and delivers to local subscribers', async () => {
+  it('publishes through Redis and delivers exactly once from the subscriber echo', async () => {
     // First subscribe a user to a room
     subscribeToRoom('user-pub-1', getUserRoomKey('user-pub-1'));
 
@@ -148,11 +152,26 @@ describe('publishToRoom', () => {
       getUserRoomKey('user-pub-1'),
       expect.stringContaining('task.update')
     );
+    const published = JSON.parse(pub!.publish.mock.calls[0][1] as string);
+    expect(published).toEqual(expect.objectContaining({
+      schemaVersion: 1,
+      type: 'task.update',
+      room: getUserRoomKey('user-pub-1'),
+      payload: { taskId: 'task-1', status: 'ACCEPTED' },
+    }));
 
-    // Local delivery: enqueue should have been called
-    expect(mockEnqueue).toHaveBeenCalledWith(
-      expect.any(Uint8Array)
+    // Origin publication must not enqueue locally. The API instance's Redis
+    // subscriber is the single delivery authority.
+    expect(mockEnqueue).not.toHaveBeenCalled();
+    initializePubSub();
+    const sub = mockInstances.find(instance => instance._messageHandler);
+    expect(sub?._messageHandler).toBeDefined();
+    sub!._messageHandler!(
+      pub!.publish.mock.calls[0][0] as string,
+      pub!.publish.mock.calls[0][1] as string,
     );
+    expect(mockEnqueue).toHaveBeenCalledOnce();
+    expect(mockEnqueue).toHaveBeenCalledWith(expect.any(Uint8Array));
 
     // Cleanup
     unsubscribeFromRoom('user-pub-1', getUserRoomKey('user-pub-1'));
@@ -171,15 +190,17 @@ describe('publishToRoom', () => {
     };
     mockGetConnections.mockReturnValue(new Set([mockClosedConn as any]));
 
-    // Should not throw
-    await expect(publishToRoom(getUserRoomKey('user-closed-1'), {
+    await publishToRoom(getUserRoomKey('user-closed-1'), {
       type: 'test',
       payload: {},
       timestamp: new Date().toISOString(),
-    })).resolves.not.toThrow();
+    });
+    initializePubSub();
+    const pub = mockInstances.find(instance => instance.publish.mock.calls.length > 0)!;
+    const sub = mockInstances.find(instance => instance._messageHandler)!;
+    sub._messageHandler!(pub.publish.mock.calls[0][0], pub.publish.mock.calls[0][1]);
 
-    // Connection should be marked as closed
-    expect(mockClosedConn.closed).toBe(true);
+    expect(mockTeardownConnection).toHaveBeenCalledWith('user-closed-1', mockClosedConn);
 
     unsubscribeFromRoom('user-closed-1', getUserRoomKey('user-closed-1'));
   });
@@ -200,6 +221,11 @@ describe('publishToRoom', () => {
       payload: {},
       timestamp: new Date().toISOString(),
     });
+
+    initializePubSub();
+    const pub = mockInstances.find(instance => instance.publish.mock.calls.length > 0)!;
+    const sub = mockInstances.find(instance => instance._messageHandler)!;
+    sub._messageHandler!(pub.publish.mock.calls[0][0], pub.publish.mock.calls[0][1]);
 
     // enqueue should NOT have been called for closed connection
     expect(mockEnqueue).not.toHaveBeenCalled();
@@ -292,6 +318,7 @@ describe('initializePubSub — message handler', () => {
 
     // Simulate Redis delivering a message
     const message = JSON.stringify({
+      schemaVersion: 1,
       type: 'task.update',
       payload: { taskId: 'task-1' },
       room: getUserRoomKey('user-msg-1'),
@@ -306,6 +333,35 @@ describe('initializePubSub — message handler', () => {
     unsubscribeFromRoom('user-msg-1', getUserRoomKey('user-msg-1'));
   });
 
+  it('drops the orphan legacy channel and a room-mismatched envelope', () => {
+    subscribeToRoom('user-msg-2', getUserRoomKey('user-msg-2'));
+    const mockEnqueue = vi.fn();
+    mockGetConnections.mockReturnValue(new Set([{
+      userId: 'user-msg-2',
+      closed: false,
+      controller: { enqueue: mockEnqueue },
+    } as any]));
+    initializePubSub();
+
+    const sub = mockInstances[mockInstances.length - 1];
+    const envelope = {
+      schemaVersion: 1,
+      type: 'message.new',
+      payload: { messageId: 'message-1' },
+      room: getUserRoomKey('user-msg-2'),
+      timestamp: new Date().toISOString(),
+    };
+
+    sub._messageHandler!('realtime:user:user-msg-2', JSON.stringify(envelope));
+    sub._messageHandler!(getUserRoomKey('user-msg-2'), JSON.stringify({
+      ...envelope,
+      room: getUserRoomKey('different-user'),
+    }));
+
+    expect(mockEnqueue).not.toHaveBeenCalled();
+    unsubscribeFromRoom('user-msg-2', getUserRoomKey('user-msg-2'));
+  });
+
   it('handles malformed JSON in Redis message without throwing', () => {
     initializePubSub();
 
@@ -317,6 +373,56 @@ describe('initializePubSub — message handler', () => {
     expect(() => {
       sub._messageHandler!('room:test:bad-json', 'this is not valid JSON {{{');
     }).not.toThrow();
+  });
+
+  it('keeps cross-instance delivery active when one of two local connections disconnects', () => {
+    const userId = 'user-cross-instance-two-tabs';
+    const room = getUserRoomKey(userId);
+    const enqueueTabOne = vi.fn();
+    const enqueueTabTwo = vi.fn();
+    const tabOne = {
+      userId,
+      closed: false,
+      controller: { enqueue: enqueueTabOne },
+    };
+    const tabTwo = {
+      userId,
+      closed: false,
+      controller: { enqueue: enqueueTabTwo },
+    };
+
+    subscribeToRoom(userId, room);
+    subscribeToRoom(userId, room);
+    mockGetConnections.mockReturnValue(new Set([tabOne as any, tabTwo as any]));
+    initializePubSub();
+
+    const sub = mockInstances[mockInstances.length - 1];
+    const remoteEnvelope = JSON.stringify({
+      schemaVersion: 1,
+      type: 'notification.new',
+      payload: { notificationId: 'remote-notification-1' },
+      room,
+      timestamp: new Date().toISOString(),
+    });
+
+    // This message callback represents a publish performed by another API
+    // instance and delivered through the shared Redis channel.
+    sub._messageHandler!(room, remoteEnvelope);
+    expect(enqueueTabOne).toHaveBeenCalledTimes(1);
+    expect(enqueueTabTwo).toHaveBeenCalledTimes(1);
+
+    // Tab one disconnects. Its registry entry and one subscription reference
+    // are removed, but Redis must remain subscribed for tab two.
+    mockGetConnections.mockReturnValue(new Set([tabTwo as any]));
+    unsubscribeAllRooms(userId);
+    expect(sub.unsubscribe).not.toHaveBeenCalled();
+
+    sub._messageHandler!(room, remoteEnvelope);
+    expect(enqueueTabOne).toHaveBeenCalledTimes(1);
+    expect(enqueueTabTwo).toHaveBeenCalledTimes(2);
+
+    unsubscribeAllRooms(userId);
+    expect(sub.unsubscribe).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -361,6 +467,46 @@ describe('shutdownPubSub', () => {
     await shutdownPubSub();
     await expect(shutdownPubSub()).resolves.not.toThrow();
   });
+
+  it('still closes the subscriber and aggregates when publisher close fails', async () => {
+    const pub = getPublisher() as unknown as MockRedisInstance;
+    const sub = getSubscriber() as unknown as MockRedisInstance;
+    const publisherError = new Error('publisher close failed');
+    pub.quit.mockRejectedValueOnce(publisherError);
+
+    const close = shutdownPubSub();
+    await expect(close).rejects.toThrow('Failed to close one or more Redis pub/sub clients');
+    const error = await close.catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).errors).toEqual([publisherError]);
+    expect(pub.quit).toHaveBeenCalledTimes(1);
+    expect(sub.quit).toHaveBeenCalledTimes(1);
+    expect(pub.disconnect).toHaveBeenCalledWith(false);
+    await expect(shutdownPubSub()).resolves.toBeUndefined();
+  });
+
+  it('bounds a hung quit and force-disconnects both Redis roles', async () => {
+    vi.useFakeTimers();
+    try {
+      const pub = getPublisher() as unknown as MockRedisInstance;
+      const sub = getSubscriber() as unknown as MockRedisInstance;
+      pub.quit.mockImplementationOnce(() => new Promise(() => undefined));
+      sub.quit.mockImplementationOnce(() => new Promise(() => undefined));
+
+      const close = shutdownPubSub();
+      const closeExpectation = expect(close).rejects.toThrow(
+        'Failed to close one or more Redis pub/sub clients',
+      );
+      await vi.advanceTimersByTimeAsync(10_001);
+
+      await closeExpectation;
+      expect(pub.disconnect).toHaveBeenCalledWith(false);
+      expect(sub.disconnect).toHaveBeenCalledWith(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 // ============================================================================
@@ -383,6 +529,11 @@ describe('deliverToLocalSubscribers — multiple connections', () => {
       payload: {},
       timestamp: new Date().toISOString(),
     });
+
+    initializePubSub();
+    const pub = mockInstances.find(instance => instance.publish.mock.calls.length > 0)!;
+    const sub = mockInstances.find(instance => instance._messageHandler)!;
+    sub._messageHandler!(pub.publish.mock.calls[0][0], pub.publish.mock.calls[0][1]);
 
     expect(enqueue1).toHaveBeenCalled();
     expect(enqueue2).toHaveBeenCalled();

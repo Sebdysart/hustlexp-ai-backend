@@ -295,6 +295,13 @@ describe('required engine automation migration', () => {
       '20260911_universal_v1_change_order_application',
       '20260912_universal_v1_work_order_execution_facts',
       '20260913_universal_v1_completion_delivery_receipt',
+      '20260914_notification_provider_in_flight',
+      '20260915_ai_spend_attempt_ledger',
+      '20260916_provider_event_inbox_v1',
+      '20260917_financial_provider_command_journal_v1',
+      '20260918_universal_v1_prepared_financial_command_v1',
+      '20260919_provider_event_processing_v1',
+      '20260920_financial_provider_command_recovery_v1',
     ]);
     const normalizePath = (candidatePath: string) => candidatePath.replaceAll('\\', '/');
     expect(actual.bootstrapSpec?.candidatePaths.map(normalizePath)).toContain(

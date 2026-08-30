@@ -10,6 +10,7 @@
  */
 
 import { AIClient } from './AIClient.js';
+import { aiOperationId } from '../ai/AIOperationIdentity.js';
 import { aiObservation } from './AIObservabilityPolicy.js';
 import { logger } from '../logger.js';
 
@@ -353,6 +354,7 @@ async function callAIGate(task: TaskDraft): Promise<InstantGateResult> {
   if (AIClient.isConfigured()) {
     try {
       const aiResult = await AIClient.callJSON<InstantGateResult>({
+        operationId: aiOperationId('instant-task-advisory', task),
         observability: aiObservation('AI-INSTANT-TASK-ADVISORY', {
           affectedObjectType: 'TASK_DRAFT',
         }),

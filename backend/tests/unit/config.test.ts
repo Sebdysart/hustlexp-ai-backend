@@ -293,20 +293,32 @@ describe('config — env var overrides', () => {
     expect(config.redis.restUrl).toBe('https://redis.upstash.io');
   });
 
-  it('prefers UPSTASH_REDIS_URL over REDIS_URL for direct TCP', async () => {
-    process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
-    process.env.REDIS_URL = 'redis://fallback:6379';
+  it('never aliases portable TCP Redis credentials into the legacy REST transport', async () => {
+    delete process.env.UPSTASH_REDIS_REST_URL;
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    process.env.REDIS_URL = 'redis://portable:6379';
+    process.env.REDIS_TOKEN = 'ambiguous-token-must-not-be-used';
     vi.resetModules();
     const { config } = await import('../../src/config');
-    expect(config.redis.url).toBe('redis://upstash:6379');
+    expect(config.redis.restUrl).toBe('');
+    expect(config.redis.restToken).toBe('');
+    expect(config.redis.url).toBe('redis://portable:6379');
   });
 
-  it('falls back to REDIS_URL when UPSTASH_REDIS_URL not set', async () => {
-    delete process.env.UPSTASH_REDIS_URL;
-    process.env.REDIS_URL = 'redis://fallback:6379';
+  it('prefers provider-neutral REDIS_URL over the legacy Upstash TCP alias', async () => {
+    process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
+    process.env.REDIS_URL = 'redis://portable:6379';
     vi.resetModules();
     const { config } = await import('../../src/config');
-    expect(config.redis.url).toBe('redis://fallback:6379');
+    expect(config.redis.url).toBe('redis://portable:6379');
+  });
+
+  it('falls back to the legacy Upstash TCP alias when REDIS_URL is not set', async () => {
+    delete process.env.REDIS_URL;
+    process.env.UPSTASH_REDIS_URL = 'rediss://legacy-upstash:6379';
+    vi.resetModules();
+    const { config } = await import('../../src/config');
+    expect(config.redis.url).toBe('rediss://legacy-upstash:6379');
   });
 
   it('reads AI_CACHE_TTL from env', async () => {
@@ -396,6 +408,7 @@ describe('validateConfig', () => {
     delete process.env.STRIPE_MODE;
     process.env.STRIPE_WEBHOOK_SECRET = 'whsec_platform_test';
     process.env.STRIPE_CONNECT_WEBHOOK_SECRET = 'whsec_connect_test';
+    process.env.UPSTASH_REDIS_REST_TOKEN = 'test-rest-token';
     process.env.S3_ENDPOINT = 'https://storage.example.test';
     process.env.AWS_ACCESS_KEY_ID = 'test-access-key';
     process.env.AWS_SECRET_ACCESS_KEY = 'test-secret-key';
@@ -436,7 +449,8 @@ describe('validateConfig', () => {
     delete process.env.FIREBASE_PRIVATE_KEY;
     delete process.env.FIREBASE_CLIENT_EMAIL;
     delete process.env.STRIPE_SECRET_KEY;
-    delete process.env.UPSTASH_REDIS_REST_URL;
+    process.env.UPSTASH_REDIS_REST_URL = 'https://partial-rest.upstash.io';
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
     delete process.env.UPSTASH_REDIS_URL;
     delete process.env.REDIS_URL;
     delete process.env.TAX_TIN_ENCRYPTION_KEY;
@@ -448,7 +462,29 @@ describe('validateConfig', () => {
     expect(result.valid).toBe(false);
     expect(result.errors.some((e) => e.includes('FIREBASE_PROJECT_ID'))).toBe(true);
     expect(result.errors.some((e) => e.includes('STRIPE_SECRET_KEY'))).toBe(true);
+    expect(result.errors).toContain(
+      'UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN must be configured together when using the legacy REST alternate',
+    );
     expect(result.errors.some((e) => e.includes('TAX_TIN_ENCRYPTION_KEY'))).toBe(true);
+  });
+
+  it('rejects malformed TCP Redis and credential-bearing REST endpoints in production', async () => {
+    process.env.DATABASE_URL = 'postgres://localhost:5432/prod';
+    process.env.NODE_ENV = 'production';
+    process.env.REDIS_URL = 'https://not-a-redis-transport.example.test';
+    process.env.UPSTASH_REDIS_REST_URL = 'http://user:password@redis-rest.example.test?token=leaked';
+    process.env.UPSTASH_REDIS_REST_TOKEN = 'separate-token';
+    vi.resetModules();
+    const { validateConfig } = await import('../../src/config');
+
+    const result = validateConfig();
+
+    expect(result.errors).toContain(
+      'REDIS_URL (or legacy UPSTASH_REDIS_URL) must use redis: or rediss: with a hostname',
+    );
+    expect(result.errors).toContain(
+      'UPSTASH_REDIS_REST_URL must be an HTTPS URL without embedded credentials, query, or fragment',
+    );
   });
 
   it('calls process.exit(1) in production when Firebase config is missing', async () => {
@@ -737,8 +773,10 @@ describe('validateConfig', () => {
     process.env.FIREBASE_CLIENT_EMAIL = 'a@b.com';
     process.env.STRIPE_SECRET_KEY = secret;
     process.env.STRIPE_MODE = mode;
-    process.env.UPSTASH_REDIS_REST_URL = 'https://redis.io';
-    process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
+    delete process.env.UPSTASH_REDIS_REST_URL;
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    delete process.env.UPSTASH_REDIS_URL;
+    process.env.REDIS_URL = 'rediss://portable.example.test:6380';
     process.env.QUEUE_HMAC_SECRET = 'real-hmac-secret';
     process.env.TAX_TIN_ENCRYPTION_KEY = 'a'.repeat(64);
     vi.resetModules();

@@ -1,5 +1,5 @@
 import { type AddressInfo } from 'node:net';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BuildIdentity } from '../../src/buildIdentity';
 import {
   startWorkerHealthServer,
@@ -96,6 +96,7 @@ async function create(options: Parameters<typeof startWorkerHealthServer>[0] = {
     port: 0,
     identity,
     release,
+    dependencyReadiness: async () => ({ database: 'ok', redis: 'ok' }),
     ...options,
   });
   handles.push(handle);
@@ -131,6 +132,47 @@ describe('worker deployment health server', () => {
       ready: true,
       build: identity,
       releaseManifest: { ...release, status: 'compatible' },
+      nonproductionFinancialBootstrap: {
+        required: false,
+        ready: true,
+        status: 'disabled',
+        environment: 'production',
+      },
+      dependencies: { database: 'ok', redis: 'ok' },
+    });
+  });
+
+  it('fails closed when nonproduction fake-finance bootstrap evidence is not ready', async () => {
+    const { handle, url } = await create({
+      production: false,
+      environment: 'local',
+      financialReadiness: async () => ({
+        schemaVersion: 1,
+        required: true,
+        ready: false,
+        status: 'bootstrap_missing',
+        environment: 'local',
+        releaseId: 'test-local-release-0001',
+        releaseManifestDigest: `sha256:${'d'.repeat(64)}`,
+        migrationArtifactDigest: `sha256:${'b'.repeat(64)}`,
+        requiredMigrationCount: 128,
+        fakeFinancialMigrationCount: 4,
+        matchedFakeFinancialMigrationCount: 0,
+        completedAt: null,
+      }),
+    });
+    handle.markReady();
+
+    const response = await fetch(`${url}/health/readiness`);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      state: 'ready',
+      ready: false,
+      nonproductionFinancialBootstrap: {
+        required: true,
+        ready: false,
+        status: 'bootstrap_missing',
+      },
     });
   });
 
@@ -145,6 +187,95 @@ describe('worker deployment health server', () => {
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({ state: 'ready', ready: false });
   });
+
+  it.each([
+    ['database', { database: 'unavailable' as const, redis: 'ok' as const }],
+    ['redis', { database: 'ok' as const, redis: 'unavailable' as const }],
+  ])('fails readiness when the %s dependency is unavailable', async (_name, dependencies) => {
+    const { handle, url } = await create({
+      production: true,
+      dependencyReadiness: async () => dependencies,
+    });
+    handle.markReady();
+
+    const response = await fetch(`${url}/health/readiness`);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      ready: false,
+      dependencies,
+    });
+  });
+
+  it('launches readiness probes concurrently and fails closed within a bounded deadline', async () => {
+    let financialProbeStarted = false;
+    let dependencyProbeStarted = false;
+    const financialReadiness = vi.fn(() => {
+      financialProbeStarted = true;
+      return new Promise<never>(() => undefined);
+    });
+    const dependencyReadiness = vi.fn(() => {
+      dependencyProbeStarted = true;
+      return new Promise<never>(() => undefined);
+    });
+    const { handle, url } = await create({
+      production: false,
+      environment: 'local',
+      readinessTimeoutMs: 25,
+      financialReadiness,
+      dependencyReadiness,
+    });
+    handle.markReady();
+
+    const startedAt = Date.now();
+    const response = await fetch(`${url}/health/readiness`);
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(response.status).toBe(503);
+    expect(elapsedMs).toBeLessThan(500);
+    expect(financialProbeStarted).toBe(true);
+    expect(dependencyProbeStarted).toBe(true);
+    expect(financialReadiness).toHaveBeenCalledTimes(1);
+    expect(dependencyReadiness).toHaveBeenCalledTimes(1);
+    expect(await response.json()).toMatchObject({
+      ready: false,
+      nonproductionFinancialBootstrap: {
+        status: 'attestation_unavailable',
+      },
+      dependencies: {
+        database: 'unavailable',
+        redis: 'unavailable',
+      },
+    });
+  });
+
+  it.each([
+    ['uppercase', 'PRODUCTION', undefined],
+    ['surrounding whitespace', ' production ', undefined],
+    ['conflicting explicit false', 'PRODUCTION', false],
+  ])(
+    'normalizes %s production identity and cannot downgrade its trust check',
+    async (_caseName, environment, production) => {
+      const { handle, url } = await create({
+        environment,
+        ...(production === undefined ? {} : { production }),
+        trustedIdentity: () => false,
+      });
+      handle.markReady();
+
+      const response = await fetch(`${url}/health/readiness`);
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({
+        state: 'ready',
+        ready: false,
+        releaseManifest: { status: 'compatible' },
+        nonproductionFinancialBootstrap: {
+          required: false,
+          status: 'disabled',
+          environment: 'production',
+        },
+      });
+    },
+  );
 
   it('fails closed when the exact production manifest is missing or incompatible', async () => {
     const { handle, url } = await create({
@@ -169,6 +300,26 @@ describe('worker deployment health server', () => {
       state: 'shutting_down',
       ready: false,
     });
+  });
+
+  it('keeps liveness process-only while exposing exact build and release identity', async () => {
+    const dependencyReadiness = vi.fn(async () => ({
+      database: 'unavailable' as const,
+      redis: 'unavailable' as const,
+    }));
+    const { handle, url } = await create({ production: true, dependencyReadiness });
+
+    const response = await fetch(`${url}/health/liveness`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      alive: true,
+      build: identity,
+      releaseManifest: { status: 'compatible' },
+    });
+    expect(dependencyReadiness).not.toHaveBeenCalled();
+
+    handle.markShuttingDown();
+    expect((await fetch(`${url}/health/liveness`)).status).toBe(503);
   });
 
   it('rejects unsupported paths and methods without leaking runtime state', async () => {
