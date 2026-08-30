@@ -57,6 +57,7 @@ function allowedOrigins(): string[] {
       'http://localhost:5173',
       'http://localhost:5174',
       'http://localhost:8081',
+      'http://192.168.0.197:5173',
     ];
   }
   return config.app.allowedOrigins.length > 0
