@@ -166,3 +166,4 @@ export async function runReleaseEffects(input:{
   await recordOfflineTax(input.post);
   await awardXp(input.post,input.escrowId);
 }
+

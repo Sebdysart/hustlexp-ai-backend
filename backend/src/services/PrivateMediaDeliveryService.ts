@@ -670,3 +670,4 @@ export async function issueSingleParticipantMediaAccess(params: {
   }, dependencies);
   return delivered.get(referenceIdentity(reference)) ?? null;
 }
+

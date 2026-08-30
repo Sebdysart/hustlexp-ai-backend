@@ -111,4 +111,7 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260824_enforce_controlled_test_business_acceptance', fileName: '20260824_enforce_controlled_test_business_acceptance.sql' },
   { name: '20260824_business_controlled_test_acceptance', fileName: '20260824_business_controlled_test_acceptance.sql' },
   { name: '20260824_orchestration_mode', fileName: '20260824_orchestration_mode.sql' },
+  { name: '20260825_ops_manual_liquidity_bypass', fileName: '20260825_ops_manual_liquidity_bypass.sql' },
+  { name: '20260825_ops_manual_worker_offer_bypass', fileName: '20260825_ops_manual_worker_offer_bypass.sql' },
+  { name: '20260826_business_local_test_payout_evidence', fileName: '20260826_business_local_test_payout_evidence.sql' },
 ] as const;

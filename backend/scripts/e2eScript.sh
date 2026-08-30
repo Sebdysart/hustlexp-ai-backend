@@ -3,10 +3,144 @@
 set -euo pipefail
 
 BASE_URL="http://localhost:5000"
-MY_AUTH_TOKEN=$(../myscripts/getToken.sh | jq -r '.idToken')
-BUSINESS_AUTH_TOKEN=$(../myscripts/getbusinesstoken.sh | jq -r '.idToken')
+FIREBASE_API_KEY="AIzaSyDD7tvoOZOkRmwUd4RoCpKbm9lB7xpWC1M"
 
+echo "==> Getting customer auth token..."
 
+MY_AUTH_TOKEN="$(
+  curl -sS \
+    "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=$FIREBASE_API_KEY" \
+    -H "Content-Type: application/json" \
+    --data-raw '{
+      "email": "martin-test@hustlexp.app",
+      "password": "password123",
+      "returnSecureToken": true
+    }' |
+  jq -r '.idToken'
+)"
+
+if [[ -z "$MY_AUTH_TOKEN" || "$MY_AUTH_TOKEN" == "null" ]]; then
+  echo "ERROR: Failed to obtain MY_AUTH_TOKEN" >&2
+  exit 1
+fi
+
+echo "==> Getting business auth token..."
+
+BUSINESS_AUTH_TOKEN="$(
+  curl -sS \
+    "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=$FIREBASE_API_KEY" \
+    -H "Content-Type: application/json" \
+    --data-raw '{
+      "email": "business-test@hustlexp.app",
+      "password": "password123",
+      "returnSecureToken": true
+    }' |
+  jq -r '.idToken'
+)"
+
+if [[ -z "$BUSINESS_AUTH_TOKEN" || "$BUSINESS_AUTH_TOKEN" == "null" ]]; then
+  echo "ERROR: Failed to obtain BUSINESS_AUTH_TOKEN" >&2
+  exit 1
+fi
+
+echo "==> Auth tokens acquired."
+
+echo
+echo "==> 0. Creating task draft..."
+
+POST_TASK_RESPONSE="$(
+  curl -sS -X POST \
+    "$BASE_URL/trpc/webPostTask.start" \
+    -H "Content-Type: application/json" \
+    --data-raw "{
+      \"lead\": {
+        \"submission_id\": \"$(uuidgen)\",
+        \"lead_type\": \"poster\",
+        \"email\": \"martin-test@hustlexp.app\",
+        \"name\": \"Martin Test\",
+        \"phone\": \"+15550009999\",
+        \"region\": \"WA\",
+        \"zip\": \"98004\",
+        \"answers\": {
+          \"preferred_contact\": \"email\",
+          \"company\": false,
+          \"returning_customer\": false
+        },
+        \"utm\": {
+          \"source\": \"linkedin\",
+          \"medium\": \"social\",
+          \"campaign\": \"backend-test\",
+          \"content\": \"post-task-flow\"
+        },
+        \"consent_version\": \"v1\",
+        \"ip_hash\": \"optional-precomputed-sha256\"
+      },
+      \"task\": {
+        \"category\": \"yard\",
+        \"title\": \"Ground-level yard cleanup\",
+        \"raw_input\": \"Ground-level yard cleanup and haul away the debris. Clear leaves, trim light overgrowth, and remove yard waste.\",
+        \"scope_summary\": \"Basic residential yard cleanup including leaf removal, light trimming, and debris haul-away.\",
+        \"structured\": {
+          \"answers\": {
+            \"preferred_window\": \"this_week\",
+            \"risk_level\": \"green\",
+            \"required_worker_count\": \"1\",
+            \"required_vehicle\": \"cargo_vehicle\",
+            \"required_tools\": [
+              \"yard_tools\"
+            ],
+            \"included_work\": [
+              \"Remove leaves\",
+              \"Trim light overgrowth\",
+              \"Haul away yard debris\"
+            ],
+            \"excluded_work\": [
+              \"Tree removal\",
+              \"Stump grinding\"
+            ],
+            \"safety_restrictions\": [],
+            \"debris\": \"haul_away\",
+            \"equipment_provided\": \"no\",
+            \"pressure_washing\": \"yes\",
+            \"scope_policy_version\": \"task_scope_v1\",
+            \"scope_confirmed_at\": \"$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")\"
+          },
+          \"missing_questions\": [],
+          \"risk_flags\": [],
+          \"scope_confirmed\": true
+        },
+        \"est_price_min_cents\": 5000,
+        \"est_price_max_cents\": 9000,
+        \"photo_count\": 3,
+        \"zip\": \"98004\",
+        \"region\": \"WA\",
+        \"source\": \"website\",
+        \"utm\": {
+          \"source\": \"linkedin\",
+          \"medium\": \"social\",
+          \"campaign\": \"backend-test\"
+        },
+        \"ip_hash\": \"optional-precomputed-sha256\"
+      }
+    }"
+)"
+
+echo "$POST_TASK_RESPONSE" | jq .
+
+taskDraftId="$(
+  echo "$POST_TASK_RESPONSE" |
+  jq -r '.result.data.taskDraftId'
+)"
+
+if [[ -z "$taskDraftId" || "$taskDraftId" == "null" ]]; then
+  echo "ERROR: taskDraftId missing" >&2
+  exit 1
+fi
+
+echo
+echo "Task draft: $taskDraftId"
+
+echo
 echo "==> 1. Creating link claim..."
 
 taskDraftId=$(../myscripts/posttask.sh | jq -r '.result.data.taskDraftId')
