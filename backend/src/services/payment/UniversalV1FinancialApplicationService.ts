@@ -12,6 +12,7 @@ import {
   canonicalFinancialProviderRequestSha256,
   JournaledFinancialProviderInvoker,
   PostgresFinancialProviderCommandJournal,
+  type DurableFakeFinancialCommandDispatchEvidence,
   type DurableFakeFinancialCommandEvidence,
   type FinancialProviderCommandActorEvidence,
   type ForegroundFinancialProviderCommandCoordinator,
@@ -247,8 +248,31 @@ export interface ExecuteUniversalV1ReconciliationCommand {
   readonly idempotencyKey: string;
   readonly providerExpectedVersion: number;
   readonly relatedOperationId: string;
+  /** Optional append-only terminal-lifecycle intent being materialized. */
+  readonly terminalIntentId?: string;
   readonly scenario?: FakeFinancialScenario;
   readonly snapshot: UniversalV1ReconciliationSnapshot;
+}
+
+export interface ExecuteUniversalV1ProviderOnboardingCommand {
+  readonly providerKind: FinancialProviderKind;
+  readonly operationId: string;
+  readonly idempotencyKey: string;
+  readonly providerExpectedVersion: number;
+  readonly providerId: string;
+  readonly scenario?: FakeFinancialScenario;
+  readonly recordedBy: string;
+}
+
+export interface ExecuteUniversalV1ProviderAccountRefreshCommand {
+  readonly providerKind: FinancialProviderKind;
+  readonly operationId: string;
+  readonly idempotencyKey: string;
+  readonly providerExpectedVersion: number;
+  readonly providerId: string;
+  readonly providerAccountReference: string;
+  readonly scenario?: FakeFinancialScenario;
+  readonly recordedBy: string;
 }
 
 export interface RecordedUniversalV1Reconciliation {
@@ -263,13 +287,39 @@ export interface RecordedUniversalV1Reconciliation {
   readonly mismatchCodes: readonly string[];
 }
 
+/**
+ * Application result for commands that are not themselves canonical lifecycle
+ * facts. A FAKE result is only returned with the exact durable dispatch chain
+ * needed by a caller to materialize its own append-only domain fact. No such
+ * claim is made for an approved-provider result.
+ */
+export type UniversalV1FakeDurableProviderCommandResult<
+  TResult extends FinancialOperationResult,
+> = Omit<TResult, 'providerKind'> & {
+  readonly providerKind: 'FAKE';
+  readonly durableFakeEvidence: DurableFakeFinancialCommandDispatchEvidence;
+};
+
+export type UniversalV1DurableProviderCommandResult<
+  TResult extends FinancialOperationResult,
+> =
+  | UniversalV1FakeDurableProviderCommandResult<TResult>
+  | (Omit<TResult, 'providerKind'> & {
+      readonly providerKind: 'APPROVED_PROVIDER';
+      readonly durableFakeEvidence?: never;
+    });
+
 interface RecordReconciliationCommand {
   readonly operationId: string;
   readonly idempotencyKey: string;
+  readonly providerKind: FinancialProviderKind;
   readonly providerState: 'MATCHED' | 'MISMATCH';
   readonly providerOperationVersion: number;
   readonly providerIdempotencyReplayed: boolean;
   readonly externalReference: string;
+  readonly reconciliationSnapshotSha256: string;
+  readonly terminalIntentId?: string;
+  readonly durableFakeEvidence?: DurableFakeFinancialCommandDispatchEvidence;
   readonly snapshot: UniversalV1ReconciliationSnapshot;
 }
 
@@ -315,6 +365,13 @@ function stableJson(value: unknown): string {
 
 function sha256(value: unknown): string {
   return createHash('sha256').update(stableJson(value)).digest('hex');
+}
+
+/** Exact provider-neutral digest of the canonical reconciliation snapshot. */
+export function canonicalUniversalV1ReconciliationSnapshotSha256(
+  snapshot: UniversalV1ReconciliationSnapshot
+): string {
+  return canonicalFinancialProviderRequestSha256(snapshot);
 }
 
 function deterministicUuid(value: unknown): string {
@@ -617,6 +674,53 @@ function preparedAuthorityInput(
   };
 }
 
+function lifecycleDispatchEvidence(
+  evidence: DurableFakeFinancialCommandDispatchEvidence | undefined
+): DurableFakeFinancialCommandEvidence {
+  const dispatch = durableDispatchEvidence(
+    evidence,
+    'UNIVERSAL_FINANCE_LIFECYCLE_BRIDGE_EVIDENCE_REQUIRED'
+  );
+  if (!('preparedCommandId' in dispatch) || !dispatch.preparedCommandId) {
+    throw new Error('UNIVERSAL_FINANCE_LIFECYCLE_BRIDGE_EVIDENCE_REQUIRED');
+  }
+  return dispatch as DurableFakeFinancialCommandEvidence;
+}
+
+function durableDispatchEvidence(
+  evidence: DurableFakeFinancialCommandDispatchEvidence | undefined,
+  errorCode: string
+): DurableFakeFinancialCommandDispatchEvidence {
+  if (
+    !evidence ||
+    !UUID.test(evidence.commandId) ||
+    !UUID.test(evidence.dispatchAttemptId) ||
+    !UUID.test(evidence.outcomeFactId) ||
+    !UUID.test(evidence.fakeOperationEventId)
+  ) {
+    throw new Error(errorCode);
+  }
+  return evidence;
+}
+
+function durableProviderCommandResult<TResult extends FinancialOperationResult>(
+  result: TResult,
+  configuredProviderKind: FinancialProviderKind,
+  evidence: DurableFakeFinancialCommandDispatchEvidence | undefined
+): UniversalV1DurableProviderCommandResult<TResult> {
+  if (configuredProviderKind === 'FAKE') {
+    return {
+      ...result,
+      providerKind: 'FAKE',
+      durableFakeEvidence: durableDispatchEvidence(
+        evidence,
+        'UNIVERSAL_FINANCE_ACCOUNT_COMMAND_BRIDGE_EVIDENCE_REQUIRED'
+      ),
+    } as UniversalV1DurableProviderCommandResult<TResult>;
+  }
+  return { ...result, providerKind: 'APPROVED_PROVIDER' } as UniversalV1DurableProviderCommandResult<TResult>;
+}
+
 function exactFinancialProviderRequest(
   command: ExecuteUniversalV1FinancialEventCommand
 ): Record<string, unknown> {
@@ -776,11 +880,42 @@ function reconciliationCommandHash(command: RecordReconciliationCommand): string
   return commandHash({
     operationId: command.operationId,
     idempotencyKey: command.idempotencyKey,
+    providerKind: command.providerKind,
     providerState: command.providerState,
     providerOperationVersion: command.providerOperationVersion,
     externalReference: command.externalReference,
+    reconciliationSnapshotSha256: command.reconciliationSnapshotSha256,
+    terminalIntentId: command.terminalIntentId ?? null,
+    durableFakeEvidence: command.durableFakeEvidence ?? null,
     snapshot: command.snapshot,
   });
+}
+
+function assertRecordReconciliationCommand(command: RecordReconciliationCommand): void {
+  if (
+    command.reconciliationSnapshotSha256 !==
+    canonicalUniversalV1ReconciliationSnapshotSha256(command.snapshot)
+  ) {
+    throw new Error('UNIVERSAL_FINANCE_RECONCILIATION_SNAPSHOT_SHA256_MISMATCH');
+  }
+  if (command.terminalIntentId !== undefined && !UUID.test(command.terminalIntentId)) {
+    throw new Error('UNIVERSAL_FINANCE_RECONCILIATION_TERMINAL_INTENT_ID_INVALID');
+  }
+  if (command.durableFakeEvidence !== undefined) {
+    durableDispatchEvidence(
+      command.durableFakeEvidence,
+      'UNIVERSAL_FINANCE_RECONCILIATION_BRIDGE_EVIDENCE_REQUIRED'
+    );
+  }
+  if (command.providerKind !== 'FAKE' && command.durableFakeEvidence !== undefined) {
+    throw new Error('UNIVERSAL_FINANCE_RECONCILIATION_FAKE_EVIDENCE_REFUSED');
+  }
+  if (
+    command.terminalIntentId !== undefined &&
+    (command.providerKind !== 'FAKE' || command.durableFakeEvidence === undefined)
+  ) {
+    throw new Error('UNIVERSAL_FINANCE_RECONCILIATION_TERMINAL_BRIDGE_EVIDENCE_REQUIRED');
+  }
 }
 
 function assertInMemoryPredecessor(
@@ -894,6 +1029,7 @@ export class InMemoryUniversalV1FinancialLifecycleRepository implements Universa
   async recordReconciliation(
     command: RecordReconciliationCommand
   ): Promise<RecordedUniversalV1Reconciliation> {
+    assertRecordReconciliationCommand(command);
     const requestHash = reconciliationCommandHash(command);
     const replay = this.reconciliationsByIdempotency.get(command.idempotencyKey);
     if (replay) {
@@ -954,6 +1090,17 @@ interface FinancialLifecycleBridgeRow {
   authority_chain_sha256: string;
 }
 
+interface ReconciliationBridgeRow {
+  reconciliation_bridge_id: string;
+  terminal_intent_id: string;
+  reconciliation_fact_id: string;
+  command_id: string;
+  dispatch_attempt_id: string;
+  outcome_fact_id: string;
+  fake_operation_event_id: string;
+  authority_chain_sha256: string;
+}
+
 function mapFinancialEventRow(
   row: FinancialEventRow,
   replayed: boolean
@@ -1002,6 +1149,23 @@ function exactBridgeEvidence(
     row.outcome_fact_id === evidence.outcomeFactId &&
     row.fake_operation_event_id === evidence.fakeOperationEventId &&
     row.task_financial_security_event_id === financialEventId &&
+    /^[0-9a-f]{64}$/u.test(row.authority_chain_sha256)
+  );
+}
+
+function exactReconciliationBridgeEvidence(
+  row: ReconciliationBridgeRow,
+  terminalIntentId: string,
+  reconciliationFactId: string,
+  evidence: DurableFakeFinancialCommandDispatchEvidence
+): boolean {
+  return (
+    row.terminal_intent_id === terminalIntentId &&
+    row.reconciliation_fact_id === reconciliationFactId &&
+    row.command_id === evidence.commandId &&
+    row.dispatch_attempt_id === evidence.dispatchAttemptId &&
+    row.outcome_fact_id === evidence.outcomeFactId &&
+    row.fake_operation_event_id === evidence.fakeOperationEventId &&
     /^[0-9a-f]{64}$/u.test(row.authority_chain_sha256)
   );
 }
@@ -1129,6 +1293,7 @@ export class PostgresUniversalV1FinancialLifecycleRepository implements Universa
   async recordReconciliation(
     command: RecordReconciliationCommand
   ): Promise<RecordedUniversalV1Reconciliation> {
+    assertRecordReconciliationCommand(command);
     return this.database.serializableTransaction(async (query) => {
       await query(
         `SELECT pg_advisory_xact_lock(hashtext('universal-v1-reconciliation'), hashtext($1))`,
@@ -1152,6 +1317,28 @@ export class PostgresUniversalV1FinancialLifecycleRepository implements Universa
         const row = replay.rows[0];
         if (row.evidence.applicationRequestSha256 !== reconciliationCommandHash(command)) {
           throw new Error('UNIVERSAL_FINANCE_RECONCILIATION_IDEMPOTENCY_CONFLICT');
+        }
+        if (command.terminalIntentId !== undefined) {
+          const bridge = await query<ReconciliationBridgeRow>(
+            `SELECT reconciliation_bridge_id, terminal_intent_id,
+                    reconciliation_fact_id, command_id,
+                    dispatch_attempt_id, outcome_fact_id, fake_operation_event_id,
+                    authority_chain_sha256
+               FROM public.universal_v1_fake_reconciliation_bridges
+              WHERE reconciliation_fact_id=$1`,
+            [row.id]
+          );
+          if (
+            !bridge.rows[0] ||
+            !exactReconciliationBridgeEvidence(
+              bridge.rows[0],
+              command.terminalIntentId,
+              row.id,
+              command.durableFakeEvidence!
+            )
+          ) {
+            throw new Error('UNIVERSAL_FINANCE_RECONCILIATION_BRIDGE_IDENTITY_MISMATCH');
+          }
         }
         return {
           id: row.id,
@@ -1229,10 +1416,14 @@ export class PostgresUniversalV1FinancialLifecycleRepository implements Universa
         snapshot.expectedVersion,
         JSON.stringify({
           operationId: command.operationId,
+          providerKind: command.providerKind,
           providerState: command.providerState,
           providerOperationVersion: command.providerOperationVersion,
           providerExternalReference: command.externalReference,
           providerIdempotencyReplayed: command.providerIdempotencyReplayed,
+          reconciliationSnapshotSha256: command.reconciliationSnapshotSha256,
+          terminalIntentId: command.terminalIntentId ?? null,
+          durableFakeEvidence: command.durableFakeEvidence ?? null,
           applicationRequestSha256: reconciliationCommandHash(command),
         }),
         snapshot.recordedBy,
@@ -1241,6 +1432,38 @@ export class PostgresUniversalV1FinancialLifecycleRepository implements Universa
     );
     const row = inserted.rows[0];
     if (!row) throw new Error('UNIVERSAL_FINANCE_RECONCILIATION_INSERT_MISSING');
+    if (command.terminalIntentId !== undefined) {
+      const evidence = command.durableFakeEvidence!;
+      const bridge = await query<ReconciliationBridgeRow>(
+        `INSERT INTO public.universal_v1_fake_reconciliation_bridges (
+           terminal_intent_id, reconciliation_fact_id, command_id, dispatch_attempt_id,
+           outcome_fact_id, fake_operation_event_id
+         ) VALUES ($1,$2,$3,$4,$5,$6)
+         RETURNING reconciliation_bridge_id, terminal_intent_id,
+                   reconciliation_fact_id, command_id,
+                   dispatch_attempt_id, outcome_fact_id, fake_operation_event_id,
+                   authority_chain_sha256`,
+        [
+          command.terminalIntentId,
+          row.id,
+          evidence.commandId,
+          evidence.dispatchAttemptId,
+          evidence.outcomeFactId,
+          evidence.fakeOperationEventId,
+        ]
+      );
+      if (
+        !bridge.rows[0] ||
+        !exactReconciliationBridgeEvidence(
+          bridge.rows[0],
+          command.terminalIntentId,
+          row.id,
+          evidence
+        )
+      ) {
+        throw new Error('UNIVERSAL_FINANCE_RECONCILIATION_BRIDGE_INSERT_MISSING');
+      }
+    }
     return {
       id: row.id,
       operationId: command.operationId,
@@ -1299,6 +1522,15 @@ export class UniversalV1FinancialApplicationService {
       : { actorId: recordedBy, actorKind: 'PARTICIPANT' };
   }
 
+  private assertDurableFakeCoordinator(errorCode: string): void {
+    if (
+      this.configuredProviderKind === 'FAKE' &&
+      !this.providerInvoker.hasForegroundCoordinator()
+    ) {
+      throw new Error(errorCode);
+    }
+  }
+
   private async invokeProviderAfterCommittedCommand<TRequest, TResult>(
     operationKind: FinancialOperationKind,
     identity: {
@@ -1345,6 +1577,10 @@ export class UniversalV1FinancialApplicationService {
       );
     }
     const execution = await this.executeProviderOperation(command, prepared);
+    const durableFakeEvidence =
+      this.configuredProviderKind === 'FAKE'
+        ? lifecycleDispatchEvidence(execution.evidence)
+        : undefined;
     const result = execution.result;
     assertProviderResult(
       result,
@@ -1385,24 +1621,22 @@ export class UniversalV1FinancialApplicationService {
       currency,
       providerState: result.state,
       providerIdempotencyReplayed: result.idempotencyReplayed,
-      ...(execution.evidence === undefined
+      ...(durableFakeEvidence === undefined
         ? {}
-        : { durableFakeEvidence: execution.evidence }),
+        : { durableFakeEvidence }),
       recordedBy: command.recordedBy,
     });
   }
 
-  async onboardProvider(input: {
-    readonly providerKind: FinancialProviderKind;
-    readonly operationId: string;
-    readonly idempotencyKey: string;
-    readonly providerExpectedVersion: number;
-    readonly providerId: string;
-    readonly scenario?: FakeFinancialScenario;
-    readonly recordedBy?: string;
-  }): Promise<FinancialOperationResult> {
+  async onboardProvider(
+    input: ExecuteUniversalV1ProviderOnboardingCommand
+  ): Promise<UniversalV1DurableProviderCommandResult<FinancialOperationResult>> {
     this.executionGate.assertAuthorized();
     assertProviderSelection(input.providerKind, this.configuredProviderKind);
+    assertUuid(input.recordedBy, 'UNIVERSAL_FINANCE_RECORDED_BY_INVALID');
+    this.assertDurableFakeCoordinator(
+      'UNIVERSAL_FINANCE_ACCOUNT_COMMAND_DURABLE_COORDINATOR_REQUIRED'
+    );
     const command = {
       operationId: input.operationId,
       idempotencyKey: input.idempotencyKey,
@@ -1410,7 +1644,7 @@ export class UniversalV1FinancialApplicationService {
       ...(input.scenario === undefined ? {} : { scenario: input.scenario }),
       providerId: input.providerId,
     };
-    const { result } = await this.invokeProviderAfterCommittedCommand(
+    const { result, evidence } = await this.invokeProviderAfterCommittedCommand(
       'ONBOARD_PROVIDER',
       input,
       command,
@@ -1427,21 +1661,18 @@ export class UniversalV1FinancialApplicationService {
       'ONBOARD_PROVIDER',
       this.configuredProviderKind
     );
-    return result;
+    return durableProviderCommandResult(result, this.configuredProviderKind, evidence);
   }
 
-  async refreshProviderAccountState(input: {
-    readonly providerKind: FinancialProviderKind;
-    readonly operationId: string;
-    readonly idempotencyKey: string;
-    readonly providerExpectedVersion: number;
-    readonly providerId: string;
-    readonly providerAccountReference: string;
-    readonly scenario?: FakeFinancialScenario;
-    readonly recordedBy?: string;
-  }): Promise<ProviderAccountStateResult> {
+  async refreshProviderAccountState(
+    input: ExecuteUniversalV1ProviderAccountRefreshCommand
+  ): Promise<UniversalV1DurableProviderCommandResult<ProviderAccountStateResult>> {
     this.executionGate.assertAuthorized();
     assertProviderSelection(input.providerKind, this.configuredProviderKind);
+    assertUuid(input.recordedBy, 'UNIVERSAL_FINANCE_RECORDED_BY_INVALID');
+    this.assertDurableFakeCoordinator(
+      'UNIVERSAL_FINANCE_ACCOUNT_COMMAND_DURABLE_COORDINATOR_REQUIRED'
+    );
     const command = {
       operationId: input.operationId,
       idempotencyKey: input.idempotencyKey,
@@ -1450,7 +1681,7 @@ export class UniversalV1FinancialApplicationService {
       providerId: input.providerId,
       providerAccountReference: input.providerAccountReference,
     };
-    const { result } = await this.invokeProviderAfterCommittedCommand(
+    const { result, evidence } = await this.invokeProviderAfterCommittedCommand(
       'REFRESH_PROVIDER_ACCOUNT_STATE',
       input,
       command,
@@ -1468,7 +1699,7 @@ export class UniversalV1FinancialApplicationService {
       this.configuredProviderKind
     );
     assertProviderAccountResult(result, input.providerId);
-    return result;
+    return durableProviderCommandResult(result, this.configuredProviderKind, evidence);
   }
 
   async ingestWebhook(input: {
@@ -1518,18 +1749,30 @@ export class UniversalV1FinancialApplicationService {
     assertProviderSelection(command.providerKind, this.configuredProviderKind);
     assertUuid(command.operationId, 'UNIVERSAL_FINANCE_OPERATION_ID_INVALID');
     assertUuid(command.relatedOperationId, 'UNIVERSAL_FINANCE_RELATED_OPERATION_ID_INVALID');
+    if (command.terminalIntentId !== undefined) {
+      assertUuid(
+        command.terminalIntentId,
+        'UNIVERSAL_FINANCE_RECONCILIATION_TERMINAL_INTENT_ID_INVALID'
+      );
+    }
     assertIdempotencyKey(command.idempotencyKey);
     assertVersion(command.providerExpectedVersion, 'UNIVERSAL_FINANCE_PROVIDER_VERSION_INVALID');
     assertReconciliationSnapshot(command.snapshot);
+    this.assertDurableFakeCoordinator(
+      'UNIVERSAL_FINANCE_RECONCILIATION_DURABLE_COORDINATOR_REQUIRED'
+    );
 
+    const reconciliationSnapshotSha256 =
+      canonicalUniversalV1ReconciliationSnapshotSha256(command.snapshot);
     const providerCommand = {
       operationId: command.operationId,
       idempotencyKey: command.idempotencyKey,
       expectedVersion: command.providerExpectedVersion,
       relatedOperationId: command.relatedOperationId,
+      reconciliationSnapshotSha256,
       ...(command.scenario === undefined ? {} : { scenario: command.scenario }),
     };
-    const { result } = await this.invokeProviderAfterCommittedCommand(
+    const { result, evidence } = await this.invokeProviderAfterCommittedCommand(
       'RECONCILE',
       command,
       providerCommand,
@@ -1555,14 +1798,27 @@ export class UniversalV1FinancialApplicationService {
     if (!stateMatches) {
       throw new Error('UNIVERSAL_FINANCE_RECONCILIATION_SNAPSHOT_MISMATCH');
     }
+    const durableFakeEvidence =
+      this.configuredProviderKind === 'FAKE'
+        ? durableDispatchEvidence(
+            evidence,
+            'UNIVERSAL_FINANCE_RECONCILIATION_BRIDGE_EVIDENCE_REQUIRED'
+          )
+        : undefined;
 
     return this.lifecycle.recordReconciliation({
       operationId: command.operationId,
       idempotencyKey: command.idempotencyKey,
+      providerKind: this.configuredProviderKind,
       providerState: result.state,
       providerOperationVersion: result.version,
       providerIdempotencyReplayed: result.idempotencyReplayed,
       externalReference: result.externalReference,
+      reconciliationSnapshotSha256,
+      ...(command.terminalIntentId === undefined
+        ? {}
+        : { terminalIntentId: command.terminalIntentId }),
+      ...(durableFakeEvidence === undefined ? {} : { durableFakeEvidence }),
       snapshot: command.snapshot,
     });
   }
@@ -1707,6 +1963,26 @@ export class UniversalV1FakeFinancialApplicationService extends UniversalV1Finan
       undefined,
       foregroundCoordinator
     );
+  }
+
+  override async onboardProvider(
+    input: ExecuteUniversalV1ProviderOnboardingCommand
+  ): Promise<UniversalV1FakeDurableProviderCommandResult<FinancialOperationResult>> {
+    const result = await super.onboardProvider(input);
+    if (result.providerKind !== 'FAKE') {
+      throw new Error('UNIVERSAL_FINANCE_PROVIDER_RESULT_IDENTITY_MISMATCH');
+    }
+    return result;
+  }
+
+  override async refreshProviderAccountState(
+    input: ExecuteUniversalV1ProviderAccountRefreshCommand
+  ): Promise<UniversalV1FakeDurableProviderCommandResult<ProviderAccountStateResult>> {
+    const result = await super.refreshProviderAccountState(input);
+    if (result.providerKind !== 'FAKE') {
+      throw new Error('UNIVERSAL_FINANCE_PROVIDER_RESULT_IDENTITY_MISMATCH');
+    }
+    return result;
   }
 }
 

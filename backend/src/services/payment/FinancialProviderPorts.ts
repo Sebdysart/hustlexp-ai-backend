@@ -118,6 +118,15 @@ export interface WebhookIngestionCommand extends FinancialOperationCommand {
   readonly authenticated: boolean;
 }
 
+/**
+ * Provider-neutral reconciliation request. The digest binds the exact
+ * canonical HustleXP ledger snapshot presented to the provider adapter; it is
+ * not a processor object identifier or processor-specific state.
+ */
+export interface ReconciliationCommand extends FinancialOperationCommand {
+  readonly reconciliationSnapshotSha256: string;
+}
+
 export interface CustomerPaymentMethodPort {
   preparePaymentMethod(input: PreparePaymentMethodCommand): Promise<FinancialOperationResult>;
 }
@@ -161,7 +170,7 @@ export interface WebhookIngestionPort {
 }
 
 export interface LedgerReconciliationPort {
-  reconcile(input: FinancialOperationCommand): Promise<FinancialOperationResult>;
+  reconcile(input: ReconciliationCommand): Promise<FinancialOperationResult>;
 }
 
 export interface FinancialProviderPorts

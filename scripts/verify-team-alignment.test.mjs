@@ -134,10 +134,19 @@ test('restricted underwriting and dirty local receipts remain subordinate and un
   assert.match(migrations, /20260919_provider_event_processing_v1/u);
   assert.match(migrations, /20260920_financial_provider_command_recovery_v1/u);
   assert.match(migrations, /20260921_universal_v1_fake_financial_lifecycle_bridge_v1/u);
+  assert.match(migrations, /20260922_universal_v1_fake_terminal_lifecycle_intent_v1/u);
   assert.match(migrations, /is not engine migration 129/iu);
   assert.match(migrations, /post-engine, nonproduction-only fake-finance fixture/iu);
-  assert.match(migrations, /Neither `20260910` nor `20260921` is a production engine-registry migration/iu);
-  assert.match(migrations, /90ce9584e7574bdcec17f7b4d8166d0a98b2f510b98d062425653becc3f7a481/u);
+  assert.match(
+    migrations,
+    /None of `20260910`, `20260921`, or `20260922` is a production engine-registry migration/iu,
+  );
+  assert.match(migrations, /1c7fb6cce680b83ef86c5ff40322cf39c61c0e96b656103eca3ebfa5482cda64/u);
+  assert.match(migrations, /hxos_fake_financial_schema_evidence_v5/u);
+  assert.match(migrations, /immutable terminal plan before the first fake financial effect/iu);
+  assert.match(migrations, /provider-authored current provider-account facts/iu);
+  assert.match(migrations, /persisted outcome-to-reconciliation snapshot-digest bridge/iu);
+  assert.match(migrations, /no provider I\/O, real-money effect[\s\S]*production authority/iu);
   assert.match(migrations, /PREPARED and REQUESTED grant neither provider I\/O nor lifecycle DML/iu);
   assert.match(migrations, /Earlier verifier receipts.*historical evidence/iu);
   assert.match(migrations, /explicitly (?:nonpromotable|unpromotable)/iu);

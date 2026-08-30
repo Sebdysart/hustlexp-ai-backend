@@ -1,15 +1,14 @@
 import { TRPCError } from '@trpc/server';
 
-import {
-  enqueueSyntheticFinancialEvent,
-  enqueueSyntheticReconciliation,
-} from '../jobs/synthetic-financial-worker.js';
+import { enqueueSyntheticFinancialEvent } from '../jobs/synthetic-financial-worker.js';
 import {
   SyntheticFinancialAuthorityError,
   syntheticFinancialCommandAuthority,
 } from '../services/payment/SyntheticFinancialCommandAuthority.js';
 import {
+  refusePublicSyntheticReconciliation,
   syntheticFinancialEventCommandSchema,
+  syntheticProviderAccountEstablishmentCommandSchema,
   syntheticProviderAccountStateCommandSchema,
   syntheticProviderOnboardingCommandSchema,
   syntheticReconciliationCommandSchema,
@@ -23,8 +22,8 @@ import {
 import {
   createUniversalV1FakeFinancialApplicationService,
   type ExecuteUniversalV1FinancialEventCommand,
-  type ExecuteUniversalV1ReconciliationCommand,
 } from '../services/payment/UniversalV1FinancialApplicationService.js';
+import { PostgresUniversalV1FakeProviderAccountRepository } from '../services/payment/UniversalV1FakeProviderAccountRepository.js';
 import { protectedProcedure, router } from '../trpc.js';
 
 function routeError(error: unknown): never {
@@ -53,8 +52,8 @@ function routeError(error: unknown): never {
     });
   }
   if (
-    error instanceof SyntheticFinancialAuthorityError
-    || (error instanceof Error && error.message.startsWith('NONPRODUCTION_FAKE_FINANCE_REFUSED:'))
+    error instanceof SyntheticFinancialAuthorityError ||
+    (error instanceof Error && error.message.startsWith('NONPRODUCTION_FAKE_FINANCE_REFUSED:'))
   ) {
     throw new TRPCError({
       code: 'FORBIDDEN',
@@ -62,11 +61,10 @@ function routeError(error: unknown): never {
     });
   }
   if (
-    error instanceof Error
-    && (
-      error.message.startsWith('UNIVERSAL_FINANCE_')
-      || error.message.startsWith('FAKE_FINANCIAL_')
-    )
+    error instanceof Error &&
+    (error.message.startsWith('UNIVERSAL_FINANCE_') ||
+      error.message.startsWith('UNIVERSAL_V1_FAKE_PROVIDER_ACCOUNT_') ||
+      error.message.startsWith('FAKE_FINANCIAL_'))
   ) {
     throw new TRPCError({
       code: 'PRECONDITION_FAILED',
@@ -79,8 +77,10 @@ function routeError(error: unknown): never {
 /**
  * Canonical Universal V1 financial command boundary.
  *
- * Every command resolves the provider-neutral application service, whose
- * exact-manifest gate permits only deterministic fake value in local, preview,
+ * Generic event calls are limited to the pre-WorkOrder preparation,
+ * authorization, and secure lane. Terminal events and reconciliation remain
+ * internal to the exact-intent fulfillment application. The provider-neutral
+ * application service permits only deterministic fake value in local, preview,
  * or staging. Legacy processor-specific routers remain compatibility/recovery
  * surfaces and are not imported here.
  */
@@ -93,7 +93,7 @@ export const universalFinanceRouter = router({
         await syntheticFinancialCommandAuthority.assertTaskParticipant(
           ctx.user.id,
           input.taskDraftId,
-          input.taskId,
+          input.taskId
         );
         return await service.executeFinancialEvent({
           ...input,
@@ -114,32 +114,19 @@ export const universalFinanceRouter = router({
       }
     }),
 
-  reconcile: protectedProcedure
-    .input(syntheticReconciliationCommandSchema)
-    .mutation(async ({ ctx, input }) => {
-      try {
-        const service = createUniversalV1FakeFinancialApplicationService();
-        await syntheticFinancialCommandAuthority.assertWorkOrderParticipant(
-          ctx.user.id,
-          input.snapshot.workOrderId,
-        );
-        return await service.reconcile({
-          ...input,
-          snapshot: {
-            ...input.snapshot,
-            recordedBy: ctx.user.id,
-          },
-        } as ExecuteUniversalV1ReconciliationCommand);
-      } catch (error) {
-        return routeError(error);
-      }
-    }),
+  reconcile: protectedProcedure.input(syntheticReconciliationCommandSchema).mutation(() => {
+    try {
+      return refusePublicSyntheticReconciliation();
+    } catch (error) {
+      return routeError(error);
+    }
+  }),
 
   enqueueReconciliation: protectedProcedure
     .input(syntheticReconciliationCommandSchema)
-    .mutation(async ({ ctx, input }) => {
+    .mutation(() => {
       try {
-        return await enqueueSyntheticReconciliation(ctx.user.id, input);
+        return refusePublicSyntheticReconciliation();
       } catch (error) {
         return routeError(error);
       }
@@ -155,6 +142,54 @@ export const universalFinanceRouter = router({
           providerId: ctx.user.id,
           recordedBy: ctx.user.id,
         });
+      } catch (error) {
+        return routeError(error);
+      }
+    }),
+
+  establishSelfAccount: protectedProcedure
+    .input(syntheticProviderAccountEstablishmentCommandSchema)
+    .mutation(async ({ ctx, input }) => {
+      try {
+        await syntheticFinancialCommandAuthority.assertProviderAccountAuthority(
+          ctx.user.id,
+          input.providerOrganizationId ?? null
+        );
+        const service = createUniversalV1FakeFinancialApplicationService();
+        const providerId = input.providerOrganizationId ?? ctx.user.id;
+        const onboard = await service.onboardProvider({
+          providerKind: input.providerKind,
+          operationId: input.onboardOperationId,
+          idempotencyKey: input.onboardIdempotencyKey,
+          providerExpectedVersion: input.providerExpectedVersion,
+          providerId,
+          ...(input.onboardScenario === undefined ? {} : { scenario: input.onboardScenario }),
+          recordedBy: ctx.user.id,
+        });
+        const refresh = await service.refreshProviderAccountState({
+          providerKind: input.providerKind,
+          operationId: input.refreshOperationId,
+          idempotencyKey: input.refreshIdempotencyKey,
+          providerExpectedVersion: input.providerExpectedVersion,
+          providerId,
+          providerAccountReference: onboard.externalReference,
+          ...(input.refreshScenario === undefined ? {} : { scenario: input.refreshScenario }),
+          recordedBy: ctx.user.id,
+        });
+        return await new PostgresUniversalV1FakeProviderAccountRepository().materializeFromDurableEvidence(
+          {
+            providerSubject:
+              input.providerOrganizationId === undefined
+                ? { kind: 'USER', userId: ctx.user.id }
+                : {
+                    kind: 'ORGANIZATION',
+                    organizationId: input.providerOrganizationId,
+                  },
+            recordedBy: ctx.user.id,
+            onboard: onboard.durableFakeEvidence,
+            refresh: refresh.durableFakeEvidence,
+          }
+        );
       } catch (error) {
         return routeError(error);
       }
@@ -184,12 +219,12 @@ export const universalFinanceRouter = router({
         await syntheticFinancialCommandAuthority.assertTaskParticipant(
           ctx.user.id,
           command.taskDraftId,
-          command.taskId,
+          command.taskId
         );
         await syntheticFinancialCommandAuthority.assertWebhookOperationBoundary(
           command.taskDraftId,
           command.taskId,
-          command.operationId,
+          command.operationId
         );
         const service = createUniversalV1FakeFinancialApplicationService();
         return await service.ingestWebhook({

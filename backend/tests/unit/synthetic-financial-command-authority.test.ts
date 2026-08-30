@@ -13,10 +13,27 @@ const actorId = '00000000-0000-4000-8000-000000000501';
 const draftId = '00000000-0000-4000-8000-000000000502';
 const taskId = '00000000-0000-4000-8000-000000000503';
 const workOrderId = '00000000-0000-4000-8000-000000000504';
+const organizationId = '00000000-0000-4000-8000-000000000505';
 
 beforeEach(() => vi.clearAllMocks());
 
 describe('SyntheticFinancialCommandAuthority', () => {
+  it('proves individual or owner/admin organization account authority before provider effects', async () => {
+    query.mockResolvedValueOnce({ rows: [{ authorized: true }], rowCount: 1 });
+    await authority.assertProviderAccountAuthority(actorId, organizationId);
+
+    const [sql, parameters] = query.mock.calls[0] as [string, unknown[]];
+    expect(sql).toContain("actor.account_status = 'ACTIVE'");
+    expect(sql).toContain('organization.provider_enabled IS TRUE');
+    expect(sql).toContain("membership.role IN ('OWNER','ADMIN')");
+    expect(parameters).toEqual([actorId, organizationId]);
+
+    query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    await expect(authority.assertProviderAccountAuthority(actorId, organizationId)).rejects.toThrow(
+      'PROVIDER_ACCOUNT_AUTHORITY_REQUIRED'
+    );
+  });
+
   it('requires an unassigned Universal V1 CONTROLLED_TEST task and exact participant', async () => {
     query.mockResolvedValueOnce({ rows: [{ authorized: true }], rowCount: 1 });
     await authority.assertTaskParticipant(actorId, draftId, taskId);
@@ -31,8 +48,9 @@ describe('SyntheticFinancialCommandAuthority', () => {
 
   it('fails closed when task ownership or the synthetic marker is absent', async () => {
     query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-    await expect(authority.assertTaskParticipant(actorId, draftId, taskId))
-      .rejects.toThrow('SYNTHETIC_FINANCIAL_AUTHORITY_REFUSED');
+    await expect(authority.assertTaskParticipant(actorId, draftId, taskId)).rejects.toThrow(
+      'SYNTHETIC_FINANCIAL_AUTHORITY_REFUSED'
+    );
   });
 
   it('requires the exact synthetic Work Order participant for reconciliation', async () => {
@@ -45,22 +63,28 @@ describe('SyntheticFinancialCommandAuthority', () => {
     expect(parameters).toEqual([actorId, workOrderId]);
 
     query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-    await expect(authority.assertWorkOrderParticipant(actorId, workOrderId))
-      .rejects.toThrow('SYNTHETIC_FINANCIAL_AUTHORITY_REFUSED');
+    await expect(authority.assertWorkOrderParticipant(actorId, workOrderId)).rejects.toThrow(
+      'SYNTHETIC_FINANCIAL_AUTHORITY_REFUSED'
+    );
   });
 
   it('verifies a bounded fake-provider HMAC and rejects missing or substituted authority', () => {
     const rawBody = JSON.stringify({ providerKind: 'FAKE', operationId: taskId });
     const secret = 'synthetic-webhook-secret-that-is-at-least-32-bytes';
     const signature = createHmac('sha256', secret).update(rawBody).digest('hex');
-    expect(() => assertSyntheticFinancialWebhookHmac(rawBody, signature, {
-      HX_FAKE_FINANCIAL_WEBHOOK_SECRET: secret,
-    })).not.toThrow();
-    expect(() => assertSyntheticFinancialWebhookHmac(rawBody, signature, {}))
-      .toThrow('WEBHOOK_SECRET_UNAVAILABLE');
-    expect(() => assertSyntheticFinancialWebhookHmac(rawBody, '0'.repeat(64), {
-      HX_FAKE_FINANCIAL_WEBHOOK_SECRET: secret,
-    })).toThrow('WEBHOOK_HMAC_INVALID');
+    expect(() =>
+      assertSyntheticFinancialWebhookHmac(rawBody, signature, {
+        HX_FAKE_FINANCIAL_WEBHOOK_SECRET: secret,
+      })
+    ).not.toThrow();
+    expect(() => assertSyntheticFinancialWebhookHmac(rawBody, signature, {})).toThrow(
+      'WEBHOOK_SECRET_UNAVAILABLE'
+    );
+    expect(() =>
+      assertSyntheticFinancialWebhookHmac(rawBody, '0'.repeat(64), {
+        HX_FAKE_FINANCIAL_WEBHOOK_SECRET: secret,
+      })
+    ).toThrow('WEBHOOK_HMAC_INVALID');
   });
 
   it('binds fake webhooks to a committed command or canonical operation recorded by a participant', async () => {
@@ -79,7 +103,8 @@ describe('SyntheticFinancialCommandAuthority', () => {
     expect(parameters).toEqual([draftId, taskId, workOrderId]);
 
     query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-    await expect(authority.assertWebhookOperationBoundary(draftId, taskId, workOrderId))
-      .rejects.toThrow('WEBHOOK_OPERATION_OR_SYNTHETIC_BOUNDARY');
+    await expect(
+      authority.assertWebhookOperationBoundary(draftId, taskId, workOrderId)
+    ).rejects.toThrow('WEBHOOK_OPERATION_OR_SYNTHETIC_BOUNDARY');
   });
 });

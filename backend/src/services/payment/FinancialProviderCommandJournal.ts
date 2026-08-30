@@ -168,17 +168,21 @@ export interface ForegroundFinancialProviderCommandContext<TRequest> {
   readonly requestSha256: string;
 }
 
-export interface DurableFakeFinancialCommandEvidence {
-  readonly preparedCommandId: string;
+export interface DurableFakeFinancialCommandDispatchEvidence {
   readonly commandId: string;
   readonly dispatchAttemptId: string;
   readonly outcomeFactId: string;
   readonly fakeOperationEventId: string;
 }
 
+export interface DurableFakeFinancialCommandEvidence
+  extends DurableFakeFinancialCommandDispatchEvidence {
+  readonly preparedCommandId: string;
+}
+
 export interface ForegroundFinancialProviderCommandResult<TResult> {
   readonly result: TResult;
-  readonly evidence: DurableFakeFinancialCommandEvidence;
+  readonly evidence: DurableFakeFinancialCommandDispatchEvidence;
 }
 
 /**
@@ -653,7 +657,7 @@ export class InMemoryFinancialProviderCommandJournal implements FinancialProvide
 export interface JournaledFinancialProviderInvocation<TResult> {
   readonly command: FinancialProviderCommandReceipt;
   readonly result: TResult;
-  readonly evidence?: DurableFakeFinancialCommandEvidence;
+  readonly evidence?: DurableFakeFinancialCommandDispatchEvidence;
 }
 
 /**

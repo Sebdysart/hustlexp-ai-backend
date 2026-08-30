@@ -151,7 +151,7 @@ describe('synthetic financial worker', () => {
     expect(mocks.executeEvent).toHaveBeenCalledWith({ ...eventCommand, recordedBy: ids.actor });
   });
 
-  it('parses and revalidates a signed bank-settlement observation without changing its semantics', async () => {
+  it('rejects a signed terminal event envelope before service, authority, or provider calls', async () => {
     const bankJob = {
       name: 'synthetic_finance.event',
       data: {
@@ -165,28 +165,26 @@ describe('synthetic financial worker', () => {
       },
     } as Job;
 
-    await processSyntheticFinancialJob(bankJob, dependencies());
-    expect(mocks.assertTask).toHaveBeenCalledWith(ids.actor, ids.draft, ids.task);
-    expect(mocks.executeEvent).toHaveBeenCalledWith({
-      ...bankSettlementCommand,
-      recordedBy: ids.actor,
-    });
+    await expect(processSyntheticFinancialJob(bankJob, dependencies())).rejects.toThrow();
+    expect(mocks.createService).not.toHaveBeenCalled();
+    expect(mocks.assertTask).not.toHaveBeenCalled();
+    expect(mocks.executeEvent).not.toHaveBeenCalled();
+    expect(mocks.reconcile).not.toHaveBeenCalled();
   });
 
-  it('revalidates Work Order authority and records the actor in reconciliation', async () => {
-    await processSyntheticFinancialJob(job('RECONCILIATION'), dependencies());
-    expect(mocks.assertWorkOrder).toHaveBeenCalledWith(ids.actor, ids.workOrder);
-    expect(mocks.reconcile).toHaveBeenCalledWith({
-      ...reconciliationCommand,
-      snapshot: { ...reconciliationCommand.snapshot, recordedBy: ids.actor },
-    });
+  it('rejects a signed reconciliation envelope before service, authority, or provider calls', async () => {
+    await expect(
+      processSyntheticFinancialJob(job('RECONCILIATION'), dependencies())
+    ).rejects.toThrow();
+    expect(mocks.createService).not.toHaveBeenCalled();
+    expect(mocks.assertTask).not.toHaveBeenCalled();
+    expect(mocks.assertWorkOrder).not.toHaveBeenCalled();
+    expect(mocks.executeEvent).not.toHaveBeenCalled();
+    expect(mocks.reconcile).not.toHaveBeenCalled();
   });
 
-  it('authorizes and signs deterministic event and reconciliation queue jobs', async () => {
-    const enqueue = vi
-      .fn()
-      .mockResolvedValueOnce({ id: 'event-job' })
-      .mockResolvedValueOnce({ id: 'reconciliation-job' });
+  it('authorizes and signs deterministic pre-WorkOrder event queue jobs', async () => {
+    const enqueue = vi.fn().mockResolvedValueOnce({ id: 'event-job' });
     const enqueueDependencies = {
       authority: {
         assertTaskParticipant: mocks.assertTask,
@@ -200,19 +198,36 @@ describe('synthetic financial worker', () => {
     await expect(
       enqueueSyntheticFinancialEvent(ids.actor, eventCommand, enqueueDependencies)
     ).resolves.toEqual({ queue: 'synthetic_finance', jobId: 'event-job' });
-    await expect(
-      enqueueSyntheticReconciliation(ids.actor, reconciliationCommand, enqueueDependencies)
-    ).resolves.toEqual({ queue: 'synthetic_finance', jobId: 'reconciliation-job' });
 
-    expect(enqueueDependencies.assertAuthorized).toHaveBeenCalledTimes(2);
+    expect(enqueueDependencies.assertAuthorized).toHaveBeenCalledOnce();
     expect(mocks.assertTask).toHaveBeenCalledWith(ids.actor, ids.draft, ids.task);
-    expect(mocks.assertWorkOrder).toHaveBeenCalledWith(ids.actor, ids.workOrder);
-    expect(enqueue).toHaveBeenNthCalledWith(
-      1,
+    expect(enqueue).toHaveBeenCalledWith(
       'synthetic_finance',
       'synthetic_finance.event',
       expect.objectContaining({ _sig: 'signed' }),
       expect.objectContaining({ jobId: expect.stringContaining(ids.operation) })
     );
+  });
+
+  it('refuses generic reconciliation before authorization, authority, signing, or queue calls', async () => {
+    const enqueueDependencies = {
+      authority: {
+        assertTaskParticipant: mocks.assertTask,
+        assertWorkOrderParticipant: mocks.assertWorkOrder,
+      },
+      assertAuthorized: vi.fn(),
+      sign: vi.fn(() => 'signed'),
+      enqueue: vi.fn(),
+    } as never;
+
+    await expect(
+      enqueueSyntheticReconciliation(ids.actor, reconciliationCommand, enqueueDependencies)
+    ).rejects.toThrow('UNIVERSAL_FINANCE_PUBLIC_RECONCILIATION_REFUSED');
+
+    expect(enqueueDependencies.assertAuthorized).not.toHaveBeenCalled();
+    expect(mocks.assertTask).not.toHaveBeenCalled();
+    expect(mocks.assertWorkOrder).not.toHaveBeenCalled();
+    expect(enqueueDependencies.sign).not.toHaveBeenCalled();
+    expect(enqueueDependencies.enqueue).not.toHaveBeenCalled();
   });
 });

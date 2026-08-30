@@ -56,23 +56,13 @@ const paymentMethodPreparation = z
     enforceScenarioOperation(value.scenario, 'PREPARE_PAYMENT_METHOD', context);
   });
 
+// Public and generic queued callers may only advance the pre-WorkOrder lane.
+// Terminal operations are intentionally available only to the fulfillment
+// application after it commits and pins the terminal lifecycle intent.
 const boundFinancialEffect = z
   .object({
     ...commandBase,
-    operationKind: z.enum([
-      'AUTHORIZE',
-      'SECURE',
-      'VOID',
-      'ADJUST',
-      'CAPTURE',
-      'REFUND',
-      'REVERSAL',
-      'SETTLE',
-      'FUND',
-      'PROVIDER_RELEASE',
-      'PAYOUT',
-      'OBSERVE_BANK_SETTLEMENT',
-    ]),
+    operationKind: z.enum(['AUTHORIZE', 'SECURE']),
     predecessorEventId: z.string().uuid(),
     relatedOperationId: z.string().uuid(),
     amountCents: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
@@ -93,6 +83,15 @@ export const syntheticFinancialEventCommandSchema = z.union([
   paymentMethodPreparation,
   boundFinancialEffect,
 ]);
+
+export const PUBLIC_SYNTHETIC_RECONCILIATION_REFUSAL =
+  'UNIVERSAL_FINANCE_PUBLIC_RECONCILIATION_REFUSED';
+
+// Reconciliation is materialized only by the terminal fulfillment coordinator,
+// which owns the exact intent, terminal event, and snapshot-digest bindings.
+export function refusePublicSyntheticReconciliation(): never {
+  throw new Error(PUBLIC_SYNTHETIC_RECONCILIATION_REFUSAL);
+}
 
 const reconciliationState = {
   voidState: z.enum(['NOT_APPLICABLE', 'PENDING', 'VOIDED', 'FAILED', 'MISMATCH']),
@@ -171,6 +170,38 @@ export const syntheticProviderAccountStateCommandSchema = z
     enforceScenarioOperation(value.scenario, 'REFRESH_PROVIDER_ACCOUNT_STATE', context);
   });
 
+export const syntheticProviderAccountEstablishmentCommandSchema = z
+  .object({
+    providerKind: z.literal('FAKE'),
+    providerOrganizationId: z.string().uuid().optional(),
+    onboardOperationId: z.string().uuid(),
+    onboardIdempotencyKey: idempotencyKey,
+    refreshOperationId: z.string().uuid(),
+    refreshIdempotencyKey: idempotencyKey,
+    providerExpectedVersion: z.number().int().nonnegative(),
+    onboardScenario: scenario.optional(),
+    refreshScenario: scenario.optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    enforceScenarioOperation(value.onboardScenario, 'ONBOARD_PROVIDER', context);
+    enforceScenarioOperation(value.refreshScenario, 'REFRESH_PROVIDER_ACCOUNT_STATE', context);
+    if (value.onboardOperationId === value.refreshOperationId) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['refreshOperationId'],
+        message: 'Provider onboarding and refresh require distinct operation IDs.',
+      });
+    }
+    if (value.onboardIdempotencyKey === value.refreshIdempotencyKey) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['refreshIdempotencyKey'],
+        message: 'Provider onboarding and refresh require distinct idempotency keys.',
+      });
+    }
+  });
+
 export const syntheticWebhookCommandSchema = z
   .object({
     providerKind: z.literal('FAKE'),
@@ -199,24 +230,16 @@ export const signedSyntheticWebhookIngressSchema = z
   })
   .strict();
 
-export const syntheticFinancialJobEnvelopeSchema = z.discriminatedUnion('kind', [
-  z
-    .object({
-      version: z.literal(1),
-      kind: z.literal('FINANCIAL_EVENT'),
-      actorId: z.string().uuid(),
-      command: syntheticFinancialEventCommandSchema,
-    })
-    .strict(),
-  z
-    .object({
-      version: z.literal(1),
-      kind: z.literal('RECONCILIATION'),
-      actorId: z.string().uuid(),
-      command: syntheticReconciliationCommandSchema,
-    })
-    .strict(),
-]);
+// A signed job authenticates bytes; it does not grant terminal authority.
+// Reconciliation and terminal events therefore have no generic worker envelope.
+export const syntheticFinancialJobEnvelopeSchema = z
+  .object({
+    version: z.literal(1),
+    kind: z.literal('FINANCIAL_EVENT'),
+    actorId: z.string().uuid(),
+    command: syntheticFinancialEventCommandSchema,
+  })
+  .strict();
 
 export type SyntheticFinancialEventRouteCommand = z.infer<
   typeof syntheticFinancialEventCommandSchema

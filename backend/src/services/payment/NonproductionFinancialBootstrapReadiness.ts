@@ -120,6 +120,10 @@ const CRITICAL_FINANCIAL_MIGRATIONS = Object.freeze([
     migrationName: '20260921_universal_v1_fake_financial_lifecycle_bridge_v1',
     fileName: '20260921_universal_v1_fake_financial_lifecycle_bridge_v1.sql',
   }),
+  Object.freeze({
+    migrationName: '20260922_universal_v1_fake_terminal_lifecycle_intent_v1',
+    fileName: '20260922_universal_v1_fake_terminal_lifecycle_intent_v1.sql',
+  }),
 ] as const);
 const CRITICAL_RELATION_NAMES = Object.freeze([
   'applied_migrations',
@@ -127,6 +131,7 @@ const CRITICAL_RELATION_NAMES = Object.freeze([
   'hxos_fake_financial_schema_evidence_v2',
   'hxos_fake_financial_schema_evidence_v3',
   'hxos_fake_financial_schema_evidence_v4',
+  'hxos_fake_financial_schema_evidence_v5',
   'hxos_nonproduction_bootstrap_completion_v1',
   'hxos_fake_financial_operations_v1',
   'hxos_fake_financial_operation_events_v1',
@@ -141,6 +146,10 @@ const CRITICAL_RELATION_NAMES = Object.freeze([
   'financial_provider_command_dispatch_attempts',
   'financial_provider_command_outcome_facts',
   'universal_v1_fake_financial_lifecycle_bridges',
+  'universal_v1_fake_terminal_plan_steps_v1',
+  'universal_v1_fake_terminal_lifecycle_intents',
+  'universal_v1_fake_provider_account_facts',
+  'universal_v1_fake_reconciliation_bridges',
 ] as const);
 const READ_ONLY_ATTESTATION_RELATION_NAMES = Object.freeze([
   'applied_migrations',
@@ -148,7 +157,9 @@ const READ_ONLY_ATTESTATION_RELATION_NAMES = Object.freeze([
   'hxos_fake_financial_schema_evidence_v2',
   'hxos_fake_financial_schema_evidence_v3',
   'hxos_fake_financial_schema_evidence_v4',
+  'hxos_fake_financial_schema_evidence_v5',
   'hxos_nonproduction_bootstrap_completion_v1',
+  'universal_v1_fake_terminal_plan_steps_v1',
 ] as const);
 const CRITICAL_FUNCTION_NAMES = Object.freeze([
   'hxos_reject_fake_financial_mutation_v1',
@@ -170,6 +181,13 @@ const CRITICAL_FUNCTION_NAMES = Object.freeze([
   'validate_universal_v1_fake_financial_lifecycle_bridge',
   'reject_universal_v1_fake_financial_lifecycle_bridge_mutation',
   'require_universal_v1_controlled_fake_lifecycle_bridge',
+  'universal_v1_fake_terminal_plan_v1',
+  'validate_universal_v1_fake_terminal_lifecycle_intent',
+  'validate_universal_v1_fake_provider_account_fact',
+  'universal_v1_reconciliation_snapshot_sha256_v1',
+  'validate_universal_v1_fake_reconciliation_bridge',
+  'require_universal_v1_fake_reconciliation_bridge',
+  'reject_universal_v1_fake_terminal_authority_mutation',
 ] as const);
 const CRITICAL_SCHEMA_IDENTITY_NAMES = Object.freeze([
   'relations',
@@ -184,7 +202,7 @@ const CRITICAL_SCHEMA_IDENTITY_NAMES = Object.freeze([
 
 // These PostgreSQL 16 semantic catalog fingerprints must be regenerated from
 // the exact, fresh 20260916..20260920 engine chain plus the nonproduction
-// fake-finance v1..v4 chain whenever any critical SQL changes.
+// fake-finance v1..v5 chain whenever any critical SQL changes.
 // An empty default intentionally keeps runtime attestation fail-closed until
 // independently captured catalog evidence is reviewed and frozen here.
 const CRITICAL_SCHEMA_EVIDENCE = Object.freeze(
@@ -338,6 +356,9 @@ async function readSchemaEvidence(query: QueryFn): Promise<SchemaEvidenceRow[]> 
        UNION ALL
        SELECT migration_name, btrim(migration_sql_sha256) AS evidence_sha256
        FROM public.hxos_fake_financial_schema_evidence_v4
+       UNION ALL
+       SELECT migration_name, btrim(migration_sql_sha256) AS evidence_sha256
+       FROM public.hxos_fake_financial_schema_evidence_v5
      )
      SELECT evidence.migration_name,
             evidence.evidence_sha256,

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
+  createService: vi.fn(),
   executeEvent: vi.fn(),
   reconcile: vi.fn(),
   onboard: vi.fn(),
@@ -10,21 +11,17 @@ const mocks = vi.hoisted(() => ({
   webhook: vi.fn(),
   assertTask: vi.fn(),
   assertWorkOrder: vi.fn(),
+  assertProviderAccount: vi.fn(),
   assertWebhookBoundary: vi.fn(),
   assertHmac: vi.fn(),
   enqueueEvent: vi.fn(),
   enqueueReconciliation: vi.fn(),
   recordInbox: vi.fn(),
+  materializeAccount: vi.fn(),
 }));
 
 vi.mock('../../src/services/payment/UniversalV1FinancialApplicationService.js', () => ({
-  createUniversalV1FakeFinancialApplicationService: () => ({
-    executeFinancialEvent: mocks.executeEvent,
-    reconcile: mocks.reconcile,
-    onboardProvider: mocks.onboard,
-    refreshProviderAccountState: mocks.refreshAccountState,
-    ingestWebhook: mocks.webhook,
-  }),
+  createUniversalV1FakeFinancialApplicationService: mocks.createService,
 }));
 
 vi.mock('../../src/services/payment/SyntheticFinancialCommandAuthority.js', () => {
@@ -35,6 +32,7 @@ vi.mock('../../src/services/payment/SyntheticFinancialCommandAuthority.js', () =
     syntheticFinancialCommandAuthority: {
       assertTaskParticipant: mocks.assertTask,
       assertWorkOrderParticipant: mocks.assertWorkOrder,
+      assertProviderAccountAuthority: mocks.assertProviderAccount,
       assertWebhookOperationBoundary: mocks.assertWebhookBoundary,
     },
   };
@@ -43,6 +41,14 @@ vi.mock('../../src/services/payment/SyntheticFinancialCommandAuthority.js', () =
 vi.mock('../../src/jobs/synthetic-financial-worker.js', () => ({
   enqueueSyntheticFinancialEvent: mocks.enqueueEvent,
   enqueueSyntheticReconciliation: mocks.enqueueReconciliation,
+}));
+
+vi.mock('../../src/services/payment/UniversalV1FakeProviderAccountRepository.js', () => ({
+  PostgresUniversalV1FakeProviderAccountRepository: class {
+    materializeFromDurableEvidence(input: unknown) {
+      return mocks.materializeAccount(input);
+    }
+  },
 }));
 
 vi.mock('../../src/services/payment/ProviderEventInbox.js', () => ({
@@ -72,7 +78,23 @@ const ids = {
   operation: '00000000-0000-4000-8000-000000000206',
   workOrder: '00000000-0000-4000-8000-000000000207',
   related: '00000000-0000-4000-8000-000000000208',
+  organization: '00000000-0000-4000-8000-000000000209',
+  onboardOperation: '00000000-0000-4000-8000-000000000212',
+  refreshOperation: '00000000-0000-4000-8000-000000000213',
 } as const;
+
+const onboardEvidence = {
+  commandId: '00000000-0000-4000-8000-000000000214',
+  dispatchAttemptId: '00000000-0000-4000-8000-000000000215',
+  outcomeFactId: '00000000-0000-4000-8000-000000000216',
+  fakeOperationEventId: '00000000-0000-4000-8000-000000000217',
+};
+const refreshEvidence = {
+  commandId: '00000000-0000-4000-8000-000000000218',
+  dispatchAttemptId: '00000000-0000-4000-8000-000000000219',
+  outcomeFactId: '00000000-0000-4000-8000-000000000220',
+  fakeOperationEventId: '00000000-0000-4000-8000-000000000221',
+};
 
 function caller() {
   return universalFinanceRouter.createCaller({
@@ -92,7 +114,7 @@ function sha256(value: string): string {
 
 function expectedNormalizationIdempotencyKey(
   providerKind: string,
-  providerEventReference: string,
+  providerEventReference: string
 ): string {
   return `provider-event:${sha256(`${providerKind}\0${providerEventReference}`)}`;
 }
@@ -140,12 +162,39 @@ const reconciliation = {
   },
 };
 
+const terminalOperationKinds = [
+  'VOID',
+  'ADJUST',
+  'CAPTURE',
+  'REFUND',
+  'REVERSAL',
+  'SETTLE',
+  'FUND',
+  'PROVIDER_RELEASE',
+  'PAYOUT',
+  'OBSERVE_BANK_SETTLEMENT',
+] as const;
+
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.createService.mockReturnValue({
+    executeFinancialEvent: mocks.executeEvent,
+    reconcile: mocks.reconcile,
+    onboardProvider: mocks.onboard,
+    refreshProviderAccountState: mocks.refreshAccountState,
+    ingestWebhook: mocks.webhook,
+  });
   mocks.executeEvent.mockResolvedValue({ operationId: ids.operation });
   mocks.reconcile.mockResolvedValue({ operationId: ids.operation });
-  mocks.onboard.mockResolvedValue({ operationId: ids.operation });
-  mocks.refreshAccountState.mockResolvedValue({ operationId: ids.operation });
+  mocks.onboard.mockResolvedValue({
+    operationId: ids.operation,
+    externalReference: 'fake-provider-account-1',
+    durableFakeEvidence: onboardEvidence,
+  });
+  mocks.refreshAccountState.mockResolvedValue({
+    operationId: ids.operation,
+    durableFakeEvidence: refreshEvidence,
+  });
   mocks.webhook.mockResolvedValue({ operationId: ids.operation });
   mocks.enqueueEvent.mockResolvedValue({ queue: 'synthetic_finance', jobId: 'event-job' });
   mocks.enqueueReconciliation.mockResolvedValue({
@@ -158,6 +207,7 @@ beforeEach(() => {
     observationReplayed: false,
     idempotencyReplayed: false,
   });
+  mocks.materializeAccount.mockResolvedValue({ providerAccountFactId: ids.related });
 });
 
 afterEach(() => vi.unstubAllEnvs());
@@ -183,75 +233,72 @@ describe('universalFinanceRouter', () => {
     expect(mocks.executeEvent).toHaveBeenCalledWith({ ...event, recordedBy: ids.actor });
   });
 
-  it('routes recovery effects through the same provider-neutral application service', async () => {
-    const recovery = {
-      providerKind: 'FAKE' as const,
-      operationKind: 'REFUND' as const,
-      operationId: ids.operation,
-      idempotencyKey: 'route:refund:recovery:0001',
-      providerExpectedVersion: 0,
-      lifecycleExpectedVersion: 4,
-      taskDraftId: ids.draft,
-      taskId: ids.task,
-      eligibilityDecisionId: ids.eligibility,
-      scopeVersionId: ids.scope,
-      predecessorEventId: '00000000-0000-4000-8000-000000000209',
-      relatedOperationId: ids.related,
-      amountCents: 2_500,
-      originalAmountCents: 12_500,
-      currency: 'usd',
-      scenario: 'PARTIAL_REFUND' as const,
-      occurredAt: '2026-08-26T12:05:00.000Z',
-    };
+  it.each(['AUTHORIZE', 'SECURE'] as const)(
+    'keeps the pre-WorkOrder %s lane participant-bound',
+    async (operationKind) => {
+      const command = {
+        providerKind: 'FAKE' as const,
+        operationKind,
+        operationId: ids.operation,
+        idempotencyKey: `route:${operationKind.toLowerCase()}:0001`,
+        providerExpectedVersion: 0,
+        lifecycleExpectedVersion: operationKind === 'AUTHORIZE' ? 1 : 2,
+        taskDraftId: ids.draft,
+        taskId: ids.task,
+        eligibilityDecisionId: ids.eligibility,
+        scopeVersionId: ids.scope,
+        predecessorEventId: '00000000-0000-4000-8000-000000000209',
+        relatedOperationId: ids.related,
+        amountCents: 12_500,
+        currency: 'usd',
+        occurredAt: '2026-08-26T12:05:00.000Z',
+      };
 
-    await caller().executeEvent(recovery);
+      await caller().executeEvent(command);
 
-    expect(mocks.assertTask).toHaveBeenCalledWith(ids.actor, ids.draft, ids.task);
-    expect(mocks.executeEvent).toHaveBeenCalledWith({
-      ...recovery,
-      recordedBy: ids.actor,
-    });
-  });
+      expect(mocks.assertTask).toHaveBeenCalledWith(ids.actor, ids.draft, ids.task);
+      expect(mocks.executeEvent).toHaveBeenCalledWith({
+        ...command,
+        recordedBy: ids.actor,
+      });
+    }
+  );
 
-  it('admits provider release and bank-settlement observation as distinct fake-only commands', async () => {
-    const base = {
-      providerKind: 'FAKE' as const,
-      operationId: ids.operation,
-      providerExpectedVersion: 0,
-      lifecycleExpectedVersion: 7,
-      taskDraftId: ids.draft,
-      taskId: ids.task,
-      eligibilityDecisionId: ids.eligibility,
-      scopeVersionId: ids.scope,
-      predecessorEventId: '00000000-0000-4000-8000-000000000209',
-      relatedOperationId: ids.related,
-      amountCents: 10_000,
-      currency: 'usd',
-      occurredAt: '2026-08-26T12:06:00.000Z',
-    };
-    const providerRelease = {
-      ...base,
-      operationKind: 'PROVIDER_RELEASE' as const,
-      idempotencyKey: 'route:provider-release:0001',
-    };
-    await caller().executeEvent(providerRelease);
-    expect(mocks.executeEvent).toHaveBeenLastCalledWith({
-      ...providerRelease,
-      recordedBy: ids.actor,
-    });
+  it.each(terminalOperationKinds)(
+    'refuses public terminal operation %s before service, authority, or queue calls',
+    async (operationKind) => {
+      const command = {
+        providerKind: 'FAKE' as const,
+        operationKind,
+        operationId: ids.operation,
+        idempotencyKey: `route:terminal:${operationKind.toLowerCase()}:0001`,
+        providerExpectedVersion: 0,
+        lifecycleExpectedVersion: 4,
+        taskDraftId: ids.draft,
+        taskId: ids.task,
+        eligibilityDecisionId: ids.eligibility,
+        scopeVersionId: ids.scope,
+        predecessorEventId: '00000000-0000-4000-8000-000000000209',
+        relatedOperationId: ids.related,
+        amountCents: 2_500,
+        originalAmountCents: 12_500,
+        currency: 'usd',
+        occurredAt: '2026-08-26T12:05:00.000Z',
+      };
 
-    const bankSettlement = {
-      ...base,
-      operationKind: 'OBSERVE_BANK_SETTLEMENT' as const,
-      idempotencyKey: 'route:bank-settlement:0001',
-      lifecycleExpectedVersion: 8,
-    };
-    await caller().executeEvent(bankSettlement);
-    expect(mocks.executeEvent).toHaveBeenLastCalledWith({
-      ...bankSettlement,
-      recordedBy: ids.actor,
-    });
-  });
+      await expect(caller().executeEvent(command as never)).rejects.toMatchObject({
+        code: 'BAD_REQUEST',
+      });
+      await expect(caller().enqueueEvent(command as never)).rejects.toMatchObject({
+        code: 'BAD_REQUEST',
+      });
+
+      expect(mocks.createService).not.toHaveBeenCalled();
+      expect(mocks.assertTask).not.toHaveBeenCalled();
+      expect(mocks.executeEvent).not.toHaveBeenCalled();
+      expect(mocks.enqueueEvent).not.toHaveBeenCalled();
+    }
+  );
 
   it('queues only the closed fake-provider command schema', async () => {
     await expect(
@@ -266,16 +313,18 @@ describe('universalFinanceRouter', () => {
     expect(mocks.enqueueEvent).toHaveBeenCalledWith(ids.actor, event);
   });
 
-  it('binds direct and queued reconciliation to the authenticated Work Order participant', async () => {
-    await caller().reconcile(reconciliation);
-    expect(mocks.assertWorkOrder).toHaveBeenCalledWith(ids.actor, ids.workOrder);
-    expect(mocks.reconcile).toHaveBeenCalledWith({
-      ...reconciliation,
-      snapshot: { ...reconciliation.snapshot, recordedBy: ids.actor },
+  it('refuses direct and queued generic reconciliation before service, authority, or queue calls', async () => {
+    await expect(caller().reconcile(reconciliation)).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+    });
+    await expect(caller().enqueueReconciliation(reconciliation)).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
     });
 
-    await caller().enqueueReconciliation(reconciliation);
-    expect(mocks.enqueueReconciliation).toHaveBeenCalledWith(ids.actor, reconciliation);
+    expect(mocks.createService).not.toHaveBeenCalled();
+    expect(mocks.assertWorkOrder).not.toHaveBeenCalled();
+    expect(mocks.reconcile).not.toHaveBeenCalled();
+    expect(mocks.enqueueReconciliation).not.toHaveBeenCalled();
   });
 
   it('limits provider onboarding and account refresh to self and requires signed participant-bound webhooks', async () => {
@@ -324,9 +373,7 @@ describe('universalFinanceRouter', () => {
       authentication: {
         status: 'VERIFIED',
         scheme: 'HMAC_SHA256',
-        evidenceSha256: sha256(
-          `HUSTLEXP_SYNTHETIC_WEBHOOK_HMAC_SHA256_V1\0${signature}`,
-        ),
+        evidenceSha256: sha256(`HUSTLEXP_SYNTHETIC_WEBHOOK_HMAC_SHA256_V1\0${signature}`),
         verifiedAt: expect.any(String),
       },
     });
@@ -342,21 +389,94 @@ describe('universalFinanceRouter', () => {
       authenticated: true,
     });
     expect(mocks.recordInbox.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.assertTask.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+      mocks.assertTask.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY
     );
     expect(mocks.recordInbox.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.assertWebhookBoundary.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+      mocks.assertWebhookBoundary.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY
     );
     expect(mocks.recordInbox.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.webhook.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+      mocks.webhook.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY
     );
+  });
+
+  it('proves organization authority before establishing and materializing an account fact', async () => {
+    const command = {
+      providerKind: 'FAKE' as const,
+      providerOrganizationId: ids.organization,
+      onboardOperationId: ids.onboardOperation,
+      onboardIdempotencyKey: 'route:onboard:establish:0001',
+      refreshOperationId: ids.refreshOperation,
+      refreshIdempotencyKey: 'route:refresh:establish:0001',
+      providerExpectedVersion: 0,
+      onboardScenario: 'SUCCESS' as const,
+      refreshScenario: 'PROVIDER_ACCOUNT_FAILURE' as const,
+    };
+
+    await caller().establishSelfAccount(command);
+
+    expect(mocks.assertProviderAccount).toHaveBeenCalledWith(ids.actor, ids.organization);
+    expect(mocks.assertProviderAccount.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.onboard.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY
+    );
+    expect(mocks.onboard).toHaveBeenCalledWith({
+      providerKind: 'FAKE',
+      operationId: ids.onboardOperation,
+      idempotencyKey: command.onboardIdempotencyKey,
+      providerExpectedVersion: 0,
+      providerId: ids.organization,
+      scenario: 'SUCCESS',
+      recordedBy: ids.actor,
+    });
+    expect(mocks.refreshAccountState).toHaveBeenCalledWith({
+      providerKind: 'FAKE',
+      operationId: ids.refreshOperation,
+      idempotencyKey: command.refreshIdempotencyKey,
+      providerExpectedVersion: 0,
+      providerId: ids.organization,
+      providerAccountReference: 'fake-provider-account-1',
+      scenario: 'PROVIDER_ACCOUNT_FAILURE',
+      recordedBy: ids.actor,
+    });
+    expect(mocks.materializeAccount).toHaveBeenCalledWith({
+      providerSubject: {
+        kind: 'ORGANIZATION',
+        organizationId: ids.organization,
+      },
+      recordedBy: ids.actor,
+      onboard: onboardEvidence,
+      refresh: refreshEvidence,
+    });
+  });
+
+  it('refuses organization account commands before committing fake provider evidence', async () => {
+    const { SyntheticFinancialAuthorityError } =
+      await import('../../src/services/payment/SyntheticFinancialCommandAuthority.js');
+    mocks.assertProviderAccount.mockRejectedValueOnce(
+      new SyntheticFinancialAuthorityError('PROVIDER_ACCOUNT_AUTHORITY_REQUIRED')
+    );
+
+    await expect(
+      caller().establishSelfAccount({
+        providerKind: 'FAKE',
+        providerOrganizationId: ids.organization,
+        onboardOperationId: ids.onboardOperation,
+        onboardIdempotencyKey: 'route:onboard:refused:0001',
+        refreshOperationId: ids.refreshOperation,
+        refreshIdempotencyKey: 'route:refresh:refused:0001',
+        providerExpectedVersion: 0,
+      })
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+
+    expect(mocks.onboard).not.toHaveBeenCalled();
+    expect(mocks.refreshAccountState).not.toHaveBeenCalled();
+    expect(mocks.materializeAccount).not.toHaveBeenCalled();
   });
 
   it('preserves an authenticated unmatched event before participant refusal without normalization', async () => {
     const { SyntheticFinancialAuthorityError } =
       await import('../../src/services/payment/SyntheticFinancialCommandAuthority.js');
     mocks.assertTask.mockRejectedValueOnce(
-      new SyntheticFinancialAuthorityError('TASK_PARTICIPANT_OR_SYNTHETIC_BOUNDARY'),
+      new SyntheticFinancialAuthorityError('TASK_PARTICIPANT_OR_SYNTHETIC_BOUNDARY')
     );
     const webhook = {
       providerKind: 'FAKE',
@@ -370,14 +490,16 @@ describe('universalFinanceRouter', () => {
     };
     const rawBody = JSON.stringify(webhook);
 
-    await expect(caller().ingestWebhook({
-      rawBody,
-      signature: 'b'.repeat(64),
-    })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(
+      caller().ingestWebhook({
+        rawBody,
+        signature: 'b'.repeat(64),
+      })
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
 
     expect(mocks.recordInbox).toHaveBeenCalledTimes(1);
     expect(mocks.recordInbox.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.assertTask.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+      mocks.assertTask.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY
     );
     expect(mocks.assertWebhookBoundary).not.toHaveBeenCalled();
     expect(mocks.webhook).not.toHaveBeenCalled();
@@ -395,10 +517,12 @@ describe('universalFinanceRouter', () => {
       providerEventReference: 'synthetic-event-unavailable',
     });
 
-    await expect(caller().ingestWebhook({
-      rawBody,
-      signature: 'c'.repeat(64),
-    })).rejects.toMatchObject({
+    await expect(
+      caller().ingestWebhook({
+        rawBody,
+        signature: 'c'.repeat(64),
+      })
+    ).rejects.toMatchObject({
       code: 'INTERNAL_SERVER_ERROR',
       message: 'Synthetic webhook evidence is temporarily unavailable.',
     });

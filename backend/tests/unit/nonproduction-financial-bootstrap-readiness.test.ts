@@ -128,6 +128,10 @@ const expectedCriticalMigrationEvidence: readonly NonproductionFinancialMigratio
     migrationName: '20260921_universal_v1_fake_financial_lifecycle_bridge_v1',
     sha256: '9'.repeat(64),
   },
+  {
+    migrationName: '20260922_universal_v1_fake_terminal_lifecycle_intent_v1',
+    sha256: 'a'.repeat(64),
+  },
 ];
 
 const sourceCriticalMigrationEvidence: readonly NonproductionFinancialMigrationEvidence[] =
@@ -153,6 +157,7 @@ const expectedCriticalSchemaEvidence = [
 function readinessQuery(options: {
   completion?: boolean;
   mismatch?: boolean;
+  missingFinalFinancialEvidence?: boolean;
   throwError?: boolean;
   throwOnCriticalSchema?: boolean;
   criticalMigrationMismatch?: boolean;
@@ -193,13 +198,18 @@ function readinessQuery(options: {
       };
     }
     if (sql.includes('WITH evidence AS')) {
-      return {
-        rows: expectedEvidence.map((entry, index) => ({
+      const rows = expectedEvidence
+        .filter((_, index) => (
+          !options.missingFinalFinancialEvidence || index !== expectedEvidence.length - 1
+        ))
+        .map((entry, index) => ({
           migration_name: entry.migrationName,
           evidence_sha256: options.mismatch && index === 1 ? '0'.repeat(64) : entry.sha256,
           applied_sha256: entry.sha256,
-        })),
-        rowCount: expectedEvidence.length,
+        }));
+      return {
+        rows,
+        rowCount: rows.length,
       };
     }
     if (sql.includes('SELECT name AS migration_name')) {
@@ -209,7 +219,9 @@ function readinessQuery(options: {
         ({ migrationName }) => migrationName,
       )]);
       const rows = criticalMigrationEvidence
-        .filter((_, index) => !options.criticalMigrationMissing || index !== 0)
+        .filter((_, index) => (
+          !options.criticalMigrationMissing || index !== criticalMigrationEvidence.length - 1
+        ))
         .map((entry, index) => ({
           migration_name: entry.migrationName,
           applied_sha256: options.criticalMigrationMismatch && index === 1
@@ -337,6 +349,10 @@ describe('nonproduction fake-finance bootstrap readiness', () => {
     expect(vi.mocked(query).mock.calls[3]?.[0]).toBe(
       "SET LOCAL lock_timeout = '250ms'",
     );
+    const schemaEvidenceSql = vi.mocked(query).mock.calls
+      .map(([sql]) => sql)
+      .find((sql) => sql.includes('WITH evidence AS'));
+    expect(schemaEvidenceSql).toContain('hxos_fake_financial_schema_evidence_v5');
     const catalogSql = vi.mocked(query).mock.calls
       .map(([sql]) => sql)
       .find((sql) => sql.includes('identity_documents'));
@@ -346,6 +362,7 @@ describe('nonproduction fake-finance bootstrap readiness', () => {
       'applied_migrations',
       'hxos_fake_financial_schema_evidence_v1',
       'hxos_fake_financial_schema_evidence_v4',
+      'hxos_fake_financial_schema_evidence_v5',
       'hxos_nonproduction_bootstrap_completion_v1',
       'hxos_fake_financial_operations_v1',
       'provider_event_inbox_receipts',
@@ -358,6 +375,17 @@ describe('nonproduction fake-finance bootstrap readiness', () => {
       'financial_provider_command_dispatch_attempts',
       'financial_provider_command_outcome_facts',
       'universal_v1_fake_financial_lifecycle_bridges',
+      'universal_v1_fake_terminal_plan_steps_v1',
+      'universal_v1_fake_terminal_lifecycle_intents',
+      'universal_v1_fake_provider_account_facts',
+      'universal_v1_fake_reconciliation_bridges',
+      'universal_v1_fake_terminal_plan_v1',
+      'validate_universal_v1_fake_terminal_lifecycle_intent',
+      'validate_universal_v1_fake_provider_account_fact',
+      'universal_v1_reconciliation_snapshot_sha256_v1',
+      'validate_universal_v1_fake_reconciliation_bridge',
+      'require_universal_v1_fake_reconciliation_bridge',
+      'reject_universal_v1_fake_terminal_authority_mutation',
       'pg_get_constraintdef',
       'pg_get_indexdef',
       'index_record.indpred',
@@ -395,7 +423,7 @@ describe('nonproduction fake-finance bootstrap readiness', () => {
     expect(authoritySql).toContain('FOREIGN_KEY_INTERNAL_TRIGGER_UNSAFE');
   });
 
-  it('derives all six critical applied checksums from exact registered SQL bytes', async () => {
+  it('derives all seven critical applied checksums from exact registered SQL bytes', async () => {
     const query = readinessQuery({
       criticalMigrationEvidence: sourceCriticalMigrationEvidence,
     });
@@ -418,6 +446,18 @@ describe('nonproduction fake-finance bootstrap readiness', () => {
   it('fails closed when append-only schema and applied checksums do not agree', async () => {
     const result = await readNonproductionFinancialBootstrapReadiness(
       options(readinessQuery({ mismatch: true })),
+    );
+
+    expect(result).toMatchObject({
+      ready: false,
+      status: 'schema_evidence_mismatch',
+      matchedFakeFinancialMigrationCount: expectedEvidence.length - 1,
+    });
+  });
+
+  it('fails closed when exact v5 append-only schema evidence is absent', async () => {
+    const result = await readNonproductionFinancialBootstrapReadiness(
+      options(readinessQuery({ missingFinalFinancialEvidence: true })),
     );
 
     expect(result).toMatchObject({

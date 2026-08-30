@@ -6,6 +6,7 @@ import {
   type FakeFinancialOperationRepository,
 } from './FakeFinancialProvider.js';
 import type {
+  DurableFakeFinancialCommandEvidence,
   ForegroundFinancialProviderCommandContext,
   ForegroundFinancialProviderCommandCoordinator,
   ForegroundFinancialProviderCommandResult,
@@ -1065,10 +1066,32 @@ export class PostgresFinancialProviderCommandRecoveryRepository implements Finan
   }
 }
 
-const FOREGROUND_FAKE_OPERATION_KINDS = new Set<FinancialOperationKind>([
+const PRE_WORK_ORDER_FAKE_OPERATION_KINDS = new Set<FinancialOperationKind>([
   'PREPARE_PAYMENT_METHOD',
   'AUTHORIZE',
   'SECURE',
+]);
+const WORK_ORDER_REQUIRED_FAKE_OPERATION_KINDS = new Set<FinancialOperationKind>([
+  'CAPTURE',
+  'REFUND',
+  'SETTLE',
+  'FUND',
+  'PROVIDER_RELEASE',
+  'PAYOUT',
+  'OBSERVE_BANK_SETTLEMENT',
+]);
+const LIFECYCLE_FAKE_OPERATION_KINDS = new Set<FinancialOperationKind>([
+  ...PRE_WORK_ORDER_FAKE_OPERATION_KINDS,
+  ...WORK_ORDER_REQUIRED_FAKE_OPERATION_KINDS,
+]);
+const PROVIDER_COMMAND_FAKE_OPERATION_KINDS = new Set<FinancialOperationKind>([
+  'ONBOARD_PROVIDER',
+  'REFRESH_PROVIDER_ACCOUNT_STATE',
+]);
+const FOREGROUND_FAKE_OPERATION_KINDS = new Set<FinancialOperationKind>([
+  ...LIFECYCLE_FAKE_OPERATION_KINDS,
+  ...PROVIDER_COMMAND_FAKE_OPERATION_KINDS,
+  'RECONCILE',
 ]);
 const FOREGROUND_NONTERMINAL_STATES = new Set<FinancialOperationState>([
   'PENDING',
@@ -1179,14 +1202,54 @@ function assertExactCommandState<TRequest>(
   ) {
     throw new Error('FAKE_FINANCIAL_FOREGROUND_REQUEST_IDENTITY_MISMATCH');
   }
-  if (
-    !command.preparedFinancialCommandId ||
-    !command.preparedAuthoritySha256 ||
-    !command.taskDraftId ||
-    !command.taskId ||
-    command.workOrderId !== null
+  if (LIFECYCLE_FAKE_OPERATION_KINDS.has(command.operationKind)) {
+    if (
+      !command.preparedFinancialCommandId ||
+      !command.preparedAuthoritySha256 ||
+      !command.taskDraftId ||
+      !command.taskId
+    ) {
+      throw new Error('FAKE_FINANCIAL_FOREGROUND_LIFECYCLE_AUTHORITY_REQUIRED');
+    }
+    if (
+      PRE_WORK_ORDER_FAKE_OPERATION_KINDS.has(command.operationKind) &&
+      command.workOrderId !== null
+    ) {
+      throw new Error('FAKE_FINANCIAL_FOREGROUND_PRE_WORK_ORDER_BINDING_REQUIRED');
+    }
+    if (
+      WORK_ORDER_REQUIRED_FAKE_OPERATION_KINDS.has(command.operationKind) &&
+      command.workOrderId === null
+    ) {
+      throw new Error('FAKE_FINANCIAL_FOREGROUND_WORK_ORDER_BINDING_REQUIRED');
+    }
+  } else if (
+    command.preparedFinancialCommandId !== null ||
+    command.preparedAuthoritySha256 !== null
   ) {
-    throw new Error('FAKE_FINANCIAL_FOREGROUND_PRE_WORK_ORDER_BINDING_REQUIRED');
+    throw new Error('FAKE_FINANCIAL_FOREGROUND_NON_LIFECYCLE_AUTHORITY_INVALID');
+  }
+  if (
+    PROVIDER_COMMAND_FAKE_OPERATION_KINDS.has(command.operationKind) &&
+    (command.taskDraftId !== null ||
+      command.taskId !== null ||
+      command.workOrderId !== null ||
+      command.relatedOperationId !== null ||
+      command.amountCents !== null ||
+      command.currency !== null)
+  ) {
+    throw new Error('FAKE_FINANCIAL_FOREGROUND_PROVIDER_COMMAND_BINDING_INVALID');
+  }
+  if (
+    command.operationKind === 'RECONCILE' &&
+    (!command.workOrderId ||
+      !command.relatedOperationId ||
+      command.taskDraftId !== null ||
+      command.taskId !== null ||
+      command.amountCents !== null ||
+      command.currency !== null)
+  ) {
+    throw new Error('FAKE_FINANCIAL_FOREGROUND_RECONCILIATION_BINDING_REQUIRED');
   }
   if (
     state.lastDispatchAttempt &&
@@ -1213,9 +1276,11 @@ export interface DurableFakeFinancialProviderCommandCoordinatorOptions {
 }
 
 /**
- * Nonproduction, fake-only foreground crash boundary for the Work Order
- * security sequence. It intentionally cannot dispatch capture, adjustment,
- * refund, payout, settlement, or an APPROVED_PROVIDER command.
+ * Nonproduction, fake-only foreground crash boundary for provider commands.
+ * Lifecycle commands must carry their exact committed PREPARED authority;
+ * pre-assignment security must remain WorkOrder-free and every downstream
+ * positive financial state must be bound to the exact WorkOrder derived by
+ * PostgreSQL. APPROVED_PROVIDER commands remain deliberately unavailable.
  */
 export class DurableFakeFinancialProviderCommandCoordinator
   implements ForegroundFinancialProviderCommandCoordinator {
@@ -1438,7 +1503,6 @@ export class DurableFakeFinancialProviderCommandCoordinator
   ): ForegroundFinancialProviderCommandResult<FinancialOperationResult> {
     const preparedCommandId = context.command.preparedFinancialCommandId;
     if (
-      !preparedCommandId ||
       outcome.outcomeKind !== 'OUTCOME_OBSERVED' ||
       outcome.retryable ||
       outcome.commandId !== context.command.commandId ||
@@ -1446,15 +1510,30 @@ export class DurableFakeFinancialProviderCommandCoordinator
     ) {
       throw new Error('FAKE_FINANCIAL_FOREGROUND_BRIDGE_EVIDENCE_INCOMPLETE');
     }
+    if (!LIFECYCLE_FAKE_OPERATION_KINDS.has(context.operationKind)) {
+      return {
+        result: event.result,
+        evidence: {
+          commandId: context.command.commandId,
+          dispatchAttemptId: attempt.dispatchAttemptId,
+          outcomeFactId: outcome.outcomeFactId,
+          fakeOperationEventId: event.eventId,
+        },
+      };
+    }
+    if (!preparedCommandId) {
+      throw new Error('FAKE_FINANCIAL_FOREGROUND_BRIDGE_EVIDENCE_INCOMPLETE');
+    }
+    const evidence: DurableFakeFinancialCommandEvidence = {
+      preparedCommandId,
+      commandId: context.command.commandId,
+      dispatchAttemptId: attempt.dispatchAttemptId,
+      outcomeFactId: outcome.outcomeFactId,
+      fakeOperationEventId: event.eventId,
+    };
     return {
       result: event.result,
-      evidence: {
-        preparedCommandId,
-        commandId: context.command.commandId,
-        dispatchAttemptId: attempt.dispatchAttemptId,
-        outcomeFactId: outcome.outcomeFactId,
-        fakeOperationEventId: event.eventId,
-      },
+      evidence,
     };
   }
 

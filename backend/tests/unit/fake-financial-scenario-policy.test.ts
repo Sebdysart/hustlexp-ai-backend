@@ -32,7 +32,7 @@ function boundCommand() {
     eligibilityDecisionId: ids.eligibility,
     scopeVersionId: ids.scope,
     occurredAt: '2026-08-28T00:00:00.000Z',
-    operationKind: 'CAPTURE' as const,
+    operationKind: 'AUTHORIZE' as const,
     predecessorEventId: ids.predecessor,
     relatedOperationId: ids.related,
     amountCents: 12_500,
@@ -76,9 +76,7 @@ describe('fake financial scenario policy', () => {
 
     const valid = syntheticFinancialEventCommandSchema.safeParse({
       ...boundCommand(),
-      operationKind: 'REFUND',
-      scenario: 'PARTIAL_REFUND',
-      originalAmountCents: 12_500,
+      scenario: 'DECLINE',
     });
     expect(valid.success).toBe(true);
   });

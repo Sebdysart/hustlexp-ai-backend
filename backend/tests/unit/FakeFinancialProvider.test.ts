@@ -24,6 +24,8 @@ const operationIds = {
   bankSettlement: '00000000-0000-4000-8000-000000000013',
 } as const;
 
+const reconciliationSnapshotSha256 = 'a'.repeat(64);
+
 function command(
   operationId: string,
   idempotencyKey: string,
@@ -41,7 +43,8 @@ function command(
 
 describe('FakeFinancialProvider', () => {
   it('executes the provider-neutral lifecycle without exposing a processor contract', async () => {
-    const provider = new FakeFinancialProvider(new InMemoryFakeFinancialOperationRepository());
+    const repository = new InMemoryFakeFinancialOperationRepository();
+    const provider = new FakeFinancialProvider(repository);
 
     const paymentMethod = await provider.preparePaymentMethod({
       ...command(operationIds.paymentMethod, 'test:payment-method:0001'),
@@ -89,6 +92,7 @@ describe('FakeFinancialProvider', () => {
     const reconciliation = await provider.reconcile({
       ...command(operationIds.reconciliation, 'test:reconcile:0001'),
       relatedOperationId: bankSettlement.operationId,
+      reconciliationSnapshotSha256,
     });
 
     expect(paymentMethod.state).toBe('SUCCEEDED');
@@ -111,6 +115,7 @@ describe('FakeFinancialProvider', () => {
     expect(reconciliation.state).toBe('MATCHED');
     expect(reconciliation.providerKind).toBe('FAKE');
     expect(reconciliation.externalReference).toMatch(/^fake_reconcile_[0-9a-f]{24}$/);
+    expect(repository.events().at(-1)?.metadata).toEqual({ reconciliationSnapshotSha256 });
   });
 
   it('replays the exact idempotent command and rejects a changed request', async () => {
@@ -139,6 +144,33 @@ describe('FakeFinancialProvider', () => {
         paymentMethodReference: 'pm-fake-substituted',
       })
     ).rejects.toThrow('FAKE_FINANCIAL_OPERATION_IDENTITY_CONFLICT');
+  });
+
+  it('binds reconciliation idempotency and event metadata to the exact snapshot digest', async () => {
+    const repository = new InMemoryFakeFinancialOperationRepository();
+    const provider = new FakeFinancialProvider(repository);
+    const input = {
+      ...command(operationIds.reconciliation, 'test:reconcile:snapshot-digest'),
+      relatedOperationId: operationIds.bankSettlement,
+      reconciliationSnapshotSha256,
+    } as const;
+
+    await provider.reconcile(input);
+    await expect(provider.reconcile(input)).resolves.toMatchObject({
+      state: 'MATCHED',
+      idempotencyReplayed: true,
+    });
+    expect(repository.events()[0]?.metadata).toEqual({ reconciliationSnapshotSha256 });
+    await expect(
+      provider.reconcile({ ...input, reconciliationSnapshotSha256: 'b'.repeat(64) })
+    ).rejects.toThrow('FAKE_FINANCIAL_IDEMPOTENCY_CONFLICT');
+    expect(() =>
+      provider.reconcile({
+        ...input,
+        idempotencyKey: 'test:reconcile:invalid-snapshot-digest',
+        reconciliationSnapshotSha256: 'not-a-digest',
+      })
+    ).toThrow('FAKE_FINANCIAL_RECONCILIATION_SNAPSHOT_SHA256_INVALID');
   });
 
   it('requires expected-version progression for retry and delayed settlement', async () => {
@@ -199,7 +231,11 @@ describe('FakeFinancialProvider', () => {
 
     const result =
       kind === 'RECONCILE'
-        ? await provider.reconcile({ ...base, relatedOperationId: operationIds.settlement })
+        ? await provider.reconcile({
+            ...base,
+            relatedOperationId: operationIds.settlement,
+            reconciliationSnapshotSha256,
+          })
         : kind === 'ONBOARD_PROVIDER'
           ? await provider.onboardProvider({ ...base, providerId: 'provider-1' })
           : kind === 'REVERSAL'
@@ -232,6 +268,7 @@ describe('FakeFinancialProvider', () => {
           'DELAYED_SETTLEMENT'
         ),
         relatedOperationId: operationIds.settlement,
+        reconciliationSnapshotSha256,
       })
     ).rejects.toThrow('FAKE_FINANCIAL_SCENARIO_OPERATION_INVALID');
   });

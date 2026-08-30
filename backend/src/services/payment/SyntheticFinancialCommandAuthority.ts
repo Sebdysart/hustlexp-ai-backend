@@ -15,7 +15,7 @@ export class SyntheticFinancialAuthorityError extends Error {
 export function assertSyntheticFinancialWebhookHmac(
   rawBody: string,
   providedSignature: string,
-  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env
 ): void {
   const secret = env.HX_FAKE_FINANCIAL_WEBHOOK_SECRET?.trim() ?? '';
   if (secret.length < 32) {
@@ -46,11 +46,46 @@ export function assertSyntheticFinancialWebhookHmac(
 export class SyntheticFinancialCommandAuthority {
   constructor(private readonly database: Database = db) {}
 
-  async assertTaskParticipant(
+  /**
+   * Proves provider-account authority before any fake provider command is
+   * committed. Individual accounts are self-only; organization accounts are
+   * restricted to an active owner/admin of an active provider organization.
+   */
+  async assertProviderAccountAuthority(
     actorId: string,
-    taskDraftId: string,
-    taskId: string,
+    providerOrganizationId: string | null
   ): Promise<void> {
+    const result = await this.database.query<{ authorized: boolean }>(
+      `SELECT TRUE AS authorized
+         FROM users actor
+        WHERE actor.id = $1
+          AND actor.account_status = 'ACTIVE'
+          AND actor.is_minor IS FALSE
+          AND COALESCE(actor.is_banned, FALSE) IS FALSE
+          AND (
+            $2::UUID IS NULL
+            OR EXISTS (
+              SELECT 1
+                FROM business_organizations organization
+                JOIN business_memberships membership
+                  ON membership.organization_id = organization.id
+               WHERE organization.id = $2::UUID
+                 AND organization.provider_enabled IS TRUE
+                 AND organization.status = 'ACTIVE'
+                 AND membership.user_id = actor.id
+                 AND membership.status = 'ACTIVE'
+                 AND membership.role IN ('OWNER','ADMIN')
+            )
+          )
+        LIMIT 1`,
+      [actorId, providerOrganizationId]
+    );
+    if (result.rows[0]?.authorized !== true) {
+      throw new SyntheticFinancialAuthorityError('PROVIDER_ACCOUNT_AUTHORITY_REQUIRED');
+    }
+  }
+
+  async assertTaskParticipant(actorId: string, taskDraftId: string, taskId: string): Promise<void> {
     const result = await this.database.query<{ authorized: boolean }>(
       `SELECT TRUE AS authorized
        FROM task_drafts draft
@@ -79,7 +114,7 @@ export class SyntheticFinancialCommandAuthority {
            )
          )
        LIMIT 1`,
-      [actorId, taskDraftId, taskId],
+      [actorId, taskDraftId, taskId]
     );
     if (result.rows[0]?.authorized !== true) {
       throw new SyntheticFinancialAuthorityError('TASK_PARTICIPANT_OR_SYNTHETIC_BOUNDARY');
@@ -111,7 +146,7 @@ export class SyntheticFinancialCommandAuthority {
            )
          )
        LIMIT 1`,
-      [actorId, workOrderId],
+      [actorId, workOrderId]
     );
     if (result.rows[0]?.authorized !== true) {
       throw new SyntheticFinancialAuthorityError('WORK_ORDER_PARTICIPANT_OR_SYNTHETIC_BOUNDARY');
@@ -126,7 +161,7 @@ export class SyntheticFinancialCommandAuthority {
   async assertWebhookOperationBoundary(
     taskDraftId: string,
     taskId: string,
-    operationId: string,
+    operationId: string
   ): Promise<void> {
     const result = await this.database.query<{ authorized: boolean }>(
       `SELECT TRUE AS authorized
@@ -191,7 +226,7 @@ export class SyntheticFinancialCommandAuthority {
            )
          )
        LIMIT 1`,
-      [taskDraftId, taskId, operationId],
+      [taskDraftId, taskId, operationId]
     );
     if (result.rows[0]?.authorized !== true) {
       throw new SyntheticFinancialAuthorityError('WEBHOOK_OPERATION_OR_SYNTHETIC_BOUNDARY');

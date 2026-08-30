@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import type { Database, QueryFn } from '../../src/db.js';
 import {
   FakeFinancialProvider,
   InMemoryFakeFinancialOperationRepository,
@@ -9,6 +10,9 @@ import {
   InMemoryFinancialProviderCommandJournal,
   type FinancialProviderCommandJournal,
   type FinancialProviderCommandReceipt,
+  type ForegroundFinancialProviderCommandContext,
+  type ForegroundFinancialProviderCommandCoordinator,
+  type ForegroundFinancialProviderCommandResult,
   type RecordFinancialProviderCommandInput,
 } from '../../src/services/payment/FinancialProviderCommandJournal.js';
 import {
@@ -19,9 +23,13 @@ import {
 } from '../../src/services/payment/PreparedFinancialCommandAuthority.js';
 import {
   authorizeUniversalV1FakeFinancialTransaction,
+  canonicalUniversalV1ReconciliationSnapshotSha256,
   InMemoryUniversalV1FinancialLifecycleRepository,
+  PostgresUniversalV1FinancialLifecycleRepository,
+  UniversalV1FinancialApplicationService,
   UniversalV1FakeFinancialApplicationService,
   type ExecuteUniversalV1FinancialEventCommand,
+  type UniversalV1ReconciliationSnapshot,
 } from '../../src/services/payment/UniversalV1FinancialApplicationService.js';
 
 const ids = {
@@ -33,6 +41,14 @@ const ids = {
   predecessor: '00000000-0000-4000-8000-000000000106',
   prepare: '00000000-0000-4000-8000-000000000111',
   authorize: '00000000-0000-4000-8000-000000000112',
+  reconciliation: '00000000-0000-4000-8000-000000000113',
+  workOrder: '00000000-0000-4000-8000-000000000114',
+  captureEvent: '00000000-0000-4000-8000-000000000115',
+  terminalIntent: '00000000-0000-4000-8000-000000000116',
+  command: '00000000-0000-4000-8000-000000000121',
+  attempt: '00000000-0000-4000-8000-000000000122',
+  outcome: '00000000-0000-4000-8000-000000000123',
+  fakeEvent: '00000000-0000-4000-8000-000000000124',
 };
 
 function preparation(
@@ -64,11 +80,14 @@ function authorization(
 
 class ObservingJournal implements FinancialProviderCommandJournal {
   readonly inputs: Array<RecordFinancialProviderCommandInput<unknown>> = [];
+  readonly receipts: FinancialProviderCommandReceipt[] = [];
   private readonly inner = new InMemoryFinancialProviderCommandJournal();
 
   async recordRequested<TRequest>(input: RecordFinancialProviderCommandInput<TRequest>): Promise<FinancialProviderCommandReceipt> {
     this.inputs.push(input as RecordFinancialProviderCommandInput<unknown>);
-    return this.inner.recordRequested(input);
+    const receipt = await this.inner.recordRequested(input);
+    this.receipts.push(receipt);
+    return receipt;
   }
 }
 
@@ -82,6 +101,73 @@ class ObservingPreparedAuthority implements UniversalV1PreparedFinancialCommandA
     this.inputs.push(input);
     return this.inner.prepare(input);
   }
+}
+
+class ImmediateDurableCoordinator implements ForegroundFinancialProviderCommandCoordinator {
+  readonly contexts: Array<ForegroundFinancialProviderCommandContext<unknown>> = [];
+
+  async dispatchOrReplay<TRequest, TResult>(
+    context: ForegroundFinancialProviderCommandContext<TRequest>,
+    invokeAdapter: (exactCanonicalRequest: TRequest) => Promise<TResult>
+  ): Promise<ForegroundFinancialProviderCommandResult<TResult>> {
+    this.contexts.push(context as ForegroundFinancialProviderCommandContext<unknown>);
+    return {
+      result: await invokeAdapter(context.exactRequest),
+      evidence: {
+        commandId: ids.command,
+        dispatchAttemptId: ids.attempt,
+        outcomeFactId: ids.outcome,
+        fakeOperationEventId: ids.fakeEvent,
+      },
+    };
+  }
+}
+
+function reconciliationSnapshot(
+  overrides: Partial<UniversalV1ReconciliationSnapshot> = {}
+): UniversalV1ReconciliationSnapshot {
+  return {
+    workOrderId: ids.workOrder,
+    reconciliationVersion: 1,
+    captureEventId: ids.captureEvent,
+    voidState: 'NOT_APPLICABLE',
+    captureState: 'CAPTURED',
+    refundState: 'NOT_APPLICABLE',
+    reversalState: 'NOT_APPLICABLE',
+    settlementState: 'NOT_APPLICABLE',
+    fundingState: 'NOT_APPLICABLE',
+    providerReleaseState: 'NOT_APPLICABLE',
+    payoutState: 'NOT_APPLICABLE',
+    bankSettlementState: 'NOT_APPLICABLE',
+    ledgerState: 'MATCHED',
+    reconciliationState: 'MATCHED',
+    mismatchCodes: [],
+    customerLedgerAmountCents: 12_000,
+    providerLedgerAmountCents: 10_000,
+    currency: 'USD',
+    expectedVersion: 0,
+    recordedBy: ids.actor,
+    ...overrides,
+  };
+}
+
+function coordinatedFixture() {
+  const journal = new ObservingJournal();
+  const providerRepository = new InMemoryFakeFinancialOperationRepository();
+  const provider = new FakeFinancialProvider(providerRepository);
+  const lifecycle = new InMemoryUniversalV1FinancialLifecycleRepository();
+  const coordinator = new ImmediateDurableCoordinator();
+  const service = new UniversalV1FinancialApplicationService(
+    provider,
+    lifecycle,
+    { assertAuthorized: vi.fn() },
+    'FAKE',
+    journal,
+    new ObservingPreparedAuthority(),
+    undefined,
+    coordinator
+  );
+  return { coordinator, journal, lifecycle, provider, providerRepository, service };
 }
 
 function fixture(
@@ -230,5 +316,224 @@ describe('UniversalV1FakeFinancialApplicationService foreground dispatch hold', 
       'UNIVERSAL_FINANCE_CALLER_OWNED_TRANSACTION_PREPARED_AUTHORITY_REFUSED'
     );
     expect(denied.providerRepository.events()).toHaveLength(0);
+  });
+});
+
+describe('Universal V1 durable non-lifecycle command evidence', () => {
+  it('binds the exact reconciliation snapshot through provider request, fake metadata, and repository evidence', async () => {
+    const { journal, lifecycle, providerRepository, service } = coordinatedFixture();
+    const recordReconciliation = vi.spyOn(lifecycle, 'recordReconciliation');
+    const snapshot = reconciliationSnapshot();
+    const reconciliationSnapshotSha256 =
+      canonicalUniversalV1ReconciliationSnapshotSha256(snapshot);
+    expect(
+      canonicalUniversalV1ReconciliationSnapshotSha256(
+        reconciliationSnapshot({ customerLedgerAmountCents: 12_001 })
+      )
+    ).not.toBe(reconciliationSnapshotSha256);
+
+    const result = await service.reconcile({
+      providerKind: 'FAKE',
+      operationId: ids.reconciliation,
+      idempotencyKey: 'app:reconcile:snapshot-binding:0001',
+      providerExpectedVersion: 0,
+      relatedOperationId: ids.authorize,
+      terminalIntentId: ids.terminalIntent,
+      snapshot,
+    });
+
+    expect(result).toMatchObject({ providerState: 'MATCHED', reconciliationVersion: 1 });
+    expect(journal.inputs[0]?.exactRequest).toEqual({
+      operationId: ids.reconciliation,
+      idempotencyKey: 'app:reconcile:snapshot-binding:0001',
+      expectedVersion: 0,
+      relatedOperationId: ids.authorize,
+      reconciliationSnapshotSha256,
+    });
+    expect(journal.inputs[0]).toMatchObject({
+      operationKind: 'RECONCILE',
+      exactRequest: { reconciliationSnapshotSha256 },
+    });
+    expect(providerRepository.events()[0]?.metadata).toEqual({
+      reconciliationSnapshotSha256,
+    });
+    expect(recordReconciliation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerKind: 'FAKE',
+        reconciliationSnapshotSha256,
+        terminalIntentId: ids.terminalIntent,
+        durableFakeEvidence: {
+          commandId: ids.command,
+          dispatchAttemptId: ids.attempt,
+          outcomeFactId: ids.outcome,
+          fakeOperationEventId: ids.fakeEvent,
+        },
+      })
+    );
+    expect(journal.receipts[0]?.requestSha256).toBe(
+      canonicalFinancialProviderRequestSha256({
+        operationId: ids.reconciliation,
+        idempotencyKey: 'app:reconcile:snapshot-binding:0001',
+        expectedVersion: 0,
+        relatedOperationId: ids.authorize,
+        reconciliationSnapshotSha256,
+      })
+    );
+  });
+
+  it('returns fake provider-account results with the durable dispatch chain and all provider fields', async () => {
+    const { service } = coordinatedFixture();
+    const onboarding = await service.onboardProvider({
+      providerKind: 'FAKE',
+      operationId: ids.reconciliation,
+      idempotencyKey: 'app:provider-account:onboard:0001',
+      providerExpectedVersion: 0,
+      providerId: 'provider-1',
+      recordedBy: ids.actor,
+    });
+
+    expect(onboarding).toMatchObject({
+      operationKind: 'ONBOARD_PROVIDER',
+      providerKind: 'FAKE',
+      state: 'SUCCEEDED',
+      externalReference: expect.stringMatching(/^fake_onboard_provider_/u),
+      durableFakeEvidence: {
+        commandId: ids.command,
+        dispatchAttemptId: ids.attempt,
+        outcomeFactId: ids.outcome,
+        fakeOperationEventId: ids.fakeEvent,
+      },
+    });
+
+    const refresh = await service.refreshProviderAccountState({
+      providerKind: 'FAKE',
+      operationId: ids.authorize,
+      idempotencyKey: 'app:provider-account:refresh:0001',
+      providerExpectedVersion: 0,
+      providerId: 'provider-1',
+      providerAccountReference: onboarding.externalReference,
+      recordedBy: ids.actor,
+    });
+    expect(refresh).toMatchObject({
+      operationKind: 'REFRESH_PROVIDER_ACCOUNT_STATE',
+      providerKind: 'FAKE',
+      providerId: 'provider-1',
+      accountState: 'ENABLED',
+      chargesEnabled: true,
+      payoutsEnabled: true,
+      requirementsDue: [],
+      durableFakeEvidence: {
+        commandId: ids.command,
+        dispatchAttemptId: ids.attempt,
+        outcomeFactId: ids.outcome,
+        fakeOperationEventId: ids.fakeEvent,
+      },
+    });
+  });
+
+  it('inserts the terminal reconciliation bridge in the canonical fact transaction', async () => {
+    const snapshot = reconciliationSnapshot({ reconciliationState: 'CLOSED' });
+    const durableFakeEvidence = {
+      commandId: ids.command,
+      dispatchAttemptId: ids.attempt,
+      outcomeFactId: ids.outcome,
+      fakeOperationEventId: ids.fakeEvent,
+    } as const;
+    const reconciliationFactId = '00000000-0000-4000-8000-000000000131';
+    const queries: Array<{ sql: string; params: unknown[] | undefined }> = [];
+    const query = (async (sql: string, params?: unknown[]) => {
+      queries.push({ sql, params });
+      if (sql.includes('INSERT INTO task_reconciliation_facts')) {
+        return {
+          rows: [{
+            id: reconciliationFactId,
+            work_order_id: ids.workOrder,
+            reconciliation_version: 1,
+            reconciliation_state: 'CLOSED',
+            mismatch_codes: [],
+          }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes('INSERT INTO public.universal_v1_fake_reconciliation_bridges')) {
+        return {
+          rows: [{
+            reconciliation_bridge_id: '00000000-0000-4000-8000-000000000132',
+            terminal_intent_id: ids.terminalIntent,
+            reconciliation_fact_id: reconciliationFactId,
+            command_id: ids.command,
+            dispatch_attempt_id: ids.attempt,
+            outcome_fact_id: ids.outcome,
+            fake_operation_event_id: ids.fakeEvent,
+            authority_chain_sha256: 'd'.repeat(64),
+          }],
+          rowCount: 1,
+        };
+      }
+      return { rows: [], rowCount: 0 };
+    }) as QueryFn;
+    const database = {
+      serializableTransaction: vi.fn(async <T>(callback: (transactionQuery: QueryFn) => Promise<T>) =>
+        callback(query)),
+    } as unknown as Database;
+    const repository = new PostgresUniversalV1FinancialLifecycleRepository(database);
+
+    await expect(repository.recordReconciliation({
+      operationId: ids.reconciliation,
+      idempotencyKey: 'app:reconcile:postgres-bridge:0001',
+      providerKind: 'FAKE',
+      providerState: 'MATCHED',
+      providerOperationVersion: 1,
+      providerIdempotencyReplayed: false,
+      externalReference: 'fake_reconcile_exact',
+      reconciliationSnapshotSha256:
+        canonicalUniversalV1ReconciliationSnapshotSha256(snapshot),
+      terminalIntentId: ids.terminalIntent,
+      durableFakeEvidence,
+      snapshot,
+    })).resolves.toMatchObject({ id: reconciliationFactId, reconciliationState: 'CLOSED' });
+
+    expect(database.serializableTransaction).toHaveBeenCalledTimes(1);
+    const bridgeInsert = queries.find(({ sql }) =>
+      sql.includes('INSERT INTO public.universal_v1_fake_reconciliation_bridges')
+    );
+    expect(bridgeInsert?.params).toEqual([
+      ids.terminalIntent,
+      reconciliationFactId,
+      ids.command,
+      ids.attempt,
+      ids.outcome,
+      ids.fakeEvent,
+    ]);
+  });
+
+  it('fails closed before fake reconciliation or account adapter I/O without a durable coordinator', async () => {
+    const { provider, providerRepository, service } = fixture();
+    const reconcileAdapter = vi.spyOn(provider, 'reconcile');
+    const onboardAdapter = vi.spyOn(provider, 'onboardProvider');
+
+    await expect(
+      service.reconcile({
+        providerKind: 'FAKE',
+        operationId: ids.reconciliation,
+        idempotencyKey: 'app:reconcile:missing-coordinator:0001',
+        providerExpectedVersion: 0,
+        relatedOperationId: ids.authorize,
+        snapshot: reconciliationSnapshot(),
+      })
+    ).rejects.toThrow('UNIVERSAL_FINANCE_RECONCILIATION_DURABLE_COORDINATOR_REQUIRED');
+    await expect(
+      service.onboardProvider({
+        providerKind: 'FAKE',
+        operationId: ids.reconciliation,
+        idempotencyKey: 'app:provider-account:missing-coordinator:0001',
+        providerExpectedVersion: 0,
+        providerId: 'provider-1',
+        recordedBy: ids.actor,
+      })
+    ).rejects.toThrow('UNIVERSAL_FINANCE_ACCOUNT_COMMAND_DURABLE_COORDINATOR_REQUIRED');
+    expect(reconcileAdapter).not.toHaveBeenCalled();
+    expect(onboardAdapter).not.toHaveBeenCalled();
+    expect(providerRepository.events()).toHaveLength(0);
   });
 });

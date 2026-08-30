@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 
 import { Hono } from 'hono';
 import pg from 'pg';
@@ -40,7 +40,32 @@ import {
   claimUniversalV1TaskDraft,
   type UniversalV1TaskDraftClaimDependencies,
 } from '../../src/services/UniversalV1TaskDraftClaim.js';
-import { createUniversalV1FakeFinancialApplicationService } from '../../src/services/payment/UniversalV1FinancialApplicationService.js';
+import {
+  createUniversalV1FakeFinancialApplicationService,
+  PostgresUniversalV1FinancialLifecycleRepository,
+  UniversalV1FinancialApplicationService,
+} from '../../src/services/payment/UniversalV1FinancialApplicationService.js';
+import {
+  FakeFinancialProvider,
+  PostgresFakeFinancialOperationRepository,
+} from '../../src/services/payment/FakeFinancialProvider.js';
+import {
+  PostgresFinancialProviderCommandJournal,
+  type ForegroundFinancialProviderCommandContext,
+  type ForegroundFinancialProviderCommandCoordinator,
+  type ForegroundFinancialProviderCommandResult,
+} from '../../src/services/payment/FinancialProviderCommandJournal.js';
+import {
+  DurableFakeFinancialProviderCommandCoordinator,
+  PostgresFinancialProviderCommandRecoveryRepository,
+} from '../../src/services/payment/FinancialProviderCommandRecovery.js';
+import {
+  PostgresUniversalV1PreparedFinancialCommandAuthority,
+  type PrepareUniversalV1FinancialCommandInput,
+  type PreparedUniversalV1FinancialCommandReceipt,
+  type UniversalV1PreparedFinancialCommandAuthority,
+} from '../../src/services/payment/PreparedFinancialCommandAuthority.js';
+import { PostgresUniversalV1FakeProviderAccountRepository } from '../../src/services/payment/UniversalV1FakeProviderAccountRepository.js';
 import { createCompletionDeliveryWebhook } from '../../src/serverCompletionDeliveryWebhook.js';
 
 const enabled = process.env.HX_ALLOW_TASK_DRAFT_INGRESS_PG === '1';
@@ -382,9 +407,11 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
   }
 
   async function verifiedTradeProviderFixture(): Promise<ProviderAuthorityFixture> {
+    const ownerUserId = await userFixture('worker');
     const providerUserId = await userFixture('worker');
     const organizationId = randomUUID();
-    const membershipId = randomUUID();
+    const ownerMembershipId = randomUUID();
+    const crewMembershipId = randomUUID();
     const credentialId = randomUUID();
     await pool.query(
       `INSERT INTO business_organizations(
@@ -395,13 +422,15 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
          $1, 'XQ Plumbing LLC', 'XQ Plumbing', TRUE, FALSE,
          'VERIFIED', 'ACTIVE', $2, $3, 'VERIFIED_TRADE_BUSINESS'
        )`,
-      [organizationId, providerUserId, `trade-org:${organizationId}`]
+      [organizationId, ownerUserId, `trade-org:${organizationId}`]
     );
     await pool.query(
       `INSERT INTO business_memberships(
          id, organization_id, user_id, role, status, invited_by, accepted_at
-       ) VALUES ($1, $2, $3, 'OWNER', 'ACTIVE', $3, clock_timestamp())`,
-      [membershipId, organizationId, providerUserId]
+       ) VALUES
+         ($1, $3, $4, 'OWNER', 'ACTIVE', $4, clock_timestamp()),
+         ($2, $3, $5, 'CREW', 'ACTIVE', $4, clock_timestamp())`,
+      [ownerMembershipId, crewMembershipId, organizationId, ownerUserId, providerUserId]
     );
     await pool.query(
       `INSERT INTO business_credentials(
@@ -420,9 +449,9 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
       [
         credentialId,
         organizationId,
-        membershipId,
+        ownerMembershipId,
         randomBytes(32).toString('hex'),
-        providerUserId,
+        ownerUserId,
         regionCode,
         JSON.stringify({ source: 'synthetic-official-register', licenseStatus: 'ACTIVE' }),
       ]
@@ -439,7 +468,7 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
       [providerUserId, organizationId, credentialId]
     );
     return {
-      actor_user_id: providerUserId,
+      actor_user_id: ownerUserId,
       provider_user_id: providerUserId,
       provider_organization_id: organizationId,
       provider_class: 'VERIFIED_TRADE_BUSINESS',
@@ -824,16 +853,89 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
   function fulfillmentService(
     databaseOverride: Database = database
   ): UniversalV1FulfillmentApplication {
-    const authority = localFakeFinanceAuthority();
     return new UniversalV1FulfillmentApplication(
       new PostgresUniversalV1FulfillmentRepository(databaseOverride),
-      () =>
-        createUniversalV1FakeFinancialApplicationService(
-          databaseOverride,
-          authority.env,
-          authority.release,
-          authority.identity
-        )
+      () => fakeFinanceService(databaseOverride)
+    );
+  }
+
+  function fakeFinanceService(databaseOverride: Database = database) {
+    const authority = localFakeFinanceAuthority();
+    return createUniversalV1FakeFinancialApplicationService(
+      databaseOverride,
+      authority.env,
+      authority.release,
+      authority.identity
+    );
+  }
+
+  function boundaryFakeFinanceService(options: {
+    readonly crashAfterPreparedOperation?: 'CAPTURE';
+    readonly crashAfterRequestedOperation?: 'SETTLE';
+    readonly leaseDurationSeconds?: number;
+  }) {
+    const fakeEvents = new PostgresFakeFinancialOperationRepository(database);
+    const prepared = new PostgresUniversalV1PreparedFinancialCommandAuthority(database);
+    let preparedCrashInjected = false;
+    const preparedAuthority: UniversalV1PreparedFinancialCommandAuthority =
+      options.crashAfterPreparedOperation === undefined
+        ? prepared
+        : {
+            async prepare(
+              input: PrepareUniversalV1FinancialCommandInput
+            ): Promise<PreparedUniversalV1FinancialCommandReceipt> {
+              const receipt = await prepared.prepare(input);
+              if (
+                !preparedCrashInjected &&
+                input.operationKind === options.crashAfterPreparedOperation
+              ) {
+                preparedCrashInjected = true;
+                throw new Error(`SYSTEM_TEST_CRASH_AFTER_PREPARED_${input.operationKind}`);
+              }
+              return receipt;
+            },
+          };
+    const durableCoordinator = new DurableFakeFinancialProviderCommandCoordinator(
+      new PostgresFinancialProviderCommandRecoveryRepository(database),
+      fakeEvents,
+      {
+        leaseOwnerId: randomUUID(),
+        ...(options.leaseDurationSeconds === undefined
+          ? {}
+          : {
+              leaseDurationSeconds: options.leaseDurationSeconds,
+              outcomeTimeoutSeconds: options.leaseDurationSeconds - 1,
+            }),
+      }
+    );
+    let requestedCrashInjected = false;
+    const foregroundCoordinator: ForegroundFinancialProviderCommandCoordinator =
+      options.crashAfterRequestedOperation === undefined
+        ? durableCoordinator
+        : {
+            async dispatchOrReplay<TRequest, TResult>(
+              context: ForegroundFinancialProviderCommandContext<TRequest>,
+              invokeAdapter: (exactCanonicalRequest: TRequest) => Promise<TResult>
+            ): Promise<ForegroundFinancialProviderCommandResult<TResult>> {
+              if (
+                !requestedCrashInjected &&
+                context.operationKind === options.crashAfterRequestedOperation
+              ) {
+                requestedCrashInjected = true;
+                throw new Error(`SYSTEM_TEST_CRASH_AFTER_REQUESTED_${context.operationKind}`);
+              }
+              return durableCoordinator.dispatchOrReplay(context, invokeAdapter);
+            },
+          };
+    return new UniversalV1FinancialApplicationService(
+      new FakeFinancialProvider(fakeEvents),
+      new PostgresUniversalV1FinancialLifecycleRepository(database),
+      { assertAuthorized: () => undefined },
+      'FAKE',
+      new PostgresFinancialProviderCommandJournal(database),
+      preparedAuthority,
+      undefined,
+      foregroundCoordinator
     );
   }
 
@@ -1276,7 +1378,7 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
     'allows an organization %s to submit commercial estimate pricing',
     async (role) => {
       const fixture = await estimateLaneFixture('plumbing');
-      let actorUserId = fixture.provider.provider_user_id;
+      let actorUserId = fixture.provider.actor_user_id;
       if (role === 'ADMIN') {
         actorUserId = await userFixture('worker');
         await pool.query(
@@ -2135,11 +2237,7 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
       quote_payments: 0,
       interest_status: 'pending',
       hold_status: 'ACTIVE',
-      security_event_kinds: [
-        'PAYMENT_METHOD_PREPARED',
-        'AUTHORIZED',
-        'SECURED',
-      ],
+      security_event_kinds: ['PAYMENT_METHOD_PREPARED', 'AUTHORIZED', 'SECURED'],
       security_event_providers: ['FAKE'],
     });
   });
@@ -2484,174 +2582,547 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
     });
   });
 
-  it('continues an unassigned Work Order through evidence, completion, fake capture, settlement, and reconciliation', async () => {
-    const lane = await heldWorkOrderLane('yard');
-    const materializationKey = `workorder-fulfillment:${randomUUID()}`;
-    const materialized = await lane.application.secureAndMaterializeFakeWorkOrder(
-      lane.fixture.posterUserId,
-      {
-        conditional_hold_id: lane.hold.conditional_hold_id,
-        expected_eligibility_version: lane.interest.eligibility_version,
-        idempotency_key: materializationKey,
-        client_ts: new Date().toISOString(),
-      }
+  it('serializes one organization account across owner/admin actors and rejects forged or out-of-order authority', async () => {
+    const provider = await verifiedTradeProviderFixture();
+    const organizationId = provider.provider_organization_id!;
+    const ownerUserId = provider.actor_user_id;
+    const adminUserId = await userFixture('worker');
+    await pool.query(
+      `INSERT INTO business_memberships(
+         organization_id, user_id, role, status, invited_by, accepted_at
+       ) VALUES ($1, $2, 'ADMIN', 'ACTIVE', $3, clock_timestamp())`,
+      [organizationId, adminUserId, ownerUserId]
     );
-    const execution = executionService();
-    const genesis = await execution.getWorkOrderExecutionState(
-      lane.fixture.provider.actor_user_id,
-      { work_order_id: materialized.work_order_id }
-    );
-    expect(genesis).toMatchObject({
-      execution_version: 1,
-      state: 'MATERIALIZED',
-      transition_kind: 'MATERIALIZED',
-      scope_version: lane.scopeVersion,
-      hard_assignment_created: false,
-      payment_creation_performed: false,
-    });
 
-    const acknowledged = await execution.advanceWorkOrderExecution(
-      lane.fixture.provider.actor_user_id,
-      {
-        work_order_id: materialized.work_order_id,
-        action: 'ACKNOWLEDGE',
-        expected_execution_version: genesis.execution_version,
-        expected_scope_version: lane.scopeVersion,
-        idempotency_key: `execution-acknowledge:${randomUUID()}`,
-        client_ts: new Date().toISOString(),
-      }
-    );
-    expect(acknowledged).toMatchObject({
-      execution_version: 2,
-      state: 'ACKNOWLEDGED',
-      transition_kind: 'ACKNOWLEDGE',
-      replayed: false,
-      hard_assignment_created: false,
-      payment_creation_performed: false,
-    });
-
-    await expect(
-      execution.advanceWorkOrderExecution(lane.fixture.provider.actor_user_id, {
-        work_order_id: materialized.work_order_id,
-        action: 'START_WORK',
-        expected_execution_version: genesis.execution_version,
-        expected_scope_version: lane.scopeVersion,
-        idempotency_key: `execution-stale-start:${randomUUID()}`,
-        client_ts: new Date().toISOString(),
-      })
-    ).rejects.toMatchObject({ code: 'EXECUTION_VERSION_CONFLICT' });
-    await expect(
-      execution.getWorkOrderExecutionState(lane.fixture.provider.actor_user_id, {
-        work_order_id: materialized.work_order_id,
-      })
-    ).resolves.toMatchObject({
-      execution_version: acknowledged.execution_version,
-      state: 'ACKNOWLEDGED',
-      transition_kind: 'ACKNOWLEDGE',
-    });
-
-    const started = await execution.advanceWorkOrderExecution(lane.fixture.provider.actor_user_id, {
-      work_order_id: materialized.work_order_id,
-      action: 'START_WORK',
-      expected_execution_version: acknowledged.execution_version,
-      expected_scope_version: lane.scopeVersion,
-      idempotency_key: `execution-start:${randomUUID()}`,
-      client_ts: new Date().toISOString(),
-    });
-    expect(started).toMatchObject({
-      execution_version: 3,
-      state: 'IN_PROGRESS',
-      transition_kind: 'START_WORK',
-      replayed: false,
-      hard_assignment_created: false,
-      payment_creation_performed: false,
-    });
-
-    const fulfillment = fulfillmentService();
-    const progress = await fulfillment.recordExecutionEvidence(
-      lane.fixture.provider.actor_user_id,
-      {
-        work_order_id: materialized.work_order_id,
-        expected_scope_version: lane.scopeVersion,
-        expected_execution_version: started.execution_version,
-        evidence_kind: 'PROGRESS',
-        description: 'Provider recorded deterministic controlled-test execution progress.',
-        photo_evidence: [],
-        idempotency_key: `fulfillment-progress:${randomUUID()}`,
-        client_ts: new Date().toISOString(),
-      }
-    );
-    expect(progress).toMatchObject({
-      evidence_kind: 'PROGRESS',
-      completion_fact_id: null,
-      hard_assignment_created: false,
-    });
-
-    const submitted = await fulfillment.submitCompletionEvidence(
-      lane.fixture.provider.actor_user_id,
-      {
-        work_order_id: materialized.work_order_id,
-        expected_scope_version: lane.scopeVersion,
-        expected_execution_version: started.execution_version,
-        description: 'Provider completed every item in the accepted controlled-test scope.',
-        photo_evidence: [],
-        decision_reason: 'Provider submitted the exact scope for customer review.',
-        idempotency_key: `fulfillment-completion:${randomUUID()}`,
-        client_ts: new Date().toISOString(),
-      }
-    );
-    expect(submitted).toMatchObject({
-      evidence_kind: 'COMPLETION',
-      completion_version: 1,
-      incident_gate: 'CLEAR',
-      hard_assignment_created: false,
-    });
-    const submittedExecution = await execution.getWorkOrderExecutionState(
-      lane.fixture.provider.actor_user_id,
-      { work_order_id: materialized.work_order_id }
-    );
-    expect(submittedExecution).toMatchObject({
-      execution_version: 4,
-      state: 'COMPLETION_SUBMITTED',
-      transition_kind: 'COMPLETION_SUBMITTED',
-    });
-
-    const sinkActorId = await userFixture('poster');
-    const sinkSecret = 'system-test-completion-delivery-secret-at-least-32-bytes';
-    const providerDeliveryId = `synthetic-sink-delivery:${randomUUID()}`;
-    const deliveryCommand = {
-      schema_version: 1 as const,
-      event_type: 'COMPLETION_NOTICE_DELIVERED' as const,
-      task_id: lane.accepted.task_id,
-      work_order_id: materialized.work_order_id,
-      submitted_completion_fact_id: submitted.completion_fact_id!,
-      expected_completion_version: submitted.completion_version!,
-      expected_execution_version: submittedExecution.execution_version,
-      provider_delivery_id: providerDeliveryId,
-      channel: 'EMAIL' as const,
-      delivered_at: new Date().toISOString(),
-      idempotency_key: `completion-delivery:${randomUUID()}`,
-      client_ts: new Date().toISOString(),
+    const repository = new PostgresUniversalV1FakeProviderAccountRepository(database);
+    const providerSubject = { kind: 'ORGANIZATION' as const, organizationId };
+    const evidence = async (
+      actorId: string,
+      suffix: string,
+      refreshScenario: 'SUCCESS' | 'PROVIDER_ACCOUNT_FAILURE' = 'SUCCESS'
+    ) => {
+      const key = `provider-account-authority:${suffix}:${randomUUID()}`;
+      const finance = fakeFinanceService();
+      const onboard = await finance.onboardProvider({
+        providerKind: 'FAKE',
+        operationId: deterministicUuid(key, 'onboard'),
+        idempotencyKey: `${key}:onboard`,
+        providerExpectedVersion: 0,
+        providerId: organizationId,
+        scenario: 'SUCCESS',
+        recordedBy: actorId,
+      });
+      const refresh = await finance.refreshProviderAccountState({
+        providerKind: 'FAKE',
+        operationId: deterministicUuid(key, 'refresh'),
+        idempotencyKey: `${key}:refresh`,
+        providerExpectedVersion: 0,
+        providerId: organizationId,
+        providerAccountReference: onboard.externalReference,
+        scenario: refreshScenario,
+        recordedBy: actorId,
+      });
+      return {
+        onboard: onboard.durableFakeEvidence,
+        refresh: refresh.durableFakeEvidence,
+        providerAccountReference: onboard.externalReference,
+      };
     };
-    const deliveryBody = JSON.stringify(deliveryCommand);
-    const deliverySignature = createHmac('sha256', sinkSecret)
-      .update(deliveryBody, 'utf8')
-      .digest('hex');
-    const deliveryApp = new Hono();
-    deliveryApp.post(
-      '/webhooks/completion-delivery',
-      createCompletionDeliveryWebhook({
-        env: {
-          HX_COMPLETION_DELIVERY_WEBHOOK_SECRET: sinkSecret,
-          HX_COMPLETION_DELIVERY_SINK_ACTOR_ID: sinkActorId,
-        },
-        application: new UniversalV1CompletionDeliveryApplication(
-          new PostgresUniversalV1CompletionDeliveryRepository(database)
-        ),
-      })
+
+    const ownerEvidence = await evidence(ownerUserId, 'owner');
+    const adminEvidence = await evidence(adminUserId, 'admin');
+    const competingInputs = [
+      {
+        providerSubject,
+        recordedBy: ownerUserId,
+        onboard: ownerEvidence.onboard,
+        refresh: ownerEvidence.refresh,
+      },
+      {
+        providerSubject,
+        recordedBy: adminUserId,
+        onboard: adminEvidence.onboard,
+        refresh: adminEvidence.refresh,
+      },
+    ] as const;
+    const competingOutcomes = await Promise.allSettled(
+      competingInputs.map((input) => repository.materializeFromDurableEvidence(input))
     );
-    const sendDeliveryReceipt = () =>
-      deliveryApp.request('/webhooks/completion-delivery', {
+    const winnerIndex = competingOutcomes.findIndex((outcome) => outcome.status === 'fulfilled');
+    const refusedIndex = competingOutcomes.findIndex((outcome) => outcome.status === 'rejected');
+    expect(winnerIndex).toBeGreaterThanOrEqual(0);
+    expect(refusedIndex).toBeGreaterThanOrEqual(0);
+    expect(competingOutcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
+    expect(competingOutcomes.filter((outcome) => outcome.status === 'rejected')).toHaveLength(1);
+    expect((competingOutcomes[refusedIndex] as PromiseRejectedResult).reason).toMatchObject({
+      code: '40001',
+    });
+    const firstFact = (
+      competingOutcomes[winnerIndex] as PromiseFulfilledResult<
+        Awaited<ReturnType<typeof repository.materializeFromDurableEvidence>>
+      >
+    ).value;
+    const retriedFact = await repository.materializeFromDurableEvidence(
+      competingInputs[refusedIndex]!
+    );
+    const orderedFacts = [firstFact, retriedFact].sort(
+      (left, right) => left.accountVersion - right.accountVersion
+    );
+    expect(orderedFacts.map((fact) => fact.accountVersion)).toEqual([1, 2]);
+    expect(orderedFacts[1]).toMatchObject({
+      supersedesFactId: orderedFacts[0]!.providerAccountFactId,
+      providerSubject,
+      accountState: 'ENABLED',
+      payoutsEnabled: true,
+    });
+    expect(new Set(orderedFacts.map((fact) => fact.recordedBy))).toEqual(
+      new Set([ownerUserId, adminUserId])
+    );
+    await expect(repository.findLatestPayoutReady({ providerSubject })).resolves.toMatchObject({
+      providerAccountFactId: orderedFacts[1]!.providerAccountFactId,
+      accountVersion: 2,
+    });
+
+    const staleVersionEvidence = await evidence(adminUserId, 'stale-version');
+    await expect(
+      pool.query(
+        `INSERT INTO public.universal_v1_fake_provider_account_facts (
+           provider_subject_kind, provider_organization_id, account_version,
+           onboard_command_id, onboard_dispatch_attempt_id, onboard_outcome_fact_id,
+           onboard_fake_event_id, refresh_command_id, refresh_dispatch_attempt_id,
+           refresh_outcome_fact_id, refresh_fake_event_id, recorded_by
+         ) VALUES ('ORGANIZATION', $1, 1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [
+          organizationId,
+          staleVersionEvidence.onboard.commandId,
+          staleVersionEvidence.onboard.dispatchAttemptId,
+          staleVersionEvidence.onboard.outcomeFactId,
+          staleVersionEvidence.onboard.fakeOperationEventId,
+          staleVersionEvidence.refresh.commandId,
+          staleVersionEvidence.refresh.dispatchAttemptId,
+          staleVersionEvidence.refresh.outcomeFactId,
+          staleVersionEvidence.refresh.fakeOperationEventId,
+          adminUserId,
+        ]
+      )
+    ).rejects.toMatchObject({
+      code: 'P0001',
+      message: expect.stringContaining('HXUV1-FTL-18'),
+    });
+    const thirdFact = await repository.materializeFromDurableEvidence({
+      providerSubject,
+      recordedBy: adminUserId,
+      onboard: staleVersionEvidence.onboard,
+      refresh: staleVersionEvidence.refresh,
+    });
+    expect(thirdFact).toMatchObject({
+      accountVersion: 3,
+      supersedesFactId: orderedFacts[1]!.providerAccountFactId,
+      accountState: 'ENABLED',
+    });
+
+    const reusedOnboardRefreshKey = `provider-account-authority:reused-onboard:${randomUUID()}`;
+    const reusedOnboardRefresh = await fakeFinanceService().refreshProviderAccountState({
+      providerKind: 'FAKE',
+      operationId: deterministicUuid(reusedOnboardRefreshKey, 'refresh'),
+      idempotencyKey: `${reusedOnboardRefreshKey}:refresh`,
+      providerExpectedVersion: 0,
+      providerId: organizationId,
+      providerAccountReference: staleVersionEvidence.providerAccountReference,
+      scenario: 'PROVIDER_ACCOUNT_FAILURE',
+      recordedBy: adminUserId,
+    });
+    const forgedStateEvidence = {
+      onboard: staleVersionEvidence.onboard,
+      refresh: reusedOnboardRefresh.durableFakeEvidence,
+    };
+    await expect(
+      pool.query(
+        `INSERT INTO public.universal_v1_fake_provider_account_facts (
+           provider_subject_kind, provider_organization_id,
+           onboard_command_id, onboard_dispatch_attempt_id, onboard_outcome_fact_id,
+           onboard_fake_event_id, refresh_command_id, refresh_dispatch_attempt_id,
+           refresh_outcome_fact_id, refresh_fake_event_id,
+           account_state, charges_enabled, payouts_enabled, recorded_by
+         ) VALUES (
+           'ORGANIZATION', $1, $2, $3, $4, $5, $6, $7, $8, $9,
+           'ENABLED', TRUE, TRUE, $10
+         )`,
+        [
+          organizationId,
+          forgedStateEvidence.onboard.commandId,
+          forgedStateEvidence.onboard.dispatchAttemptId,
+          forgedStateEvidence.onboard.outcomeFactId,
+          forgedStateEvidence.onboard.fakeOperationEventId,
+          forgedStateEvidence.refresh.commandId,
+          forgedStateEvidence.refresh.dispatchAttemptId,
+          forgedStateEvidence.refresh.outcomeFactId,
+          forgedStateEvidence.refresh.fakeOperationEventId,
+          adminUserId,
+        ]
+      )
+    ).rejects.toMatchObject({
+      code: 'P0001',
+      message: expect.stringContaining('HXUV1-FTL-18'),
+    });
+    const restrictedLatest = await repository.materializeFromDurableEvidence({
+      providerSubject,
+      recordedBy: adminUserId,
+      ...forgedStateEvidence,
+    });
+    expect(restrictedLatest).toMatchObject({
+      accountVersion: 4,
+      supersedesFactId: thirdFact.providerAccountFactId,
+      accountState: 'FAILED',
+      chargesEnabled: false,
+      payoutsEnabled: false,
+    });
+    await expect(repository.findLatestPayoutReady({ providerSubject })).resolves.toBeNull();
+
+    const causalKey = `provider-account-causal:${randomUUID()}`;
+    const causalOnboardOperationId = deterministicUuid(causalKey, 'onboard');
+    const expectedAccountReference = `fake_onboard_provider_${createHash('sha256')
+      .update(JSON.stringify(causalOnboardOperationId), 'utf8')
+      .digest('hex')
+      .slice(0, 24)}`;
+    const causalFinance = fakeFinanceService();
+    const refreshBeforeOnboard = await causalFinance.refreshProviderAccountState({
+      providerKind: 'FAKE',
+      operationId: deterministicUuid(causalKey, 'refresh'),
+      idempotencyKey: `${causalKey}:refresh`,
+      providerExpectedVersion: 0,
+      providerId: organizationId,
+      providerAccountReference: expectedAccountReference,
+      scenario: 'SUCCESS',
+      recordedBy: adminUserId,
+    });
+    const laterOnboard = await causalFinance.onboardProvider({
+      providerKind: 'FAKE',
+      operationId: causalOnboardOperationId,
+      idempotencyKey: `${causalKey}:onboard`,
+      providerExpectedVersion: 0,
+      providerId: organizationId,
+      scenario: 'SUCCESS',
+      recordedBy: adminUserId,
+    });
+    expect(laterOnboard.externalReference).toBe(expectedAccountReference);
+    await expect(
+      repository.materializeFromDurableEvidence({
+        providerSubject,
+        recordedBy: adminUserId,
+        onboard: laterOnboard.durableFakeEvidence,
+        refresh: refreshBeforeOnboard.durableFakeEvidence,
+      })
+    ).rejects.toMatchObject({ reason: 'EVIDENCE_INVALID' });
+
+    const observationKey = `provider-account-observation-order:${randomUUID()}`;
+    const observationOnboard = await fakeFinanceService().onboardProvider({
+      providerKind: 'FAKE',
+      operationId: deterministicUuid(observationKey, 'onboard'),
+      idempotencyKey: `${observationKey}:onboard`,
+      providerExpectedVersion: 0,
+      providerId: organizationId,
+      scenario: 'SUCCESS',
+      recordedBy: adminUserId,
+    });
+    const oldSuccess = await fakeFinanceService().refreshProviderAccountState({
+      providerKind: 'FAKE',
+      operationId: deterministicUuid(observationKey, 'old-success'),
+      idempotencyKey: `${observationKey}:old-success`,
+      providerExpectedVersion: 0,
+      providerId: organizationId,
+      providerAccountReference: observationOnboard.externalReference,
+      scenario: 'SUCCESS',
+      recordedBy: adminUserId,
+    });
+    const newFailure = await fakeFinanceService().refreshProviderAccountState({
+      providerKind: 'FAKE',
+      operationId: deterministicUuid(observationKey, 'new-failure'),
+      idempotencyKey: `${observationKey}:new-failure`,
+      providerExpectedVersion: 0,
+      providerId: organizationId,
+      providerAccountReference: observationOnboard.externalReference,
+      scenario: 'PROVIDER_ACCOUNT_FAILURE',
+      recordedBy: adminUserId,
+    });
+    const latestFailure = await repository.materializeFromDurableEvidence({
+      providerSubject,
+      recordedBy: adminUserId,
+      onboard: observationOnboard.durableFakeEvidence,
+      refresh: newFailure.durableFakeEvidence,
+    });
+    expect(latestFailure).toMatchObject({
+      accountVersion: 5,
+      accountState: 'FAILED',
+      payoutsEnabled: false,
+    });
+    await expect(
+      repository.materializeFromDurableEvidence({
+        providerSubject,
+        recordedBy: adminUserId,
+        onboard: observationOnboard.durableFakeEvidence,
+        refresh: oldSuccess.durableFakeEvidence,
+      })
+    ).rejects.toMatchObject({ reason: 'EVIDENCE_INVALID' });
+    const latestObservation = await pool.query<{
+      provider_account_fact_id: string;
+      account_version: string;
+      account_state: string;
+      fact_count: string;
+    }>(
+      `SELECT fact.provider_account_fact_id, fact.account_version::text,
+              fact.account_state, COUNT(*) OVER ()::text AS fact_count
+         FROM universal_v1_fake_provider_account_facts fact
+        WHERE fact.provider_subject_kind = 'ORGANIZATION'
+          AND fact.provider_organization_id = $1
+        ORDER BY fact.account_version DESC
+        LIMIT 1`,
+      [organizationId]
+    );
+    expect(latestObservation.rows[0]).toEqual({
+      provider_account_fact_id: latestFailure.providerAccountFactId,
+      account_version: '5',
+      account_state: 'FAILED',
+      fact_count: '5',
+    });
+    await expect(repository.findLatestPayoutReady({ providerSubject })).resolves.toBeNull();
+  });
+
+  it.each([
+    {
+      path: 'SETTLED' as const,
+      description: 'settlement and reconciliation',
+    },
+    {
+      path: 'FULL_REFUND' as const,
+      description: 'full refund and closed reconciliation',
+    },
+  ])(
+    'continues an unassigned Work Order through evidence, completion, fake capture, $description',
+    async ({ path }) => {
+      const lane = await heldWorkOrderLane('yard');
+      const materializationKey = `workorder-fulfillment:${randomUUID()}`;
+      const materialized = await lane.application.secureAndMaterializeFakeWorkOrder(
+        lane.fixture.posterUserId,
+        {
+          conditional_hold_id: lane.hold.conditional_hold_id,
+          expected_eligibility_version: lane.interest.eligibility_version,
+          idempotency_key: materializationKey,
+          client_ts: new Date().toISOString(),
+        }
+      );
+      const execution = executionService();
+      const genesis = await execution.getWorkOrderExecutionState(
+        lane.fixture.provider.actor_user_id,
+        { work_order_id: materialized.work_order_id }
+      );
+      expect(genesis).toMatchObject({
+        execution_version: 1,
+        state: 'MATERIALIZED',
+        transition_kind: 'MATERIALIZED',
+        scope_version: lane.scopeVersion,
+        hard_assignment_created: false,
+        payment_creation_performed: false,
+      });
+
+      const acknowledged = await execution.advanceWorkOrderExecution(
+        lane.fixture.provider.actor_user_id,
+        {
+          work_order_id: materialized.work_order_id,
+          action: 'ACKNOWLEDGE',
+          expected_execution_version: genesis.execution_version,
+          expected_scope_version: lane.scopeVersion,
+          idempotency_key: `execution-acknowledge:${randomUUID()}`,
+          client_ts: new Date().toISOString(),
+        }
+      );
+      expect(acknowledged).toMatchObject({
+        execution_version: 2,
+        state: 'ACKNOWLEDGED',
+        transition_kind: 'ACKNOWLEDGE',
+        replayed: false,
+        hard_assignment_created: false,
+        payment_creation_performed: false,
+      });
+
+      await expect(
+        execution.advanceWorkOrderExecution(lane.fixture.provider.actor_user_id, {
+          work_order_id: materialized.work_order_id,
+          action: 'START_WORK',
+          expected_execution_version: genesis.execution_version,
+          expected_scope_version: lane.scopeVersion,
+          idempotency_key: `execution-stale-start:${randomUUID()}`,
+          client_ts: new Date().toISOString(),
+        })
+      ).rejects.toMatchObject({ code: 'EXECUTION_VERSION_CONFLICT' });
+      await expect(
+        execution.getWorkOrderExecutionState(lane.fixture.provider.actor_user_id, {
+          work_order_id: materialized.work_order_id,
+        })
+      ).resolves.toMatchObject({
+        execution_version: acknowledged.execution_version,
+        state: 'ACKNOWLEDGED',
+        transition_kind: 'ACKNOWLEDGE',
+      });
+
+      const started = await execution.advanceWorkOrderExecution(
+        lane.fixture.provider.actor_user_id,
+        {
+          work_order_id: materialized.work_order_id,
+          action: 'START_WORK',
+          expected_execution_version: acknowledged.execution_version,
+          expected_scope_version: lane.scopeVersion,
+          idempotency_key: `execution-start:${randomUUID()}`,
+          client_ts: new Date().toISOString(),
+        }
+      );
+      expect(started).toMatchObject({
+        execution_version: 3,
+        state: 'IN_PROGRESS',
+        transition_kind: 'START_WORK',
+        replayed: false,
+        hard_assignment_created: false,
+        payment_creation_performed: false,
+      });
+
+      const fulfillment = fulfillmentService();
+      const progress = await fulfillment.recordExecutionEvidence(
+        lane.fixture.provider.actor_user_id,
+        {
+          work_order_id: materialized.work_order_id,
+          expected_scope_version: lane.scopeVersion,
+          expected_execution_version: started.execution_version,
+          evidence_kind: 'PROGRESS',
+          description: 'Provider recorded deterministic controlled-test execution progress.',
+          photo_evidence: [],
+          idempotency_key: `fulfillment-progress:${randomUUID()}`,
+          client_ts: new Date().toISOString(),
+        }
+      );
+      expect(progress).toMatchObject({
+        evidence_kind: 'PROGRESS',
+        completion_fact_id: null,
+        hard_assignment_created: false,
+      });
+
+      const submitted = await fulfillment.submitCompletionEvidence(
+        lane.fixture.provider.actor_user_id,
+        {
+          work_order_id: materialized.work_order_id,
+          expected_scope_version: lane.scopeVersion,
+          expected_execution_version: started.execution_version,
+          description: 'Provider completed every item in the accepted controlled-test scope.',
+          photo_evidence: [],
+          decision_reason: 'Provider submitted the exact scope for customer review.',
+          idempotency_key: `fulfillment-completion:${randomUUID()}`,
+          client_ts: new Date().toISOString(),
+        }
+      );
+      expect(submitted).toMatchObject({
+        evidence_kind: 'COMPLETION',
+        completion_version: 1,
+        incident_gate: 'CLEAR',
+        hard_assignment_created: false,
+      });
+      const submittedExecution = await execution.getWorkOrderExecutionState(
+        lane.fixture.provider.actor_user_id,
+        { work_order_id: materialized.work_order_id }
+      );
+      expect(submittedExecution).toMatchObject({
+        execution_version: 4,
+        state: 'COMPLETION_SUBMITTED',
+        transition_kind: 'COMPLETION_SUBMITTED',
+      });
+
+      const sinkActorId = await userFixture('poster');
+      const sinkSecret = 'system-test-completion-delivery-secret-at-least-32-bytes';
+      const providerDeliveryId = `synthetic-sink-delivery:${randomUUID()}`;
+      const deliveryCommand = {
+        schema_version: 1 as const,
+        event_type: 'COMPLETION_NOTICE_DELIVERED' as const,
+        task_id: lane.accepted.task_id,
+        work_order_id: materialized.work_order_id,
+        submitted_completion_fact_id: submitted.completion_fact_id!,
+        expected_completion_version: submitted.completion_version!,
+        expected_execution_version: submittedExecution.execution_version,
+        provider_delivery_id: providerDeliveryId,
+        channel: 'EMAIL' as const,
+        delivered_at: new Date().toISOString(),
+        idempotency_key: `completion-delivery:${randomUUID()}`,
+        client_ts: new Date().toISOString(),
+      };
+      const deliveryBody = JSON.stringify(deliveryCommand);
+      const deliverySignature = createHmac('sha256', sinkSecret)
+        .update(deliveryBody, 'utf8')
+        .digest('hex');
+      const deliveryApp = new Hono();
+      deliveryApp.post(
+        '/webhooks/completion-delivery',
+        createCompletionDeliveryWebhook({
+          env: {
+            HX_COMPLETION_DELIVERY_WEBHOOK_SECRET: sinkSecret,
+            HX_COMPLETION_DELIVERY_SINK_ACTOR_ID: sinkActorId,
+          },
+          application: new UniversalV1CompletionDeliveryApplication(
+            new PostgresUniversalV1CompletionDeliveryRepository(database)
+          ),
+        })
+      );
+      const sendDeliveryReceipt = () =>
+        deliveryApp.request('/webhooks/completion-delivery', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-hustlexp-completion-delivery-signature': deliverySignature,
+          },
+          body: deliveryBody,
+        });
+      const deliveryResponses = await Promise.all([sendDeliveryReceipt(), sendDeliveryReceipt()]);
+      expect(deliveryResponses.map((response) => response.status)).toEqual([200, 200]);
+      const deliveryResults = (await Promise.all(
+        deliveryResponses.map((response) => response.json())
+      )) as Array<{
+        delivery_event_id: string;
+        idempotency_replayed: boolean;
+        payment_creation_performed: boolean;
+        hard_assignment_created: boolean;
+      }>;
+      expect(deliveryResults.map((result) => result.idempotency_replayed).sort()).toEqual([
+        false,
+        true,
+      ]);
+      expect(deliveryResults[0]).toMatchObject({
+        payment_creation_performed: false,
+        hard_assignment_created: false,
+      });
+      expect(deliveryResults[1]!.delivery_event_id).toBe(deliveryResults[0]!.delivery_event_id);
+
+      const delayedDeliveryApp = new Hono();
+      delayedDeliveryApp.post(
+        '/webhooks/completion-delivery',
+        createCompletionDeliveryWebhook({
+          env: {
+            HX_COMPLETION_DELIVERY_WEBHOOK_SECRET: sinkSecret,
+            HX_COMPLETION_DELIVERY_SINK_ACTOR_ID: sinkActorId,
+          },
+          application: new UniversalV1CompletionDeliveryApplication(
+            new PostgresUniversalV1CompletionDeliveryRepository(
+              database,
+              () => Date.parse(deliveryCommand.client_ts) + 24 * 60 * 60_000
+            )
+          ),
+        })
+      );
+      const unsignedDelayedReplay = await delayedDeliveryApp.request(
+        '/webhooks/completion-delivery',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: deliveryBody,
+        }
+      );
+      expect(unsignedDelayedReplay.status).toBe(401);
+      const delayedReplay = await delayedDeliveryApp.request('/webhooks/completion-delivery', {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
@@ -2659,184 +3130,747 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
         },
         body: deliveryBody,
       });
-    const deliveryResponses = await Promise.all([sendDeliveryReceipt(), sendDeliveryReceipt()]);
-    expect(deliveryResponses.map((response) => response.status)).toEqual([200, 200]);
-    const deliveryResults = (await Promise.all(
-      deliveryResponses.map((response) => response.json())
-    )) as Array<{
-      delivery_event_id: string;
-      idempotency_replayed: boolean;
-      payment_creation_performed: boolean;
-      hard_assignment_created: boolean;
-    }>;
-    expect(deliveryResults.map((result) => result.idempotency_replayed).sort()).toEqual([
-      false,
-      true,
-    ]);
-    expect(deliveryResults[0]).toMatchObject({
-      payment_creation_performed: false,
-      hard_assignment_created: false,
-    });
-    expect(deliveryResults[1]!.delivery_event_id).toBe(deliveryResults[0]!.delivery_event_id);
+      expect(delayedReplay.status).toBe(200);
+      expect(await delayedReplay.json()).toMatchObject({
+        delivery_event_id: deliveryResults[0]!.delivery_event_id,
+        idempotency_replayed: true,
+        payment_creation_performed: false,
+        hard_assignment_created: false,
+      });
 
-    const delayedDeliveryApp = new Hono();
-    delayedDeliveryApp.post(
-      '/webhooks/completion-delivery',
-      createCompletionDeliveryWebhook({
-        env: {
-          HX_COMPLETION_DELIVERY_WEBHOOK_SECRET: sinkSecret,
-          HX_COMPLETION_DELIVERY_SINK_ACTOR_ID: sinkActorId,
-        },
-        application: new UniversalV1CompletionDeliveryApplication(
-          new PostgresUniversalV1CompletionDeliveryRepository(
-            database,
-            () => Date.parse(deliveryCommand.client_ts) + 24 * 60 * 60_000
-          )
-        ),
-      })
-    );
-    const unsignedDelayedReplay = await delayedDeliveryApp.request(
-      '/webhooks/completion-delivery',
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: deliveryBody,
-      }
-    );
-    expect(unsignedDelayedReplay.status).toBe(401);
-    const delayedReplay = await delayedDeliveryApp.request('/webhooks/completion-delivery', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-hustlexp-completion-delivery-signature': deliverySignature,
-      },
-      body: deliveryBody,
-    });
-    expect(delayedReplay.status).toBe(200);
-    expect(await delayedReplay.json()).toMatchObject({
-      delivery_event_id: deliveryResults[0]!.delivery_event_id,
-      idempotency_replayed: true,
-      payment_creation_performed: false,
-      hard_assignment_created: false,
-    });
+      const conflictingDeliveryBody = JSON.stringify({
+        ...deliveryCommand,
+        idempotency_key: `completion-delivery:${randomUUID()}`,
+      });
+      const conflictingDelivery = await delayedDeliveryApp.request(
+        '/webhooks/completion-delivery',
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-hustlexp-completion-delivery-signature': createHmac('sha256', sinkSecret)
+              .update(conflictingDeliveryBody, 'utf8')
+              .digest('hex'),
+          },
+          body: conflictingDeliveryBody,
+        }
+      );
+      expect(conflictingDelivery.status).toBe(409);
 
-    const conflictingDeliveryBody = JSON.stringify({
-      ...deliveryCommand,
-      idempotency_key: `completion-delivery:${randomUUID()}`,
-    });
-    const conflictingDelivery = await delayedDeliveryApp.request('/webhooks/completion-delivery', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-hustlexp-completion-delivery-signature': createHmac('sha256', sinkSecret)
-          .update(conflictingDeliveryBody, 'utf8')
-          .digest('hex'),
-      },
-      body: conflictingDeliveryBody,
-    });
-    expect(conflictingDelivery.status).toBe(409);
-
-    const deliveryAudit = await pool.query<{
-      receipt_count: number;
-      work_order_id: string;
-      expected_completion_fact_id: string;
-      expected_execution_version: number;
-      recorded_by: string;
-      provider_service_identity: string;
-    }>(
-      `SELECT COUNT(*) OVER ()::integer AS receipt_count,
+      const deliveryAudit = await pool.query<{
+        receipt_count: number;
+        work_order_id: string;
+        expected_completion_fact_id: string;
+        expected_execution_version: number;
+        recorded_by: string;
+        provider_service_identity: string;
+      }>(
+        `SELECT COUNT(*) OVER ()::integer AS receipt_count,
               work_order_id, expected_completion_fact_id,
               expected_execution_version, recorded_by,
               provider_service_identity
          FROM task_completion_delivery_events
         WHERE provider_delivery_id = $1`,
-      [providerDeliveryId]
-    );
-    expect(deliveryAudit.rows[0]).toEqual({
-      receipt_count: 1,
-      work_order_id: materialized.work_order_id,
-      expected_completion_fact_id: submitted.completion_fact_id,
-      expected_execution_version: submittedExecution.execution_version,
-      recorded_by: sinkActorId,
-      provider_service_identity: `hustlexp.synthetic-communications-sink.v1:${sinkActorId}`,
-    });
-    const approved = await fulfillment.decideCompletion(lane.fixture.posterUserId, {
-      work_order_id: materialized.work_order_id,
-      submitted_completion_fact_id: submitted.completion_fact_id!,
-      expected_completion_version: submitted.completion_version!,
-      expected_execution_version: submittedExecution.execution_version,
-      decision: 'APPROVED',
-      delivery_event_id: deliveryResults[0]!.delivery_event_id,
-      decision_reason: 'Customer approved the exact submitted controlled-test completion.',
-      idempotency_key: `fulfillment-approval:${randomUUID()}`,
-      client_ts: new Date().toISOString(),
-    });
-    expect(approved).toMatchObject({
-      completion_version: 2,
-      decision: 'APPROVED',
-      replayed: false,
-      payment_creation_performed: false,
-    });
-    const completedExecution = await execution.getWorkOrderExecutionState(
-      lane.fixture.posterUserId,
-      { work_order_id: materialized.work_order_id }
-    );
-    expect(completedExecution).toMatchObject({
-      execution_version: 5,
-      state: 'COMPLETED',
-      transition_kind: 'COMPLETION_APPROVED',
-    });
+        [providerDeliveryId]
+      );
+      expect(deliveryAudit.rows[0]).toEqual({
+        receipt_count: 1,
+        work_order_id: materialized.work_order_id,
+        expected_completion_fact_id: submitted.completion_fact_id,
+        expected_execution_version: submittedExecution.execution_version,
+        recorded_by: sinkActorId,
+        provider_service_identity: `hustlexp.synthetic-communications-sink.v1:${sinkActorId}`,
+      });
+      const approved = await fulfillment.decideCompletion(lane.fixture.posterUserId, {
+        work_order_id: materialized.work_order_id,
+        submitted_completion_fact_id: submitted.completion_fact_id!,
+        expected_completion_version: submitted.completion_version!,
+        expected_execution_version: submittedExecution.execution_version,
+        decision: 'APPROVED',
+        delivery_event_id: deliveryResults[0]!.delivery_event_id,
+        decision_reason: 'Customer approved the exact submitted controlled-test completion.',
+        idempotency_key: `fulfillment-approval:${randomUUID()}`,
+        client_ts: new Date().toISOString(),
+      });
+      expect(approved).toMatchObject({
+        completion_version: 2,
+        decision: 'APPROVED',
+        replayed: false,
+        payment_creation_performed: false,
+      });
+      const completedExecution = await execution.getWorkOrderExecutionState(
+        lane.fixture.posterUserId,
+        { work_order_id: materialized.work_order_id }
+      );
+      expect(completedExecution).toMatchObject({
+        execution_version: 5,
+        state: 'COMPLETED',
+        transition_kind: 'COMPLETION_APPROVED',
+      });
 
-    const lifecycleKey = `fulfillment-settlement:${randomUUID()}`;
-    const terminal = await fulfillment.completeFakeFinancialLifecycle(lane.fixture.posterUserId, {
-      work_order_id: materialized.work_order_id,
-      approved_completion_fact_id: approved.completion_fact_id,
-      path: 'SETTLED',
-      expected_execution_version: completedExecution.execution_version,
-      expected_financial_version: 2,
-      expected_reconciliation_version: 0,
-      idempotency_key: lifecycleKey,
-      client_ts: new Date().toISOString(),
-    });
-    expect(terminal).toMatchObject({
-      path: 'SETTLED',
-      replayed: false,
-      provider_kind: 'FAKE',
-      refund_event_id: null,
-      payment_creation_performed: false,
-      hard_assignment_created: false,
-    });
+      const predecessorResult = await pool.query<{
+        operation_id: string;
+        expected_version: string;
+        amount_cents: string;
+        currency: string;
+        scope_version_id: string;
+        task_draft_id: string;
+        task_id: string;
+        eligibility_decision_id: string;
+      }>(
+        `SELECT operation_id, expected_version::text, amount_cents::text,
+                currency, scope_version_id, task_draft_id, task_id,
+                eligibility_decision_id
+           FROM task_financial_security_events
+          WHERE id = $1`,
+        [materialized.financial_security_event_id]
+      );
+      const predecessor = predecessorResult.rows[0]!;
+      const noIntentCaptureKey = `no-intent-capture:${randomUUID()}`;
+      const noIntentCaptureOperationId = deterministicUuid(noIntentCaptureKey, 'capture');
+      await expect(
+        fakeFinanceService().executeFinancialEvent({
+          providerKind: 'FAKE',
+          operationKind: 'CAPTURE',
+          operationId: noIntentCaptureOperationId,
+          idempotencyKey: `${noIntentCaptureKey}:capture`,
+          providerExpectedVersion: 0,
+          lifecycleExpectedVersion: Number(predecessor.expected_version) + 1,
+          taskDraftId: predecessor.task_draft_id,
+          taskId: predecessor.task_id,
+          eligibilityDecisionId: predecessor.eligibility_decision_id,
+          scopeVersionId: predecessor.scope_version_id,
+          predecessorEventId: materialized.financial_security_event_id,
+          relatedOperationId: predecessor.operation_id,
+          amountCents: Number(predecessor.amount_cents),
+          currency: predecessor.currency.toLowerCase(),
+          completionFactId: approved.completion_fact_id,
+          scenario: 'SUCCESS',
+          recordedBy: lane.fixture.posterUserId,
+          occurredAt: new Date().toISOString(),
+        })
+      ).rejects.toThrow(/HXUV1-FTL-40/u);
 
-    const facts = await pool.query<{
-      worker_id: string | null;
-      progress_proofs: number;
-      completion_proofs: number;
-      completion_facts: number;
-      execution_facts: number;
-      execution_versions: number[];
-      execution_states: string[];
-      execution_transitions: string[];
-      execution_scope_bindings: number;
-      completion_execution_facts: number;
-      event_kinds: string[];
-      provider_kinds: string[];
-      approved_provider_events: number;
-      approved_provider_operations: number;
-      fake_operations: number;
-      fake_operation_events: number;
-      escrows: number;
-      quote_payments: number;
-      capture_state: string;
-      settlement_state: string;
-      funding_state: string;
-      provider_release_state: string;
-      payout_state: string;
-      bank_settlement_state: string;
-      reconciliation_state: string;
-      customer_ledger_amount_cents: string;
-      provider_ledger_amount_cents: string;
-    }>(
-      `SELECT task.worker_id,
+      const noIntentReconciliationKey = `no-intent-reconciliation:${randomUUID()}`;
+      const noIntentReconciliationOperationId = deterministicUuid(
+        noIntentReconciliationKey,
+        'reconciliation'
+      );
+      await expect(
+        fakeFinanceService().reconcile({
+          providerKind: 'FAKE',
+          operationId: noIntentReconciliationOperationId,
+          idempotencyKey: `${noIntentReconciliationKey}:reconciliation`,
+          providerExpectedVersion: 0,
+          relatedOperationId: randomUUID(),
+          scenario: 'SUCCESS',
+          snapshot: {
+            workOrderId: materialized.work_order_id,
+            reconciliationVersion: 1,
+            captureEventId: randomUUID(),
+            voidState: 'NOT_APPLICABLE',
+            captureState: 'CAPTURED',
+            refundState: 'NOT_APPLICABLE',
+            reversalState: 'NOT_APPLICABLE',
+            settlementState: 'NOT_APPLICABLE',
+            fundingState: 'NOT_APPLICABLE',
+            providerReleaseState: 'NOT_APPLICABLE',
+            payoutState: 'NOT_APPLICABLE',
+            bankSettlementState: 'NOT_APPLICABLE',
+            ledgerState: 'MATCHED',
+            reconciliationState: 'MATCHED',
+            mismatchCodes: [],
+            customerLedgerAmountCents: Number(predecessor.amount_cents),
+            providerLedgerAmountCents: 8_000,
+            currency: predecessor.currency,
+            expectedVersion: 0,
+            recordedBy: lane.fixture.posterUserId,
+          },
+        })
+      ).rejects.toThrow(/HXUV1-FTL-43/u);
+
+      const refusedAuthority = await pool.query<{
+        prepared_commands: number;
+        journal_commands: number;
+        dispatch_attempts: number;
+        observed_outcomes: number;
+        fake_operations: number;
+        fake_operation_events: number;
+        lifecycle_operations: number;
+        lifecycle_events: number;
+      }>(
+        `SELECT
+         (SELECT COUNT(*)::integer
+            FROM public.universal_v1_prepared_financial_commands prepared
+           WHERE prepared.operation_id = ANY($1::uuid[])) AS prepared_commands,
+         (SELECT COUNT(*)::integer
+            FROM public.financial_provider_command_journal command
+           WHERE command.operation_id = ANY($1::uuid[])) AS journal_commands,
+         (SELECT COUNT(*)::integer
+            FROM public.financial_provider_command_dispatch_attempts attempt
+            JOIN public.financial_provider_command_journal command
+              ON command.command_id = attempt.command_id
+           WHERE command.operation_id = ANY($1::uuid[])) AS dispatch_attempts,
+         (SELECT COUNT(*)::integer
+            FROM public.financial_provider_command_outcome_facts outcome
+            JOIN public.financial_provider_command_journal command
+              ON command.command_id = outcome.command_id
+           WHERE command.operation_id = ANY($1::uuid[])) AS observed_outcomes,
+         (SELECT COUNT(*)::integer
+            FROM public.hxos_fake_financial_operations_v1 operation
+           WHERE operation.operation_id = ANY($1::uuid[])) AS fake_operations,
+         (SELECT COUNT(*)::integer
+            FROM public.hxos_fake_financial_operation_events_v1 event
+           WHERE event.operation_id = ANY($1::uuid[])) AS fake_operation_events,
+         (SELECT COUNT(*)::integer
+            FROM public.task_financial_operations operation
+           WHERE operation.operation_id = ANY($2::text[])) AS lifecycle_operations,
+         (SELECT COUNT(*)::integer
+            FROM public.task_financial_security_events event
+           WHERE event.operation_id = ANY($2::text[])) AS lifecycle_events`,
+        [
+          [noIntentCaptureOperationId, noIntentReconciliationOperationId],
+          [noIntentCaptureOperationId, noIntentReconciliationOperationId],
+        ]
+      );
+      expect(refusedAuthority.rows[0]).toEqual({
+        prepared_commands: 0,
+        journal_commands: 0,
+        dispatch_attempts: 0,
+        observed_outcomes: 0,
+        fake_operations: 0,
+        fake_operation_events: 0,
+        lifecycle_operations: 0,
+        lifecycle_events: 0,
+      });
+
+      const providerAccountOperationIds: string[] = [];
+      if (path === 'SETTLED') {
+        const accountKey = `fake-provider-account:${lane.fixture.provider.actor_user_id}:${materialized.work_order_id}`;
+        const onboardOperationId = deterministicUuid(accountKey, 'onboard');
+        const refreshOperationId = deterministicUuid(accountKey, 'state');
+        const providerId =
+          lane.fixture.provider.provider_organization_id ?? lane.fixture.provider.provider_user_id;
+        const finance = fakeFinanceService();
+        const onboard = await finance.onboardProvider({
+          providerKind: 'FAKE',
+          operationId: onboardOperationId,
+          idempotencyKey: `${accountKey}:onboard`,
+          providerExpectedVersion: 0,
+          providerId,
+          scenario: 'SUCCESS',
+          recordedBy: lane.fixture.provider.actor_user_id,
+        });
+        const refresh = await finance.refreshProviderAccountState({
+          providerKind: 'FAKE',
+          operationId: refreshOperationId,
+          idempotencyKey: `${accountKey}:refresh`,
+          providerExpectedVersion: 0,
+          providerId,
+          providerAccountReference: onboard.externalReference,
+          scenario: 'SUCCESS',
+          recordedBy: lane.fixture.provider.actor_user_id,
+        });
+        const accountFact = await new PostgresUniversalV1FakeProviderAccountRepository(
+          database
+        ).materializeFromDurableEvidence({
+          providerSubject:
+            lane.fixture.provider.provider_organization_id === null
+              ? {
+                  kind: 'USER',
+                  userId: lane.fixture.provider.provider_user_id,
+                }
+              : {
+                  kind: 'ORGANIZATION',
+                  organizationId: lane.fixture.provider.provider_organization_id,
+                },
+          recordedBy: lane.fixture.provider.actor_user_id,
+          onboard: onboard.durableFakeEvidence,
+          refresh: refresh.durableFakeEvidence,
+        });
+        expect(accountFact).toMatchObject({
+          providerSubject:
+            lane.fixture.provider.provider_organization_id === null
+              ? {
+                  kind: 'USER',
+                  userId: lane.fixture.provider.provider_user_id,
+                }
+              : {
+                  kind: 'ORGANIZATION',
+                  organizationId: lane.fixture.provider.provider_organization_id,
+                },
+          accountVersion: 1,
+          accountState: 'ENABLED',
+          payoutsEnabled: true,
+          idempotencyReplayed: false,
+        });
+        providerAccountOperationIds.push(onboardOperationId, refreshOperationId);
+      }
+
+      const lifecycleKey = `fulfillment-${path.toLowerCase()}:${randomUUID()}`;
+      const lifecycleCommand = {
+        work_order_id: materialized.work_order_id,
+        approved_completion_fact_id: approved.completion_fact_id,
+        path,
+        expected_execution_version: completedExecution.execution_version,
+        expected_financial_version: 2,
+        expected_reconciliation_version: 0,
+        idempotency_key: lifecycleKey,
+        client_ts: new Date().toISOString(),
+      };
+      const providerEffectCounts = async (operationId: string) => {
+        const refused = await pool.query<{
+          prepared_commands: number;
+          journal_commands: number;
+          dispatch_attempts: number;
+          fake_operations: number;
+          fake_operation_events: number;
+        }>(
+          `SELECT
+           (SELECT COUNT(*)::integer
+              FROM universal_v1_prepared_financial_commands prepared
+             WHERE prepared.operation_id = $1) AS prepared_commands,
+           (SELECT COUNT(*)::integer
+              FROM financial_provider_command_journal command
+             WHERE command.operation_id = $1) AS journal_commands,
+           (SELECT COUNT(*)::integer
+              FROM financial_provider_command_dispatch_attempts attempt
+              JOIN financial_provider_command_journal command
+                ON command.command_id = attempt.command_id
+             WHERE command.operation_id = $1) AS dispatch_attempts,
+           (SELECT COUNT(*)::integer
+              FROM hxos_fake_financial_operations_v1 operation
+             WHERE operation.operation_id = $1::uuid) AS fake_operations,
+           (SELECT COUNT(*)::integer
+              FROM hxos_fake_financial_operation_events_v1 event
+             WHERE event.operation_id = $1::uuid) AS fake_operation_events`,
+          [operationId]
+        );
+        return refused.rows[0]!;
+      };
+      const expectNoProviderEffect = async (operationId: string) => {
+        expect(await providerEffectCounts(operationId)).toEqual({
+          prepared_commands: 0,
+          journal_commands: 0,
+          dispatch_attempts: 0,
+          fake_operations: 0,
+          fake_operation_events: 0,
+        });
+      };
+      let alteredScenarioRefused = false;
+      let alteredPayoutReferenceRefused = false;
+      let alteredReconciliationSnapshotRefused = false;
+      const captureOperationId = deterministicUuid(lifecycleKey, 'capture');
+      const scenarioTamperFinance = fakeFinanceService();
+      await expect(
+        new PostgresUniversalV1FulfillmentRepository(database).completeFakeFinancialLifecycle(
+          lane.fixture.posterUserId,
+          lifecycleCommand,
+          {
+            executeFinancialEvent: (command) =>
+              scenarioTamperFinance.executeFinancialEvent({
+                ...command,
+                scenario: 'DECLINE',
+              }),
+            reconcile: (command) => scenarioTamperFinance.reconcile(command),
+          }
+        )
+      ).rejects.toThrow(/HXUV1-FTL-45/u);
+      await expectNoProviderEffect(captureOperationId);
+      alteredScenarioRefused = true;
+
+      if (path === 'SETTLED') {
+        const preparedCrashFinance = boundaryFakeFinanceService({
+          crashAfterPreparedOperation: 'CAPTURE',
+        });
+        await expect(
+          new PostgresUniversalV1FulfillmentRepository(database).completeFakeFinancialLifecycle(
+            lane.fixture.posterUserId,
+            lifecycleCommand,
+            preparedCrashFinance
+          )
+        ).rejects.toThrow('SYSTEM_TEST_CRASH_AFTER_PREPARED_CAPTURE');
+        expect(await providerEffectCounts(captureOperationId)).toEqual({
+          prepared_commands: 1,
+          journal_commands: 0,
+          dispatch_attempts: 0,
+          fake_operations: 0,
+          fake_operation_events: 0,
+        });
+
+        await pool.query(`UPDATE users SET account_status = 'SUSPENDED' WHERE id = $1`, [
+          lane.fixture.provider.provider_user_id,
+        ]);
+        await expect(
+          new PostgresUniversalV1FulfillmentRepository(database).completeFakeFinancialLifecycle(
+            lane.fixture.posterUserId,
+            lifecycleCommand,
+            boundaryFakeFinanceService({ leaseDurationSeconds: 2 })
+          )
+        ).rejects.toThrow(/HXUV1-FTL-47/u);
+        expect(await providerEffectCounts(captureOperationId)).toEqual({
+          prepared_commands: 1,
+          journal_commands: 1,
+          dispatch_attempts: 0,
+          fake_operations: 0,
+          fake_operation_events: 0,
+        });
+        await pool.query(`UPDATE users SET account_status = 'ACTIVE' WHERE id = $1`, [
+          lane.fixture.provider.provider_user_id,
+        ]);
+        await new Promise((resolve) => setTimeout(resolve, 2_100));
+
+        const captureRecoveryFinance = fakeFinanceService();
+        await expect(
+          new PostgresUniversalV1FulfillmentRepository(database).completeFakeFinancialLifecycle(
+            lane.fixture.posterUserId,
+            lifecycleCommand,
+            {
+              executeFinancialEvent: async (command) => {
+                const result = await captureRecoveryFinance.executeFinancialEvent(command);
+                if (command.operationKind === 'CAPTURE') {
+                  throw new Error('SYSTEM_TEST_CRASH_AFTER_CAPTURE_RECOVERY');
+                }
+                return result;
+              },
+              reconcile: (command) => captureRecoveryFinance.reconcile(command),
+            }
+          )
+        ).rejects.toThrow('SYSTEM_TEST_CRASH_AFTER_CAPTURE_RECOVERY');
+
+        const settleOperationId = deterministicUuid(lifecycleKey, 'settle');
+        await expect(
+          new PostgresUniversalV1FulfillmentRepository(database).completeFakeFinancialLifecycle(
+            lane.fixture.posterUserId,
+            lifecycleCommand,
+            boundaryFakeFinanceService({ crashAfterRequestedOperation: 'SETTLE' })
+          )
+        ).rejects.toThrow('SYSTEM_TEST_CRASH_AFTER_REQUESTED_SETTLE');
+        expect(await providerEffectCounts(settleOperationId)).toEqual({
+          prepared_commands: 1,
+          journal_commands: 1,
+          dispatch_attempts: 0,
+          fake_operations: 0,
+          fake_operation_events: 0,
+        });
+
+        await pool.query(`UPDATE users SET account_status = 'SUSPENDED' WHERE id = $1`, [
+          lane.fixture.provider.provider_user_id,
+        ]);
+        await expect(
+          new PostgresUniversalV1FulfillmentRepository(database).completeFakeFinancialLifecycle(
+            lane.fixture.posterUserId,
+            lifecycleCommand,
+            boundaryFakeFinanceService({ leaseDurationSeconds: 2 })
+          )
+        ).rejects.toThrow(/HXUV1-FTL-47/u);
+        expect(await providerEffectCounts(settleOperationId)).toEqual({
+          prepared_commands: 1,
+          journal_commands: 1,
+          dispatch_attempts: 0,
+          fake_operations: 0,
+          fake_operation_events: 0,
+        });
+        await pool.query(`UPDATE users SET account_status = 'ACTIVE' WHERE id = $1`, [
+          lane.fixture.provider.provider_user_id,
+        ]);
+        await new Promise((resolve) => setTimeout(resolve, 2_100));
+      } else {
+        const openRefundIncident = async (description: string): Promise<string> => {
+          const incident = await pool.query<{ id: string }>(
+            `INSERT INTO task_safety_incidents (
+               task_id,
+               reporter_user_id,
+               category,
+               urgency,
+               description,
+               contact_permission,
+               idempotency_key
+             ) VALUES ($1, $2, 'other', 'standard', $3, 'in_app_only', $4)
+             RETURNING id`,
+            [
+              lane.accepted.task_id,
+              lane.fixture.posterUserId,
+              description,
+              randomUUID(),
+            ]
+          );
+          return incident.rows[0]!.id;
+        };
+        const resolveRefundIncident = async (incidentId: string): Promise<void> => {
+          await pool.query(
+            `UPDATE task_safety_incidents
+                SET status = 'acknowledged',
+                    acknowledged_at = clock_timestamp(),
+                    assigned_admin_id = $2,
+                    updated_at = clock_timestamp()
+              WHERE id = $1`,
+            [incidentId, lane.fixture.invitationOperatorUserId]
+          );
+          await pool.query(
+            `INSERT INTO task_safety_incident_events (
+               incident_id,
+               event_type,
+               actor_user_id,
+               public_message,
+               metadata
+             ) VALUES (
+               $1,
+               'resolved',
+               $2,
+               'Synthetic incident resolution permits controlled-test replay to resume.',
+               jsonb_build_object(
+                 'resolution_code', 'safety_plan_confirmed',
+                 'idempotency_key', $3::text,
+                 'request_hash', repeat('a', 64)
+               )
+             )`,
+            [incidentId, lane.fixture.invitationOperatorUserId, randomUUID()]
+          );
+          await pool.query(
+            `UPDATE task_safety_incidents
+                SET status = 'resolved',
+                    resolved_at = clock_timestamp(),
+                    updated_at = clock_timestamp()
+              WHERE id = $1`,
+            [incidentId]
+          );
+        };
+
+        await expect(
+          new PostgresUniversalV1FulfillmentRepository(database).completeFakeFinancialLifecycle(
+            lane.fixture.posterUserId,
+            lifecycleCommand,
+            boundaryFakeFinanceService({ crashAfterPreparedOperation: 'CAPTURE' })
+          )
+        ).rejects.toThrow('SYSTEM_TEST_CRASH_AFTER_PREPARED_CAPTURE');
+        expect(await providerEffectCounts(captureOperationId)).toEqual({
+          prepared_commands: 1,
+          journal_commands: 0,
+          dispatch_attempts: 0,
+          fake_operations: 0,
+          fake_operation_events: 0,
+        });
+
+        const preparedIncidentId = await openRefundIncident(
+          'Refund replay must stop after an incident opens beyond PREPARED authority.'
+        );
+        await expect(
+          new PostgresUniversalV1FulfillmentRepository(database).completeFakeFinancialLifecycle(
+            lane.fixture.posterUserId,
+            lifecycleCommand,
+            boundaryFakeFinanceService({ leaseDurationSeconds: 2 })
+          )
+        ).rejects.toThrow(/HXUV1-FTL-47/u);
+        expect(await providerEffectCounts(captureOperationId)).toEqual({
+          prepared_commands: 1,
+          journal_commands: 1,
+          dispatch_attempts: 0,
+          fake_operations: 0,
+          fake_operation_events: 0,
+        });
+        await resolveRefundIncident(preparedIncidentId);
+        await new Promise((resolve) => setTimeout(resolve, 2_100));
+
+        const captureRecoveryFinance = fakeFinanceService();
+        await expect(
+          new PostgresUniversalV1FulfillmentRepository(database).completeFakeFinancialLifecycle(
+            lane.fixture.posterUserId,
+            lifecycleCommand,
+            {
+              executeFinancialEvent: async (command) => {
+                const result = await captureRecoveryFinance.executeFinancialEvent(command);
+                if (command.operationKind === 'CAPTURE') {
+                  throw new Error('SYSTEM_TEST_CRASH_AFTER_REFUND_CAPTURE_RECOVERY');
+                }
+                return result;
+              },
+              reconcile: (command) => captureRecoveryFinance.reconcile(command),
+            }
+          )
+        ).rejects.toThrow('SYSTEM_TEST_CRASH_AFTER_REFUND_CAPTURE_RECOVERY');
+
+        const refundOperationId = deterministicUuid(lifecycleKey, 'full-refund');
+        await expect(
+          new PostgresUniversalV1FulfillmentRepository(database).completeFakeFinancialLifecycle(
+            lane.fixture.posterUserId,
+            lifecycleCommand,
+            boundaryFakeFinanceService({ crashAfterRequestedOperation: 'REFUND' })
+          )
+        ).rejects.toThrow('SYSTEM_TEST_CRASH_AFTER_REQUESTED_REFUND');
+        expect(await providerEffectCounts(refundOperationId)).toEqual({
+          prepared_commands: 1,
+          journal_commands: 1,
+          dispatch_attempts: 0,
+          fake_operations: 0,
+          fake_operation_events: 0,
+        });
+
+        const requestedIncidentId = await openRefundIncident(
+          'Refund replay must stop after an incident opens beyond REQUESTED authority.'
+        );
+        await expect(
+          new PostgresUniversalV1FulfillmentRepository(database).completeFakeFinancialLifecycle(
+            lane.fixture.posterUserId,
+            lifecycleCommand,
+            boundaryFakeFinanceService({ leaseDurationSeconds: 2 })
+          )
+        ).rejects.toThrow(/HXUV1-FTL-47/u);
+        expect(await providerEffectCounts(refundOperationId)).toEqual({
+          prepared_commands: 1,
+          journal_commands: 1,
+          dispatch_attempts: 0,
+          fake_operations: 0,
+          fake_operation_events: 0,
+        });
+        await resolveRefundIncident(requestedIncidentId);
+        await new Promise((resolve) => setTimeout(resolve, 2_100));
+      }
+      const crashBoundaries =
+        path === 'SETTLED'
+          ? [
+              'CAPTURE',
+              'SETTLE',
+              'FUND',
+              'PROVIDER_RELEASE',
+              'PAYOUT',
+              'OBSERVE_BANK_SETTLEMENT',
+              'RECONCILE',
+            ]
+          : ['CAPTURE', 'REFUND', 'RECONCILE'];
+      for (const crashBoundary of crashBoundaries) {
+        const durableFinance = fakeFinanceService();
+        let injected = false;
+        const crashAfterCommittedBoundary = {
+          executeFinancialEvent: async (
+            command: Parameters<typeof durableFinance.executeFinancialEvent>[0]
+          ) => {
+            if (!alteredScenarioRefused && command.operationKind === 'CAPTURE') {
+              await expect(
+                durableFinance.executeFinancialEvent({ ...command, scenario: 'DECLINE' })
+              ).rejects.toThrow(/HXUV1-FTL-45/u);
+              await expectNoProviderEffect(command.operationId);
+              alteredScenarioRefused = true;
+            }
+            if (!alteredPayoutReferenceRefused && command.operationKind === 'PAYOUT') {
+              await expect(
+                durableFinance.executeFinancialEvent({
+                  ...command,
+                  providerAccountReference: `tampered-${randomUUID()}`,
+                })
+              ).rejects.toThrow(/HXUV1-FTL-45/u);
+              await expectNoProviderEffect(command.operationId);
+              alteredPayoutReferenceRefused = true;
+            }
+            const result = await durableFinance.executeFinancialEvent(command);
+            if (!injected && command.operationKind === crashBoundary) {
+              injected = true;
+              throw new Error(`SYSTEM_TEST_CRASH_AFTER_${crashBoundary}`);
+            }
+            return result;
+          },
+          reconcile: async (command: Parameters<typeof durableFinance.reconcile>[0]) => {
+            if (!alteredReconciliationSnapshotRefused) {
+              await expect(
+                durableFinance.reconcile({
+                  ...command,
+                  snapshot: {
+                    ...command.snapshot,
+                    customerLedgerAmountCents:
+                      command.snapshot.customerLedgerAmountCents + 1,
+                  },
+                })
+              ).rejects.toThrow(/HXUV1-FTL-44/u);
+              await expectNoProviderEffect(command.operationId);
+              alteredReconciliationSnapshotRefused = true;
+            }
+            const result = await durableFinance.reconcile(command);
+            if (!injected && crashBoundary === 'RECONCILE') {
+              injected = true;
+              throw new Error('SYSTEM_TEST_CRASH_AFTER_RECONCILE');
+            }
+            return result;
+          },
+        };
+        await expect(
+          new PostgresUniversalV1FulfillmentRepository(database).completeFakeFinancialLifecycle(
+            lane.fixture.posterUserId,
+            lifecycleCommand,
+            crashAfterCommittedBoundary
+          )
+        ).rejects.toThrow(`SYSTEM_TEST_CRASH_AFTER_${crashBoundary}`);
+        expect(injected).toBe(true);
+      }
+      expect(alteredScenarioRefused).toBe(true);
+      expect(alteredPayoutReferenceRefused).toBe(path === 'SETTLED');
+      expect(alteredReconciliationSnapshotRefused).toBe(true);
+      const terminal = await fulfillment.completeFakeFinancialLifecycle(
+        lane.fixture.posterUserId,
+        lifecycleCommand
+      );
+      expect(terminal).toMatchObject({
+        path,
+        replayed: true,
+        reconciliation_version: 1,
+        provider_kind: 'FAKE',
+        refund_event_id: path === 'FULL_REFUND' ? expect.any(String) : null,
+        settlement_event_id: path === 'SETTLED' ? expect.any(String) : null,
+        payment_creation_performed: false,
+        hard_assignment_created: false,
+      });
+
+      const terminalLifecycleOperationIds =
+        path === 'SETTLED'
+          ? [
+              deterministicUuid(lifecycleKey, 'capture'),
+              deterministicUuid(lifecycleKey, 'settle'),
+              deterministicUuid(lifecycleKey, 'fund'),
+              deterministicUuid(lifecycleKey, 'provider-release'),
+              deterministicUuid(lifecycleKey, 'payout'),
+              deterministicUuid(lifecycleKey, 'bank-settlement'),
+            ]
+          : [
+              deterministicUuid(lifecycleKey, 'capture'),
+              deterministicUuid(lifecycleKey, 'full-refund'),
+            ];
+      const reconciliationOperationId = deterministicUuid(lifecycleKey, 'reconciliation');
+      const operationIds = [
+        ...financialOperationIds(materializationKey),
+        ...providerAccountOperationIds,
+        ...terminalLifecycleOperationIds,
+        reconciliationOperationId,
+      ];
+
+      const facts = await pool.query<{
+        worker_id: string | null;
+        progress_proofs: number;
+        completion_proofs: number;
+        completion_facts: number;
+        execution_facts: number;
+        execution_versions: number[];
+        execution_states: string[];
+        execution_transitions: string[];
+        execution_scope_bindings: number;
+        completion_execution_facts: number;
+        event_kinds: string[];
+        provider_kinds: string[];
+        approved_provider_events: number;
+        approved_provider_operations: number;
+        fake_operations: number;
+        fake_operation_events: number;
+        escrows: number;
+        quote_payments: number;
+        capture_state: string;
+        settlement_state: string;
+        funding_state: string;
+        provider_release_state: string;
+        payout_state: string;
+        bank_settlement_state: string;
+        reconciliation_state: string;
+        customer_ledger_amount_cents: string;
+        provider_ledger_amount_cents: string;
+      }>(
+        `SELECT task.worker_id,
               (SELECT COUNT(*)::integer FROM proofs proof
                 WHERE proof.work_order_id = $1
                   AND proof.evidence_kind = 'PROGRESS') AS progress_proofs,
@@ -2895,81 +3929,248 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
          JOIN task_reconciliation_facts reconciliation
            ON reconciliation.id = $4
         WHERE task.id = $5`,
-      [
-        materialized.work_order_id,
-        lane.fixture.quoteId,
         [
-          ...financialOperationIds(materializationKey),
-          deterministicUuid(
-            `fake-provider-account:${lane.fixture.provider.actor_user_id}`,
-            'onboard'
-          ),
-          deterministicUuid(
-            `fake-provider-account:${lane.fixture.provider.actor_user_id}`,
-            'state'
-          ),
-          deterministicUuid(lifecycleKey, 'capture'),
-          deterministicUuid(lifecycleKey, 'settle'),
-          deterministicUuid(lifecycleKey, 'fund'),
-          deterministicUuid(lifecycleKey, 'provider-release'),
-          deterministicUuid(lifecycleKey, 'payout'),
-          deterministicUuid(lifecycleKey, 'bank-settlement'),
-          deterministicUuid(lifecycleKey, 'reconciliation'),
+          materialized.work_order_id,
+          lane.fixture.quoteId,
+          operationIds,
+          terminal.reconciliation_id,
+          lane.accepted.task_id,
+        ]
+      );
+      expect(facts.rows[0]).toEqual({
+        worker_id: null,
+        progress_proofs: 1,
+        completion_proofs: 1,
+        completion_facts: 2,
+        execution_facts: 5,
+        execution_versions: [1, 2, 3, 4, 5],
+        execution_states: [
+          'MATERIALIZED',
+          'ACKNOWLEDGED',
+          'IN_PROGRESS',
+          'COMPLETION_SUBMITTED',
+          'COMPLETED',
         ],
-        terminal.reconciliation_id,
-        lane.accepted.task_id,
-      ]
-    );
-    expect(facts.rows[0]).toEqual({
-      worker_id: null,
-      progress_proofs: 1,
-      completion_proofs: 1,
-      completion_facts: 2,
-      execution_facts: 5,
-      execution_versions: [1, 2, 3, 4, 5],
-      execution_states: [
-        'MATERIALIZED',
-        'ACKNOWLEDGED',
-        'IN_PROGRESS',
-        'COMPLETION_SUBMITTED',
-        'COMPLETED',
-      ],
-      execution_transitions: [
-        'MATERIALIZED',
-        'ACKNOWLEDGE',
-        'START_WORK',
-        'COMPLETION_SUBMITTED',
-        'COMPLETION_APPROVED',
-      ],
-      execution_scope_bindings: 1,
-      completion_execution_facts: 2,
-      event_kinds: [
-        'PAYMENT_METHOD_PREPARED',
-        'AUTHORIZED',
-        'SECURED',
-        'CAPTURED',
-        'SETTLEMENT_OBSERVED',
-        'FUNDING_OBSERVED',
-        'PROVIDER_RELEASED',
-        'PAYOUT_OBSERVED',
-        'BANK_SETTLEMENT_OBSERVED',
-      ],
-      provider_kinds: ['FAKE'],
-      approved_provider_events: 0,
-      approved_provider_operations: 0,
-      fake_operations: 12,
-      fake_operation_events: 12,
-      escrows: 0,
-      quote_payments: 0,
-      capture_state: 'CAPTURED',
-      settlement_state: 'SETTLED',
-      funding_state: 'FUNDED',
-      provider_release_state: 'RELEASED',
-      payout_state: 'PAID',
-      bank_settlement_state: 'SETTLED',
-      reconciliation_state: 'MATCHED',
-      customer_ledger_amount_cents: '10000',
-      provider_ledger_amount_cents: '8000',
-    });
-  });
+        execution_transitions: [
+          'MATERIALIZED',
+          'ACKNOWLEDGE',
+          'START_WORK',
+          'COMPLETION_SUBMITTED',
+          'COMPLETION_APPROVED',
+        ],
+        execution_scope_bindings: 1,
+        completion_execution_facts: 2,
+        event_kinds:
+          path === 'SETTLED'
+            ? [
+                'PAYMENT_METHOD_PREPARED',
+                'AUTHORIZED',
+                'SECURED',
+                'CAPTURED',
+                'SETTLEMENT_OBSERVED',
+                'FUNDING_OBSERVED',
+                'PROVIDER_RELEASED',
+                'PAYOUT_OBSERVED',
+                'BANK_SETTLEMENT_OBSERVED',
+              ]
+            : ['PAYMENT_METHOD_PREPARED', 'AUTHORIZED', 'SECURED', 'CAPTURED', 'REFUNDED'],
+        provider_kinds: ['FAKE'],
+        approved_provider_events: 0,
+        approved_provider_operations: 0,
+        fake_operations: operationIds.length,
+        fake_operation_events: operationIds.length,
+        escrows: 0,
+        quote_payments: 0,
+        capture_state: 'CAPTURED',
+        settlement_state: path === 'SETTLED' ? 'SETTLED' : 'NOT_APPLICABLE',
+        funding_state: path === 'SETTLED' ? 'FUNDED' : 'NOT_APPLICABLE',
+        provider_release_state: path === 'SETTLED' ? 'RELEASED' : 'NOT_APPLICABLE',
+        payout_state: path === 'SETTLED' ? 'PAID' : 'NOT_APPLICABLE',
+        bank_settlement_state: path === 'SETTLED' ? 'SETTLED' : 'NOT_APPLICABLE',
+        reconciliation_state: path === 'SETTLED' ? 'MATCHED' : 'CLOSED',
+        customer_ledger_amount_cents: path === 'SETTLED' ? '10000' : '0',
+        provider_ledger_amount_cents: path === 'SETTLED' ? '8000' : '0',
+      });
+
+      const terminalRelatedOperationId = terminalLifecycleOperationIds.at(-1)!;
+      const authority = await pool.query<{
+        journal_commands: number;
+        dispatch_attempts: number;
+        observed_outcomes: number;
+        prepared_commands: number;
+        exact_prepared_requests: number;
+        lifecycle_bridges: number;
+        pre_work_order_commands: number;
+        post_work_order_commands: number;
+        provider_scoped_commands: number;
+        reconciliation_commands: number;
+        reconciliations: number;
+        capture_completion_bindings: number;
+        terminal_intents: number;
+        provider_account_facts: number;
+        reconciliation_bridges: number;
+        canonical_snapshot_bindings: number;
+      }>(
+        `SELECT
+         (SELECT COUNT(*)::integer
+            FROM public.financial_provider_command_journal command
+           WHERE command.operation_id = ANY($1::uuid[])) AS journal_commands,
+         (SELECT COUNT(*)::integer
+            FROM public.financial_provider_command_dispatch_attempts attempt
+            JOIN public.financial_provider_command_journal command
+              ON command.command_id = attempt.command_id
+           WHERE command.operation_id = ANY($1::uuid[])) AS dispatch_attempts,
+         (SELECT COUNT(*)::integer
+            FROM public.financial_provider_command_outcome_facts outcome
+            JOIN public.financial_provider_command_journal command
+              ON command.command_id = outcome.command_id
+           WHERE command.operation_id = ANY($1::uuid[])
+             AND outcome.outcome_kind = 'OUTCOME_OBSERVED'
+             AND outcome.retryable IS FALSE) AS observed_outcomes,
+         (SELECT COUNT(*)::integer
+            FROM public.universal_v1_prepared_financial_commands prepared
+           WHERE prepared.operation_id = ANY($1::uuid[])) AS prepared_commands,
+         (SELECT COUNT(*)::integer
+            FROM public.universal_v1_prepared_financial_commands prepared
+            JOIN public.financial_provider_command_journal command
+              ON command.prepared_financial_command_id = prepared.prepared_command_id
+             AND command.prepared_authority_sha256 = prepared.authority_context_sha256
+             AND command.work_order_id IS NOT DISTINCT FROM prepared.work_order_id
+             AND command.request_sha256 = prepared.provider_request_sha256
+           WHERE prepared.operation_id = ANY($1::uuid[])) AS exact_prepared_requests,
+         (SELECT COUNT(*)::integer
+            FROM public.universal_v1_fake_financial_lifecycle_bridges bridge
+           WHERE bridge.fake_operation_id = ANY($1::uuid[])) AS lifecycle_bridges,
+         (SELECT COUNT(*)::integer
+            FROM public.universal_v1_prepared_financial_commands prepared
+           WHERE prepared.operation_id = ANY($1::uuid[])
+             AND prepared.operation_kind IN (
+               'PREPARE_PAYMENT_METHOD', 'AUTHORIZE', 'SECURE'
+             )
+             AND prepared.work_order_id IS NULL) AS pre_work_order_commands,
+         (SELECT COUNT(*)::integer
+            FROM public.universal_v1_prepared_financial_commands prepared
+           WHERE prepared.operation_id = ANY($1::uuid[])
+             AND prepared.operation_kind IN (
+               'CAPTURE', 'REFUND', 'SETTLE', 'FUND',
+               'PROVIDER_RELEASE', 'PAYOUT', 'OBSERVE_BANK_SETTLEMENT'
+             )
+             AND prepared.work_order_id = $2) AS post_work_order_commands,
+         (SELECT COUNT(*)::integer
+            FROM public.financial_provider_command_journal command
+           WHERE command.operation_id = ANY($1::uuid[])
+             AND command.operation_kind IN (
+               'ONBOARD_PROVIDER', 'REFRESH_PROVIDER_ACCOUNT_STATE'
+             )
+             AND command.prepared_financial_command_id IS NULL
+             AND command.prepared_authority_sha256 IS NULL
+             AND command.task_draft_id IS NULL
+             AND command.task_id IS NULL
+             AND command.work_order_id IS NULL
+             AND command.related_operation_id IS NULL
+             AND command.amount_cents IS NULL
+             AND command.currency IS NULL
+             AND command.recorded_actor_id = $5
+             AND command.recorded_actor_kind = 'PARTICIPANT') AS provider_scoped_commands,
+         (SELECT COUNT(*)::integer
+            FROM public.financial_provider_command_journal command
+           WHERE command.operation_id = $3
+             AND command.operation_kind = 'RECONCILE'
+             AND command.prepared_financial_command_id IS NULL
+             AND command.prepared_authority_sha256 IS NULL
+             AND command.task_draft_id IS NULL
+             AND command.task_id IS NULL
+             AND command.work_order_id = $2
+             AND command.related_operation_id = $4
+             AND command.amount_cents IS NULL
+             AND command.currency IS NULL
+             AND command.recorded_actor_id = $6
+             AND command.recorded_actor_kind = 'PARTICIPANT') AS reconciliation_commands,
+         (SELECT COUNT(*)::integer
+            FROM public.task_reconciliation_facts reconciliation
+           WHERE reconciliation.id = $7
+             AND reconciliation.work_order_id = $2
+             AND reconciliation.evidence->>'operationId' = $3::text) AS reconciliations,
+         (SELECT COUNT(*)::integer
+            FROM public.universal_v1_prepared_financial_commands prepared
+           WHERE prepared.operation_id = $8
+             AND prepared.operation_kind = 'CAPTURE'
+             AND prepared.work_order_id = $2
+             AND prepared.completion_fact_id = $9) AS capture_completion_bindings,
+         (SELECT COUNT(*)::integer
+            FROM public.universal_v1_fake_terminal_lifecycle_intents intent
+           WHERE intent.work_order_id = $2
+             AND intent.idempotency_key = $10
+             AND intent.requested_by = $6
+             AND intent.terminal_path = $11) AS terminal_intents,
+         (SELECT COUNT(*)::integer
+            FROM public.universal_v1_fake_provider_account_facts account
+           WHERE account.provider_subject_kind = CASE
+                   WHEN $12::UUID IS NULL THEN 'USER'
+                   ELSE 'ORGANIZATION'
+                 END
+             AND account.provider_user_id IS NOT DISTINCT FROM CASE
+                   WHEN $12::UUID IS NULL THEN $5::UUID
+                   ELSE NULL
+                 END
+             AND account.provider_organization_id IS NOT DISTINCT FROM $12::UUID
+             AND account.recorded_by = $5
+             AND account.account_state = 'ENABLED'
+             AND account.payouts_enabled IS TRUE) AS provider_account_facts,
+         (SELECT COUNT(*)::integer
+            FROM public.universal_v1_fake_reconciliation_bridges bridge
+            JOIN public.universal_v1_fake_terminal_lifecycle_intents intent
+              ON intent.terminal_intent_id = bridge.terminal_intent_id
+           WHERE bridge.reconciliation_fact_id = $7
+             AND intent.work_order_id = $2
+             AND bridge.provider_account_fact_id IS NOT DISTINCT FROM intent.provider_account_fact_id
+         ) AS reconciliation_bridges,
+         (SELECT COUNT(*)::integer
+            FROM public.universal_v1_fake_reconciliation_bridges bridge
+            JOIN public.task_reconciliation_facts reconciliation
+              ON reconciliation.id = bridge.reconciliation_fact_id
+            JOIN public.hxos_fake_financial_operation_events_v1 fake_event
+              ON fake_event.event_id = bridge.fake_operation_event_id
+           WHERE bridge.reconciliation_fact_id = $7
+             AND fake_event.metadata->>'reconciliationSnapshotSha256' =
+                 public.universal_v1_reconciliation_snapshot_sha256_v1(reconciliation.id)
+             AND reconciliation.evidence->>'reconciliationSnapshotSha256' =
+                 public.universal_v1_reconciliation_snapshot_sha256_v1(reconciliation.id)
+         ) AS canonical_snapshot_bindings`,
+        [
+          operationIds,
+          materialized.work_order_id,
+          reconciliationOperationId,
+          terminalRelatedOperationId,
+          lane.fixture.provider.actor_user_id,
+          lane.fixture.posterUserId,
+          terminal.reconciliation_id,
+          deterministicUuid(lifecycleKey, 'capture'),
+          approved.completion_fact_id,
+          lifecycleKey,
+          path,
+          lane.fixture.provider.provider_organization_id,
+        ]
+      );
+      const expectedPreparedCommands = 3 + terminalLifecycleOperationIds.length;
+      expect(authority.rows[0]).toEqual({
+        journal_commands: operationIds.length,
+        dispatch_attempts: operationIds.length,
+        observed_outcomes: operationIds.length,
+        prepared_commands: expectedPreparedCommands,
+        exact_prepared_requests: expectedPreparedCommands,
+        lifecycle_bridges: expectedPreparedCommands,
+        pre_work_order_commands: 3,
+        post_work_order_commands: terminalLifecycleOperationIds.length,
+        provider_scoped_commands: providerAccountOperationIds.length,
+        reconciliation_commands: 1,
+        reconciliations: 1,
+        capture_completion_bindings: 1,
+        terminal_intents: 1,
+        provider_account_facts: path === 'SETTLED' ? 1 : 0,
+        reconciliation_bridges: 1,
+        canonical_snapshot_bindings: 1,
+      });
+    }
+  );
 });

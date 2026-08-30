@@ -719,6 +719,7 @@ describePg('HX/OS canonical PostgreSQL lifecycle', () => {
       currency: 'usd',
       relatedOperationId: underpaidPayout.operationId,
       scenario: 'RECONCILIATION_MISMATCH',
+      reconciliationSnapshotSha256: 'b'.repeat(64),
     });
     expect(mismatch).toMatchObject({ providerKind: 'FAKE', state: 'MISMATCH' });
     const mismatchEvidence = await db.query<{
@@ -787,6 +788,7 @@ describePg('HX/OS canonical PostgreSQL lifecycle', () => {
       amountCents: NET_WORKER_PAYOUT_CENTS,
       currency: 'usd',
       relatedOperationId: payout.operationId,
+      reconciliationSnapshotSha256: 'c'.repeat(64),
     } as const;
     const fakeReconciliation = await financialProvider.reconcile(reconciliationInput);
     const fakeReconciliationReplay = await financialProvider.reconcile(reconciliationInput);

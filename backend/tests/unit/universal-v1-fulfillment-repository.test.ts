@@ -25,6 +25,8 @@ const ids = {
   bankSettlement: '10000000-0000-4000-8000-000000000019',
   execution: '10000000-0000-4000-8000-000000000020',
   completionExecution: '10000000-0000-4000-8000-000000000021',
+  terminalIntent: '10000000-0000-4000-8000-000000000022',
+  providerAccountFact: '10000000-0000-4000-8000-000000000023',
 };
 
 const context = {
@@ -175,7 +177,8 @@ describe('PostgresUniversalV1FulfillmentRepository', () => {
       expectedCustomerLedger,
       expectedProviderLedger
     ) => {
-      const query = vi.fn(async (sql: string) => {
+      let terminalIntent: Record<string, unknown> | undefined;
+      const query = vi.fn(async (sql: string, parameters: readonly unknown[] = []) => {
         if (sql.includes('SELECT work_order.id AS work_order_id'))
           return {
             rows: [{ ...context, execution_version: 6, execution_state: 'COMPLETED' }],
@@ -183,6 +186,9 @@ describe('PostgresUniversalV1FulfillmentRepository', () => {
           };
         if (sql.includes('FROM task_reconciliation_facts') && sql.includes('idempotency_key')) {
           return { rows: [], rowCount: 0 };
+        }
+        if (sql.includes('FROM public.universal_v1_fake_terminal_lifecycle_intents intent')) {
+          return { rows: terminalIntent ? [terminalIntent] : [], rowCount: terminalIntent ? 1 : 0 };
         }
         if (sql.includes('FROM task_completion_facts completion')) {
           return {
@@ -229,19 +235,51 @@ describe('PostgresUniversalV1FulfillmentRepository', () => {
         ) {
           return { rows: [], rowCount: 0 };
         }
+        if (sql.includes('INSERT INTO public.universal_v1_fake_terminal_lifecycle_intents')) {
+          terminalIntent = {
+            terminal_intent_id: ids.terminalIntent,
+            idempotency_key: parameters[7],
+            request_sha256: parameters[8],
+            terminal_path: path,
+            work_order_id: ids.workOrder,
+            task_draft_id: ids.draft,
+            task_id: ids.task,
+            eligibility_decision_id: ids.eligibility,
+            scope_version_id: ids.scope,
+            scope_version: 1,
+            scope_hash: 'a'.repeat(64),
+            completion_execution_fact_id: ids.execution,
+            execution_version: 6,
+            completion_fact_id: ids.approved,
+            completion_version: 2,
+            starting_financial_event_id: ids.secured,
+            starting_financial_operation_id: '20000000-0000-4000-8000-000000000000',
+            starting_financial_event_kind: 'SECURED',
+            starting_financial_status: 'SUCCEEDED',
+            starting_financial_amount_cents: 12_000,
+            starting_financial_currency: 'USD',
+            expected_financial_version: 2,
+            expected_reconciliation_version: 0,
+            prior_reconciliation_fact_id: null,
+            starting_financial_version: 2,
+            starting_reconciliation_version: 0,
+            customer_amount_cents: 12_000,
+            provider_amount_cents: 9_000,
+            currency: 'USD',
+            provider_subject_kind: 'USER',
+            provider_subject_id: ids.provider,
+            provider_account_fact_id: path === 'SETTLED' ? ids.providerAccountFact : null,
+            requested_by: ids.poster,
+            authority_context_sha256: 'b'.repeat(64),
+            materialized_at: '2026-08-28T12:00:00.000Z',
+          };
+          return { rows: [{ terminal_intent_id: ids.terminalIntent }], rowCount: 1 };
+        }
         return { rows: [], rowCount: 1 };
       }) as unknown as QueryFn;
       const executeFinancialEvent = vi.fn(async (command: { operationKind: string }) =>
         successEvent(command.operationKind)
       );
-      const onboardProvider = vi.fn().mockResolvedValue({
-        externalReference: 'fake_provider_account_onboarded',
-      });
-      const refreshProviderAccountState = vi.fn().mockResolvedValue({
-        externalReference: 'fake_provider_account_enabled',
-        accountState: 'ENABLED',
-        payoutsEnabled: true,
-      });
       const reconcile = vi.fn().mockResolvedValue({
         id: ids.reconciliation,
         operationId: '20000000-0000-4000-8000-000000000004',
@@ -255,11 +293,26 @@ describe('PostgresUniversalV1FulfillmentRepository', () => {
       });
       const finance = {
         executeFinancialEvent,
-        onboardProvider,
-        refreshProviderAccountState,
         reconcile,
       };
-      const repository = new PostgresUniversalV1FulfillmentRepository(databaseFor(query));
+      const providerAccount = {
+        providerAccountFactId: ids.providerAccountFact,
+        providerAccountReference: 'fake_provider_account_onboarded',
+      };
+      const providerAccounts = {
+        materializeFromDurableEvidence: vi.fn(),
+        findLatestPayoutReady: vi.fn(),
+        findLatestPayoutReadyInTransaction: vi
+          .fn()
+          .mockResolvedValue(path === 'SETTLED' ? providerAccount : null),
+        findPinnedPayoutReadyInTransaction: vi
+          .fn()
+          .mockResolvedValue(path === 'SETTLED' ? providerAccount : null),
+      };
+      const repository = new PostgresUniversalV1FulfillmentRepository(
+        databaseFor(query),
+        providerAccounts as never
+      );
       const result = await repository.completeFakeFinancialLifecycle(
         ids.poster,
         {
@@ -301,6 +354,7 @@ describe('PostgresUniversalV1FulfillmentRepository', () => {
       expect(reconcile).toHaveBeenCalledWith(
         expect.objectContaining({
           providerKind: 'FAKE',
+          terminalIntentId: ids.terminalIntent,
           snapshot: expect.objectContaining(expectedSnapshot),
         })
       );
@@ -317,8 +371,9 @@ describe('PostgresUniversalV1FulfillmentRepository', () => {
         payment_creation_performed: false,
         hard_assignment_created: false,
       });
-      expect(onboardProvider).toHaveBeenCalledTimes(path === 'SETTLED' ? 1 : 0);
-      expect(refreshProviderAccountState).toHaveBeenCalledTimes(path === 'SETTLED' ? 1 : 0);
+      expect(providerAccounts.findLatestPayoutReadyInTransaction).toHaveBeenCalledTimes(
+        path === 'SETTLED' ? 1 : 0
+      );
     }
   );
 });

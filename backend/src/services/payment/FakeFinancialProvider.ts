@@ -16,6 +16,7 @@ import type {
   ProviderAccountStateResult,
   PreparePaymentMethodCommand,
   ProviderOnboardingCommand,
+  ReconciliationCommand,
   RefundCommand,
   SecureFinancialSecurityCommand,
   WebhookIngestionCommand,
@@ -132,6 +133,10 @@ function assertCommand(input: FinancialOperationCommand): void {
 
 function assertReference(value: unknown, error: string): asserts value is string {
   if (typeof value !== 'string' || !value.trim()) throw new Error(error);
+}
+
+function assertSha256(value: unknown, error: string): asserts value is string {
+  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/u.test(value)) throw new Error(error);
 }
 
 function externalReference(kind: FinancialOperationKind, operationId: string): string {
@@ -439,6 +444,14 @@ function exactMetadataFor(
       return {
         providerEventReference: exactRequest.providerEventReference,
         authenticated: exactRequest.authenticated === true,
+      };
+    case 'RECONCILE':
+      assertSha256(
+        exactRequest.reconciliationSnapshotSha256,
+        'FAKE_FINANCIAL_RECONCILIATION_SNAPSHOT_SHA256_INVALID'
+      );
+      return {
+        reconciliationSnapshotSha256: exactRequest.reconciliationSnapshotSha256,
       };
     default:
       return {};
@@ -758,8 +771,14 @@ export class FakeFinancialProvider implements FinancialProviderPorts {
     });
   }
 
-  reconcile(input: FakeInput<FinancialOperationCommand>): Promise<FinancialOperationResult> {
-    return this.execute('RECONCILE', input);
+  reconcile(input: FakeInput<ReconciliationCommand>): Promise<FinancialOperationResult> {
+    assertSha256(
+      input.reconciliationSnapshotSha256,
+      'FAKE_FINANCIAL_RECONCILIATION_SNAPSHOT_SHA256_INVALID'
+    );
+    return this.execute('RECONCILE', input, {
+      reconciliationSnapshotSha256: input.reconciliationSnapshotSha256,
+    });
   }
 }
 

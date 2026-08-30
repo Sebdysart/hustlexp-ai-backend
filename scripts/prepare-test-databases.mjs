@@ -49,6 +49,15 @@ export const NONPRODUCTION_TEST_FINANCIAL_MIGRATIONS = Object.freeze([
     evidenceTable: 'hxos_fake_financial_schema_evidence_v4',
     requiredMarker: 'universal_v1_fake_financial_lifecycle_bridges',
   }),
+  Object.freeze({
+    name: '20260922_universal_v1_fake_terminal_lifecycle_intent_v1',
+    path: resolve(
+      scriptDirectory,
+      '../backend/database/migrations/20260922_universal_v1_fake_terminal_lifecycle_intent_v1.sql'
+    ),
+    evidenceTable: 'hxos_fake_financial_schema_evidence_v5',
+    requiredMarker: 'universal_v1_fake_terminal_lifecycle_intents',
+  }),
 ]);
 export const NONPRODUCTION_TEST_FINANCIAL_MIGRATION =
   NONPRODUCTION_TEST_FINANCIAL_MIGRATIONS.at(-1).name;

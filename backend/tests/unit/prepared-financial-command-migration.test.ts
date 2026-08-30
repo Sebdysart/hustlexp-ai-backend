@@ -189,11 +189,11 @@ describe('Universal V1 prepared financial command migration', () => {
       'ordered 128-entry migration runner applies that exact three-migration tail after its engine prerequisites'
     );
     expect(migrationDocs).toContain(
-      '`20260921` remains outside both foundational baselines and `REQUIRED_MIGRATION_FILES`'
+      '`20260921` and `20260922` remain outside both foundational baselines and `REQUIRED_MIGRATION_FILES`'
     );
   });
 
-  it('documents the narrow three-phase Work Order path and keeps every other caller-owned path held', () => {
+  it('documents the Work Order and fake post-completion paths while preserving exact holds', () => {
     expect(financialApplicationSource).toContain(
       'UNIVERSAL_FINANCE_CALLER_OWNED_TRANSACTION_PREPARED_AUTHORITY_REFUSED'
     );
@@ -204,7 +204,10 @@ describe('Universal V1 prepared financial command migration', () => {
       'commits one single-winner command witness',
       'Crash replay reads the exact durable event and outcome',
       'proves the exact secured-event bridge',
-      'full fulfillment lifecycle therefore remains held before adapter entry',
+      'exercises both `SETTLED` and `FULL_REFUND` terminal paths',
+      '`VOID`, `ADJUST`, `REVERSAL`, and `INGEST_WEBHOOK` remain refused before adapter entry',
+      'canonical append-only double-entry ledger',
+      'No approved real-provider adapter exists',
     ]) {
       expect(migrationDocs).toContain(token);
     }

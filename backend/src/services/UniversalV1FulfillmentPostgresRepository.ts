@@ -10,13 +10,15 @@ import {
 } from './UniversalV1FulfillmentContracts.js';
 import { deterministicUuid } from './UniversalV1WorkOrderPostgresRepository.js';
 import type { UniversalV1FakeFinancialApplicationService } from './payment/UniversalV1FinancialApplicationService.js';
+import {
+  PostgresUniversalV1FakeProviderAccountRepository,
+  type UniversalV1FakeProviderAccountSubject,
+  type UniversalV1FakeProviderAccountRepository,
+} from './payment/UniversalV1FakeProviderAccountRepository.js';
 
 type FinancePort = Pick<
   UniversalV1FakeFinancialApplicationService,
-  | 'executeFinancialEvent'
-  | 'onboardProvider'
-  | 'refreshProviderAccountState'
-  | 'reconcile'
+  'executeFinancialEvent' | 'reconcile'
 >;
 
 interface FulfillmentContext {
@@ -113,6 +115,46 @@ interface ReconciliationReplay {
   recorded_by: string;
   capture_completion_fact_id: string | null;
   capture_expected_version: number | null;
+  terminal_intent_id: string;
+  terminal_intent_request_sha256: string;
+}
+
+interface TerminalLifecycleIntentRow {
+  terminal_intent_id: string;
+  idempotency_key: string;
+  request_sha256: string;
+  terminal_path: 'SETTLED' | 'FULL_REFUND';
+  work_order_id: string;
+  task_draft_id: string;
+  task_id: string;
+  eligibility_decision_id: string;
+  scope_version_id: string;
+  scope_version: number;
+  scope_hash: string;
+  completion_execution_fact_id: string;
+  execution_version: number;
+  completion_fact_id: string;
+  completion_version: number;
+  starting_financial_event_id: string;
+  starting_financial_operation_id: string;
+  starting_financial_event_kind: string;
+  starting_financial_status: string;
+  starting_financial_amount_cents: number | null;
+  starting_financial_currency: string | null;
+  expected_financial_version: number;
+  expected_reconciliation_version: number;
+  prior_reconciliation_fact_id: string | null;
+  starting_financial_version: number;
+  starting_reconciliation_version: number;
+  customer_amount_cents: number;
+  provider_amount_cents: number;
+  currency: string;
+  provider_subject_kind: 'USER' | 'ORGANIZATION';
+  provider_subject_id: string;
+  provider_account_fact_id: string | null;
+  requested_by: string;
+  authority_context_sha256: string;
+  materialized_at: Date | string;
 }
 
 export interface UniversalV1EvidenceResult {
@@ -233,6 +275,14 @@ function requireContext(row: FulfillmentContext | undefined): FulfillmentContext
   return row;
 }
 
+function providerAccountSubject(
+  context: FulfillmentContext
+): UniversalV1FakeProviderAccountSubject {
+  return context.provider_organization_id === null
+    ? { kind: 'USER', userId: context.provider_user_id }
+    : { kind: 'ORGANIZATION', organizationId: context.provider_organization_id };
+}
+
 function assertScopeVersion(context: FulfillmentContext, expected: number): void {
   if (Number(context.scope_version) !== expected) {
     throw new UniversalV1FulfillmentError(
@@ -316,6 +366,131 @@ async function lockContext(
 ): Promise<FulfillmentContext> {
   const result = await query<FulfillmentContext>(LOCK_CONTEXT_SQL, [workOrderId, actorId]);
   return requireContext(result.rows[0]);
+}
+
+async function lockTerminalLifecycleIntents(
+  query: QueryFn,
+  idempotencyKey: string,
+  workOrderId: string
+): Promise<TerminalLifecycleIntentRow[]> {
+  const result = await query<TerminalLifecycleIntentRow>(
+    `SELECT intent.terminal_intent_id,
+            intent.idempotency_key,
+            intent.request_sha256,
+            intent.terminal_path,
+            intent.work_order_id,
+            intent.task_draft_id,
+            intent.task_id,
+            intent.eligibility_decision_id,
+            intent.scope_version_id,
+            scope.version AS scope_version,
+            scope.scope_hash,
+            intent.completion_execution_fact_id,
+            execution.execution_version,
+            intent.completion_fact_id,
+            completion.completion_version,
+            intent.starting_financial_event_id,
+            starting.operation_id AS starting_financial_operation_id,
+            starting.event_kind AS starting_financial_event_kind,
+            starting.status AS starting_financial_status,
+            starting.amount_cents AS starting_financial_amount_cents,
+            starting.currency AS starting_financial_currency,
+            intent.expected_financial_version,
+            intent.expected_reconciliation_version,
+            intent.prior_reconciliation_fact_id,
+            intent.starting_financial_version,
+            intent.starting_reconciliation_version,
+            intent.customer_amount_cents,
+            intent.provider_amount_cents,
+            intent.currency,
+            intent.provider_subject_kind,
+            intent.provider_subject_id,
+            intent.provider_account_fact_id,
+            intent.requested_by,
+            intent.authority_context_sha256,
+            intent.materialized_at
+       FROM public.universal_v1_fake_terminal_lifecycle_intents intent
+       JOIN public.task_scope_versions scope
+         ON scope.id = intent.scope_version_id
+       JOIN public.task_work_order_execution_facts execution
+         ON execution.id = intent.completion_execution_fact_id
+       JOIN public.task_completion_facts completion
+         ON completion.id = intent.completion_fact_id
+       JOIN public.task_financial_security_events starting
+         ON starting.id = intent.starting_financial_event_id
+      WHERE intent.idempotency_key = $1
+         OR intent.work_order_id = $2
+      ORDER BY intent.terminal_intent_id
+      FOR UPDATE OF intent`,
+    [idempotencyKey, workOrderId]
+  );
+  return result.rows;
+}
+
+function assertTerminalLifecycleIntentIdentity(
+  intent: TerminalLifecycleIntentRow,
+  context: FulfillmentContext,
+  actorId: string,
+  input: CompleteFakeFinancialLifecyclePublic,
+  requestSha256: string
+): void {
+  const expectedSubjectKind = context.provider_organization_id === null ? 'USER' : 'ORGANIZATION';
+  const expectedSubjectId = context.provider_organization_id ?? context.provider_user_id;
+  const materializedAt = new Date(intent.materialized_at);
+  if (
+    intent.idempotency_key !== input.idempotency_key ||
+    intent.request_sha256 !== requestSha256 ||
+    intent.terminal_path !== input.path ||
+    intent.work_order_id !== context.work_order_id ||
+    intent.task_draft_id !== context.task_draft_id ||
+    intent.task_id !== context.task_id ||
+    intent.eligibility_decision_id !== context.eligibility_decision_id ||
+    intent.scope_version_id !== context.scope_version_id ||
+    Number(intent.scope_version) !== Number(context.scope_version) ||
+    intent.scope_hash !== context.scope_hash ||
+    intent.completion_execution_fact_id !== context.execution_fact_id ||
+    Number(intent.execution_version) !== input.expected_execution_version ||
+    intent.completion_fact_id !== input.approved_completion_fact_id ||
+    (intent.starting_financial_event_kind !== 'SECURED' &&
+      intent.starting_financial_event_kind !== 'ADJUSTMENT_AUTHORIZED') ||
+    intent.starting_financial_status !== 'SUCCEEDED' ||
+    Number(intent.starting_financial_amount_cents) !== Number(context.customer_total_cents) ||
+    intent.starting_financial_currency !== context.currency ||
+    Number(intent.expected_financial_version) !== input.expected_financial_version ||
+    Number(intent.starting_financial_version) !== input.expected_financial_version ||
+    Number(intent.expected_reconciliation_version) !== input.expected_reconciliation_version ||
+    Number(intent.starting_reconciliation_version) !== input.expected_reconciliation_version ||
+    Number(intent.customer_amount_cents) !== Number(context.customer_total_cents) ||
+    Number(intent.provider_amount_cents) !== Number(context.provider_payout_cents) ||
+    intent.currency !== context.currency ||
+    intent.provider_subject_kind !== expectedSubjectKind ||
+    intent.provider_subject_id !== expectedSubjectId ||
+    (input.path === 'SETTLED') !== (intent.provider_account_fact_id !== null) ||
+    intent.requested_by !== actorId ||
+    !/^[0-9a-f]{64}$/u.test(intent.authority_context_sha256) ||
+    Number.isNaN(materializedAt.getTime())
+  ) {
+    throw new UniversalV1FulfillmentError(
+      'FULFILLMENT_IDEMPOTENCY_CONFLICT',
+      'The terminal lifecycle intent is occupied by a different immutable authority claim.'
+    );
+  }
+}
+
+function startingFinancialEventFromIntent(intent: TerminalLifecycleIntentRow): FinancialRow {
+  return {
+    id: intent.starting_financial_event_id,
+    operation_id: intent.starting_financial_operation_id,
+    event_kind: intent.starting_financial_event_kind,
+    status: intent.starting_financial_status,
+    expected_version: Number(intent.starting_financial_version),
+    amount_cents:
+      intent.starting_financial_amount_cents === null
+        ? null
+        : Number(intent.starting_financial_amount_cents),
+    currency: intent.starting_financial_currency,
+    scope_version_id: intent.scope_version_id,
+  };
 }
 
 async function proofReplay(
@@ -434,7 +609,12 @@ async function insertProof(
 }
 
 export class PostgresUniversalV1FulfillmentRepository {
-  constructor(private readonly database: Database = db) {}
+  constructor(
+    private readonly database: Database = db,
+    private readonly providerAccounts: UniversalV1FakeProviderAccountRepository = new PostgresUniversalV1FakeProviderAccountRepository(
+      database
+    )
+  ) {}
 
   async recordExecutionEvidence(
     actorId: string,
@@ -495,7 +675,7 @@ export class PostgresUniversalV1FulfillmentRepository {
         input.evidence_kind,
         requestHash
       );
-    return {
+      return {
         proof_id: proof.id,
         evidence_kind: input.evidence_kind,
         scope_version_id: context.scope_version_id,
@@ -837,6 +1017,18 @@ export class PostgresUniversalV1FulfillmentRepository {
     input: CompleteFakeFinancialLifecyclePublic,
     finance: FinancePort
   ): Promise<UniversalV1FakeLifecycleResult> {
+    const intentRequest = {
+      schemaVersion: 1,
+      workOrderId: input.work_order_id,
+      approvedCompletionFactId: input.approved_completion_fact_id,
+      path: input.path,
+      expectedExecutionVersion: input.expected_execution_version,
+      startingFinancialVersion: input.expected_financial_version,
+      startingReconciliationVersion: input.expected_reconciliation_version,
+      idempotencyKey: input.idempotency_key,
+      actorId,
+    } as const;
+    const intentRequestSha256 = universalV1FulfillmentCommandHash(intentRequest);
     const prepared = await this.database.serializableTransaction(async (query) => {
       await query(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, [
         `fulfillment:${input.work_order_id}`,
@@ -850,31 +1042,28 @@ export class PostgresUniversalV1FulfillmentRepository {
           'Fake capture requires the exact completed execution state.'
         );
       }
-      if (input.path === 'SETTLED' && !context.provider_authority_current) {
-        throw new UniversalV1FulfillmentError(
-          'FULFILLMENT_PROVIDER_AUTHORITY_REVOKED',
-          'Settlement is unavailable because provider authority was revoked.'
-        );
-      }
-      if (context.incident_blocked) {
-        throw new UniversalV1FulfillmentError(
-          'FULFILLMENT_INCIDENT_BLOCKED',
-          'Financial completion is blocked while a safety incident remains open.'
-        );
-      }
-
       const replay = await query<ReconciliationReplay>(
         `SELECT reconciliation.id, reconciliation.work_order_id,
                 reconciliation.reconciliation_version,
-                capture_event_id, refund_event_id, settlement_event_id,
-                funding_event_id, provider_release_event_id, payout_event_id,
-                bank_settlement_event_id,
+                reconciliation.capture_event_id,
+                reconciliation.refund_event_id,
+                reconciliation.settlement_event_id,
+                reconciliation.funding_event_id,
+                reconciliation.provider_release_event_id,
+                reconciliation.payout_event_id,
+                reconciliation.bank_settlement_event_id,
                 reconciliation_state, reconciliation.recorded_by,
                 capture.completion_fact_id AS capture_completion_fact_id,
-                capture.expected_version AS capture_expected_version
+                capture.expected_version AS capture_expected_version,
+                terminal_intent.terminal_intent_id AS terminal_intent_id,
+                terminal_intent.request_sha256 AS terminal_intent_request_sha256
            FROM task_reconciliation_facts reconciliation
            LEFT JOIN task_financial_security_events capture
              ON capture.id = reconciliation.capture_event_id
+           JOIN public.universal_v1_fake_reconciliation_bridges reconciliation_bridge
+             ON reconciliation_bridge.reconciliation_fact_id = reconciliation.id
+           JOIN public.universal_v1_fake_terminal_lifecycle_intents terminal_intent
+             ON terminal_intent.terminal_intent_id = reconciliation_bridge.terminal_intent_id
           WHERE reconciliation.idempotency_key = $1
           FOR UPDATE OF reconciliation`,
         [`${input.idempotency_key}:reconciliation`]
@@ -892,14 +1081,19 @@ export class PostgresUniversalV1FulfillmentRepository {
               row.refund_event_id == null
             : row.capture_event_id != null &&
               row.refund_event_id != null &&
-              row.settlement_event_id == null;
+              row.settlement_event_id == null &&
+              row.funding_event_id == null &&
+              row.provider_release_event_id == null &&
+              row.payout_event_id == null &&
+              row.bank_settlement_event_id == null;
         if (
           row.work_order_id !== context.work_order_id ||
           !samePath ||
           row.recorded_by !== actorId ||
           row.capture_completion_fact_id !== input.approved_completion_fact_id ||
           Number(row.capture_expected_version) !== input.expected_financial_version + 1 ||
-          Number(row.reconciliation_version) !== input.expected_reconciliation_version + 1
+          Number(row.reconciliation_version) !== input.expected_reconciliation_version + 1 ||
+          row.terminal_intent_request_sha256 !== intentRequestSha256
         ) {
           throw new UniversalV1FulfillmentError(
             'FULFILLMENT_IDEMPOTENCY_CONFLICT',
@@ -925,6 +1119,69 @@ export class PostgresUniversalV1FulfillmentRepository {
             hard_assignment_created: false as const,
           },
         };
+      }
+
+      const occupiedIntents = await lockTerminalLifecycleIntents(
+        query,
+        input.idempotency_key,
+        context.work_order_id
+      );
+      if (occupiedIntents.length > 1) {
+        throw new UniversalV1FulfillmentError(
+          'FULFILLMENT_IDEMPOTENCY_CONFLICT',
+          'The Work Order and lifecycle key are occupied by different terminal intents.'
+        );
+      }
+      const occupiedIntent = occupiedIntents[0];
+      if (occupiedIntent) {
+        assertTerminalLifecycleIntentIdentity(
+          occupiedIntent,
+          context,
+          actorId,
+          input,
+          intentRequestSha256
+        );
+        const providerAccount =
+          occupiedIntent.provider_account_fact_id === null
+            ? null
+            : await this.providerAccounts.findPinnedPayoutReadyInTransaction(query, {
+                providerAccountFactId: occupiedIntent.provider_account_fact_id,
+                providerSubject: providerAccountSubject(context),
+              });
+        if (input.path === 'SETTLED' && !providerAccount) {
+          throw new UniversalV1FulfillmentError(
+            'FULFILLMENT_PROVIDER_ACCOUNT_UNAVAILABLE',
+            'The exact fake provider-account authority pinned by the terminal intent is unavailable.'
+          );
+        }
+        return {
+          completed: false as const,
+          context,
+          terminalIntent: occupiedIntent,
+          predecessor: startingFinancialEventFromIntent(occupiedIntent),
+          prior:
+            occupiedIntent.prior_reconciliation_fact_id === null
+              ? undefined
+              : {
+                  id: occupiedIntent.prior_reconciliation_fact_id,
+                  reconciliation_version: Number(occupiedIntent.starting_reconciliation_version),
+                },
+          priorVersion: Number(occupiedIntent.starting_reconciliation_version),
+          providerAccount,
+        };
+      }
+
+      if (input.path === 'SETTLED' && !context.provider_authority_current) {
+        throw new UniversalV1FulfillmentError(
+          'FULFILLMENT_PROVIDER_AUTHORITY_REVOKED',
+          'Settlement is unavailable because provider authority was revoked.'
+        );
+      }
+      if (context.incident_blocked) {
+        throw new UniversalV1FulfillmentError(
+          'FULFILLMENT_INCIDENT_BLOCKED',
+          'Financial completion is blocked while a safety incident remains open.'
+        );
       }
 
       const completionResult = await query<CompletionRow & { proof_state: string }>(
@@ -958,10 +1215,9 @@ export class PostgresUniversalV1FulfillmentRepository {
                 amount_cents, currency, scope_version_id
            FROM task_financial_security_events
           WHERE task_draft_id = $1
-          ORDER BY expected_version DESC
-          LIMIT 1
+            AND expected_version = $2
           FOR UPDATE`,
-        [context.task_draft_id]
+        [context.task_draft_id, input.expected_financial_version]
       );
       const predecessor = predecessorResult.rows[0];
       if (
@@ -996,212 +1252,258 @@ export class PostgresUniversalV1FulfillmentRepository {
           'The reconciliation snapshot changed.'
         );
       }
+      const providerAccount =
+        input.path === 'SETTLED'
+          ? await this.providerAccounts.findLatestPayoutReadyInTransaction(query, {
+              providerSubject: providerAccountSubject(context),
+            })
+          : null;
+      if (input.path === 'SETTLED' && !providerAccount) {
+        throw new UniversalV1FulfillmentError(
+          'FULFILLMENT_PROVIDER_ACCOUNT_UNAVAILABLE',
+          "Settlement requires the provider's exact latest enabled fake account fact."
+        );
+      }
+      const insertedIntent = await query<{ terminal_intent_id: string }>(
+        `INSERT INTO public.universal_v1_fake_terminal_lifecycle_intents (
+           terminal_path,
+           work_order_id,
+           completion_fact_id,
+           starting_financial_event_id,
+           provider_account_fact_id,
+           expected_financial_version,
+           expected_reconciliation_version,
+           idempotency_key,
+           request_sha256,
+           requested_by
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+         RETURNING terminal_intent_id`,
+        [
+          input.path,
+          context.work_order_id,
+          completion.id,
+          predecessor.id,
+          providerAccount?.providerAccountFactId ?? null,
+          input.expected_financial_version,
+          input.expected_reconciliation_version,
+          input.idempotency_key,
+          intentRequestSha256,
+          actorId,
+        ]
+      );
+      const terminalIntentId = insertedIntent.rows[0]?.terminal_intent_id;
+      if (!terminalIntentId) {
+        throw new UniversalV1FulfillmentError(
+          'FULFILLMENT_COMPLETION_STATE_CONFLICT',
+          'The durable terminal lifecycle intent was not created.'
+        );
+      }
+      const insertedIntents = await lockTerminalLifecycleIntents(
+        query,
+        input.idempotency_key,
+        context.work_order_id
+      );
+      const terminalIntent = insertedIntents[0];
+      if (
+        insertedIntents.length !== 1 ||
+        !terminalIntent ||
+        terminalIntent.terminal_intent_id !== terminalIntentId
+      ) {
+        throw new UniversalV1FulfillmentError(
+          'FULFILLMENT_COMPLETION_STATE_CONFLICT',
+          'The durable terminal lifecycle intent identity was not preserved.'
+        );
+      }
+      assertTerminalLifecycleIntentIdentity(
+        terminalIntent,
+        context,
+        actorId,
+        input,
+        intentRequestSha256
+      );
       return {
         completed: false as const,
         context,
-        completion,
+        terminalIntent,
         predecessor,
         prior,
         priorVersion,
+        providerAccount,
       };
     });
 
     if (prepared.completed) return prepared.result;
-    const { context, completion, predecessor, prior, priorVersion } = prepared;
-      const occurredAt = new Date().toISOString();
-      const common = {
-        providerKind: 'FAKE' as const,
-        providerExpectedVersion: 0,
-        taskDraftId: context.task_draft_id,
-        taskId: context.task_id,
-        eligibilityDecisionId: context.eligibility_decision_id,
-        scopeVersionId: context.scope_version_id,
-        recordedBy: actorId,
-        scenario: 'SUCCESS' as const,
-      };
-      let providerAccountReference: string | null = null;
-      if (input.path === 'SETTLED') {
-        const providerAccountKey = `fake-provider-account:${context.provider_user_id}`;
-        const providerAccount = await finance.onboardProvider({
-          providerKind: 'FAKE',
-          operationId: deterministicUuid(providerAccountKey, 'onboard'),
-          idempotencyKey: `${providerAccountKey}:onboard`,
-          providerExpectedVersion: 0,
-          providerId: context.provider_user_id,
-          scenario: 'SUCCESS',
-        });
-        const providerAccountState = await finance.refreshProviderAccountState({
-          providerKind: 'FAKE',
-          operationId: deterministicUuid(providerAccountKey, 'state'),
-          idempotencyKey: `${providerAccountKey}:state`,
-          providerExpectedVersion: 0,
-          providerId: context.provider_user_id,
-          providerAccountReference: providerAccount.externalReference,
-          scenario: 'SUCCESS',
-        });
-        if (
-          providerAccountState.accountState !== 'ENABLED' ||
-          !providerAccountState.payoutsEnabled
-        ) {
-          throw new UniversalV1FulfillmentError(
-            'FULFILLMENT_PROVIDER_ACCOUNT_UNAVAILABLE',
-            'The deterministic fake provider account is not payout-ready.'
-          );
-        }
-        providerAccountReference = providerAccount.externalReference;
+    const { terminalIntent, predecessor, prior, priorVersion, providerAccount } = prepared;
+    const occurredAt = new Date(terminalIntent.materialized_at).toISOString();
+    const common = {
+      providerKind: 'FAKE' as const,
+      providerExpectedVersion: 0,
+      taskDraftId: terminalIntent.task_draft_id,
+      taskId: terminalIntent.task_id,
+      eligibilityDecisionId: terminalIntent.eligibility_decision_id,
+      scopeVersionId: terminalIntent.scope_version_id,
+      recordedBy: actorId,
+      scenario: 'SUCCESS' as const,
+    };
+    const capture = await finance.executeFinancialEvent({
+      ...common,
+      operationKind: 'CAPTURE',
+      operationId: deterministicUuid(input.idempotency_key, 'capture'),
+      idempotencyKey: `${input.idempotency_key}:capture`,
+      lifecycleExpectedVersion: Number(terminalIntent.starting_financial_version) + 1,
+      occurredAt,
+      predecessorEventId: predecessor.id,
+      relatedOperationId: predecessor.operation_id,
+      amountCents: Number(terminalIntent.customer_amount_cents),
+      currency: terminalIntent.currency.toLowerCase(),
+      completionFactId: terminalIntent.completion_fact_id,
+    });
+
+    let settlement: Awaited<ReturnType<typeof finance.executeFinancialEvent>> | null = null;
+    let funding: Awaited<ReturnType<typeof finance.executeFinancialEvent>> | null = null;
+    let providerRelease: Awaited<ReturnType<typeof finance.executeFinancialEvent>> | null = null;
+    let payout: Awaited<ReturnType<typeof finance.executeFinancialEvent>> | null = null;
+    let bankSettlement: Awaited<ReturnType<typeof finance.executeFinancialEvent>> | null = null;
+    let refund: Awaited<ReturnType<typeof finance.executeFinancialEvent>> | null = null;
+    if (input.path === 'SETTLED') {
+      if (!providerAccount) {
+        throw new UniversalV1FulfillmentError(
+          'FULFILLMENT_PROVIDER_ACCOUNT_UNAVAILABLE',
+          'The exact provider account authority was not preserved for settlement.'
+        );
       }
-      const capture = await finance.executeFinancialEvent({
+      settlement = await finance.executeFinancialEvent({
         ...common,
-        operationKind: 'CAPTURE',
-        operationId: deterministicUuid(input.idempotency_key, 'capture'),
-        idempotencyKey: `${input.idempotency_key}:capture`,
-        lifecycleExpectedVersion: input.expected_financial_version + 1,
-        occurredAt,
-        predecessorEventId: predecessor.id,
-        relatedOperationId: predecessor.operation_id,
-        amountCents: Number(context.customer_total_cents),
-        currency: context.currency.toLowerCase(),
-        completionFactId: completion.id,
+        operationKind: 'SETTLE',
+        operationId: deterministicUuid(input.idempotency_key, 'settle'),
+        idempotencyKey: `${input.idempotency_key}:settle`,
+        lifecycleExpectedVersion: Number(terminalIntent.starting_financial_version) + 2,
+        occurredAt: new Date(Date.parse(occurredAt) + 1).toISOString(),
+        predecessorEventId: capture.id,
+        relatedOperationId: capture.operationId,
+        amountCents: Number(terminalIntent.customer_amount_cents),
+        currency: terminalIntent.currency.toLowerCase(),
       });
-
-      let settlement: Awaited<ReturnType<typeof finance.executeFinancialEvent>> | null = null;
-      let funding: Awaited<ReturnType<typeof finance.executeFinancialEvent>> | null = null;
-      let providerRelease: Awaited<ReturnType<typeof finance.executeFinancialEvent>> | null = null;
-      let payout: Awaited<ReturnType<typeof finance.executeFinancialEvent>> | null = null;
-      let bankSettlement: Awaited<ReturnType<typeof finance.executeFinancialEvent>> | null = null;
-      let refund: Awaited<ReturnType<typeof finance.executeFinancialEvent>> | null = null;
-      if (input.path === 'SETTLED') {
-        settlement = await finance.executeFinancialEvent({
-          ...common,
-          operationKind: 'SETTLE',
-          operationId: deterministicUuid(input.idempotency_key, 'settle'),
-          idempotencyKey: `${input.idempotency_key}:settle`,
-          lifecycleExpectedVersion: input.expected_financial_version + 2,
-          occurredAt: new Date(Date.parse(occurredAt) + 1).toISOString(),
-          predecessorEventId: capture.id,
-          relatedOperationId: capture.operationId,
-          amountCents: Number(context.customer_total_cents),
-          currency: context.currency.toLowerCase(),
-        });
-        funding = await finance.executeFinancialEvent({
-          ...common,
-          operationKind: 'FUND',
-          operationId: deterministicUuid(input.idempotency_key, 'fund'),
-          idempotencyKey: `${input.idempotency_key}:fund`,
-          lifecycleExpectedVersion: input.expected_financial_version + 3,
-          occurredAt: new Date(Date.parse(occurredAt) + 2).toISOString(),
-          predecessorEventId: settlement.id,
-          relatedOperationId: settlement.operationId,
-          amountCents: Number(context.customer_total_cents),
-          currency: context.currency.toLowerCase(),
-        });
-        providerRelease = await finance.executeFinancialEvent({
-          ...common,
-          operationKind: 'PROVIDER_RELEASE',
-          operationId: deterministicUuid(input.idempotency_key, 'provider-release'),
-          idempotencyKey: `${input.idempotency_key}:provider-release`,
-          lifecycleExpectedVersion: input.expected_financial_version + 4,
-          occurredAt: new Date(Date.parse(occurredAt) + 3).toISOString(),
-          predecessorEventId: funding.id,
-          relatedOperationId: funding.operationId,
-          amountCents: Number(context.provider_payout_cents),
-          currency: context.currency.toLowerCase(),
-        });
-        payout = await finance.executeFinancialEvent({
-          ...common,
-          operationKind: 'PAYOUT',
-          operationId: deterministicUuid(input.idempotency_key, 'payout'),
-          idempotencyKey: `${input.idempotency_key}:payout`,
-          lifecycleExpectedVersion: input.expected_financial_version + 5,
-          occurredAt: new Date(Date.parse(occurredAt) + 4).toISOString(),
-          predecessorEventId: providerRelease.id,
-          relatedOperationId: providerRelease.operationId,
-          amountCents: Number(context.provider_payout_cents),
-          currency: context.currency.toLowerCase(),
-          providerAccountReference: providerAccountReference!,
-        });
-        bankSettlement = await finance.executeFinancialEvent({
-          ...common,
-          operationKind: 'OBSERVE_BANK_SETTLEMENT',
-          operationId: deterministicUuid(input.idempotency_key, 'bank-settlement'),
-          idempotencyKey: `${input.idempotency_key}:bank-settlement`,
-          lifecycleExpectedVersion: input.expected_financial_version + 6,
-          occurredAt: new Date(Date.parse(occurredAt) + 5).toISOString(),
-          predecessorEventId: payout.id,
-          relatedOperationId: payout.operationId,
-          amountCents: Number(context.provider_payout_cents),
-          currency: context.currency.toLowerCase(),
-        });
-      } else {
-        refund = await finance.executeFinancialEvent({
-          ...common,
-          operationKind: 'REFUND',
-          operationId: deterministicUuid(input.idempotency_key, 'full-refund'),
-          idempotencyKey: `${input.idempotency_key}:refund`,
-          lifecycleExpectedVersion: input.expected_financial_version + 2,
-          occurredAt: new Date(Date.parse(occurredAt) + 1).toISOString(),
-          predecessorEventId: capture.id,
-          relatedOperationId: capture.operationId,
-          amountCents: Number(context.customer_total_cents),
-          originalAmountCents: Number(context.customer_total_cents),
-          currency: context.currency.toLowerCase(),
-        });
-      }
-
-      const reconciliationVersion = priorVersion + 1;
-      const reconciliation = await finance.reconcile({
-        providerKind: 'FAKE',
-        operationId: deterministicUuid(input.idempotency_key, 'reconciliation'),
-        idempotencyKey: `${input.idempotency_key}:reconciliation`,
-        providerExpectedVersion: 0,
-        relatedOperationId: (bankSettlement ?? refund ?? capture).operationId,
-        scenario: 'SUCCESS',
-        snapshot: {
-          workOrderId: context.work_order_id,
-          reconciliationVersion,
-          ...(prior ? { supersedesFactId: prior.id } : {}),
-          captureEventId: capture.id,
-          ...(settlement ? { settlementEventId: settlement.id } : {}),
-          ...(funding ? { fundingEventId: funding.id } : {}),
-          ...(providerRelease ? { providerReleaseEventId: providerRelease.id } : {}),
-          ...(payout ? { payoutEventId: payout.id } : {}),
-          ...(bankSettlement ? { bankSettlementEventId: bankSettlement.id } : {}),
-          ...(refund ? { refundEventId: refund.id } : {}),
-          voidState: 'NOT_APPLICABLE',
-          captureState: 'CAPTURED',
-          refundState: refund ? 'REFUNDED' : 'NOT_APPLICABLE',
-          reversalState: 'NOT_APPLICABLE',
-          settlementState: settlement ? 'SETTLED' : 'NOT_APPLICABLE',
-          fundingState: funding ? 'FUNDED' : 'NOT_APPLICABLE',
-          providerReleaseState: providerRelease ? 'RELEASED' : 'NOT_APPLICABLE',
-          payoutState: payout ? 'PAID' : 'NOT_APPLICABLE',
-          bankSettlementState: bankSettlement ? 'SETTLED' : 'NOT_APPLICABLE',
-          ledgerState: 'MATCHED',
-          reconciliationState: refund ? 'CLOSED' : 'MATCHED',
-          mismatchCodes: [],
-          customerLedgerAmountCents: refund ? 0 : Number(context.customer_total_cents),
-          providerLedgerAmountCents: refund ? 0 : Number(context.provider_payout_cents),
-          currency: context.currency,
-          expectedVersion: priorVersion,
-          recordedBy: actorId,
-        },
+      funding = await finance.executeFinancialEvent({
+        ...common,
+        operationKind: 'FUND',
+        operationId: deterministicUuid(input.idempotency_key, 'fund'),
+        idempotencyKey: `${input.idempotency_key}:fund`,
+        lifecycleExpectedVersion: Number(terminalIntent.starting_financial_version) + 3,
+        occurredAt: new Date(Date.parse(occurredAt) + 2).toISOString(),
+        predecessorEventId: settlement.id,
+        relatedOperationId: settlement.operationId,
+        amountCents: Number(terminalIntent.customer_amount_cents),
+        currency: terminalIntent.currency.toLowerCase(),
       });
+      providerRelease = await finance.executeFinancialEvent({
+        ...common,
+        operationKind: 'PROVIDER_RELEASE',
+        operationId: deterministicUuid(input.idempotency_key, 'provider-release'),
+        idempotencyKey: `${input.idempotency_key}:provider-release`,
+        lifecycleExpectedVersion: Number(terminalIntent.starting_financial_version) + 4,
+        occurredAt: new Date(Date.parse(occurredAt) + 3).toISOString(),
+        predecessorEventId: funding.id,
+        relatedOperationId: funding.operationId,
+        amountCents: Number(terminalIntent.provider_amount_cents),
+        currency: terminalIntent.currency.toLowerCase(),
+      });
+      payout = await finance.executeFinancialEvent({
+        ...common,
+        operationKind: 'PAYOUT',
+        operationId: deterministicUuid(input.idempotency_key, 'payout'),
+        idempotencyKey: `${input.idempotency_key}:payout`,
+        lifecycleExpectedVersion: Number(terminalIntent.starting_financial_version) + 5,
+        occurredAt: new Date(Date.parse(occurredAt) + 4).toISOString(),
+        predecessorEventId: providerRelease.id,
+        relatedOperationId: providerRelease.operationId,
+        amountCents: Number(terminalIntent.provider_amount_cents),
+        currency: terminalIntent.currency.toLowerCase(),
+        providerAccountReference: providerAccount.providerAccountReference,
+      });
+      bankSettlement = await finance.executeFinancialEvent({
+        ...common,
+        operationKind: 'OBSERVE_BANK_SETTLEMENT',
+        operationId: deterministicUuid(input.idempotency_key, 'bank-settlement'),
+        idempotencyKey: `${input.idempotency_key}:bank-settlement`,
+        lifecycleExpectedVersion: Number(terminalIntent.starting_financial_version) + 6,
+        occurredAt: new Date(Date.parse(occurredAt) + 5).toISOString(),
+        predecessorEventId: payout.id,
+        relatedOperationId: payout.operationId,
+        amountCents: Number(terminalIntent.provider_amount_cents),
+        currency: terminalIntent.currency.toLowerCase(),
+      });
+    } else {
+      refund = await finance.executeFinancialEvent({
+        ...common,
+        operationKind: 'REFUND',
+        operationId: deterministicUuid(input.idempotency_key, 'full-refund'),
+        idempotencyKey: `${input.idempotency_key}:refund`,
+        lifecycleExpectedVersion: Number(terminalIntent.starting_financial_version) + 2,
+        occurredAt: new Date(Date.parse(occurredAt) + 1).toISOString(),
+        predecessorEventId: capture.id,
+        relatedOperationId: capture.operationId,
+        amountCents: Number(terminalIntent.customer_amount_cents),
+        originalAmountCents: Number(terminalIntent.customer_amount_cents),
+        currency: terminalIntent.currency.toLowerCase(),
+      });
+    }
 
-      return {
-        reconciliation_id: reconciliation.id,
-        reconciliation_version: reconciliation.reconciliationVersion,
-        capture_event_id: capture.id,
-        settlement_event_id: settlement?.id ?? null,
-        funding_event_id: funding?.id ?? null,
-        provider_release_event_id: providerRelease?.id ?? null,
-        payout_event_id: payout?.id ?? null,
-        bank_settlement_event_id: bankSettlement?.id ?? null,
-        refund_event_id: refund?.id ?? null,
-        path: input.path,
-        replayed: false,
-        provider_kind: 'FAKE',
-        payment_creation_performed: false,
-        hard_assignment_created: false,
+    const reconciliationVersion = priorVersion + 1;
+    const reconciliation = await finance.reconcile({
+      providerKind: 'FAKE',
+      operationId: deterministicUuid(input.idempotency_key, 'reconciliation'),
+      idempotencyKey: `${input.idempotency_key}:reconciliation`,
+      providerExpectedVersion: 0,
+      relatedOperationId: (bankSettlement ?? refund ?? capture).operationId,
+      terminalIntentId: terminalIntent.terminal_intent_id,
+      scenario: 'SUCCESS',
+      snapshot: {
+        workOrderId: terminalIntent.work_order_id,
+        reconciliationVersion,
+        ...(prior ? { supersedesFactId: prior.id } : {}),
+        captureEventId: capture.id,
+        ...(settlement ? { settlementEventId: settlement.id } : {}),
+        ...(funding ? { fundingEventId: funding.id } : {}),
+        ...(providerRelease ? { providerReleaseEventId: providerRelease.id } : {}),
+        ...(payout ? { payoutEventId: payout.id } : {}),
+        ...(bankSettlement ? { bankSettlementEventId: bankSettlement.id } : {}),
+        ...(refund ? { refundEventId: refund.id } : {}),
+        voidState: 'NOT_APPLICABLE',
+        captureState: 'CAPTURED',
+        refundState: refund ? 'REFUNDED' : 'NOT_APPLICABLE',
+        reversalState: 'NOT_APPLICABLE',
+        settlementState: settlement ? 'SETTLED' : 'NOT_APPLICABLE',
+        fundingState: funding ? 'FUNDED' : 'NOT_APPLICABLE',
+        providerReleaseState: providerRelease ? 'RELEASED' : 'NOT_APPLICABLE',
+        payoutState: payout ? 'PAID' : 'NOT_APPLICABLE',
+        bankSettlementState: bankSettlement ? 'SETTLED' : 'NOT_APPLICABLE',
+        ledgerState: 'MATCHED',
+        reconciliationState: refund ? 'CLOSED' : 'MATCHED',
+        mismatchCodes: [],
+        customerLedgerAmountCents: refund ? 0 : Number(terminalIntent.customer_amount_cents),
+        providerLedgerAmountCents: refund ? 0 : Number(terminalIntent.provider_amount_cents),
+        currency: terminalIntent.currency,
+        expectedVersion: priorVersion,
+        recordedBy: actorId,
+      },
+    });
+
+    return {
+      reconciliation_id: reconciliation.id,
+      reconciliation_version: reconciliation.reconciliationVersion,
+      capture_event_id: capture.id,
+      settlement_event_id: settlement?.id ?? null,
+      funding_event_id: funding?.id ?? null,
+      provider_release_event_id: providerRelease?.id ?? null,
+      payout_event_id: payout?.id ?? null,
+      bank_settlement_event_id: bankSettlement?.id ?? null,
+      refund_event_id: refund?.id ?? null,
+      path: input.path,
+      replayed: false,
+      provider_kind: 'FAKE',
+      payment_creation_performed: false,
+      hard_assignment_created: false,
     };
   }
 }
