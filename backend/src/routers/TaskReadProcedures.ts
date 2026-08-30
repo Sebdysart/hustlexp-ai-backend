@@ -87,6 +87,31 @@ getById: protectedProcedure
         quote_shortlisted_worker_id: quoteChatRole ? quoteWorkerId : null,
       };
     }),
+getDraftById: posterProcedure
+  .input(
+    z.object({
+      draftId: Schemas.uuid,
+    }),
+  )
+  .query(async ({ ctx, input }) => {
+    const result = await db.query(
+      `SELECT *
+         FROM task_drafts
+        WHERE id = $1
+          AND poster_user_id = $2
+        LIMIT 1`,
+      [input.draftId, ctx.user.id],
+    );
+
+    if (result.rows.length === 0) {
+      throw new TRPCError({
+        code: 'NOT_FOUND',
+        message: 'Task request not found',
+      });
+    }
+
+    return result.rows[0];
+  }),
 getState: protectedProcedure
     .input(z.object({ taskId: Schemas.uuid }))
     .query(async ({ input, ctx }) => {
