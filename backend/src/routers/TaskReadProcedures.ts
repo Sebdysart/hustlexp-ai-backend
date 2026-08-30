@@ -112,6 +112,40 @@ getDraftById: posterProcedure
 
     return result.rows[0];
   }),
+getQuoteVersionByQuoteId: posterProcedure
+  .input(
+    z.object({
+      quoteId: Schemas.uuid,
+    }),
+  )
+  .query(async ({ ctx, input }) => {
+    const result = await db.query(
+      `SELECT
+         qv.total_cents,
+         qv.id,
+         qv.quote_id,
+         qv.status
+       FROM quote_versions qv
+       JOIN task_drafts td
+         ON td.quote_id = qv.quote_id
+       WHERE qv.quote_id = $1
+         AND td.poster_user_id = $2
+       ORDER BY
+         qv.expires_at DESC NULLS LAST,
+         qv.updated_at DESC
+       LIMIT 1`,
+      [input.quoteId, ctx.user.id],
+    );
+
+    if (result.rows.length === 0) {
+      throw new TRPCError({
+        code: 'NOT_FOUND',
+        message: 'Quote version not found',
+      });
+    }
+
+    return result.rows[0];
+  }),
 getState: protectedProcedure
     .input(z.object({ taskId: Schemas.uuid }))
     .query(async ({ input, ctx }) => {
