@@ -78,6 +78,40 @@ function makeClaimRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function expectApprovedPayoutContained(
+  result: Awaited<ReturnType<typeof SelfInsurancePoolService.payClaim>>
+): void {
+  expect(result.success).toBe(false);
+  if (!result.success) {
+    expect(result.error).toMatchObject({
+      code: 'PAYMENT_CREATION_FROZEN',
+      details: {
+        lane: 'provider_payout',
+        disposition: 'CONTAINED_PENDING_PROVIDER_NEUTRAL_INSURANCE_PAYOUT_SAGA',
+      },
+    });
+  }
+  expect(mockDb.query).toHaveBeenCalledTimes(1);
+  expect(mockDb.transaction).not.toHaveBeenCalled();
+  expect(mockStripe.createTransfer).not.toHaveBeenCalled();
+  expect(String(mockDb.query.mock.calls[0]?.[0]).trimStart().toUpperCase()).toMatch(/^SELECT\b/);
+}
+
+function expectHistoricalPayoutNeedsReconciliation(
+  result: Awaited<ReturnType<typeof SelfInsurancePoolService.payClaim>>
+): void {
+  expect(result.success).toBe(false);
+  if (!result.success) {
+    expect(result.error).toMatchObject({
+      code: 'CLAIM_PAYOUT_RECONCILIATION_REQUIRED',
+      details: { disposition: 'RECONCILIATION_REQUIRED' },
+    });
+  }
+  expect(mockDb.query).toHaveBeenCalledTimes(1);
+  expect(mockDb.transaction).not.toHaveBeenCalled();
+  expect(mockStripe.createTransfer).not.toHaveBeenCalled();
+}
+
 describe('SelfInsurancePoolService', () => {
   // --------------------------------------------------------------------------
   // calculateContribution
@@ -338,7 +372,7 @@ describe('SelfInsurancePoolService', () => {
       if (!result.success) expect(result.error.code).toBe('CLAIM_NOT_APPROVED');
     });
 
-    it('returns INSUFFICIENT_POOL_BALANCE when pool too low', async () => {
+    it('contains an approved payout before any pool-balance lookup', async () => {
       // F-04 FIX: coverage_percentage is now read INSIDE the transaction (no outer SELECT).
       // Pool FOR UPDATE returns BOTH available_balance_cents AND coverage_percentage.
       // F46-4 FIX: pre-check SELECT stripe_connect_id runs BEFORE the transaction.
@@ -355,11 +389,10 @@ describe('SelfInsurancePoolService', () => {
 
       const result = await SelfInsurancePoolService.payClaim('claim-1');
 
-      expect(result.success).toBe(false);
-      if (!result.success) expect(result.error.code).toBe('INSUFFICIENT_POOL_BALANCE');
+      expectApprovedPayoutContained(result);
     });
 
-    it('returns CLAIM_EXCEEDS_MAX when coverage raise makes payout exceed pool cap (F48-2)', async () => {
+    it('contains an approved payout before any coverage or maximum calculation', async () => {
       // F48-2: claim filed at 80% coverage (covered=8000), but coverage raised to 200%
       // inside the transaction covered=20000 > max_claim_cents=10000 → CLAIM_EXCEEDS_MAX
       mockDb.query
@@ -373,12 +406,10 @@ describe('SelfInsurancePoolService', () => {
 
       const result = await SelfInsurancePoolService.payClaim('claim-1');
 
-      expect(result.success).toBe(false);
-      if (!result.success) expect(result.error.code).toBe('CLAIM_EXCEEDS_MAX');
+      expectApprovedPayoutContained(result);
     });
 
-    it('pays claim successfully (F-06: uses StripeService.createTransfer)', async () => {
-      const { StripeService: MockStripe } = await import('../../src/services/StripeService.js');
+    it('permanently contains approved legacy payouts with no provider call or write', async () => {
 
       // F-04 FIX: coverage_percentage is now read INSIDE the transaction under FOR UPDATE.
       // No outer SELECT for coverage_percentage — pool FOR UPDATE returns both columns.
@@ -400,8 +431,7 @@ describe('SelfInsurancePoolService', () => {
 
       const result = await SelfInsurancePoolService.payClaim('claim-1');
 
-      expect(result.success).toBe(true);
-      expect(vi.mocked(MockStripe.createTransfer)).toHaveBeenCalledOnce();
+      expectApprovedPayoutContained(result);
     });
   });
 
@@ -504,10 +534,10 @@ describe('SelfInsurancePoolService', () => {
   });
 
   // --------------------------------------------------------------------------
-  // F53-5: transfer amount floor — coveredAmountCents must be >= 50 before Stripe
+  // Legacy provider-specific amount rules cannot reopen insurance payouts
   // --------------------------------------------------------------------------
-  describe('payClaim — F53-5: minimum transfer amount floor (50 cents)', () => {
-    it('returns TRANSFER_AMOUNT_TOO_LOW when covered amount is below 50 cents (F53-5)', async () => {
+  describe('payClaim — provider-specific amount boundaries stay contained', () => {
+    it('contains an approved payout below the historical provider floor', async () => {
       // coveredAmountCents = round(40 * 80/100) = 32 < 50 → must fail before Stripe
       mockDb.query
         .mockResolvedValueOnce({
@@ -520,11 +550,10 @@ describe('SelfInsurancePoolService', () => {
 
       const result = await SelfInsurancePoolService.payClaim('claim-1');
 
-      expect(result.success).toBe(false);
-      if (!result.success) expect(result.error.code).toBe('TRANSFER_AMOUNT_TOO_LOW');
+      expectApprovedPayoutContained(result);
     });
 
-    it('returns TRANSFER_AMOUNT_TOO_LOW for exactly 49 cents covered (F53-5)', async () => {
+    it('contains an approved payout at 48 covered cents', async () => {
       // claim_amount_cents=62, coverage=80% → round(62*0.8)=50 → should pass at 50
       // claim_amount_cents=60, coverage=80% → round(60*0.8)=48 < 50 → must fail
       mockDb.query
@@ -538,11 +567,10 @@ describe('SelfInsurancePoolService', () => {
 
       const result = await SelfInsurancePoolService.payClaim('claim-1');
 
-      expect(result.success).toBe(false);
-      if (!result.success) expect(result.error.code).toBe('TRANSFER_AMOUNT_TOO_LOW');
+      expectApprovedPayoutContained(result);
     });
 
-    it('does NOT debit the pool when covered amount is below 50 cents (F56-1: pre-flight check)', async () => {
+    it('performs no pool write for a below-floor legacy amount', async () => {
       // F56-1 BUG: The coveredAmountCents < 50 check fired AFTER the DB transaction
       // committed — the pool was debited and claim marked 'paid' before the check ran.
       // Fix: move the check INSIDE the transaction but BEFORE the pool debit and
@@ -561,8 +589,7 @@ describe('SelfInsurancePoolService', () => {
 
       const result = await SelfInsurancePoolService.payClaim('claim-1');
 
-      expect(result.success).toBe(false);
-      if (!result.success) expect(result.error.code).toBe('TRANSFER_AMOUNT_TOO_LOW');
+      expectApprovedPayoutContained(result);
 
       // Critical: the pool debit UPDATE (total_claims_cents) must NOT have been called.
       // With the bug the transaction commits before the check; with the fix it rolls back.
@@ -571,8 +598,7 @@ describe('SelfInsurancePoolService', () => {
       expect(poolDebitCalled).toBe(false);
     });
 
-    it('succeeds when covered amount is exactly 50 cents (F53-5 boundary)', async () => {
-      const { StripeService: MockStripe } = await import('../../src/services/StripeService.js');
+    it('does not treat the historical provider floor as authority to create a payout', async () => {
       // claim_amount_cents=63, coverage=80% → round(63*0.8)=50 → exactly at floor → ok
       mockDb.query
         .mockResolvedValueOnce({
@@ -588,16 +614,15 @@ describe('SelfInsurancePoolService', () => {
 
       const result = await SelfInsurancePoolService.payClaim('claim-1');
 
-      expect(result.success).toBe(true);
-      expect(vi.mocked(MockStripe.createTransfer)).toHaveBeenCalledOnce();
+      expectApprovedPayoutContained(result);
     });
   });
 
   // --------------------------------------------------------------------------
-  // F53-10: payClaim must NOT swallow Stripe failures
+  // Provider behavior is unreachable from the contained legacy route
   // --------------------------------------------------------------------------
-  describe('payClaim — F53-10: Stripe failures must not return success', () => {
-    it('returns failure when Stripe createTransfer throws (F53-10)', async () => {
+  describe('payClaim — provider failures cannot affect the contained route', () => {
+    it('returns the frozen contract without invoking a provider configured to throw', async () => {
       const { StripeService: MockStripe } = await import('../../src/services/StripeService.js');
       vi.mocked(MockStripe.createTransfer).mockRejectedValueOnce(new Error('stripe network error'));
 
@@ -614,13 +639,10 @@ describe('SelfInsurancePoolService', () => {
 
       const result = await SelfInsurancePoolService.payClaim('claim-1');
 
-      // F53-10 BUG: currently returns { success: true } even when Stripe throws.
-      // After fix: must propagate the error.
-      expect(result.success).toBe(false);
-      if (!result.success) expect(result.error.code).toBe('STRIPE_TRANSFER_FAILED');
+      expectApprovedPayoutContained(result);
     });
 
-    it('returns failure when Stripe createTransfer returns success:false (F53-10)', async () => {
+    it('returns the frozen contract without invoking a provider configured to fail', async () => {
       const { StripeService: MockStripe } = await import('../../src/services/StripeService.js');
       vi.mocked(MockStripe.createTransfer).mockResolvedValueOnce({
         success: false,
@@ -640,11 +662,10 @@ describe('SelfInsurancePoolService', () => {
 
       const result = await SelfInsurancePoolService.payClaim('claim-1');
 
-      expect(result.success).toBe(false);
-      if (!result.success) expect(result.error.code).toBe('STRIPE_TRANSFER_FAILED');
+      expectApprovedPayoutContained(result);
     });
 
-    it('does NOT return success:true when Stripe throws (regression guard for F53-10)', async () => {
+    it('performs no provider call or mutation when provider behavior is unavailable', async () => {
       // Extra explicit assertion: success must be falsy when Stripe blows up
       const { StripeService: MockStripe } = await import('../../src/services/StripeService.js');
       vi.mocked(MockStripe.createTransfer).mockRejectedValueOnce(new Error('timeout'));
@@ -662,7 +683,7 @@ describe('SelfInsurancePoolService', () => {
 
       const result = await SelfInsurancePoolService.payClaim('claim-1');
 
-      expect(result.success).not.toBe(true);
+      expectApprovedPayoutContained(result);
     });
   });
 
@@ -822,64 +843,33 @@ describe('SelfInsurancePoolService', () => {
   });
 
   // --------------------------------------------------------------------------
-  // F59-2: payClaim must not call Stripe when transaction detects already-paid claim
+  // Historical payout replay and reconciliation are read-only
   // --------------------------------------------------------------------------
-  describe('payClaim — F59-2: concurrent already-paid path must not invoke Stripe', () => {
-    it('returns already_paid=true and does NOT call StripeService.createTransfer when inner transaction detects status=paid', async () => {
-      const { StripeService: MockStripe } = await import('../../src/services/StripeService.js');
-
-      // Outer SELECT returns approved (pre-transaction check passes)
-      // pre-check SELECT stripe_connect_id also passes
-      // Inside transaction: claim FOR UPDATE returns status='paid' → alreadyPaid=true, transaction returns early
-      // After transaction: guard detects alreadyPaid → returns { success: true, data: { already_paid: true } }
-      // Stripe must NOT be called
-      mockDb.query
-        .mockResolvedValueOnce({
-          rows: [makeClaimRow({ status: 'approved', claim_amount_cents: 10000 })],
-          rowCount: 1,
-        } as never) // outer SELECT claim
-        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never) // pre-check stripe_connect_id
-        .mockResolvedValueOnce({ rows: [{ status: 'paid', stripe_transfer_id: 'tr_existing', claim_amount_cents: 10000 }], rowCount: 1 } as never); // claim FOR UPDATE — already paid
+  describe('payClaim — historical payout disposition', () => {
+    it('returns an existing completed payout as a read-only replay', async () => {
+      mockDb.query.mockResolvedValueOnce({
+        rows: [makeClaimRow({ status: 'paid', stripe_transfer_id: 'tr_existing' })],
+        rowCount: 1,
+      } as never);
 
       const result = await SelfInsurancePoolService.payClaim('claim-1');
 
       expect(result.success).toBe(true);
       if (result.success) expect(result.data.already_paid).toBe(true);
-      expect(vi.mocked(MockStripe.createTransfer)).not.toHaveBeenCalled();
+      expect(mockDb.query).toHaveBeenCalledTimes(1);
+      expect(mockDb.transaction).not.toHaveBeenCalled();
+      expect(mockStripe.createTransfer).not.toHaveBeenCalled();
     });
 
-    it('F62-1: retries Stripe when status=paid but stripe_transfer_id is NULL (DB committed, Stripe failed)', async () => {
-      // Scenario: previous payClaim call committed the DB transaction (status='paid') but
-      // the Stripe transfer failed before stripe_transfer_id was written.
-      // On retry: inner transaction detects status='paid' AND stripe_transfer_id=NULL →
-      // should NOT set alreadyPaid=true; should set coveredAmountCents from stored value.
-      // Outer code proceeds to Stripe transfer (retry).
-      const { StripeService: MockStripe } = await import('../../src/services/StripeService.js');
-      mockStripe.createTransfer.mockResolvedValueOnce({ success: true, data: { transferId: 'tr_retry', amount: 20000 } } as any);
-
-      mockDb.query
-        .mockResolvedValueOnce({
-          rows: [makeClaimRow({ status: 'approved', claim_amount_cents: 25000, covered_amount_cents: 20000 })],
-          rowCount: 1,
-        } as never) // outer SELECT claim
-        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never) // pre-check stripe_connect_id
-        // claim FOR UPDATE: status='paid' but stripe_transfer_id=NULL (DB committed, Stripe never ran)
-        .mockResolvedValueOnce({
-          rows: [{ status: 'paid', stripe_transfer_id: null, claim_amount_cents: 25000, covered_amount_cents: 20000 }],
-          rowCount: 1,
-        } as never) // claim FOR UPDATE
-        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE stripe_transfer_id after Stripe succeeds
+    it('flags a paid record with no payout reference for reconciliation without retrying', async () => {
+      mockDb.query.mockResolvedValueOnce({
+        rows: [makeClaimRow({ status: 'paid', stripe_transfer_id: null })],
+        rowCount: 1,
+      } as never);
 
       const result = await SelfInsurancePoolService.payClaim('claim-1');
 
-      // Must succeed by retrying Stripe (not returning already_paid)
-      expect(result.success).toBe(true);
-      if (result.success) expect((result.data as any).already_paid).toBeUndefined();
-      // Stripe MUST be called with the stored covered_amount_cents
-      expect(vi.mocked(MockStripe.createTransfer)).toHaveBeenCalledOnce();
-      expect(vi.mocked(MockStripe.createTransfer)).toHaveBeenCalledWith(
-        expect.objectContaining({ amount: 20000 })
-      );
+      expectHistoricalPayoutNeedsReconciliation(result);
     });
   });
 
@@ -990,68 +980,26 @@ describe('SelfInsurancePoolService', () => {
       expect(poolUpdateModule).toBe(false);
     });
 
-    it('F60-3: payClaim uses stored covered_amount_cents when available (not recomputed)', async () => {
-      const { StripeService: MockStripe } = await import('../../src/services/StripeService.js');
-
-      // Claim row has covered_amount_cents=20000 stored (filed at 80% of 25000).
-      // Pool coverage_percentage is now 90% (changed after filing).
-      // payClaim must use stored 20000, NOT recompute 25000 * 90% = 22500.
-      mockDb.query
-        .mockResolvedValueOnce({
-          rows: [makeClaimRow({ status: 'approved', claim_amount_cents: 25000, covered_amount_cents: 20000 })],
-          rowCount: 1,
-        } as never) // claim outer SELECT
-        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never) // pre-check stripe_connect_id
-        // Inside transaction:
-        .mockResolvedValueOnce({
-          rows: [{ status: 'approved', stripe_transfer_id: null, claim_amount_cents: 25000, covered_amount_cents: 20000 }],
-          rowCount: 1,
-        } as never) // claim FOR UPDATE (includes covered_amount_cents)
-        .mockResolvedValueOnce({
-          rows: [{ available_balance_cents: 50000, coverage_percentage: 90, max_claim_cents: 500000 }],
-          rowCount: 1,
-        } as never) // pool FOR UPDATE (coverage now 90%)
-        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE claim to paid
-        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE stripe_transfer_id
+    it('F60-3: stored covered amount does not authorize a legacy payout', async () => {
+      mockDb.query.mockResolvedValueOnce({
+        rows: [makeClaimRow({ status: 'approved', covered_amount_cents: 20000 })],
+        rowCount: 1,
+      } as never);
 
       const result = await SelfInsurancePoolService.payClaim('claim-1');
 
-      expect(result.success).toBe(true);
-
-      // Stripe must have been called with 20000 (stored), not 22500 (recomputed)
-      expect(MockStripe.createTransfer).toHaveBeenCalledWith(
-        expect.objectContaining({ amount: 20000 })
-      );
+      expectApprovedPayoutContained(result);
     });
 
-    it('F60-3: payClaim falls back to recomputing when covered_amount_cents is null (legacy rows)', async () => {
-      const { StripeService: MockStripe } = await import('../../src/services/StripeService.js');
-
-      // Legacy row: covered_amount_cents=null. Fallback: 10000 * 80% = 8000.
-      mockDb.query
-        .mockResolvedValueOnce({
-          rows: [makeClaimRow({ status: 'approved', claim_amount_cents: 10000, covered_amount_cents: null })],
-          rowCount: 1,
-        } as never) // claim outer SELECT
-        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never) // pre-check stripe_connect_id
-        .mockResolvedValueOnce({
-          rows: [{ status: 'approved', stripe_transfer_id: null, claim_amount_cents: 10000, covered_amount_cents: null }],
-          rowCount: 1,
-        } as never) // claim FOR UPDATE
-        .mockResolvedValueOnce({
-          rows: [{ available_balance_cents: 50000, coverage_percentage: 80, max_claim_cents: 500000 }],
-          rowCount: 1,
-        } as never) // pool FOR UPDATE
-        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // UPDATE claim to paid
-        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE stripe_transfer_id
+    it('F60-3: a null covered amount does not trigger legacy recomputation or payout', async () => {
+      mockDb.query.mockResolvedValueOnce({
+        rows: [makeClaimRow({ status: 'approved', covered_amount_cents: null })],
+        rowCount: 1,
+      } as never);
 
       const result = await SelfInsurancePoolService.payClaim('claim-1');
 
-      expect(result.success).toBe(true);
-      // Stripe called with fallback recomputed 8000
-      expect(MockStripe.createTransfer).toHaveBeenCalledWith(
-        expect.objectContaining({ amount: 8000 })
-      );
+      expectApprovedPayoutContained(result);
     });
   });
 });
@@ -1141,42 +1089,21 @@ describe('F61-1: fileClaim concurrent duplicate handling via unique constraint',
 });
 
 // --------------------------------------------------------------------------
-// F64-2: payClaim outer status guard must allow status='paid'+stripe_transfer_id=NULL
+// Historical false-paid records require reconciliation, never blind retries
 // --------------------------------------------------------------------------
-describe('payClaim — F64-2: outer status guard allows retry when status=paid but Stripe not completed', () => {
+describe('payClaim — historical false-paid containment', () => {
   beforeEach(() => {
     vi.resetAllMocks();
   });
 
-  it('F64-2: retries Stripe when outer SELECT returns status=paid with stripe_transfer_id=NULL', async () => {
-    // The real retry scenario: a previous payClaim call set status='paid' in the DB
-    // but Stripe failed. On this retry the outer SELECT returns status='paid' (not
-    // 'approved'). Before the fix, the outer guard `status !== 'approved'` would
-    // return CLAIM_NOT_APPROVED here, permanently blocking the retry.
-    const { StripeService: MockStripe } = await import('../../src/services/StripeService.js');
-    mockStripe.createTransfer.mockResolvedValueOnce({ success: true, data: { transferId: 'tr_retry_f64', amount: 15000 } } as any);
-
-    mockDb.query
-      .mockResolvedValueOnce({
-        // Outer SELECT: status='paid', stripe_transfer_id=NULL — the blocking scenario
-        rows: [makeClaimRow({ status: 'paid', claim_amount_cents: 18750, covered_amount_cents: 15000, stripe_transfer_id: null })],
-        rowCount: 1,
-      } as never) // outer SELECT claim
-      .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_test' }], rowCount: 1 } as never) // pre-check
-      // Inner transaction: claim FOR UPDATE — status='paid', stripe_transfer_id=NULL
-      .mockResolvedValueOnce({
-        rows: [{ status: 'paid', stripe_transfer_id: null, claim_amount_cents: 18750, covered_amount_cents: 15000 }],
-        rowCount: 1,
-      } as never)
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // UPDATE stripe_transfer_id
+  it('returns reconciliation-required from the outer read and performs no retry', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [makeClaimRow({ status: 'paid', stripe_transfer_id: null })],
+      rowCount: 1,
+    } as never);
 
     const result = await SelfInsurancePoolService.payClaim('claim-f64');
 
-    expect(result.success).toBe(true);
-    if (result.success) expect((result.data as any).already_paid).toBeUndefined();
-    expect(vi.mocked(MockStripe.createTransfer)).toHaveBeenCalledOnce();
-    expect(vi.mocked(MockStripe.createTransfer)).toHaveBeenCalledWith(
-      expect.objectContaining({ amount: 15000 })
-    );
+    expectHistoricalPayoutNeedsReconciliation(result);
   });
 });

@@ -22,6 +22,7 @@ export const BUSINESS_ACTIONS = [
   'VIEW_BILLING',
   'MANAGE_BILLING',
   'ASSIGN_CREW',
+  'SUBMIT_ESTIMATE',
   'SUBMIT_PROOF',
 ] as const;
 

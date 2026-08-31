@@ -7,8 +7,9 @@
  */
 
 import { z } from 'zod';
-import { router, protectedProcedure, platformAdminProcedure } from '../trpc.js';
+import { operationsStepUpProcedure, protectedProcedure, router } from '../trpc.js';
 import { FlagsService } from '../services/FlagsService.js';
+import { OperatorAuthorityService } from '../services/OperatorAuthorityService.js';
 
 export const flagsRouter = router({
   /**
@@ -22,26 +23,23 @@ export const flagsRouter = router({
     }),
 
   /**
-   * Set (create or update) a feature flag (admin only)
+   * Request a disable-only feature-flag command. The target mutation happens
+   * only after a different, freshly stepped-up operator approves the exact
+   * expected-version command through the OperatorAuthorityService rail.
    */
-  setFlag: platformAdminProcedure
+  requestDisable: operationsStepUpProcedure
     .input(z.object({
-      name: z.string().min(1).max(100),
-      enabled: z.boolean(),
-      rolloutPercentage: z.number().int().min(0).max(100).default(0),
-      userAllowlist: z.array(z.string().uuid()).default([]),
-      userBlocklist: z.array(z.string().uuid()).default([]),
-      metadata: z.record(z.any()).default({}),
+      name: z.string().regex(/^[a-z][a-z0-9_]{1,99}$/),
+      enabled: z.literal(false),
+      expectedVersion: z.number().int().positive(),
+      reason: z.string().trim().min(10).max(500),
+      idempotencyKey: z.string().uuid(),
     }))
-    .mutation(async ({ input }) => {
-      const flag = await FlagsService.setFlag({
-        name: input.name,
-        enabled: input.enabled,
-        rolloutPercentage: input.rolloutPercentage,
-        userAllowlist: input.userAllowlist,
-        userBlocklist: input.userBlocklist,
-        metadata: input.metadata,
-      });
-      return flag;
-    }),
+    .mutation(({ ctx, input }) => OperatorAuthorityService.request(ctx, {
+      operationType: 'DISABLE_FEATURE_FLAG',
+      targetId: input.name,
+      targetExpectedVersion: input.expectedVersion,
+      reason: input.reason,
+      idempotencyKey: input.idempotencyKey,
+    })),
 });

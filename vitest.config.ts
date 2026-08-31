@@ -8,11 +8,19 @@ export default defineConfig({
     // A machine-level `NODE_ENV=production` export was observed flipping 19 tests
     // red (db.ts fail-fast, HX_STRIPE_STUB gated off, rate-limiter fail-closed).
     // Force NODE_ENV=test for every worker regardless of inherited environment.
-    // NOTE: deliberately NOT setting a dummy DATABASE_URL here — `hasDb` skip
-    // logic in DB-backed invariant suites must keep skipping when no real DB.
+    // Deliberately do not invent a DATABASE_URL here. Local unit-only runs may
+    // omit PostgreSQL, but required CI provisions isolated databases and its
+    // outcome verifier rejects every skipped/todo test.
     env: {
       NODE_ENV: 'test',
+      // Legacy assignment behavior is executable only inside Vitest. The
+      // runtime guard also requires positive isolated-runner evidence, so this
+      // value cannot enable a deployed process.
+      HX_HARD_ASSIGNMENT_MODE: 'enabled',
     },
+    setupFiles: [
+      './backend/tests/legacy-task-materialization-compatibility.setup.ts',
+    ],
     testTimeout: 30000,
     include: ['backend/tests/**/*.test.ts'],
     reporters: ['verbose'],

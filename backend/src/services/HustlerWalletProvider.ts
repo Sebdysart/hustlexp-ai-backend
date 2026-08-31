@@ -8,6 +8,7 @@ import type {
   WalletProviderPayoutResult,
   WalletProviderSnapshot,
 } from './HustlerWalletTypes.js';
+import { newPaymentCreationFailure } from './NewPaymentCreationGuard.js';
 
 const MAX_PAYOUT_PAGES = 20;
 const PAYOUT_PAGE_SIZE = 100;
@@ -107,6 +108,7 @@ export function createStripeWalletProvider(client?: Stripe | null): WalletProvid
     : client;
 
   return {
+    providerKind: 'APPROVED_PROVIDER',
     isConfigured: () => stripe !== null,
 
     async getSnapshot(accountId: string): Promise<WalletProviderSnapshot> {
@@ -133,6 +135,12 @@ export function createStripeWalletProvider(client?: Stripe | null): WalletProvid
     },
 
     async createStandardPayout(input): Promise<WalletProviderPayoutResult> {
+      const frozen = newPaymentCreationFailure('provider_payout');
+      if (frozen) {
+        throw Object.assign(new Error(frozen.error.message), {
+          code: frozen.error.code,
+        });
+      }
       if (!stripe) throw new Error('STRIPE_NOT_CONFIGURED');
       const payout = await stripe.payouts.create({
         amount: input.amountCents,

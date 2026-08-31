@@ -120,45 +120,10 @@ describe('EscrowRepository.findByState', () => {
   });
 });
 
-// ============================================================================
-// create
-// ============================================================================
-
-describe('EscrowRepository.create', () => {
-  it('creates escrow with all fields', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [mockEscrow], rowCount: 1 });
-    const result = await repo.create({
-      id: 'escrow-1',
-      task_id: 'task-1',
-      amount: 10000,
-      stripe_payment_intent_id: 'pi_test123',
-    });
-    expect(result).toEqual(mockEscrow);
-    expect(mockQuery).toHaveBeenCalledWith(
-      expect.stringContaining('INSERT INTO escrow'),
-      ['escrow-1', 'task-1', 10000, 'pi_test123']
-    );
-  });
-
-  it('creates escrow without stripe_payment_intent_id', async () => {
-    const escrowWithoutPi = { ...mockEscrow, stripe_payment_intent_id: null };
-    mockQuery.mockResolvedValueOnce({ rows: [escrowWithoutPi], rowCount: 1 });
-    await repo.create({ id: 'escrow-2', task_id: 'task-2', amount: 5000 });
-    const params = mockQuery.mock.calls[0][1] as unknown[];
-    expect(params[3]).toBeNull();
-  });
-
-  it('inserts with PENDING state', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [mockEscrow], rowCount: 1 });
-    await repo.create({ id: 'escrow-1', task_id: 'task-1', amount: 5000 });
-    const sql = mockQuery.mock.calls[0][0] as string;
-    expect(sql).toContain("'PENDING'");
-  });
-
-  it('uses transaction context', async () => {
-    const txQuery = vi.fn().mockResolvedValueOnce({ rows: [mockEscrow], rowCount: 1 });
-    await repo.create({ id: 'escrow-1', task_id: 'task-1', amount: 5000 }, { query: txQuery });
-    expect(txQuery).toHaveBeenCalled();
+describe('EscrowRepository legacy writer containment', () => {
+  it('does not expose the obsolete singular-table PENDING escrow creator', () => {
+    expect('create' in repo).toBe(false);
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 });
 

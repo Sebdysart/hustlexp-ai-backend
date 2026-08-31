@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+/.local-tools/
 # npm/package-lock.json is the canonical package manager contract.
 pnpm-lock.yaml
 pnpm-workspace.yaml
@@ -37,6 +38,7 @@ docs/github/*
 coverage/
 .nyc_output/
 .vitest-temp.json
+reports/
 
 # Logs
 logs/

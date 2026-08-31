@@ -11,6 +11,7 @@ import { TaskService } from '../services/TaskService.js';
 import { db } from '../db.js';
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
+import { hardAssignmentFailure } from '../services/HardAssignmentGuard.js';
 
 export const instantRouter = router({
   /**
@@ -72,6 +73,14 @@ export const instantRouter = router({
   accept: hustlerProcedure
     .input(z.object({ taskId: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
+      const frozen = hardAssignmentFailure('instant_accept');
+      if (frozen) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: frozen.error.message,
+          cause: { applicationCode: frozen.error.code },
+        });
+      }
       const result = await TaskService.accept({
         taskId: input.taskId,
         workerId: ctx.user.id,

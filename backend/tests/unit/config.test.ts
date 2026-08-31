@@ -5,6 +5,32 @@
  * and the validateConfig() function.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+  releaseManifestDigest,
+  type ReleaseManifestEvidence,
+} from '../../src/releaseManifest';
+
+// config.ts snapshots process.env at module evaluation, so these cases must
+// continue to reset and re-import it. Preserve the real build-identity trust
+// functions while replacing only the eager runtime singleton: otherwise each
+// config import recursively re-hashes the complete dist tree.
+vi.mock('../../src/buildIdentity', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/buildIdentity')>();
+  return {
+    ...actual,
+    buildIdentity: Object.freeze({
+      schema_version: 1,
+      service: 'hustlexp-engine',
+      revision: 'unattributed',
+      built_at: '1970-01-01T00:00:00.000Z',
+      environment: 'test',
+      clean_source: false,
+      source: 'none',
+      artifact_digest: 'unattributed',
+      artifact_verified: false,
+    }),
+  };
+});
 
 // Save original env
 const originalEnv = { ...process.env };
@@ -289,20 +315,32 @@ describe('config — env var overrides', () => {
     expect(config.redis.restUrl).toBe('https://redis.upstash.io');
   });
 
-  it('prefers UPSTASH_REDIS_URL over REDIS_URL for direct TCP', async () => {
-    process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
-    process.env.REDIS_URL = 'redis://fallback:6379';
+  it('never aliases portable TCP Redis credentials into the legacy REST transport', async () => {
+    delete process.env.UPSTASH_REDIS_REST_URL;
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    process.env.REDIS_URL = 'redis://portable:6379';
+    process.env.REDIS_TOKEN = 'ambiguous-token-must-not-be-used';
     vi.resetModules();
     const { config } = await import('../../src/config');
-    expect(config.redis.url).toBe('redis://upstash:6379');
+    expect(config.redis.restUrl).toBe('');
+    expect(config.redis.restToken).toBe('');
+    expect(config.redis.url).toBe('redis://portable:6379');
   });
 
-  it('falls back to REDIS_URL when UPSTASH_REDIS_URL not set', async () => {
-    delete process.env.UPSTASH_REDIS_URL;
-    process.env.REDIS_URL = 'redis://fallback:6379';
+  it('prefers provider-neutral REDIS_URL over the legacy Upstash TCP alias', async () => {
+    process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
+    process.env.REDIS_URL = 'redis://portable:6379';
     vi.resetModules();
     const { config } = await import('../../src/config');
-    expect(config.redis.url).toBe('redis://fallback:6379');
+    expect(config.redis.url).toBe('redis://portable:6379');
+  });
+
+  it('falls back to the legacy Upstash TCP alias when REDIS_URL is not set', async () => {
+    delete process.env.REDIS_URL;
+    process.env.UPSTASH_REDIS_URL = 'rediss://legacy-upstash:6379';
+    vi.resetModules();
+    const { config } = await import('../../src/config');
+    expect(config.redis.url).toBe('rediss://legacy-upstash:6379');
   });
 
   it('reads AI_CACHE_TTL from env', async () => {
@@ -386,8 +424,13 @@ describe('validateConfig', () => {
 
   beforeEach(() => {
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {}) as () => never);
+    // Required CI deliberately exports STRIPE_MODE=test for the complete
+    // process. Configuration unit cases must declare their own processor mode
+    // so a live-key fixture is not coupled to that ambient test-runner value.
+    delete process.env.STRIPE_MODE;
     process.env.STRIPE_WEBHOOK_SECRET = 'whsec_platform_test';
     process.env.STRIPE_CONNECT_WEBHOOK_SECRET = 'whsec_connect_test';
+    process.env.UPSTASH_REDIS_REST_TOKEN = 'test-rest-token';
     process.env.S3_ENDPOINT = 'https://storage.example.test';
     process.env.AWS_ACCESS_KEY_ID = 'test-access-key';
     process.env.AWS_SECRET_ACCESS_KEY = 'test-secret-key';
@@ -428,7 +471,8 @@ describe('validateConfig', () => {
     delete process.env.FIREBASE_PRIVATE_KEY;
     delete process.env.FIREBASE_CLIENT_EMAIL;
     delete process.env.STRIPE_SECRET_KEY;
-    delete process.env.UPSTASH_REDIS_REST_URL;
+    process.env.UPSTASH_REDIS_REST_URL = 'https://partial-rest.upstash.io';
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
     delete process.env.UPSTASH_REDIS_URL;
     delete process.env.REDIS_URL;
     delete process.env.TAX_TIN_ENCRYPTION_KEY;
@@ -440,7 +484,29 @@ describe('validateConfig', () => {
     expect(result.valid).toBe(false);
     expect(result.errors.some((e) => e.includes('FIREBASE_PROJECT_ID'))).toBe(true);
     expect(result.errors.some((e) => e.includes('STRIPE_SECRET_KEY'))).toBe(true);
+    expect(result.errors).toContain(
+      'UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN must be configured together when using the legacy REST alternate',
+    );
     expect(result.errors.some((e) => e.includes('TAX_TIN_ENCRYPTION_KEY'))).toBe(true);
+  });
+
+  it('rejects malformed TCP Redis and credential-bearing REST endpoints in production', async () => {
+    process.env.DATABASE_URL = 'postgres://localhost:5432/prod';
+    process.env.NODE_ENV = 'production';
+    process.env.REDIS_URL = 'https://not-a-redis-transport.example.test';
+    process.env.UPSTASH_REDIS_REST_URL = 'http://user:password@redis-rest.example.test?token=leaked';
+    process.env.UPSTASH_REDIS_REST_TOKEN = 'separate-token';
+    vi.resetModules();
+    const { validateConfig } = await import('../../src/config');
+
+    const result = validateConfig();
+
+    expect(result.errors).toContain(
+      'REDIS_URL (or legacy UPSTASH_REDIS_URL) must use redis: or rediss: with a hostname',
+    );
+    expect(result.errors).toContain(
+      'UPSTASH_REDIS_REST_URL must be an HTTPS URL without embedded credentials, query, or fragment',
+    );
   });
 
   it('calls process.exit(1) in production when Firebase config is missing', async () => {
@@ -694,6 +760,30 @@ describe('validateConfig', () => {
     expect(result.errors).toContain('HX_PAYMENT_CREATION_MODE must be either enabled or frozen');
   });
 
+  it('fails production boot when an environment flag attempts to enable new customer money', async () => {
+    process.env.DATABASE_URL = 'postgres://prod';
+    process.env.NODE_ENV = 'production';
+    process.env.FIREBASE_PROJECT_ID = 'proj';
+    process.env.FIREBASE_PRIVATE_KEY = 'key';
+    process.env.FIREBASE_CLIENT_EMAIL = 'a@b.com';
+    process.env.STRIPE_SECRET_KEY = 'sk_live_real';
+    process.env.STRIPE_MODE = 'live';
+    process.env.HX_PAYMENT_CREATION_MODE = 'enabled';
+    process.env.UPSTASH_REDIS_REST_URL = 'https://redis.io';
+    process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
+    process.env.QUEUE_HMAC_SECRET = 'real-hmac-secret';
+    process.env.TAX_TIN_ENCRYPTION_KEY = 'a'.repeat(64);
+    vi.resetModules();
+
+    const { validateConfig } = await import('../../src/config');
+    const result = validateConfig();
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(result.errors).toContain(
+      'HX_PAYMENT_CREATION_MODE=enabled is forbidden while underwriting decisions remain unresolved',
+    );
+  });
+
   it.each([
     ['test', 'sk_test_real'],
     ['live', 'sk_live_real'],
@@ -705,8 +795,10 @@ describe('validateConfig', () => {
     process.env.FIREBASE_CLIENT_EMAIL = 'a@b.com';
     process.env.STRIPE_SECRET_KEY = secret;
     process.env.STRIPE_MODE = mode;
-    process.env.UPSTASH_REDIS_REST_URL = 'https://redis.io';
-    process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
+    delete process.env.UPSTASH_REDIS_REST_URL;
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    delete process.env.UPSTASH_REDIS_URL;
+    process.env.REDIS_URL = 'rediss://portable.example.test:6380';
     process.env.QUEUE_HMAC_SECRET = 'real-hmac-secret';
     process.env.TAX_TIN_ENCRYPTION_KEY = 'a'.repeat(64);
     vi.resetModules();
@@ -714,6 +806,325 @@ describe('validateConfig', () => {
     const result = validateConfig();
     expect(exitSpy).not.toHaveBeenCalled();
     expect(result.errors).toHaveLength(0);
+  });
+
+  const syntheticRevision = 'a'.repeat(40);
+  const syntheticDigest = (value: string) => `sha256:${value.repeat(64)}`;
+
+  function syntheticManifest(environment: 'staging' | 'preview') {
+    return {
+      version: 1,
+      environment,
+      releaseId: `${environment}-20260826-001`,
+      createdAt: '2026-08-26T12:00:00.000Z',
+      authority: {
+        document: 'HustleXP Business and Universal V1 Charter',
+        charterVersion: '1.1.0',
+        charterRevision: '0b80c71e118d7cab70474bbbf6df778811fe4fe8',
+        capabilityPolicyDigest: syntheticDigest('f'),
+      },
+      components: {
+        backend: {
+          revision: syntheticRevision,
+          artifactDigest: syntheticDigest('1'),
+          imageEvidence: 'VERIFIED_IMMUTABLE_IMAGE',
+          imageDigest: syntheticDigest('2'),
+        },
+        worker: {
+          revision: syntheticRevision,
+          artifactDigest: syntheticDigest('3'),
+          imageEvidence: 'VERIFIED_IMMUTABLE_IMAGE',
+          imageDigest: syntheticDigest('4'),
+        },
+        web: {
+          revision: 'b'.repeat(40),
+          artifactDigest: syntheticDigest('5'),
+          imageEvidence: 'VERIFIED_IMMUTABLE_IMAGE',
+          imageDigest: syntheticDigest('6'),
+        },
+        migration: { revision: syntheticRevision, artifactDigest: syntheticDigest('7') },
+        policy: { revision: 'c'.repeat(40), artifactDigest: syntheticDigest('8') },
+        fixtures: {
+          revision: 'd'.repeat(40),
+          artifactDigest: syntheticDigest('9'),
+          imageEvidence: 'VERIFIED_IMMUTABLE_IMAGE',
+          imageDigest: syntheticDigest('a'),
+        },
+      },
+      capabilities: {
+        financialProvider: 'fake',
+        fakeFinancialEvents: true,
+        customerMoneyCreation: false,
+        hardAssignment: false,
+        realSettlement: false,
+        outboundCommunication: 'sink',
+        dataClass: 'synthetic',
+      },
+      promotion: {
+        baseManifestDigest: null,
+        changedComponents: ['backend', 'worker', 'web', 'migration', 'policy', 'fixtures'],
+      },
+      health: {
+        backend: { component: 'backend', path: '/health' },
+        worker: { component: 'worker', path: '/health' },
+        web: { component: 'web', path: '/version.json' },
+      },
+    };
+  }
+
+  function configureSyntheticDeployment(environment: 'staging' | 'preview') {
+    for (const name of Object.keys(process.env)) {
+      if (
+        /^(?:AI_ROUTE_|OPENAI_|DEEPSEEK_|GROQ_|ALIBABA_|ANTHROPIC_|GOOGLE_|GCP_|AZURE_|AWS_|R2_|FIREBASE_|TWILIO_|SENDGRID_|CHECKR_|TURNSTILE_|SENTRY_|DATADOG_|DD_|STRIPE_(?!MODE$)|PLAID_|DWOLLA_|ADYEN_|BRAINTREE_|PAYPAL_|SQUARE_|BANK_)/u.test(name)
+        || /^HXOS_(?:ALLOW_)?LOCAL_TEST_/u.test(name)
+      ) {
+        delete process.env[name];
+      }
+    }
+    delete process.env.GITHUB_SHA;
+    delete process.env.SOURCE_VERSION;
+    delete process.env.HX_BUILD_REVISION;
+    const apiHost = environment === 'staging'
+      ? 'api.staging.example.invalid'
+      : 'api-pr-123.example.invalid';
+    const webOrigin = environment === 'staging'
+      ? 'https://web.staging.example.invalid'
+      : 'https://web-pr-123.example.invalid';
+    Object.assign(process.env, {
+      NODE_ENV: 'production',
+      HX_ENVIRONMENT: environment,
+      SERVICE_ROLE: 'api',
+      ENGINE_API_MODE: 'test',
+      STRIPE_MODE: 'test',
+      HX_PAYMENT_CREATION_MODE: 'frozen',
+      HX_FAKE_FINANCIAL_PROVIDER_ENABLED: 'true',
+      HX_FINANCIAL_PROVIDER_MODE: 'fake',
+      HX_AI_PROVIDER_MODE: 'deterministic',
+      HX_MAPS_PROVIDER_MODE: 'deterministic',
+      HX_VISION_PROVIDER_MODE: 'deterministic',
+      HX_BIOMETRIC_PROVIDER_MODE: 'deterministic',
+      HX_IDENTITY_PROVIDER_MODE: 'synthetic',
+      HX_SCREENING_PROVIDER_MODE: 'synthetic',
+      HX_CREDENTIAL_VERIFICATION_MODE: 'synthetic',
+      HX_OBJECT_STORAGE_MODE: 'synthetic',
+      HX_EXTERNAL_VALUE: 'false',
+      HX_LIVE_PROVIDER_ACCESS: 'false',
+      HX_OUTBOUND_COMMUNICATION_MODE: 'sink',
+      HX_EMAIL_DELIVERY_MODE: 'sink',
+      HX_SMS_DELIVERY_MODE: 'sink',
+      HX_LIVE_DELIVERY: 'false',
+      HX_COMPLETION_DELIVERY_SINK_ACTOR_ID: '00000000-0000-4000-8000-000000000138',
+      HX_TELEMETRY_EXPORT_MODE: 'disabled',
+      HX_SYNTHETIC_OPERATOR_AUTH_MODE: 'signed_hmac',
+      HX_SYNTHETIC_OPERATOR_AUTH_SECRET: 'synthetic-operator-auth-secret-v1',
+      HX_FAKE_FINANCIAL_WEBHOOK_SECRET: 'synthetic-fake-webhook-secret-v1',
+      DATABASE_URL: 'postgresql://synthetic:synthetic@postgres.railway.internal:5432/hustlexp_nonprod',
+      REDIS_URL: 'redis://redis.railway.internal:6379',
+      UPSTASH_REDIS_URL: 'redis://redis.railway.internal:6379',
+      QUEUE_HMAC_SECRET: 'synthetic-queue-hmac-secret-0000000000000000',
+      TAX_TIN_ENCRYPTION_KEY: '1'.repeat(64),
+      SESSION_ENCRYPTION_KEY: '2'.repeat(64),
+      TASK_LOCATION_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
+      TASK_LOCATION_ENCRYPTION_KEY_ID: 'staging-v1',
+      S3_ENDPOINT: 'https://storage.railway.app',
+      AWS_ACCESS_KEY_ID: 'nonprod_bucket_access_123',
+      AWS_SECRET_ACCESS_KEY: 'nonprod-bucket-secret-reference-v1',
+      BUCKET_NAME: 'hustlexp-synthetic-media-123',
+      HX_NONPROD_API_ORIGIN: `https://${apiHost}`,
+      HX_NONPROD_WEB_ORIGIN: webOrigin,
+      ALLOWED_ORIGINS: webOrigin,
+      SMTP_URL: 'smtp://message-sink.railway.internal:1025',
+      HX_SMS_SINK_URL: 'http://synthetic-providers.railway.internal:8080/v1/messages/sms',
+      RAILWAY_PROJECT_NAME: 'hustlexp-nonprod',
+      RAILWAY_PROJECT_ID: 'project_nonprod_123',
+      RAILWAY_ENVIRONMENT_NAME: environment === 'staging' ? 'staging' : 'pr-123',
+      RAILWAY_ENVIRONMENT_ID: 'environment_nonprod_123',
+      RAILWAY_PUBLIC_DOMAIN: apiHost,
+      RAILWAY_GIT_COMMIT_SHA: syntheticRevision,
+      HX_RELEASE_MANIFEST_JSON: JSON.stringify(syntheticManifest(environment)),
+    });
+    return {
+      schema_version: 1 as const,
+      service: 'hustlexp-engine' as const,
+      revision: syntheticRevision,
+      built_at: '2026-08-26T12:00:00.000Z',
+      environment: 'production',
+      clean_source: true,
+      source: 'RAILWAY_GIT_COMMIT_SHA',
+      artifact_digest: syntheticManifest(environment).components.backend.artifactDigest,
+      artifact_verified: true,
+    };
+  }
+
+  function authenticatedSyntheticRelease(
+    environment: 'staging' | 'preview',
+  ): ReleaseManifestEvidence {
+    const manifest = syntheticManifest(environment);
+    return {
+      schema_version: 1,
+      status: 'valid',
+      digest: releaseManifestDigest(manifest),
+      source: 'HX_RELEASE_MANIFEST_JSON',
+      errors: [],
+      manifest,
+      authentication: {
+        status: 'verified',
+        algorithm: 'ed25519',
+        keyId: 'unit-test-release-authority',
+        keyFingerprint: `sha256:${'d'.repeat(64)}`,
+        signatureDigest: `sha256:${'e'.repeat(64)}`,
+        source: 'unit-test-detached-signature',
+        errors: [],
+      },
+    };
+  }
+
+  it.each(['staging', 'preview'] as const)(
+    'accepts exact %s with production runtime safety and no live provider credential',
+    async (environment) => {
+      const identity = configureSyntheticDeployment(environment);
+      vi.resetModules();
+      const { validateConfig } = await import('../../src/config');
+      const result = validateConfig({
+        identity,
+        release: authenticatedSyntheticRelease(environment),
+      });
+      expect(exitSpy).not.toHaveBeenCalled();
+      expect(result).toEqual({ valid: true, errors: [], warnings: [] });
+    },
+  );
+
+  it('isolates a synthetic Railway identity from ambient CI revision sources', async () => {
+    process.env.GITHUB_SHA = 'a'.repeat(40);
+    process.env.SOURCE_VERSION = 'b'.repeat(40);
+    process.env.HX_BUILD_REVISION = 'c'.repeat(40);
+
+    const identity = configureSyntheticDeployment('staging');
+
+    expect(process.env.GITHUB_SHA).toBeUndefined();
+    expect(process.env.SOURCE_VERSION).toBeUndefined();
+    expect(process.env.HX_BUILD_REVISION).toBeUndefined();
+
+    vi.resetModules();
+    const { validateConfig } = await import('../../src/config');
+    const result = validateConfig({
+      identity,
+      release: authenticatedSyntheticRelease('staging'),
+    });
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(result).toEqual({ valid: true, errors: [], warnings: [] });
+  });
+
+  it('fails deployed synthetic startup without an exact release manifest', async () => {
+    const identity = configureSyntheticDeployment('staging');
+    delete process.env.HX_RELEASE_MANIFEST_JSON;
+    vi.resetModules();
+    const { validateConfig } = await import('../../src/config');
+    const result = validateConfig({ identity });
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(result.errors.join('\n')).toMatch(/EXACT_MANIFEST_REQUIRED|HX_RELEASE_MANIFEST_JSON/u);
+  });
+
+  it('rejects NODE_ENV=staging even with otherwise exact synthetic evidence', async () => {
+    const identity = configureSyntheticDeployment('staging');
+    process.env.NODE_ENV = 'staging';
+    vi.resetModules();
+    const { validateConfig } = await import('../../src/config');
+    const result = validateConfig({
+      identity,
+      release: authenticatedSyntheticRelease('staging'),
+    });
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(result.errors).toContain('NODE_ENV must be production for deployed synthetic nonproduction');
+  });
+
+  it('does not treat HX_ENVIRONMENT=production as the synthetic staging branch', async () => {
+    const identity = configureSyntheticDeployment('staging');
+    process.env.HX_ENVIRONMENT = 'production';
+    vi.resetModules();
+    const { validateConfig } = await import('../../src/config');
+    const result = validateConfig({
+      identity,
+      release: authenticatedSyntheticRelease('staging'),
+    });
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(result.errors.join('\n')).toMatch(/FIREBASE_PROJECT_ID|STRIPE_SECRET_KEY/u);
+  });
+
+  it('rejects any live money or identity credential in deployed synthetic nonproduction', async () => {
+    const identity = configureSyntheticDeployment('staging');
+    process.env.STRIPE_SECRET_KEY = 'sk_live_forbidden';
+    process.env.FIREBASE_PROJECT_ID = 'live-identity-project';
+    vi.resetModules();
+    const { validateConfig } = await import('../../src/config');
+    const result = validateConfig({
+      identity,
+      release: authenticatedSyntheticRelease('staging'),
+    });
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(result.errors.join('\n')).toMatch(/STRIPE_SECRET_KEY.*absent|FIREBASE_PROJECT_ID.*absent/u);
+  });
+
+  it.each([
+    ['OPENAI_API_KEY', 'live-ai-key'],
+    ['GOOGLE_MAPS_API_KEY', 'live-maps-key'],
+    ['GOOGLE_CLOUD_VISION_API_KEY', 'live-vision-key'],
+    ['AWS_REGION', 'us-east-1'],
+    ['R2_ACCESS_KEY_ID', 'live-storage-key'],
+    ['TWILIO_AUTH_TOKEN', 'live-outbound-token'],
+    ['SENDGRID_API_KEY', 'live-outbound-key'],
+    ['CHECKR_WEBHOOK_SECRET', 'live-screening-secret'],
+    ['SENTRY_DSN', 'https://public@example.invalid/1'],
+  ])('rejects deployed synthetic live-provider variable %s', async (name, value) => {
+    const identity = configureSyntheticDeployment('staging');
+    process.env[name] = value;
+    vi.resetModules();
+    const { validateConfig } = await import('../../src/config');
+    const result = validateConfig({ identity });
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(result.errors).toContain(`${name} must be absent in deployed synthetic nonproduction`);
+  });
+
+  it('requires exact deterministic modes and isolated Railway bucket authority', async () => {
+    const identity = configureSyntheticDeployment('preview');
+    process.env.HX_AI_PROVIDER_MODE = 'openai';
+    process.env.S3_ENDPOINT = 'https://production-storage.example.invalid';
+    vi.resetModules();
+    const { validateConfig } = await import('../../src/config');
+    const result = validateConfig({ identity });
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(result.errors).toContain('HX_AI_PROVIDER_MODE must be deterministic');
+    expect(result.errors).toContain('S3_ENDPOINT must be the isolated Railway bucket origin https://storage.railway.app');
+  });
+
+  it('requires a named UUID completion-delivery sink actor in deployed synthetic nonproduction', async () => {
+    const identity = configureSyntheticDeployment('staging');
+    process.env.HX_COMPLETION_DELIVERY_SINK_ACTOR_ID = 'not-a-uuid';
+    vi.resetModules();
+    const { validateConfig } = await import('../../src/config');
+    const result = validateConfig({
+      identity,
+      release: authenticatedSyntheticRelease('staging'),
+    });
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(result.errors).toContain(
+      'HX_COMPLETION_DELIVERY_SINK_ACTOR_ID must identify the named synthetic completion-delivery service actor'
+    );
+  });
+
+  it('rejects loopback infrastructure and a web/API public-origin mismatch', async () => {
+    const identity = configureSyntheticDeployment('preview');
+    process.env.DATABASE_URL = 'postgresql://localhost:5432/not-isolated';
+    process.env.ALLOWED_ORIGINS = 'https://wrong-web.example.invalid';
+    process.env.HX_NONPROD_API_ORIGIN = 'https://wrong-api.example.invalid';
+    vi.resetModules();
+    const { validateConfig } = await import('../../src/config');
+    const result = validateConfig({
+      identity,
+      release: authenticatedSyntheticRelease('preview'),
+    });
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(result.errors.join('\n')).toMatch(/loopback|ALLOWED_ORIGINS|Railway API public domain/u);
   });
 });
 

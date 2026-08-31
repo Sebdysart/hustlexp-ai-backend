@@ -4,6 +4,7 @@ import type { ServiceResult } from '../types.js';
 import { controlledTestLiquidityEnabled } from './ControlledTestLiquidityService.js';
 import { localCertificationPayoutEnabled } from './LocalCertificationPayoutProvider.js';
 import { localCertificationScreeningEnabled } from './LocalCertificationScreeningProvider.js';
+import { hardAssignmentFailure } from './HardAssignmentGuard.js';
 import {
   buildReservationRequestHash,
   commitReservation,
@@ -168,6 +169,10 @@ function denied(
 
 export const TaskReservationService = {
   reserve: async (params: ReserveTaskParams): Promise<ServiceResult<EngineReservationResult>> => {
+    const frozen = hardAssignmentFailure(
+      params.serviceBusiness ? 'service_business_assignment' : 'engine_reservation',
+    );
+    if (frozen) return frozen;
     const requestHash = buildReservationRequestHash(params);
     try {
       const outcome = await db.transaction((query) => reserveTransaction(query,params,requestHash));

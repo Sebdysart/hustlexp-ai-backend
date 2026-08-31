@@ -20,25 +20,35 @@
  * @see STEP_9D_STRIPE_INTEGRATION.md
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import pg from 'pg';
-import { db, hasDb } from '../../src/db';
+import { describe, it, expect, beforeAll } from 'vitest';
+import { db } from '../../src/db';
 import { PlanService } from '../../src/services/PlanService';
 import { processEntitlementPurchase } from '../../src/services/StripeEntitlementProcessor';
 import { processSubscriptionEvent } from '../../src/services/StripeSubscriptionProcessor';
+import { TaskService } from '../../src/services/TaskService';
 import type { User } from '../../src/types';
-import { createTestPool, createTestTask } from '../setup';
 
-let testPool: pg.Pool;
+function assertDisposableDatabase(databaseUrl: string): void {
+  if (!databaseUrl) {
+    throw new Error('DATABASE_URL is required for Stripe monetization invariants');
+  }
+  const parsed = new URL(databaseUrl);
+  const loopback = parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost';
+  const disposableName = /(?:e2e|test|startup)/i.test(parsed.pathname.slice(1));
+  if (!loopback || !disposableName) {
+    throw new Error(
+      `Refusing Stripe monetization invariants against non-disposable target ${parsed.hostname}/${parsed.pathname.slice(1)}`,
+    );
+  }
+}
 
 beforeAll(() => {
-  if (!hasDb) return;
-  testPool = createTestPool();
+  assertDisposableDatabase(process.env.DATABASE_URL ?? '');
 });
 
-afterAll(async () => {
-  if (testPool) await testPool.end();
-});
+// Required tests recreate this database from the exact migration chain. These
+// uniquely keyed fixtures intentionally remain because deleting their users or
+// tasks would attempt to rewrite append-only audit relationships.
 
 // ============================================================================
 // TEST HELPERS
@@ -104,13 +114,42 @@ async function getUserPlan(userId: string): Promise<'free' | 'premium' | 'pro'> 
   return result.rows[0]?.plan || 'free';
 }
 
+async function createControlledTestTask(posterId: string, label: string): Promise<string> {
+  const fixtureId = crypto.randomUUID();
+  const created = await TaskService.create({
+    posterId,
+    title: `Entitlement fixture ${label}`,
+    description: 'Controlled local task used to prove entitlement persistence invariants.',
+    price: 5_000,
+    hustlerPayoutCents: 4_000,
+    platformMarginCents: 1_000,
+    requirements: 'Keep entitlement identity bound to this exact task.',
+    location: '101 Test Avenue, Seattle, WA 98101',
+    roughArea: 'Seattle, WA',
+    regionCode: 'US-WA',
+    category: 'moving',
+    deadline: new Date(Date.now() + 60 * 60_000),
+    dispatchExpiresAt: new Date(Date.now() + 30 * 60_000),
+    requiresProof: true,
+    riskLevel: 'LOW',
+    mode: 'STANDARD',
+    automationClassification: 'CONTROLLED_TEST',
+    proofSteps: ['Verify the entitlement linkage.'],
+    estimatedDurationMinutes: 60,
+    requiredTools: ['none'],
+    clientIdempotencyKey: `stripe-entitlement-${label}-${fixtureId}`,
+  });
+  if (!created.success) throw new Error(created.error.message);
+  return created.data.id;
+}
+
 // ============================================================================
 // INVARIANT S-1: Stripe Event Idempotency
 // ============================================================================
 
-describe.skipIf(!hasDb)('Invariant S-1: Stripe Event Idempotency', () => {
+describe('Invariant S-1: Stripe Event Idempotency', () => {
   it('S-1: duplicate stripe_event_id cannot be inserted', async () => {
-    const eventId = `evt_test_${Date.now()}_${Math.random()}`;
+    const eventId = `evt_test_${Date.now()}_${crypto.randomUUID().replaceAll('-', '')}`;
     const payload = { type: 'checkout.session.completed', data: {} };
 
     // First insert succeeds
@@ -148,16 +187,12 @@ describe.skipIf(!hasDb)('Invariant S-1: Stripe Event Idempotency', () => {
 // INVARIANT S-2: Subscription Plan Changes Are Monotonic
 // ============================================================================
 
-describe.skipIf(!hasDb)('Invariant S-2: Subscription Plan Changes Are Monotonic', () => {
+describe('Invariant S-2: Subscription Plan Changes Are Monotonic', () => {
   let userId: string;
 
   beforeAll(async () => {
     const user = await createTestUser('free');
     userId = user.id;
-  });
-
-  afterAll(async () => {
-    await db.query('DELETE FROM users WHERE id = $1', [userId]);
   });
 
   it('S-2: subscription event applies at most once', async () => {
@@ -230,7 +265,7 @@ describe.skipIf(!hasDb)('Invariant S-2: Subscription Plan Changes Are Monotonic'
 // INVARIANT S-3: Per-Task Entitlements Are Idempotent
 // ============================================================================
 
-describe.skipIf(!hasDb)('Invariant S-3: Per-Task Entitlements Are Idempotent', () => {
+describe('Invariant S-3: Per-Task Entitlements Are Idempotent', () => {
   let userId: string;
   let taskId: string;
 
@@ -238,14 +273,7 @@ describe.skipIf(!hasDb)('Invariant S-3: Per-Task Entitlements Are Idempotent', (
     const user = await createTestUser('free');
     userId = user.id;
 
-    const task = await createTestTask(testPool, { posterId: userId });
-    taskId = task.id;
-  });
-
-  afterAll(async () => {
-    await db.query('DELETE FROM plan_entitlements WHERE user_id = $1', [userId]);
-    await db.query('DELETE FROM tasks WHERE id = $1', [taskId]);
-    await db.query('DELETE FROM users WHERE id = $1', [userId]);
+    taskId = await createControlledTestTask(userId, 's3');
   });
 
   it('S-3: per-task entitlement is idempotent', async () => {
@@ -313,7 +341,7 @@ describe.skipIf(!hasDb)('Invariant S-3: Per-Task Entitlements Are Idempotent', (
 // INVARIANT S-4: Entitlements Never Outlive Validity
 // ============================================================================
 
-describe.skipIf(!hasDb)('Invariant S-4: Entitlements Never Outlive Validity', () => {
+describe('Invariant S-4: Entitlements Never Outlive Validity', () => {
   let userId: string;
   let taskId: string;
 
@@ -321,14 +349,7 @@ describe.skipIf(!hasDb)('Invariant S-4: Entitlements Never Outlive Validity', ()
     const user = await createTestUser('free');
     userId = user.id;
 
-    const task = await createTestTask(testPool, { posterId: userId });
-    taskId = task.id;
-  });
-
-  afterAll(async () => {
-    await db.query('DELETE FROM plan_entitlements WHERE user_id = $1', [userId]);
-    await db.query('DELETE FROM tasks WHERE id = $1', [taskId]);
-    await db.query('DELETE FROM users WHERE id = $1', [userId]);
+    taskId = await createControlledTestTask(userId, 's4');
   });
 
   it('S-4: expired entitlements grant no access', async () => {
@@ -413,7 +434,7 @@ describe.skipIf(!hasDb)('Invariant S-4: Entitlements Never Outlive Validity', ()
 // INVARIANT S-5: Entitlements Must Reference a Valid Stripe Event
 // ============================================================================
 
-describe.skipIf(!hasDb)('Invariant S-5: Entitlements Must Reference a Valid Stripe Event', () => {
+describe('Invariant S-5: Entitlements Must Reference a Valid Stripe Event', () => {
   let userId: string;
   let taskId: string;
 
@@ -421,14 +442,7 @@ describe.skipIf(!hasDb)('Invariant S-5: Entitlements Must Reference a Valid Stri
     const user = await createTestUser('free');
     userId = user.id;
 
-    const task = await createTestTask(testPool, { posterId: userId });
-    taskId = task.id;
-  });
-
-  afterAll(async () => {
-    await db.query('DELETE FROM plan_entitlements WHERE user_id = $1', [userId]);
-    await db.query('DELETE FROM tasks WHERE id = $1', [taskId]);
-    await db.query('DELETE FROM users WHERE id = $1', [userId]);
+    taskId = await createControlledTestTask(userId, 's5');
   });
 
   it('S-5: entitlement creation requires valid Stripe event', async () => {

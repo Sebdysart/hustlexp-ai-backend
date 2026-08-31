@@ -54,7 +54,11 @@ vi.mock('../../src/logger.js', () => {
 // ────────────────────────────────────────────────────────────────────────────
 
 import { db } from '../../src/db.js';
-import { processOutboxEvents } from '../../src/jobs/outbox-worker.js';
+import {
+  markOutboxEventFailed,
+  markOutboxEventProcessed,
+  processOutboxEvents,
+} from '../../src/jobs/outbox-worker.js';
 
 const mockDb = vi.mocked(db);
 
@@ -71,14 +75,27 @@ const mockDb = vi.mocked(db);
 function setupTransactionWithRows(selectRows: unknown[], selectRowCount: number = selectRows.length) {
   mockTransaction.mockImplementationOnce(async (fn: (txQuery: unknown) => Promise<unknown>) => {
     let callIndex = 0;
-    const txQuery = vi.fn().mockImplementation(() => {
+    let claimedIndex = 0;
+    const txQuery = vi.fn().mockImplementation((_sql: string, params?: unknown[]) => {
       callIndex++;
       if (callIndex === 1) {
-        // First call: SELECT FOR UPDATE SKIP LOCKED
+        // Expired pre-provider attempts that exhausted the dispatch budget.
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      }
+      if (callIndex === 2) {
         return Promise.resolve({ rows: selectRows, rowCount: selectRowCount });
       }
-      // Subsequent calls: CAS UPDATE per event — default success (rowCount=1)
-      return Promise.resolve({ rows: [], rowCount: 1 });
+      const source = selectRows[claimedIndex++] as Record<string, unknown>;
+      return Promise.resolve({
+        rows: [{
+          ...source,
+          status: 'enqueued',
+          attempts: params?.[1],
+          bullmq_job_id: params?.[2],
+          dispatch_attempt_id: params?.[3],
+        }],
+        rowCount: 1,
+      });
     });
     return fn(txQuery);
   });
@@ -109,6 +126,15 @@ function makeEvent(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function resolveQueueJob(state: string = 'waiting') {
+  mockQueueAdd.mockImplementationOnce(
+    async (...args: unknown[]) => ({
+      id: (args[3] as { jobId?: string } | undefined)?.jobId,
+      getState: vi.fn().mockResolvedValue(state),
+    }),
+  );
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Tests
 // ────────────────────────────────────────────────────────────────────────────
@@ -131,7 +157,7 @@ describe('processOutboxEvents', () => {
       // Transaction: SELECT returns one event; CAS UPDATE succeeds (rowCount=1)
       setupTransactionWithRows([event], 1);
       // queue.add() succeeds
-      mockQueueAdd.mockResolvedValueOnce({ id: 'bullmq-job-001' });
+      resolveQueueJob();
       // db.query() outside the transaction: persist bullmq_job_id
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
 
@@ -145,8 +171,38 @@ describe('processOutboxEvents', () => {
       expect(mockDb.query).toHaveBeenCalledTimes(1);
       const [sql, params] = mockDb.query.mock.calls[0];
       expect(sql).toContain('bullmq_job_id');
-      expect(params).toContain('bullmq-job-001');
+      expect(params).toContainEqual(expect.stringMatching(/^outbox-[0-9a-f]{64}$/));
       expect(params).toContain(event.id);
+    });
+
+    it('uses a fresh deterministic dispatch ID while retaining the provider idempotency key', async () => {
+      const event = makeEvent({
+        event_type: 'push.send_requested',
+        aggregate_type: 'push',
+        aggregate_id: 'notification-1',
+        idempotency_key: 'push.send_requested:notification-1:1',
+        queue_name: 'user_notifications',
+        attempts: 1,
+      });
+      setupTransactionWithRows([event], 1);
+      resolveQueueJob();
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+
+      await processOutboxEvents(10);
+
+      expect(mockQueueAdd).toHaveBeenCalledWith(
+        'user_notifications',
+        'push.send_requested',
+        expect.objectContaining({
+          outbox_idempotency_key: event.idempotency_key,
+          outbox_dispatch_attempt_id: expect.any(String),
+          outbox_bullmq_job_id: expect.stringMatching(/^outbox-[0-9a-f]{64}-dispatch-2$/),
+        }),
+        { jobId: expect.stringMatching(/^outbox-[0-9a-f]{64}-dispatch-2$/) },
+      );
+      const dispatchJobId = mockQueueAdd.mock.calls[0]?.[3]?.jobId;
+      expect(dispatchJobId).not.toContain(':');
+      expect(mockQueueAdd.mock.calls[0]?.[2]?.outbox_bullmq_job_id).toBe(dispatchJobId);
     });
 
     it('skips event (does not increment processed) when CAS UPDATE in tx returns rowCount=0', async () => {
@@ -157,7 +213,8 @@ describe('processOutboxEvents', () => {
         let callIndex = 0;
         const txQuery = vi.fn().mockImplementation(() => {
           callIndex++;
-          if (callIndex === 1) {
+          if (callIndex === 1) return Promise.resolve({ rows: [], rowCount: 0 });
+          if (callIndex === 2) {
             return Promise.resolve({ rows: [event], rowCount: 1 });
           }
           // CAS UPDATE: already claimed
@@ -186,7 +243,7 @@ describe('processOutboxEvents', () => {
         let callIndex = 0;
         const txQuery = vi.fn().mockImplementation((sql: string) => {
           callIndex++;
-          if (callIndex === 1) {
+          if (callIndex === 2) {
             capturedSql = sql;
             return Promise.resolve({ rows: [], rowCount: 0 });
           }
@@ -199,7 +256,7 @@ describe('processOutboxEvents', () => {
 
       expect(capturedSql).toContain('FOR UPDATE');
       expect(capturedSql).toContain('SKIP LOCKED');
-      expect(capturedSql).toContain("WHERE status = 'pending'");
+      expect(capturedSql).toContain("status = 'pending'");
       expect(capturedSql).toContain('available_at <= NOW()');
       expect(capturedSql).toContain('ORDER BY created_at ASC');
       expect(capturedSql).toContain('LIMIT $1');
@@ -213,22 +270,26 @@ describe('processOutboxEvents', () => {
         let callIndex = 0;
         const txQuery = vi.fn().mockImplementation((sql: string) => {
           callIndex++;
-          if (callIndex === 1) {
+          if (callIndex === 1) return Promise.resolve({ rows: [], rowCount: 0 });
+          if (callIndex === 2) {
             return Promise.resolve({ rows: [event], rowCount: 1 });
           }
           capturedCasSql = sql;
-          return Promise.resolve({ rows: [], rowCount: 1 });
+          return Promise.resolve({
+            rows: [{ ...event, status: 'enqueued', attempts: 1, bullmq_job_id: event.idempotency_key, dispatch_attempt_id: '00000000-0000-4000-8000-000000000001' }],
+            rowCount: 1,
+          });
         });
         return fn(txQuery);
       });
 
-      mockQueueAdd.mockResolvedValueOnce({ id: 'job-x' });
+      resolveQueueJob();
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
 
       await processOutboxEvents(10);
 
       expect(capturedCasSql).toContain("status = 'enqueued'");
-      expect(capturedCasSql).toContain("AND status = 'pending'");
+      expect(capturedCasSql).toContain("status = 'pending'");
     });
   });
 
@@ -236,9 +297,8 @@ describe('processOutboxEvents', () => {
   // Attempt-based retry logic
   // ──────────────────────────────────────────────────────────────────────────
 
-  describe("retry logic when queue.add() throws", () => {
-    it("resets status to 'pending' when attempts < 5 (below max)", async () => {
-      // attempts=0 in DB; transaction increments to 1 (still < 5) → should become 'pending'
+  describe('durable dispatch lease recovery', () => {
+    it('keeps the exact dispatch claim when queue.add has an ambiguous outcome', async () => {
       const event = makeEvent({ attempts: 0 });
 
       setupTransactionWithRows([event], 1);
@@ -255,64 +315,204 @@ describe('processOutboxEvents', () => {
         error: 'Redis connection refused',
       });
 
-      // The catch-block db.query() should reset status using CASE expression
       const updateCall = mockDb.query.mock.calls[0];
       const sql: string = updateCall[0];
       const params: unknown[] = updateCall[1];
 
-      expect(sql).toContain('CASE WHEN attempts <');
-      expect(sql).toContain("THEN 'pending'");
-      expect(sql).toContain("ELSE 'failed'");
-      // $1 = MAX_OUTBOX_ATTEMPTS (5)
-      expect(params[0]).toBe(5);
-      // $2 = error message
-      expect(params[1]).toBe('Redis connection refused');
-      // $3 = event id
-      expect(params[2]).toBe('event-001');
+      expect(sql).toContain('SET error_message = $1');
+      expect(sql).toContain("status = 'enqueued'");
+      expect(sql).toContain('dispatch_attempt_id = $3::UUID');
+      expect(params[0]).toBe('Redis connection refused');
+      expect(params[1]).toBe('event-001');
+      expect(params[2]).toEqual(expect.any(String));
     });
 
-    it("resets status to 'pending' when attempts=3 (still below max of 5)", async () => {
-      const event = makeEvent({ attempts: 3 });
-
-      setupTransactionWithRows([event], 1);
-      mockQueueAdd.mockRejectedValueOnce(new Error('Queue timeout'));
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
-
-      const result = await processOutboxEvents(10);
-
-      expect(result.failed).toBe(1);
-
-      const updateCall = mockDb.query.mock.calls[0];
-      const params: unknown[] = updateCall[1];
-      // MAX_OUTBOX_ATTEMPTS still 5
-      expect(params[0]).toBe(5);
-      // attempts was 3 in DB; tx incremented to 4 (< 5) → SQL evaluates to 'pending'
-    });
-
-    it("permanently sets status to 'failed' when attempts=4 (would become 5, hitting max)", async () => {
-      // attempts=4 in DB; transaction increments to 5, which is NOT < 5 → should become 'failed'
-      const event = makeEvent({ attempts: 4 });
-
-      setupTransactionWithRows([event], 1);
-      mockQueueAdd.mockRejectedValueOnce(new Error('Redis down'));
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
-
-      const result = await processOutboxEvents(10);
-
-      expect(result.failed).toBe(1);
-      expect(result.errors[0]).toMatchObject({
-        eventId: 'event-001',
-        error: 'Redis down',
+    it('re-adds an expired ambiguous queue claim with the same retained job ID', async () => {
+      const event = makeEvent({
+        status: 'enqueued',
+        attempts: 3,
+        dispatch_attempt_id: '00000000-0000-4000-8000-000000000009',
+        bullmq_job_id: 'retained-job-id',
+        dispatch_deadline_at: new Date(0),
       });
 
-      const updateCall = mockDb.query.mock.calls[0];
-      const sql: string = updateCall[0];
-      const params: unknown[] = updateCall[1];
+      setupTransactionWithRows([event], 1);
+      resolveQueueJob('waiting');
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
 
-      expect(sql).toContain('CASE WHEN attempts <');
-      expect(params[0]).toBe(5);
-      // attempts=4 in DB; tx incremented to 5, NOT < 5 → SQL evaluates to 'failed'
-      expect(params[2]).toBe('event-001');
+      const result = await processOutboxEvents(10);
+
+      expect(result.processed).toBe(1);
+      expect(mockQueueAdd).toHaveBeenCalledWith(
+        event.queue_name,
+        event.event_type,
+        expect.objectContaining({
+          outbox_idempotency_key: event.idempotency_key,
+          outbox_dispatch_attempt_id: event.dispatch_attempt_id,
+          outbox_bullmq_job_id: event.bullmq_job_id,
+        }),
+        { jobId: 'retained-job-id' },
+      );
+    });
+
+    it.each(['active', 'delayed', 'prioritized', 'unknown'])(
+      'preserves the exact retained job ID while BullMQ reports %s',
+      async (state) => {
+        const event = makeEvent({
+          status: 'enqueued',
+          attempts: 2,
+          dispatch_attempt_id: '00000000-0000-4000-8000-000000000029',
+          bullmq_job_id: 'retained-nonterminal-job',
+          dispatch_deadline_at: new Date(0),
+        });
+
+        setupTransactionWithRows([event], 1);
+        resolveQueueJob(state);
+        mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+
+        const result = await processOutboxEvents(10);
+
+        expect(result).toMatchObject({ processed: 1, failed: 0 });
+        expect(mockQueueAdd).toHaveBeenCalledTimes(1);
+        expect(mockQueueAdd.mock.calls[0]?.[3]).toEqual({
+          jobId: 'retained-nonterminal-job',
+        });
+      },
+    );
+
+    it.each(['completed', 'failed'])(
+      'rotates a retained %s BullMQ job only after the atomic no-effect proof',
+      async (state) => {
+        const event = makeEvent({
+          event_type: 'email.send_requested',
+          aggregate_type: 'email',
+          aggregate_id: '10000000-0000-4000-8000-000000000001',
+          idempotency_key: 'email.send_requested:test:1',
+          payload: { emailId: '10000000-0000-4000-8000-000000000001' },
+          queue_name: 'user_notifications',
+          status: 'enqueued',
+          attempts: 3,
+          dispatch_attempt_id: '00000000-0000-4000-8000-000000000039',
+          bullmq_job_id: 'retained-terminal-job',
+          dispatch_deadline_at: new Date(0),
+        });
+
+        setupTransactionWithRows([event], 1);
+        resolveQueueJob(state);
+        mockDb.query.mockResolvedValueOnce({
+          rows: [{ ...event, status: 'enqueued', attempts: 4 }],
+          rowCount: 1,
+        } as any);
+        resolveQueueJob('waiting');
+        mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+
+        const result = await processOutboxEvents(10);
+
+        expect(result).toMatchObject({ processed: 1, failed: 0 });
+        expect(mockQueueAdd).toHaveBeenCalledTimes(2);
+        expect(mockQueueAdd.mock.calls[0]?.[3]).toEqual({ jobId: 'retained-terminal-job' });
+        expect(mockQueueAdd.mock.calls[1]?.[3]?.jobId).toMatch(
+          /^outbox-[0-9a-f]{64}-dispatch-4$/,
+        );
+        expect(mockQueueAdd.mock.calls[1]?.[2]).toEqual(expect.objectContaining({
+          outbox_idempotency_key: event.idempotency_key,
+          outbox_dispatch_attempt_id: expect.any(String),
+          outbox_bullmq_job_id: mockQueueAdd.mock.calls[1]?.[3]?.jobId,
+        }));
+        expect(mockQueueAdd.mock.calls[1]?.[2]?.outbox_dispatch_attempt_id).not.toBe(
+          event.dispatch_attempt_id,
+        );
+
+        const rotationSql = mockDb.query.mock.calls[0]?.[0] as string;
+        expect(rotationSql).toContain("outbox.status = 'enqueued'");
+        expect(rotationSql).toContain('outbox.dispatch_attempt_id = $2::UUID');
+        expect(rotationSql).toContain('outbox.bullmq_job_id = $3');
+        expect(rotationSql).toContain('outbox.pre_provider_claim_id IS NULL');
+        expect(rotationSql).toContain('outbox.provider_io_started_at IS NULL');
+        expect(rotationSql).toContain('email.notification_provider_attempt_id IS NULL');
+        expect(rotationSql).toContain('email.provider_msg_id IS NULL');
+        expect(rotationSql).toContain('email.sent_at IS NULL');
+        expect(rotationSql).toContain('delivery.state NOT IN');
+        expect(rotationSql).toContain('sms.provider_message_id IS NULL');
+        expect(rotationSql).toContain('sms.twilio_sid IS NULL');
+        expect(rotationSql).toContain('sms.provider_status IS NULL');
+        expect(rotationSql).toContain("WHEN 'push.send_requested' THEN EXISTS");
+      },
+    );
+
+    it('refuses to rotate a retained terminal job when the no-effect proof loses its CAS', async () => {
+      const event = makeEvent({
+        event_type: 'push.send_requested',
+        aggregate_type: 'push',
+        aggregate_id: '20000000-0000-4000-8000-000000000001',
+        payload: { notificationId: '20000000-0000-4000-8000-000000000001' },
+        queue_name: 'user_notifications',
+        status: 'enqueued',
+        attempts: 2,
+        dispatch_attempt_id: '00000000-0000-4000-8000-000000000049',
+        bullmq_job_id: 'retained-unsafe-job',
+        dispatch_deadline_at: new Date(0),
+      });
+
+      setupTransactionWithRows([event], 1);
+      resolveQueueJob('completed');
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+      const result = await processOutboxEvents(10);
+
+      expect(result).toMatchObject({ processed: 0, failed: 1 });
+      expect(result.errors[0]?.error).toBe('retained_terminal_dispatch_not_safely_rotated');
+      expect(mockQueueAdd).toHaveBeenCalledTimes(1);
+    });
+
+    it('repairs a legacy colon-delimited ambiguous job ID before re-adding it', async () => {
+      const event = makeEvent({
+        status: 'enqueued',
+        attempts: 2,
+        dispatch_attempt_id: '00000000-0000-4000-8000-000000000019',
+        bullmq_job_id: 'notification:event:legacy',
+        dispatch_deadline_at: new Date(0),
+      });
+
+      setupTransactionWithRows([event], 1);
+      resolveQueueJob();
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+
+      await processOutboxEvents(10);
+
+      expect(mockQueueAdd).toHaveBeenCalledWith(
+        event.queue_name,
+        event.event_type,
+        expect.objectContaining({ outbox_idempotency_key: event.idempotency_key }),
+        { jobId: expect.stringMatching(/^outbox-[0-9a-f]{64}-dispatch-2$/) },
+      );
+      expect(mockQueueAdd.mock.calls[0]?.[3]?.jobId).not.toContain(':');
+    });
+
+    it('issues a fresh dispatch ID after an expired pre-provider processing lease', async () => {
+      const event = makeEvent({
+        status: 'processing',
+        attempts: 1,
+        bullmq_job_id: 'completed-retained-job',
+        pre_provider_claim_id: '00000000-0000-4000-8000-000000000008',
+        pre_provider_claim_deadline_at: new Date(0),
+        provider_io_started_at: null,
+      });
+
+      setupTransactionWithRows([event], 1);
+      resolveQueueJob();
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+
+      const result = await processOutboxEvents(10);
+
+      expect(result.processed).toBe(1);
+      expect(mockQueueAdd).toHaveBeenCalledWith(
+        event.queue_name,
+        event.event_type,
+        expect.objectContaining({ outbox_idempotency_key: event.idempotency_key }),
+        { jobId: expect.stringMatching(/^outbox-[0-9a-f]{64}-dispatch-2$/) },
+      );
+      expect(mockQueueAdd.mock.calls[0]?.[3]?.jobId).not.toContain(':');
     });
 
     it('processes multiple events independently — one failure does not abort batch', async () => {
@@ -320,21 +520,10 @@ describe('processOutboxEvents', () => {
       const failEvent = makeEvent({ id: 'event-fail', attempts: 2 });
 
       // Transaction: SELECT returns two events; both CAS UPDATEs succeed
-      mockTransaction.mockImplementationOnce(async (fn: (txQuery: unknown) => Promise<unknown>) => {
-        let callIndex = 0;
-        const txQuery = vi.fn().mockImplementation(() => {
-          callIndex++;
-          if (callIndex === 1) {
-            return Promise.resolve({ rows: [okEvent, failEvent], rowCount: 2 });
-          }
-          // CAS UPDATEs for both events succeed
-          return Promise.resolve({ rows: [], rowCount: 1 });
-        });
-        return fn(txQuery);
-      });
+      setupTransactionWithRows([okEvent, failEvent], 2);
 
       // First event (ok): queue.add() succeeds → bullmq_job_id UPDATE
-      mockQueueAdd.mockResolvedValueOnce({ id: 'job-ok' });
+      resolveQueueJob();
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any); // bullmq_job_id persist
 
       // Second event (fail): queue.add() fails → retry UPDATE
@@ -395,7 +584,7 @@ describe('processOutboxEvents', () => {
       });
 
       setupTransactionWithRows([financialEvent], 1);
-      mockQueueAdd.mockResolvedValueOnce({ id: 'job-financial' });
+      resolveQueueJob();
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
 
       await processOutboxEvents(10);
@@ -404,5 +593,65 @@ describe('processOutboxEvents', () => {
       const jobData = mockQueueAdd.mock.calls[0][2];
       expect(jobData.payload).toHaveProperty('_sig', 'mock-signature');
     });
+  });
+});
+
+describe('outbox callback dispatch fencing', () => {
+  const authority = {
+    dispatchAttemptId: '00000000-0000-4000-8000-000000000099',
+    bullmqJobId: 'outbox-exact-job',
+  };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockDb.transaction = mockTransaction;
+  });
+
+  it('marks processed only through the exact attempt/job CAS and reports a stale no-op', async () => {
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+
+    const changed = await markOutboxEventProcessed('event:key', authority);
+
+    expect(changed).toBe(false);
+    const [sql, params] = mockDb.query.mock.calls[0];
+    expect(sql).toContain('dispatch_attempt_id = $2::UUID');
+    expect(sql).toContain('bullmq_job_id = $3');
+    expect(sql).toContain("status IN ('enqueued', 'processing')");
+    expect(params).toEqual(['event:key', authority.dispatchAttemptId, authority.bullmqJobId]);
+  });
+
+  it('marks failed through the exact attempt/job CAS and never retries after provider I/O', async () => {
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+
+    const changed = await markOutboxEventFailed('event:key', 'pre-provider failure', authority);
+
+    expect(changed).toBe(true);
+    const [sql, params] = mockDb.query.mock.calls[0];
+    expect(sql).toContain('dispatch_attempt_id = $5::UUID');
+    expect(sql).toContain('bullmq_job_id = $6');
+    expect(sql).toContain('provider_io_started_at IS NULL');
+    expect(params).toEqual([
+      'pre-provider failure',
+      'event:key',
+      5,
+      false,
+      authority.dispatchAttemptId,
+      authority.bullmqJobId,
+    ]);
+  });
+
+  it('supports exact terminal closure inside a caller-owned transaction', async () => {
+    const txQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 1 });
+
+    const changed = await markOutboxEventFailed(
+      'event:key',
+      'channel_attempts_exhausted',
+      authority,
+      { terminal: true, query: txQuery },
+    );
+
+    expect(changed).toBe(true);
+    expect(mockDb.query).not.toHaveBeenCalled();
+    expect(txQuery.mock.calls[0]?.[1]?.[3]).toBe(true);
   });
 });

@@ -6,12 +6,14 @@ const { mockPublisher, mockSubscriber } = vi.hoisted(() => ({
     publish: vi.fn().mockResolvedValue(1),
     on: vi.fn(),
     quit: vi.fn().mockResolvedValue('OK'),
+    disconnect: vi.fn(),
   },
   mockSubscriber: {
     subscribe: vi.fn().mockResolvedValue(1),
     unsubscribe: vi.fn().mockResolvedValue(1),
     on: vi.fn(),
     quit: vi.fn().mockResolvedValue('OK'),
+    disconnect: vi.fn(),
   },
 }));
 
@@ -23,6 +25,7 @@ vi.mock('ioredis', () => ({
     quit = redisCallCount % 2 === 0 ? mockPublisher.quit : mockSubscriber.quit;
     subscribe = mockSubscriber.subscribe;
     unsubscribe = mockSubscriber.unsubscribe;
+    disconnect = redisCallCount % 2 === 0 ? mockPublisher.disconnect : mockSubscriber.disconnect;
   },
 }));
 
@@ -129,6 +132,51 @@ describe('Redis PubSub', () => {
     it('handles unsubscribing from non-existent room gracefully', () => {
       expect(() => unsubscribeFromRoom('u1', 'room:nonexistent')).not.toThrow();
     });
+
+    it('retains the Redis room until the last local connection releases it', () => {
+      const userId = 'user-two-tabs';
+      const room = getUserRoomKey(userId);
+
+      subscribeToRoom(userId, room);
+      subscribeToRoom(userId, room);
+
+      expect(mockSubscriber.subscribe).toHaveBeenCalledTimes(1);
+      expect(getRoomSubscribers(room)?.has(userId)).toBe(true);
+
+      unsubscribeFromRoom(userId, room);
+
+      expect(getRoomSubscribers(room)?.has(userId)).toBe(true);
+      expect(mockSubscriber.unsubscribe).not.toHaveBeenCalled();
+
+      unsubscribeFromRoom(userId, room);
+
+      expect(getRoomSubscribers(room)).toBeUndefined();
+      expect(mockSubscriber.unsubscribe).toHaveBeenCalledTimes(1);
+
+      // Duplicate cleanup is an underflow-safe no-op.
+      unsubscribeFromRoom(userId, room);
+      expect(mockSubscriber.unsubscribe).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not latch a failed SUBSCRIBE and retries for a later tab', async () => {
+      const userId = 'user-subscribe-retry';
+      const room = getUserRoomKey(userId);
+      mockSubscriber.subscribe
+        .mockRejectedValueOnce(new Error('Redis unavailable'))
+        .mockResolvedValueOnce(1);
+
+      subscribeToRoom(userId, room);
+      await vi.waitFor(() => expect(mockSubscriber.subscribe).toHaveBeenCalledTimes(1));
+      await Promise.resolve();
+      await Promise.resolve();
+
+      subscribeToRoom(userId, room);
+      await vi.waitFor(() => expect(mockSubscriber.subscribe).toHaveBeenCalledTimes(2));
+      expect(getRoomSubscribers(room)?.has(userId)).toBe(true);
+
+      unsubscribeFromRoom(userId, room);
+      unsubscribeFromRoom(userId, room);
+    });
   });
 
   describe('unsubscribeAllRooms', () => {
@@ -141,6 +189,21 @@ describe('Redis PubSub', () => {
 
     it('handles user with no rooms gracefully', () => {
       expect(() => unsubscribeAllRooms('nobody')).not.toThrow();
+    });
+
+    it('releases one connection reference without disconnecting another tab', () => {
+      const userId = 'user-all-two-tabs';
+      const room = getUserRoomKey(userId);
+      subscribeToRoom(userId, room);
+      subscribeToRoom(userId, room);
+
+      unsubscribeAllRooms(userId);
+      expect(getRoomSubscribers(room)?.has(userId)).toBe(true);
+      expect(mockSubscriber.unsubscribe).not.toHaveBeenCalled();
+
+      unsubscribeAllRooms(userId);
+      expect(getRoomSubscribers(room)).toBeUndefined();
+      expect(mockSubscriber.unsubscribe).toHaveBeenCalledTimes(1);
     });
   });
 

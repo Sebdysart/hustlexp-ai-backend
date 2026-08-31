@@ -563,7 +563,7 @@ export const FraudDetectionService = {
               const activeEscrows = await db.query<{ id: string }>(
                 `SELECT e.id FROM escrows e
                  JOIN tasks t ON t.id = e.task_id
-                 WHERE (e.poster_id = $1 OR e.worker_id = $1)
+                 WHERE (t.poster_id = $1 OR t.worker_id = $1)
                    AND e.state = 'FUNDED'
                    AND t.state IN ('ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED')`,
                 [userId]

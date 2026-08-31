@@ -6,34 +6,56 @@
  */
 
 import { z } from 'zod';
-import { router, publicProcedure } from '../../trpc.js';
+import {
+  heldOperationsAdminProcedure,
+  operationsAdminProcedure,
+  publicProcedure,
+  router,
+} from '../../trpc.js';
 import { db } from '../../db.js';
 import { logger } from '../../logger.js';
 import { TRPCError } from '@trpc/server';
-import crypto from 'crypto';
+import crypto from 'node:crypto';
+import {
+  submitUniversalV1Lead,
+  universalV1LeadIngressSchema,
+  type UniversalV1LeadIngressInput,
+} from '../../services/UniversalV1LeadIngressService.js';
+import type { Context } from '../../trpc-context.js';
 
 const log = logger.child({ router: 'web.leads' });
+const LEGACY_MUTATION_HELD_MESSAGE =
+  'Legacy lead administration writes are held. Use a separately approved, versioned two-person command path.';
+
+function holdLegacyMutation(): never {
+  throw new TRPCError({ code: 'PRECONDITION_FAILED', message: LEGACY_MUTATION_HELD_MESSAGE });
+}
 
 // ── Turnstile verification ────────────────────────────────────────────────────
 
-async function verifyTurnstile(token: string, ip?: string): Promise<boolean> {
-  const secret = process.env.TURNSTILE_SECRET_KEY;
+async function verifySurveyTurnstile(token: string, ip?: string): Promise<boolean> {
+  const secret = process.env.TURNSTILE_SECRET_KEY?.trim();
   if (!secret) {
-    const production = process.env.NODE_ENV === 'production';
-    log.warn({ production }, 'TURNSTILE_SECRET_KEY not set');
-    return !production;
+    log.warn('TURNSTILE_SECRET_KEY is required for public lead ingress');
+    return false;
   }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 4_000);
   try {
     const res = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ secret, response: token, ...(ip ? { remoteip: ip } : {}) }),
+      signal: controller.signal,
     });
+    if (!res.ok) return false;
     const data = await res.json() as { success: boolean };
     return data.success === true;
   } catch (error) {
     log.warn({ err: error instanceof Error ? error.message : String(error) }, 'Turnstile verification request failed');
     return false;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -42,24 +64,6 @@ function hashValue(value: string): string {
 }
 
 // ── Schemas ───────────────────────────────────────────────────────────────────
-
-const LeadSchema = z.object({
-  submission_id: z.string().uuid(),
-  lead_type: z.enum(['poster', 'hustler', 'business', 'founder']),
-  email: z.string().email().max(254),
-  name: z.string().max(200).optional(),
-  phone: z.string().max(30).optional(),
-  region: z.string().max(100).optional(),
-  zip: z.string().max(20).optional(),
-  answers: z.record(z.unknown()).default({}),
-  utm: z.record(z.unknown()).optional(),
-  consent_version: z.literal('v1'),
-  turnstile_token: z.string().min(1),
-  // Honeypots — must be empty
-  company_url: z.string().max(512).optional(),
-  hp_email: z.string().max(512).optional(),
-  client_ts: z.number(),
-});
 
 const SurveySchema = z.object({
   submission_id: z.string().uuid(),
@@ -79,7 +83,6 @@ const SurveySchema = z.object({
   client_ts: z.number(),
 });
 
-type LeadInput = z.infer<typeof LeadSchema>;
 type SurveyInput = z.infer<typeof SurveySchema>;
 
 function assertFreshRequest(clientTs: number): void {
@@ -89,46 +92,31 @@ function assertFreshRequest(clientTs: number): void {
 }
 
 async function assertHuman(token: string, ip?: string): Promise<void> {
-  if (!await verifyTurnstile(token, ip)) {
+  if (!await verifySurveyTurnstile(token, ip)) {
     throw new TRPCError({ code: 'FORBIDDEN', message: 'Bot check failed' });
   }
 }
 
-async function persistLead(input: LeadInput, ipHash: string | null, correlationId: string) {
-  const result = await db.query<{ id: string; status: string }>(
-    `INSERT INTO leads (
-      submission_id, lead_type, email, name, phone, region, zip,
-      answers, utm, consent_version, ip_hash, correlation_id
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10,$11,$12)
-    ON CONFLICT (submission_id) DO UPDATE SET updated_at = now()
-    RETURNING id, status`,
-    [
-      input.submission_id, input.lead_type, input.email.trim().toLowerCase(),
-      input.name?.trim() ?? null, input.phone?.trim() ?? null, input.region ?? null,
-      input.zip ?? null, JSON.stringify(input.answers), JSON.stringify(input.utm ?? {}),
-      input.consent_version, ipHash, correlationId,
-    ]
-  );
-  return result.rows[0];
-}
-
-async function handleSubmitLead({ input, ctx }: { input: LeadInput; ctx: { ip: string | null } }) {
-  if (input.company_url || input.hp_email) {
-    return { ok: true, submission_id: input.submission_id, status: 'replayed' };
+async function handleSubmitLead({
+  input,
+  ctx,
+}: {
+  input: UniversalV1LeadIngressInput;
+  ctx: Context;
+}) {
+  const result = await submitUniversalV1Lead(input, {
+    ip: ctx.ip,
+    origin: ctx.origin,
+    userAgent: ctx.userAgent,
+  });
+  if (!result.ok && result.code === 'rate_limited') {
+    ctx.responseHeaders?.set('retry-after', String(result.retry_after_seconds));
+    throw new TRPCError({ code: 'TOO_MANY_REQUESTS', message: 'Lead submission rate limited' });
   }
-  assertFreshRequest(input.client_ts);
-  const ip = ctx.ip ?? undefined;
-  await assertHuman(input.turnstile_token, ip);
-  const correlationId = crypto.randomUUID();
-  const row = await persistLead(input, ip ? hashValue(ip) : null, correlationId);
-  log.info({ leadId: row.id, leadType: input.lead_type }, 'Lead submitted');
-  return {
-    ok: true,
-    submission_id: input.submission_id,
-    lead_id: row.id,
-    status: row.status,
-    correlation_id: correlationId,
-  };
+  if (result.ok) {
+    log.info({ leadId: result.lead_id, leadType: input.lead_type, status: result.status }, 'Lead submitted');
+  }
+  return result;
 }
 
 async function persistSurvey(input: SurveyInput, ipHash: string | null, correlationId: string) {
@@ -165,7 +153,7 @@ async function handleSubmitSurvey({ input, ctx }: { input: SurveyInput; ctx: { i
 export const webLeadsRouter = router({
 
   submitLead: publicProcedure
-    .input(LeadSchema)
+    .input(universalV1LeadIngressSchema)
     .mutation(handleSubmitLead),
 
   submitSurvey: publicProcedure
@@ -174,19 +162,14 @@ export const webLeadsRouter = router({
 
   // ── Admin reads ─────────────────────────────────────────────────────────────
 
-  listLeads: publicProcedure
+  listLeads: operationsAdminProcedure
     .input(z.object({
-      adminKey: z.string(),
       status: z.string().optional(),
       leadType: z.string().optional(),
       limit: z.number().min(1).max(200).default(50),
       offset: z.number().min(0).default(0),
     }))
     .query(async ({ input }) => {
-      if (input.adminKey !== process.env.OPS_ADMIN_KEY) {
-        throw new TRPCError({ code: 'FORBIDDEN', message: 'Invalid admin key' });
-      }
-
       const conditions: string[] = [];
       const params: unknown[] = [];
 
@@ -214,45 +197,18 @@ export const webLeadsRouter = router({
       return { ok: true, leads: result.rows, total: parseInt(count.rows[0]?.total ?? '0', 10) };
     }),
 
-  updateLead: publicProcedure
+  updateLead: heldOperationsAdminProcedure
     .input(z.object({
-      adminKey: z.string(),
       id: z.string().uuid(),
       status: z.string().optional(),
       notes: z.string().optional(),
       assigned_to: z.string().optional(),
     }))
-    .mutation(async ({ input }) => {
-      if (input.adminKey !== process.env.OPS_ADMIN_KEY) {
-        throw new TRPCError({ code: 'FORBIDDEN', message: 'Invalid admin key' });
-      }
+    .mutation(holdLegacyMutation),
 
-      const sets: string[] = ['updated_at = now()'];
-      const params: unknown[] = [];
-
-      if (input.status !== undefined) {
-        sets.push(`status = $${params.push(input.status)}`);
-        sets.push(`status_changed_at = now()`);
-      }
-      if (input.notes !== undefined) sets.push(`notes = $${params.push(input.notes)}`);
-      if (input.assigned_to !== undefined) sets.push(`assigned_to = $${params.push(input.assigned_to)}`);
-
-      params.push(input.id);
-      await db.query(
-        `UPDATE leads SET ${sets.join(', ')} WHERE id = $${params.length}`,
-        params
-      );
-
-      return { ok: true };
-    }),
-
-  getSurveyStats: publicProcedure
-    .input(z.object({ adminKey: z.string() }))
-    .query(async ({ input }) => {
-      if (input.adminKey !== process.env.OPS_ADMIN_KEY) {
-        throw new TRPCError({ code: 'FORBIDDEN', message: 'Invalid admin key' });
-      }
-
+  getSurveyStats: operationsAdminProcedure
+    .input(z.object({}))
+    .query(async () => {
       const result = await db.query<{
         native_1h: string; native_24h: string; native_7d: string; queue_depth: string;
       }>(`

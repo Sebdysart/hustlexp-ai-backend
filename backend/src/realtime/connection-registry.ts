@@ -23,6 +23,10 @@ export interface SSEConnection {
   controller: ReadableStreamDefaultController<Uint8Array>;
   // Track connection for cleanup
   closed: boolean;
+  /** Release exactly this connection's personal-room subscription reference. */
+  releasePersonalRoom?: () => void;
+  /** Internal idempotency guard for teardown paths that can race. */
+  teardownComplete?: boolean;
 }
 
 // ============================================================================
@@ -108,6 +112,43 @@ export function removeConnection(userId: string, conn: SSEConnection): void {
 }
 
 /**
+ * Close one exact SSE connection and release its owned resources once.
+ *
+ * Abort, stream cancellation, controller write failures, and administrative
+ * force-disconnects can race. Keeping their cleanup here prevents any path
+ * from leaking a Redis room reference or consuming another browser tab's
+ * reference.
+ */
+export function teardownConnection(
+  userId: string,
+  conn: SSEConnection,
+  closeController = true,
+): void {
+  if (conn.teardownComplete) return;
+  conn.teardownComplete = true;
+  conn.closed = true;
+  removeConnection(userId, conn);
+
+  const releasePersonalRoom = conn.releasePersonalRoom;
+  conn.releasePersonalRoom = undefined;
+  if (releasePersonalRoom) {
+    try {
+      releasePersonalRoom();
+    } catch {
+      // Cleanup is best-effort and must not prevent controller closure.
+    }
+  }
+
+  if (closeController) {
+    try {
+      conn.controller.close();
+    } catch {
+      // Controller may already be closed.
+    }
+  }
+}
+
+/**
  * Get all active connections for a user
  */
 export function getConnections(userId: string): Set<SSEConnection> | undefined {
@@ -160,16 +201,10 @@ export function forceDisconnectUser(userId: string): void {
   const set = connections.get(userId);
   if (!set) return;
 
-  for (const conn of set) {
-    conn.closed = true;
-    try {
-      conn.controller.close();
-    } catch {
-      // Controller may already be closed — safe to ignore
-    }
+  // Copy before teardown mutates the registry set.
+  for (const conn of Array.from(set)) {
+    teardownConnection(userId, conn);
   }
-
-  connections.delete(userId);
   // Do NOT clear reconnectTracker here. Wiping the tracker on a forced
   // disconnect (e.g. after a ban) would give the banned user a fresh flood
   // budget immediately, allowing them to hammer the SSE endpoint before auth

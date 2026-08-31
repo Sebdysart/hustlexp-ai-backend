@@ -11,6 +11,7 @@ import type { User } from './types.js';
 import { redis } from './cache/redis.js';
 import { REVOCATION_MARKER_TTL_SECONDS } from './auth/constants.js';
 import { db } from './db.js';
+import type { IdentityAssurance } from './auth/operator-identity-assurance.js';
 
 // Matches the REVOKED_KEY pattern used in auth/middleware.ts.
 // Must be kept in sync if that constant is ever renamed.
@@ -19,6 +20,7 @@ const REDIS_REVOKED_KEY = (uid: string) => `auth:revoked:${uid}`;
 type CachedAuth = {
   user: User;
   firebaseUid: string;
+  identityAssurance?: IdentityAssurance;
   expiresAt: number; // Unix ms
 };
 
@@ -138,7 +140,7 @@ export async function invalidateAuthCacheForUser(userId: string, firebaseUid?: s
 
 export function authCacheSet(
   token: string,
-  value: { user: User; firebaseUid: string },
+  value: { user: User; firebaseUid: string; identityAssurance?: IdentityAssurance },
   tokenExp: number
 ): void {
   // Evict oldest entry when at capacity (Map preserves insertion order)

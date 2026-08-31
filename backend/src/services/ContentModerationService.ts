@@ -21,6 +21,7 @@ import { ErrorCodes } from '../types.js';
 import { NotificationService } from './NotificationService.js';
 import { notifyAdmins } from './AdminNotificationHelper.js';
 import { AIClient } from './AIClient.js';
+import { aiOperationId } from '../ai/AIOperationIdentity.js';
 import { aiObservation } from './AIObservabilityPolicy.js';
 import { logger } from '../logger.js';
 
@@ -189,6 +190,7 @@ export const ContentModerationService = {
             confidence: number;
             recommendation: 'approve' | 'flag' | 'block';
           }>({
+            operationId: aiOperationId('content-moderation', contentType, contentId, userId, contentText),
             observability: aiObservation('AI-CONTENT-MODERATION-ROUTING', {
               actorUserId: userId,
               affectedObjectType: contentType.toUpperCase(),

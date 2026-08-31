@@ -14,7 +14,8 @@
  * - getAccountDetails: no accountId, stripe null, catch error vs non-Error
  * - refreshOnboarding: user not found
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 vi.mock('stripe', () => ({
   default: vi.fn(),
@@ -51,9 +52,29 @@ import { StripeConnectService } from '../../src/services/StripeConnectService';
 
 const mockDb = vi.mocked(db);
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  enableControlledStripePaymentTestCohortV7();
+});
+
+afterEach(() => vi.unstubAllEnvs());
 
 describe('StripeConnectService branch coverage', () => {
+  it('freezes Connect provisioning before any Stripe or database work', async () => {
+    vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'frozen');
+
+    const result = await StripeConnectService.createOnboardingLink({
+      userId: 'u1', email: 'a@b.com', fullName: 'Test',
+      refreshUrl: 'http://refresh', returnUrl: 'http://return',
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      error: { code: 'PAYMENT_CREATION_FROZEN' },
+    });
+    expect(mockDb.query).not.toHaveBeenCalled();
+  });
+
   describe('isConfigured', () => {
     it('returns false when stripe is null', () => {
       expect(StripeConnectService.isConfigured()).toBe(false);

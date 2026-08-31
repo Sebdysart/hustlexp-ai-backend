@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import { REQUIRED_MIGRATION_FILES } from '../../src/jobs/engine-automation-migration-files';
+
 const read = (path: string) => readFileSync(resolve(process.cwd(), path), 'utf8');
 
 const REPAIR = read('backend/database/migrations/20260720_schema_convergence_repair.sql');
@@ -51,17 +53,23 @@ describe('HX/OS clean and upgraded schema convergence repair', () => {
 
   it('registers the omitted admin contract and terminal convergence repair', () => {
     expect(RUNNER).toContain(
-      "ADMIN_CAPABILITY_CONTRACT_MIGRATION = '20260719_admin_capability_contract'",
+      "ADMIN_CAPABILITY_CONTRACT_MIGRATION = '20260719_admin_capability_contract'"
     );
     expect(RUNNER).toContain("fileName: '20260719_admin_capability_contract.sql'");
     expect(RUNNER).toContain(
-      "SCHEMA_CONVERGENCE_REPAIR_MIGRATION = '20260720_schema_convergence_repair'",
+      "SCHEMA_CONVERGENCE_REPAIR_MIGRATION = '20260720_schema_convergence_repair'"
     );
     expect(RUNNER).toContain("fileName: '20260720_schema_convergence_repair.sql'");
   });
 
-  it('requires the exact current migration chain and preserves legacy reconciliation classification', () => {
-    expect(UPGRADE_ASSERT).toContain('count(*)=97 AND count(DISTINCT name)=97');
+  it('requires the frozen pre-audit migration chain and preserves legacy reconciliation classification', () => {
+    const occurrenceAuditIndex = REQUIRED_MIGRATION_FILES.findIndex(
+      ({ name }) => name === '20261005_universal_v1_occurrence_access_audit_v1'
+    );
+    expect(occurrenceAuditIndex).toBe(REQUIRED_MIGRATION_FILES.length - 2);
+    expect(UPGRADE_ASSERT).toContain(
+      `count(*)=${occurrenceAuditIndex} AND count(DISTINCT name)=${occurrenceAuditIndex}`
+    );
     expect(UPGRADE_ASSERT).toContain('reconciliation_contract_version=0');
     expect(UPGRADE_ASSERT).toContain('offline_payload_hash IS NULL');
   });

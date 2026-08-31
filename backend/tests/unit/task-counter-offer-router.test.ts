@@ -104,4 +104,23 @@ describe('task worker-counter router contract', () => {
       idempotencyKey: 'counter-replace-0002',
     })).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
+
+  it('maps the legacy task-materialization freeze to PRECONDITION_FAILED', async () => {
+    service.materialize.mockResolvedValue({
+      success: false,
+      error: {
+        code: 'LEGACY_TASK_MATERIALIZATION_FROZEN',
+        message: 'Legacy task creation is frozen.',
+      },
+    });
+
+    await expect(caller('poster').materializeWorkerCounter({
+      counterOfferId: COUNTER_ID,
+      replacementLocation: '202 Fresh Address, Seattle, WA 98101',
+      idempotencyKey: 'counter-replace-frozen-0001',
+    })).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: 'Legacy task creation is frozen.',
+    });
+  });
 });

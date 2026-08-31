@@ -6,6 +6,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockRecordObservation = vi.hoisted(() => vi.fn());
+const spendMocks = vi.hoisted(() => ({
+  reserve: vi.fn(), settle: vi.fn(), unknown: vi.fn(), release: vi.fn(), fail: vi.fn(), query: vi.fn(),
+}));
 const observationReceipt = {
   observationId: '11111111-1111-4111-8111-111111111111',
   surfaceId: 'AI-SCOPER-PROPOSAL',
@@ -61,6 +64,11 @@ vi.mock('../../src/cache/redis', () => ({
   },
 }));
 
+vi.mock('../../src/ai/ExternalAIProviderAuthority', () => ({
+  assertExternalAIProviderIOAuthorized: vi.fn(),
+  isExternalAIProviderConfigured: () => true,
+}));
+
 vi.mock('../../src/logger', () => ({
   aiLogger: { child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() }) },
   logger: { child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() }) },
@@ -70,11 +78,24 @@ vi.mock('../../src/services/AIObservabilityService.js', () => ({
   AIObservabilityService: { record: mockRecordObservation },
 }));
 
+vi.mock('../../src/db.js', () => ({ db: { query: spendMocks.query } }));
+vi.mock('../../src/ai/UserAIBudget.js', () => ({
+  failAIOperation: spendMocks.fail,
+}));
+vi.mock('../../src/ai/AISpendAttemptLedger.js', () => ({
+  reserveAIProviderAttempt: spendMocks.reserve,
+  settleAIProviderAttempt: spendMocks.settle,
+  markAIProviderAttemptUnknown: spendMocks.unknown,
+  releaseAIProviderAttempt: spendMocks.release,
+}));
+
 vi.mock('../../src/middleware/circuit-breaker', () => ({
+  CircuitOpenError: class CircuitOpenError extends Error {},
   openaiBreaker: { execute: vi.fn((fn: () => Promise<unknown>) => fn()) },
   groqBreaker: { execute: vi.fn((fn: () => Promise<unknown>) => fn()) },
   deepseekBreaker: { execute: vi.fn((fn: () => Promise<unknown>) => fn()) },
   anthropicBreaker: { execute: vi.fn((fn: () => Promise<unknown>) => fn()) },
+  alibabaBreaker: { execute: vi.fn((fn: () => Promise<unknown>) => fn()) },
 }));
 
 import { AIClient } from '../../src/services/AIClient';
@@ -90,7 +111,18 @@ beforeEach(() => {
     choices: [{ message: { content: 'Groq response text' } }],
   });
   mockRecordObservation.mockResolvedValue({ success: true, data: observationReceipt });
+  spendMocks.reserve.mockResolvedValue({ status: 'reserved', reservedCents: 11 });
+  spendMocks.settle.mockResolvedValue(undefined);
+  spendMocks.unknown.mockResolvedValue(undefined);
+  spendMocks.release.mockResolvedValue(undefined);
+  spendMocks.fail.mockResolvedValue(undefined);
+  spendMocks.query.mockResolvedValue({ rows: [] });
 });
+
+const originalCall = AIClient.call;
+const originalCallJSON = AIClient.callJSON;
+AIClient.call = ((options: Record<string, unknown>) => originalCall({ operationId: `test:${String(options.prompt)}`, ...options } as never)) as typeof AIClient.call;
+AIClient.callJSON = ((options: Record<string, unknown>) => originalCallJSON({ operationId: `test-json:${String(options.prompt)}`, ...options } as never)) as typeof AIClient.callJSON;
 
 // ============================================================================
 // isConfigured
@@ -131,17 +163,40 @@ describe('AIClient.call', () => {
   });
 
   it('returns cached result when available', async () => {
-    (redis.get as ReturnType<typeof vi.fn>).mockResolvedValueOnce('Cached response');
-
-    const result = await AIClient.call({
+    const options = {
       route: 'primary',
       prompt: 'Cached question',
       enableCache: true,
-    });
+    } as const;
+    await AIClient.call(options);
+    const stored = (redis.set as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    mockCreate.mockClear();
+    (redis.get as ReturnType<typeof vi.fn>).mockResolvedValueOnce(stored);
 
-    expect(result.content).toBe('Cached response');
+    const result = await AIClient.call(options);
+
+    expect(result.content).toBe('AI response text');
     expect(result.cached).toBe(true);
     expect(result.provider).toBe('openai');
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it('rejects a cache value whose immutable operation binding does not match', async () => {
+    (redis.get as ReturnType<typeof vi.fn>).mockResolvedValueOnce(JSON.stringify({
+      version: 1,
+      operationId: 'different-operation',
+      fingerprint: 'different-fingerprint',
+      userId: 'different-user',
+      provider: 'openai',
+      model: 'gpt-4o',
+      content: 'poisoned',
+    }));
+    const result = await AIClient.call({
+      route: 'primary', prompt: 'Binding check', enableCache: true,
+    });
+    expect(result.content).toBe('AI response text');
+    expect(result.cached).toBe(false);
+    expect(mockCreate).toHaveBeenCalledOnce();
   });
 
   it('falls back when primary provider fails', async () => {
@@ -173,6 +228,7 @@ describe('AIClient.call', () => {
           { role: 'user', content: 'User message' },
         ]),
       }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
 
@@ -211,6 +267,38 @@ describe('AIClient.call', () => {
       executionResult: 'GENERATED',
       output: 'AI response text',
     }));
+  });
+
+  it('uses the same actor-bound namespace for cache lookup and write', async () => {
+    await AIClient.call({
+      route: 'primary',
+      prompt: 'Actor-bound cache',
+      enableCache: true,
+      observability: {
+        surfaceId: 'AI-SCOPER-PROPOSAL', authorityLevel: 'A2_PROPOSAL_ONLY',
+        action: 'Propose editable scope', scopeAffected: 'task_draft_scope',
+        reason: 'A user requested a proposal.', evidenceClasses: ['SANITIZED_TASK_DESCRIPTION'],
+        expectedBenefit: 'Faster review.', uncertainty: 'Conditions remain unknown.',
+        downside: 'The proposal may be wrong.', policyVersion: 'test-v1', confidenceBand: 'UNKNOWN',
+        controls: {
+          apply: true, edit: true, dismiss: true, snooze: true, why: true,
+          approve: false, override: true, autoExecute: false, reversible: true,
+        },
+        outcomeSource: 'test', actorUserId: '33333333-3333-4333-8333-333333333333',
+        affectedObjectType: 'TASK_DRAFT', affectedObjectId: 'draft-cache-1',
+      },
+    });
+
+    const lookupKey = (redis.get as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    const writeKey = (redis.set as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(writeKey).toBe(lookupKey);
+  });
+
+  it('binds timeoutMs into the immutable spend fingerprint', async () => {
+    await AIClient.call({ route: 'primary', prompt: 'Timeout identity', enableCache: false, timeoutMs: 5_000 });
+    await AIClient.call({ route: 'primary', prompt: 'Timeout identity', enableCache: false, timeoutMs: 10_000 });
+    const fingerprints = spendMocks.reserve.mock.calls.map((call) => call[0].reservation.fingerprint);
+    expect(new Set(fingerprints).size).toBe(2);
   });
 
   it('withholds provider output when the observability write fails', async () => {

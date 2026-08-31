@@ -1,14 +1,19 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { Job } from 'bullmq';
+import type { BuildIdentity } from '../../src/buildIdentity.js';
 import { db } from '../../src/db.js';
-import { processPaymentJob } from '../../src/jobs/payment-worker.js';
-import { signJobPayload } from '../../src/jobs/queues.js';
+import {
+  RELEASE_CHARTER_AUTHORITY,
+  releaseManifestDigest,
+  type ReleaseManifest,
+  type ReleaseManifestEvidence,
+} from '../../src/releaseManifest.js';
 import { AutomationLifecycleReadService } from '../../src/services/AutomationLifecycleReadService.js';
 import { ControlledTestDurationEvidenceService } from '../../src/services/ControlledTestDurationEvidenceService.js';
 import { ControlledTestLiquidityService } from '../../src/services/ControlledTestLiquidityService.js';
 import { ControlledTestOfferReviewService } from '../../src/services/ControlledTestOfferReviewService.js';
 import { ControlledTestProviderCapabilityService } from '../../src/services/ControlledTestProviderCapabilityService.js';
+import { EscrowService } from '../../src/services/EscrowService.js';
 import { EscrowReleaseReconciliationService } from '../../src/services/EscrowReleaseReconciliationService.js';
 import { HustlerIdentityLinkService } from '../../src/services/HustlerIdentityLinkService.js';
 import { HustlerWalletService } from '../../src/services/HustlerWalletService.js';
@@ -16,12 +21,14 @@ import type { WalletProvider } from '../../src/services/HustlerWalletTypes.js';
 import { LocalCertificationIdentityProvider } from '../../src/services/LocalCertificationIdentityProvider.js';
 import { LocalCertificationPayoutProvider } from '../../src/services/LocalCertificationPayoutProvider.js';
 import { LocalCertificationScreeningProvider } from '../../src/services/LocalCertificationScreeningProvider.js';
+import { newPaymentCreationHealth } from '../../src/services/NewPaymentCreationGuard.js';
 import { ProofService } from '../../src/services/ProofService.js';
 import { TaskLocationService } from '../../src/services/TaskLocationService.js';
 import { TaskReservationService } from '../../src/services/TaskReservationService.js';
 import { TaskScopeService } from '../../src/services/TaskScopeService.js';
 import { TaskService } from '../../src/services/TaskService.js';
 import type { CreateTaskParams } from '../../src/services/TaskServiceShared.js';
+import { createDatabaseBackedFakeFinancialProvider } from '../../src/services/payment/FakeFinancialProvider.js';
 import { grantScreeningConsent } from '../../src/services/WorkerScreeningRightsService.js';
 import {
   LOCAL_CERTIFICATION_SCREENING_DISCLOSURE_HASH,
@@ -39,6 +46,84 @@ const GROSS_WORKER_PAYOUT_CENTS = 4_000;
 const PLATFORM_FEE_CENTS = 1_000;
 const INSURANCE_CENTS = 100;
 const NET_WORKER_PAYOUT_CENTS = 3_900;
+const LOCAL_TEST_REVISION = 'd'.repeat(40);
+const LOCAL_TEST_DIGEST = `sha256:${'a'.repeat(64)}`;
+
+function authorizedFakeFinanceRuntime(): {
+  environment: NodeJS.ProcessEnv;
+  release: ReleaseManifestEvidence;
+  identity: BuildIdentity;
+} {
+  const environment: NodeJS.ProcessEnv = {
+    NODE_ENV: 'test',
+    HX_ENVIRONMENT: 'local',
+    HX_PAYMENT_CREATION_MODE: 'frozen',
+    HX_EXTERNAL_VALUE: 'false',
+    HX_LIVE_PROVIDER_ACCESS: 'false',
+    SERVICE_ROLE: 'backend',
+  };
+  const component = {
+    revision: LOCAL_TEST_REVISION,
+    artifactDigest: LOCAL_TEST_DIGEST,
+  };
+  const imageComponent = { ...component, imageEvidence: 'VERIFIED_IMMUTABLE_IMAGE' as const, imageDigest: LOCAL_TEST_DIGEST };
+  const manifest: ReleaseManifest = {
+    version: 1,
+    environment: 'local',
+    releaseId: 'hxos-canonical-lifecycle-test',
+    createdAt: '2026-08-26T00:00:00.000Z',
+    authority: {
+      document: RELEASE_CHARTER_AUTHORITY.document,
+      charterVersion: RELEASE_CHARTER_AUTHORITY.version,
+      charterRevision: RELEASE_CHARTER_AUTHORITY.revision,
+      capabilityPolicyDigest: LOCAL_TEST_DIGEST,
+    },
+    components: {
+      backend: imageComponent,
+      worker: imageComponent,
+      web: imageComponent,
+      migration: component,
+      policy: component,
+      fixtures: imageComponent,
+    },
+    capabilities: {
+      financialProvider: 'fake',
+      fakeFinancialEvents: true,
+      customerMoneyCreation: false,
+      hardAssignment: false,
+      realSettlement: false,
+      outboundCommunication: 'sink',
+      dataClass: 'synthetic',
+    },
+    promotion: {
+      baseManifestDigest: null,
+      changedComponents: ['backend', 'worker', 'web', 'migration', 'policy', 'fixtures'],
+    },
+    health: {
+      backend: { component: 'backend', path: '/health' },
+      worker: { component: 'worker', path: '/health' },
+      web: { component: 'web', path: '/version.json' },
+    },
+  };
+  const release: ReleaseManifestEvidence = {
+    schema_version: 1,
+    status: 'valid',
+    digest: releaseManifestDigest(manifest),
+    source: 'HXOS_CANONICAL_LIFECYCLE_TEST',
+    errors: [],
+    manifest,
+  };
+  const identity: BuildIdentity = {
+    schema_version: 1,
+    service: 'hustlexp-engine',
+    revision: LOCAL_TEST_REVISION,
+    built_at: '2026-08-26T00:00:00.000Z',
+    environment: 'test',
+    clean_source: false,
+    source: 'HXOS_CANONICAL_LIFECYCLE_TEST',
+  };
+  return { environment, release, identity };
+}
 
 function assertDisposableDatabase(databaseUrl: string): void {
   const parsed = new URL(databaseUrl);
@@ -188,35 +273,6 @@ function iso(value: Date | string | null): string | null {
   return value == null ? null : new Date(value).toISOString();
 }
 
-function paymentJob(stripeEventId: string, eventType: string): Job {
-  const payload = {
-    stripeEventId,
-    eventType,
-    eventCreated: new Date().toISOString(),
-  };
-  return {
-    id: `e2e:${stripeEventId}`,
-    data: {
-      payload: {
-        ...payload,
-        _sig: signJobPayload(payload),
-      },
-    },
-  } as unknown as Job;
-}
-
-async function insertStripeEvent(
-  stripeEventId: string,
-  eventType: string,
-  object: Record<string, unknown>,
-): Promise<void> {
-  await db.query(
-    `INSERT INTO stripe_events(stripe_event_id,type,created,payload_json)
-     VALUES ($1,$2,NOW(),$3::jsonb)`,
-    [stripeEventId, eventType, JSON.stringify({ data: { object } })],
-  );
-}
-
 describePg('HX/OS canonical PostgreSQL lifecycle', () => {
   const databaseUrl = process.env.DATABASE_URL ?? '';
   const runId = randomUUID();
@@ -236,6 +292,12 @@ describePg('HX/OS canonical PostgreSQL lifecycle', () => {
   beforeAll(async () => {
     assertDisposableDatabase(databaseUrl);
     await db.query('SELECT 1');
+    const fakeFinanceSchema = await db.query<{ table_name: string | null }>(
+      "SELECT to_regclass('public.hxos_fake_financial_operations_v1')::text AS table_name",
+    );
+    if (!fakeFinanceSchema.rows[0]?.table_name) {
+      throw new Error('NONPRODUCTION_FAKE_FINANCE_SCHEMA_REQUIRED');
+    }
   });
 
   afterAll(async () => {
@@ -243,6 +305,36 @@ describePg('HX/OS canonical PostgreSQL lifecycle', () => {
   });
 
   it('proves intent through bank payout with replay, concurrency, and failure evidence', async () => {
+    const fakeRuntime = authorizedFakeFinanceRuntime();
+    expect(newPaymentCreationHealth(fakeRuntime.environment)).toMatchObject({
+      mode: 'frozen',
+      acceptsNewCustomerMoney: false,
+      permitsRealSettlement: false,
+      permitsProviderPayouts: false,
+    });
+    const financialProvider = createDatabaseBackedFakeFinancialProvider(
+      db,
+      fakeRuntime.environment,
+      fakeRuntime.release,
+      fakeRuntime.identity,
+    );
+    const stripeEventsBefore = await db.query<{ count: number }>(
+      'SELECT COUNT(*)::integer AS count FROM stripe_events',
+    );
+    const financialOperationIds = {
+      providerAccount: randomUUID(),
+      paymentMethod: randomUUID(),
+      authorization: randomUUID(),
+      security: randomUUID(),
+      capture: randomUUID(),
+      settlement: randomUUID(),
+      funding: randomUUID(),
+      underpaidPayout: randomUUID(),
+      mismatchReconciliation: randomUUID(),
+      payout: randomUUID(),
+      webhook: randomUUID(),
+      reconciliation: randomUUID(),
+    } as const;
     const initialPool = await db.query<{ total_deposits_cents: number }>(
       'SELECT total_deposits_cents FROM self_insurance_pool LIMIT 1',
     );
@@ -359,27 +451,78 @@ describePg('HX/OS canonical PostgreSQL lifecycle', () => {
       [taskId],
     );
     const escrowId = escrowBeforeFunding.rows[0].id;
-    const paymentIntentId = `pi_e2e_${runId.replaceAll('-', '')}`;
-    await db.query('UPDATE escrows SET stripe_payment_intent_id=$2 WHERE id=$1', [escrowId, paymentIntentId]);
-    const fundingEventId = `evt_funding_${runId}`;
-    await insertStripeEvent(fundingEventId, 'payment_intent.succeeded', {
-      id: paymentIntentId,
-      amount: CUSTOMER_TOTAL_CENTS,
-      amount_received: CUSTOMER_TOTAL_CENTS,
-      metadata: { escrow_id: escrowId },
+    const providerAccount = await financialProvider.onboardProvider({
+      operationId: financialOperationIds.providerAccount,
+      idempotencyKey: `canonical:${runId}:provider-account`,
+      expectedVersion: 0,
+      providerId: workerId,
     });
-    await Promise.all([
-      processPaymentJob(paymentJob(fundingEventId, 'payment_intent.succeeded')),
-      processPaymentJob(paymentJob(fundingEventId, 'payment_intent.succeeded')),
+    expect(providerAccount).toMatchObject({ providerKind: 'FAKE', state: 'SUCCEEDED' });
+    const paymentMethod = await financialProvider.preparePaymentMethod({
+      operationId: financialOperationIds.paymentMethod,
+      idempotencyKey: `canonical:${runId}:payment-method`,
+      expectedVersion: 0,
+      amountCents: CUSTOMER_TOTAL_CENTS,
+      currency: 'usd',
+      customerId: posterId,
+    });
+    const authorization = await financialProvider.authorize({
+      operationId: financialOperationIds.authorization,
+      idempotencyKey: `canonical:${runId}:authorization`,
+      expectedVersion: 0,
+      amountCents: CUSTOMER_TOTAL_CENTS,
+      currency: 'usd',
+      relatedOperationId: paymentMethod.operationId,
+      paymentMethodReference: paymentMethod.externalReference,
+    });
+    const secureInput = {
+      operationId: financialOperationIds.security,
+      idempotencyKey: `canonical:${runId}:security`,
+      expectedVersion: 0,
+      amountCents: CUSTOMER_TOTAL_CENTS,
+      currency: 'usd',
+      relatedOperationId: authorization.operationId,
+      authorizationOperationId: authorization.operationId,
+    } as const;
+    const securedAttempts = await Promise.all([
+      financialProvider.secure(secureInput),
+      financialProvider.secure(secureInput),
     ]);
-    const funded = await db.query<{ state: string; version: number; event_count: string; result: string }>(
-      `SELECT e.state,e.version,s.result,
-              (SELECT COUNT(*)::text FROM outbox_events o
-               WHERE o.event_type='escrow.funded' AND o.aggregate_id=e.id) AS event_count
-       FROM escrows e JOIN stripe_events s ON s.stripe_event_id=$2 WHERE e.id=$1`,
-      [escrowId, fundingEventId],
+    expect(securedAttempts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ providerKind: 'FAKE', state: 'SUCCEEDED', idempotencyReplayed: false }),
+      expect.objectContaining({ providerKind: 'FAKE', state: 'SUCCEEDED', idempotencyReplayed: true }),
+    ]));
+    const secured = securedAttempts[0];
+
+    // The legacy escrow schema still names this compatibility column stripe_*.
+    // In this nonproduction-only test it is a projection of a verified FAKE
+    // security event; it is not processor authority and creates no Stripe row.
+    successData(await EscrowService.fund({
+      escrowId,
+      stripePaymentIntentId: secured.externalReference,
+    }), 'FAKE security legacy escrow projection');
+    const funded = await db.query<{
+      state: string;
+      compatibility_reference: string;
+      event_count: string;
+      provider_state: string;
+    }>(
+      `SELECT e.state,e.stripe_payment_intent_id AS compatibility_reference,
+              (SELECT COUNT(*)::text FROM escrow_events x
+               WHERE x.escrow_id=e.id AND x.to_state='FUNDED') AS event_count,
+              f.state AS provider_state
+       FROM escrows e
+       JOIN hxos_fake_financial_operation_events_v1 f
+         ON f.operation_id=$2 AND f.operation_kind='SECURE'
+       WHERE e.id=$1`,
+      [escrowId, financialOperationIds.security],
     );
-    expect(funded.rows[0]).toMatchObject({ state: 'FUNDED', result: 'success', event_count: '1' });
+    expect(funded.rows[0]).toEqual({
+      state: 'FUNDED',
+      compatibility_reference: secured.externalReference,
+      event_count: '1',
+      provider_state: 'SUCCEEDED',
+    });
 
     const offer = await prepareControlledTestOffer(
       taskId,
@@ -535,45 +678,154 @@ describePg('HX/OS canonical PostgreSQL lifecycle', () => {
     expect(successData(await TaskService.complete(taskId, posterId, { mode: 'POSTER_CONFIRMED' }), 'completion replay').id)
       .toBe(taskId);
 
-    const underpaidEventId = `evt_underpaid_${runId}`;
-    await insertStripeEvent(underpaidEventId, 'transfer.created', {
-      id: `tr_underpaid_${runId}`,
-      amount: NET_WORKER_PAYOUT_CENTS - 1,
-      metadata: { escrow_id: escrowId },
+    const capture = await financialProvider.capture({
+      operationId: financialOperationIds.capture,
+      idempotencyKey: `canonical:${runId}:capture`,
+      expectedVersion: 0,
+      amountCents: CUSTOMER_TOTAL_CENTS,
+      currency: 'usd',
+      relatedOperationId: secured.operationId,
     });
-    await expect(processPaymentJob(paymentJob(underpaidEventId, 'transfer.created')))
-      .rejects.toThrow(`does not match expected net payout (${NET_WORKER_PAYOUT_CENTS})`);
-    const underpaid = await db.query<{
+    const settlement = await financialProvider.settle({
+      operationId: financialOperationIds.settlement,
+      idempotencyKey: `canonical:${runId}:settlement`,
+      expectedVersion: 0,
+      amountCents: CUSTOMER_TOTAL_CENTS,
+      currency: 'usd',
+      relatedOperationId: capture.operationId,
+    });
+    const funding = await financialProvider.fund({
+      operationId: financialOperationIds.funding,
+      idempotencyKey: `canonical:${runId}:funding`,
+      expectedVersion: 0,
+      amountCents: CUSTOMER_TOTAL_CENTS,
+      currency: 'usd',
+      relatedOperationId: settlement.operationId,
+    });
+    const underpaidPayout = await financialProvider.payout({
+      operationId: financialOperationIds.underpaidPayout,
+      idempotencyKey: `canonical:${runId}:underpaid-payout`,
+      expectedVersion: 0,
+      amountCents: NET_WORKER_PAYOUT_CENTS - 1,
+      currency: 'usd',
+      relatedOperationId: funding.operationId,
+      providerAccountReference: providerAccount.externalReference,
+    });
+    const mismatch = await financialProvider.reconcile({
+      operationId: financialOperationIds.mismatchReconciliation,
+      idempotencyKey: `canonical:${runId}:mismatch-reconciliation`,
+      expectedVersion: 0,
+      amountCents: NET_WORKER_PAYOUT_CENTS,
+      currency: 'usd',
+      relatedOperationId: underpaidPayout.operationId,
+      scenario: 'RECONCILIATION_MISMATCH',
+      reconciliationSnapshotSha256: 'b'.repeat(64),
+    });
+    expect(mismatch).toMatchObject({ providerKind: 'FAKE', state: 'MISMATCH' });
+    const mismatchEvidence = await db.query<{
       escrow_state: string;
-      result: string;
-      claimed_at: Date | null;
-      processed_at: Date | null;
+      payout_state: string;
+      payout_cents: number;
+      reconciliation_state: string;
     }>(
-      `SELECT e.state AS escrow_state,s.result,s.claimed_at,s.processed_at
-       FROM escrows e JOIN stripe_events s ON s.stripe_event_id=$2 WHERE e.id=$1`,
-      [escrowId, underpaidEventId],
+      `SELECT e.state AS escrow_state,payout.state AS payout_state,
+              payout.amount_cents::integer AS payout_cents,
+              reconciliation.state AS reconciliation_state
+       FROM escrows e
+       JOIN hxos_fake_financial_operation_events_v1 payout
+         ON payout.operation_id=$2 AND payout.operation_kind='PAYOUT'
+       JOIN hxos_fake_financial_operation_events_v1 reconciliation
+         ON reconciliation.operation_id=$3 AND reconciliation.operation_kind='RECONCILE'
+       WHERE e.id=$1`,
+      [
+        escrowId,
+        financialOperationIds.underpaidPayout,
+        financialOperationIds.mismatchReconciliation,
+      ],
     );
-    expect(underpaid.rows[0]).toMatchObject({
-      escrow_state: 'FUNDED', result: 'failed', claimed_at: null, processed_at: null,
+    expect(mismatchEvidence.rows[0]).toEqual({
+      escrow_state: 'FUNDED',
+      payout_state: 'SUCCEEDED',
+      payout_cents: NET_WORKER_PAYOUT_CENTS - 1,
+      reconciliation_state: 'MISMATCH',
     });
 
-    const transferId = `tr_exact_${runId}`;
-    const transferEventId = `evt_transfer_${runId}`;
-    await insertStripeEvent(transferEventId, 'transfer.created', {
-      id: transferId,
-      amount: NET_WORKER_PAYOUT_CENTS,
-      metadata: { escrow_id: escrowId },
-    });
-    await Promise.all([
-      processPaymentJob(paymentJob(transferEventId, 'transfer.created')),
-      processPaymentJob(paymentJob(transferEventId, 'transfer.created')),
+    const payoutInput = {
+      operationId: financialOperationIds.payout,
+      idempotencyKey: `canonical:${runId}:payout`,
+      expectedVersion: 0,
+      amountCents: NET_WORKER_PAYOUT_CENTS,
+      currency: 'usd',
+      relatedOperationId: funding.operationId,
+      providerAccountReference: providerAccount.externalReference,
+    } as const;
+    const payoutAttempts = await Promise.all([
+      financialProvider.payout(payoutInput),
+      financialProvider.payout(payoutInput),
     ]);
-    const reconciliation = successData(await EscrowReleaseReconciliationService.reconcile({
+    expect(payoutAttempts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ providerKind: 'FAKE', state: 'SUCCEEDED', idempotencyReplayed: false }),
+      expect.objectContaining({ providerKind: 'FAKE', state: 'SUCCEEDED', idempotencyReplayed: true }),
+    ]));
+    const payout = payoutAttempts[0];
+    const webhookInput = {
+      operationId: financialOperationIds.webhook,
+      idempotencyKey: `canonical:${runId}:payout-webhook`,
+      expectedVersion: 0,
+      relatedOperationId: payout.operationId,
+      providerEventReference: payout.externalReference,
+      authenticated: true,
+      scenario: 'DUPLICATE_WEBHOOK',
+    } as const;
+    const webhook = await financialProvider.ingestWebhook(webhookInput);
+    const webhookReplay = await financialProvider.ingestWebhook(webhookInput);
+    expect(webhook).toMatchObject({ providerKind: 'FAKE', state: 'ACCEPTED', idempotencyReplayed: false });
+    expect(webhookReplay).toMatchObject({ providerKind: 'FAKE', state: 'ACCEPTED', idempotencyReplayed: true });
+    const reconciliationInput = {
+      operationId: financialOperationIds.reconciliation,
+      idempotencyKey: `canonical:${runId}:reconciliation`,
+      expectedVersion: 0,
+      amountCents: NET_WORKER_PAYOUT_CENTS,
+      currency: 'usd',
+      relatedOperationId: payout.operationId,
+      reconciliationSnapshotSha256: 'c'.repeat(64),
+    } as const;
+    const fakeReconciliation = await financialProvider.reconcile(reconciliationInput);
+    const fakeReconciliationReplay = await financialProvider.reconcile(reconciliationInput);
+    expect(fakeReconciliation).toMatchObject({
+      providerKind: 'FAKE', state: 'MATCHED', idempotencyReplayed: false,
+    });
+    expect(fakeReconciliationReplay).toMatchObject({
+      providerKind: 'FAKE', state: 'MATCHED', idempotencyReplayed: true,
+    });
+
+    // The legacy accounting projection remains bounded to the pre-existing
+    // controlled TEST provider. It cannot run outside a disposable test DB and
+    // never turns the FAKE external reference into a Stripe transfer.
+    const compatibilityTransfer = successData(
+      await LocalCertificationPayoutProvider.createPaidTransfer({
+        taskId,
+        escrowId,
+        workerId,
+        idempotencyKey: `canonical:${runId}:legacy-payout-projection`,
+      }),
+      'FAKE payout legacy escrow projection',
+    );
+    expect(compatibilityTransfer).toMatchObject({
+      provider: 'LOCAL_CERTIFICATION_TEST',
+      status: 'paid',
+      amountCents: payout.amountCents,
+      isTest: true,
+    });
+    successData(await EscrowService.release({
       escrowId,
-      expectedStripeTransferId: transferId,
+      localTestTransferId: compatibilityTransfer.transferId,
+    }), 'legacy escrow release projection');
+    const releaseReconciliation = successData(await EscrowReleaseReconciliationService.reconcile({
+      escrowId,
       fromState: 'E2E_REPLAY',
     }), 'release reconciliation');
-    expect(reconciliation).toMatchObject({
+    expect(releaseReconciliation).toMatchObject({
       taskId,
       workerId,
       grossAmountCents: CUSTOMER_TOTAL_CENTS,
@@ -583,13 +835,15 @@ describePg('HX/OS canonical PostgreSQL lifecycle', () => {
     });
     successData(await EscrowReleaseReconciliationService.reconcile({
       escrowId,
-      expectedStripeTransferId: transferId,
       fromState: 'E2E_SECOND_REPLAY',
     }), 'release reconciliation replay');
 
     const accounting = await db.query<{
       escrow_state: string;
       transfer_id: string;
+      stripe_transfer_id: string | null;
+      payout_provider: string;
+      compatibility_security_reference: string;
       task_state: string;
       progress_state: string;
       release_events: string;
@@ -614,9 +868,12 @@ describePg('HX/OS canonical PostgreSQL lifecycle', () => {
       judge_decisions: string;
       judge_overrides: string;
       trust_telemetry: string;
-      stripe_result: string;
+      fake_payout_state: string;
+      fake_reconciliation_state: string;
     }>(
-      `SELECT e.state AS escrow_state,e.stripe_transfer_id AS transfer_id,
+      `SELECT e.state AS escrow_state,e.provider_transfer_id AS transfer_id,
+              e.stripe_transfer_id,e.payout_provider,
+              e.stripe_payment_intent_id AS compatibility_security_reference,
               t.state AS task_state,t.progress_state,
               (SELECT COUNT(*)::text FROM escrow_events x WHERE x.escrow_id=e.id AND x.to_state='RELEASED') AS release_events,
               (SELECT COUNT(*)::text FROM outbox_events o WHERE o.idempotency_key='escrow.released:'||e.id::text) AS release_outbox,
@@ -646,18 +903,25 @@ describePg('HX/OS canonical PostgreSQL lifecycle', () => {
                  AND a.validator_override=TRUE AND a.validator_reason IS NOT NULL) AS judge_overrides,
               (SELECT COUNT(*)::text FROM alpha_telemetry a
                WHERE a.user_id=t.worker_id AND a.task_id=t.id
-                 AND a.event_group='trust_delta_applied') AS trust_telemetry,
-              s.result AS stripe_result
+                  AND a.event_group='trust_delta_applied') AS trust_telemetry,
+              (SELECT f.state FROM hxos_fake_financial_operation_events_v1 f
+               WHERE f.operation_id=$2 AND f.operation_kind='PAYOUT'
+               ORDER BY f.event_version DESC LIMIT 1) AS fake_payout_state,
+              (SELECT f.state FROM hxos_fake_financial_operation_events_v1 f
+               WHERE f.operation_id=$4 AND f.operation_kind='RECONCILE'
+               ORDER BY f.event_version DESC LIMIT 1) AS fake_reconciliation_state
        FROM escrows e
        JOIN tasks t ON t.id=e.task_id
        LEFT JOIN verification_earnings_tracking vt ON vt.user_id=t.worker_id
-       JOIN stripe_events s ON s.stripe_event_id=$2
        WHERE e.id=$1`,
-      [escrowId, transferEventId, proof.id],
+      [escrowId, payout.operationId, proof.id, fakeReconciliation.operationId],
     );
     expect(accounting.rows[0]).toEqual({
       escrow_state: 'RELEASED',
-      transfer_id: transferId,
+      transfer_id: compatibilityTransfer.transferId,
+      stripe_transfer_id: null,
+      payout_provider: 'LOCAL_CERTIFICATION_TEST',
+      compatibility_security_reference: secured.externalReference,
       task_state: 'COMPLETED',
       progress_state: 'CLOSED',
       release_events: '1',
@@ -682,7 +946,8 @@ describePg('HX/OS canonical PostgreSQL lifecycle', () => {
       judge_decisions: '1',
       judge_overrides: '1',
       trust_telemetry: '2',
-      stripe_result: 'success',
+      fake_payout_state: 'SUCCEEDED',
+      fake_reconciliation_state: 'MATCHED',
     });
     expect(
       Number(accounting.rows[0].platform_fee)
@@ -690,12 +955,37 @@ describePg('HX/OS canonical PostgreSQL lifecycle', () => {
       + Number(accounting.rows[0].verification_cents),
     ).toBe(CUSTOMER_TOTAL_CENTS);
 
+    const financialEvidence = await db.query<{
+      operation_count: number;
+      event_count: number;
+      fake_provider_count: number;
+    }>(
+      `SELECT COUNT(DISTINCT operation.operation_id)::integer AS operation_count,
+              COUNT(*)::integer AS event_count,
+              COUNT(*) FILTER (WHERE operation.provider_kind='FAKE')::integer AS fake_provider_count
+       FROM hxos_fake_financial_operations_v1 operation
+       JOIN hxos_fake_financial_operation_events_v1 event
+         ON event.operation_id=operation.operation_id
+       WHERE operation.operation_id=ANY($1::uuid[])`,
+      [Object.values(financialOperationIds)],
+    );
+    expect(financialEvidence.rows[0]).toEqual({
+      operation_count: Object.keys(financialOperationIds).length,
+      event_count: Object.keys(financialOperationIds).length,
+      fake_provider_count: Object.keys(financialOperationIds).length,
+    });
+    const stripeEventsAfter = await db.query<{ count: number }>(
+      'SELECT COUNT(*)::integer AS count FROM stripe_events',
+    );
+    expect(stripeEventsAfter.rows[0].count).toBe(stripeEventsBefore.rows[0].count);
+
     const providerPayoutIds = [
       `po_e2e_failed_${runId.replaceAll('-', '')}`,
       `po_e2e_retry_${runId.replaceAll('-', '')}`,
     ];
     let providerAttempt = 0;
     const provider: WalletProvider = {
+      providerKind: 'FAKE',
       isConfigured: () => true,
       getSnapshot: async (accountId) => ({
         accountId,
@@ -744,6 +1034,10 @@ describePg('HX/OS canonical PostgreSQL lifecycle', () => {
       idempotencyKey: cashOutKey,
     }, provider)).resolves.toMatchObject({ success: false, error: { code: 'IDEMPOTENCY_CONFLICT' } });
 
+    // HustlerWalletService's transitional DTO still names the provider event
+    // reference stripeEventId. These values belong to the FAKE provider and are
+    // never written to stripe_events; the zero-Stripe-event assertion below
+    // keeps that compatibility boundary executable.
     const failedEvent = {
       stripeEventId: `evt_payout_failed_${runId}`,
       providerPayoutId: providerPayoutIds[0]!,
@@ -801,7 +1095,7 @@ describePg('HX/OS canonical PostgreSQL lifecycle', () => {
       stripeEventId: `evt_payout_late_failure_${runId}`,
       state: 'failed' as const,
       failureCode: 'bank_returned',
-      failureMessage: 'The bank returned the payout after Stripe marked it paid.',
+      failureMessage: 'The bank returned the payout after the provider marked it paid.',
     };
     expect(await HustlerWalletService.syncProviderPayoutEvent(lateFailure)).toEqual({ matched: true, workerId });
     expect(await HustlerWalletService.syncProviderPayoutEvent(lateFailure)).toEqual({ matched: true, workerId });
@@ -907,9 +1201,153 @@ describePg('HX/OS canonical PostgreSQL lifecycle', () => {
       proofId: proof.id,
       cashOutId: cashOut.id,
       cashOutRetryId: retry.id,
-      fundingEventId,
-      transferEventId,
-      transferId,
+      fakeFinancialOperationIds: financialOperationIds,
+      fakePayoutExternalReference: payout.externalReference,
+      compatibilityTransferId: compatibilityTransfer.transferId,
+      stripeEventsCreated: stripeEventsAfter.rows[0].count - stripeEventsBefore.rows[0].count,
     }));
   }, 60_000);
+
+  it('persists provider-account refresh with replay, conflict, concurrency, and no external effect', async () => {
+    const fakeRuntime = authorizedFakeFinanceRuntime();
+    expect(newPaymentCreationHealth(fakeRuntime.environment)).toMatchObject({
+      mode: 'frozen',
+      acceptsNewCustomerMoney: false,
+      permitsRealSettlement: false,
+      permitsProviderPayouts: false,
+    });
+    const provider = createDatabaseBackedFakeFinancialProvider(
+      db,
+      fakeRuntime.environment,
+      fakeRuntime.release,
+      fakeRuntime.identity,
+    );
+    const refreshRunId = randomUUID();
+    const providerId = `synthetic-provider-${refreshRunId}`;
+    const operationIds = {
+      onboarding: randomUUID(),
+      refresh: randomUUID(),
+      failedRefresh: randomUUID(),
+    };
+    const stripeEventsBefore = await db.query<{ count: number }>(
+      'SELECT COUNT(*)::integer AS count FROM stripe_events',
+    );
+
+    const onboarding = await provider.onboardProvider({
+      operationId: operationIds.onboarding,
+      idempotencyKey: `refresh:${refreshRunId}:onboarding`,
+      expectedVersion: 0,
+      providerId,
+    });
+    expect(onboarding).toMatchObject({
+      operationKind: 'ONBOARD_PROVIDER',
+      providerKind: 'FAKE',
+      state: 'SUCCEEDED',
+      idempotencyReplayed: false,
+    });
+
+    const refreshCommand = {
+      operationId: operationIds.refresh,
+      idempotencyKey: `refresh:${refreshRunId}:enabled`,
+      expectedVersion: 0,
+      providerId,
+      providerAccountReference: onboarding.externalReference,
+    } as const;
+    const refreshAttempts = await Promise.all([
+      provider.refreshProviderAccountState(refreshCommand),
+      provider.refreshProviderAccountState(refreshCommand),
+    ]);
+    expect(refreshAttempts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        operationKind: 'REFRESH_PROVIDER_ACCOUNT_STATE',
+        accountState: 'ENABLED',
+        chargesEnabled: true,
+        payoutsEnabled: true,
+        idempotencyReplayed: false,
+      }),
+      expect.objectContaining({
+        operationKind: 'REFRESH_PROVIDER_ACCOUNT_STATE',
+        accountState: 'ENABLED',
+        chargesEnabled: true,
+        payoutsEnabled: true,
+        idempotencyReplayed: true,
+      }),
+    ]));
+    await expect(provider.refreshProviderAccountState(refreshCommand)).resolves.toMatchObject({
+      idempotencyReplayed: true,
+      accountState: 'ENABLED',
+    });
+    await expect(provider.refreshProviderAccountState({
+      ...refreshCommand,
+      providerId: `${providerId}-substituted`,
+    })).rejects.toThrow('FAKE_FINANCIAL_IDEMPOTENCY_CONFLICT');
+
+    const failedRefresh = await provider.refreshProviderAccountState({
+      operationId: operationIds.failedRefresh,
+      idempotencyKey: `refresh:${refreshRunId}:failed`,
+      expectedVersion: 0,
+      providerId,
+      providerAccountReference: onboarding.externalReference,
+      scenario: 'PROVIDER_ACCOUNT_FAILURE',
+    });
+    expect(failedRefresh).toMatchObject({
+      operationKind: 'REFRESH_PROVIDER_ACCOUNT_STATE',
+      state: 'FAILED',
+      accountState: 'FAILED',
+      chargesEnabled: false,
+      payoutsEnabled: false,
+      requirementsDue: ['identity_verification'],
+    });
+
+    const persisted = await db.query<{
+      operation_count: number;
+      event_count: number;
+      refresh_count: number;
+      failed_refresh_count: number;
+      fake_provider_count: number;
+    }>(
+      `SELECT COUNT(DISTINCT operation.operation_id)::integer AS operation_count,
+              COUNT(*)::integer AS event_count,
+              COUNT(*) FILTER (
+                WHERE operation.operation_kind='REFRESH_PROVIDER_ACCOUNT_STATE'
+              )::integer AS refresh_count,
+              COUNT(*) FILTER (
+                WHERE operation.operation_kind='REFRESH_PROVIDER_ACCOUNT_STATE'
+                  AND event.state='FAILED'
+              )::integer AS failed_refresh_count,
+              COUNT(*) FILTER (WHERE operation.provider_kind='FAKE')::integer
+                AS fake_provider_count
+       FROM hxos_fake_financial_operations_v1 operation
+       JOIN hxos_fake_financial_operation_events_v1 event
+         ON event.operation_id=operation.operation_id
+       WHERE operation.operation_id=ANY($1::uuid[])`,
+      [Object.values(operationIds)],
+    );
+    expect(persisted.rows[0]).toEqual({
+      operation_count: 3,
+      event_count: 3,
+      refresh_count: 2,
+      failed_refresh_count: 1,
+      fake_provider_count: 3,
+    });
+    const migrationEvidence = await db.query<{
+      schema_digest: string;
+      applied_digest: string;
+    }>(
+      `SELECT evidence.migration_sql_sha256 AS schema_digest,
+              applied.sha256 AS applied_digest
+       FROM hxos_fake_financial_schema_evidence_v2 evidence
+       JOIN applied_migrations applied ON applied.name=evidence.migration_name
+       WHERE evidence.migration_name='20260903_fake_financial_provider_account_refresh_v2'`,
+    );
+    expect(migrationEvidence.rows[0]?.schema_digest.trim()).toMatch(/^[0-9a-f]{64}$/u);
+    expect(migrationEvidence.rows[0]?.applied_digest.trim()).toBe(
+      migrationEvidence.rows[0]?.schema_digest.trim(),
+    );
+
+    const stripeEventsAfter = await db.query<{ count: number }>(
+      'SELECT COUNT(*)::integer AS count FROM stripe_events',
+    );
+    expect(stripeEventsAfter.rows[0].count).toBe(stripeEventsBefore.rows[0].count);
+  }, 30_000);
 });

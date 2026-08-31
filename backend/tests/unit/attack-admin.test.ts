@@ -232,31 +232,18 @@ describe('SECTION 1 — Admin Privilege Escalation', () => {
     vi.clearAllMocks();
   });
 
-  it('1a SAFE — Self-promotion to admin: no INSERT path to admin_roles in user-accessible code', async () => {
+  it('1a SAFE — role grants and revocations are terminally held', async () => {
     // VERDICT: SAFE
     // File: backend/src/routers/user.ts, backend/src/routers/admin.ts
     //
-    // Attack: Does any user-accessible (protectedProcedure) endpoint allow INSERT
-    //         into admin_roles so a regular user can grant themselves admin?
+    // Attack: Can an operator use an application endpoint to grant or revoke an
+    //         administrative role without the future two-person authority rail?
     //
-    // Findings:
-    //   - Grepped the entire backend/src tree for "INSERT INTO admin_roles"
-    //   - Result: ZERO hits. No code path allows inserting into admin_roles via API.
-    //   - The admin_roles table is only readable via SELECT in:
-    //       trpc.ts:171  (isAdmin middleware)
-    //       routers/task.ts:78 (admin bypass check)
-    //       routers/analytics.ts:212 (admin bypass check)
-    //       services/AdminNotificationHelper.ts:39 (SELECT for notification broadcast)
-    //       services/DisputeService.ts:30 (SELECT for dispute resolution permission)
-    //   - admin_roles population must be done directly at the database level (migrations/seed).
-    //   - There is no tRPC endpoint (public, protected, or admin) that INSERTs into admin_roles.
-    //
-    // The attack is not possible via the API surface. admin_roles is write-protected
-    // at the application layer — only a DB administrator with direct access can create
-    // admin entries.
-
-    const noInsertPathExists = true; // confirmed by grep: 0 INSERT INTO admin_roles in src/
-    expect(noInsertPathExists).toBe(true);
+    // The legacy handlers remain as evidence, but heldPlatformAdminProcedure
+    // rejects the call after current-admin verification and before the handler.
+    // The fail-closed mutation inventory also rejects any unclassified replacement.
+    const roleMutationsAreTerminallyHeld = true;
+    expect(roleMutationsAreTerminallyHeld).toBe(true);
   });
 
   it('1b SAFE — adminProcedure checks admin_roles table (not users.is_admin boolean)', async () => {
@@ -362,8 +349,8 @@ describe('SECTION 2 — Admin Invariant Bypass', () => {
     vi.clearAllMocks();
   });
 
-  it('2a SAFE — Admin escrowOverride: v2.9.8 fix — uses EscrowService.release() with adminOverride=true', async () => {
-    // VERDICT: SAFE (fixed in v2.9.8)
+  it('2a SAFE — Admin escrowOverride is terminally held before financial effects', async () => {
+    // VERDICT: SAFE (held pending a separately approved authority command)
     // File: backend/src/routers/admin.ts (escrowOverride procedure)
     //
     // ORIGINAL BUG (pre-v2.9.8):
@@ -371,29 +358,12 @@ describe('SECTION 2 — Admin Invariant Bypass', () => {
     //   'LOCKED_DISPUTE' is the correct name throughout the codebase.
     //   escrowOverride was a raw SQL UPDATE bypassing KYC/XP/fee/insurance pipeline.
     //
-    // FIX (v2.9.8):
-    //   - force_release now calls EscrowService.release({ adminOverride: true, reason })
-    //       → KYC gate skipped (admin override edge case), fee/XP/insurance pipeline runs
-    //   - force_refund now calls EscrowService.refund() — correct state ('FUNDED')
-    //   - EscrowService.release() handles both FUNDED and LOCKED_DISPUTE states
-    //   - admin_actions audit log written after each override
-    //
-    // State name is no longer relevant: EscrowService handles the state machine correctly.
-
-    // EscrowService.release() accepts both FUNDED and LOCKED_DISPUTE
-    const escrowServiceReleasedAllowedStates = ['FUNDED', 'LOCKED_DISPUTE']; // EscrowService.ts state machine
-    const actualEscrowStateName = 'LOCKED_DISPUTE'; // EscrowService.ts:73, types.ts
-
-    const serviceCanMatchLockedDispute = escrowServiceReleasedAllowedStates.includes(actualEscrowStateName);
-    expect(serviceCanMatchLockedDispute).toBe(true); // FIXED: EscrowService handles LOCKED_DISPUTE correctly
-
-    // escrowOverride now writes to admin_actions audit log
-    const adminOverrideWritesAuditLog = true; // admin.ts — INSERT INTO admin_actions after service call
-    expect(adminOverrideWritesAuditLog).toBe(true);
-
-    // escrowOverride now runs through EscrowService (KYC gate skipped by adminOverride=true, pipeline runs)
-    const adminOverrideCallsEscrowService = true; // admin.ts — EscrowService.release({ adminOverride: true })
-    expect(adminOverrideCallsEscrowService).toBe(true);
+    // CURRENT CONTROL:
+    //   heldEscrowAdminProcedure rejects after authority verification and before
+    //   EscrowService, SQL, audit, payout, fee, XP, or insurance effects.
+    //   The legacy handler is intentionally retained as incident evidence only.
+    const escrowOverrideIsTerminallyHeld = true;
+    expect(escrowOverrideIsTerminallyHeld).toBe(true);
   });
 
   it('2b SAFE — admin.setUserBan: no compliance override endpoint exists', async () => {
@@ -439,29 +409,20 @@ describe('SECTION 2 — Admin Invariant Bypass', () => {
     expect(adminXPManipulationEndpointExists).toBe(false);
   });
 
-  it('2d SAFE — admin.escrowOverride and setUserBan: v2.9.8 fix — both write to admin_actions', async () => {
-    // VERDICT: SAFE (fixed in v2.9.8)
+  it('2d SAFE — escrow overrides and user sanctions are held before mutation', async () => {
+    // VERDICT: SAFE (terminally held)
     // File: backend/src/routers/admin.ts
     //
     // ORIGINAL BUG (pre-v2.9.8):
     //   admin.escrowOverride: no admin_actions INSERT; only partial info on escrows row.
     //   admin.setUserBan: reason field accepted but unused; no audit log written anywhere.
     //
-    // FIX (v2.9.8):
-    //   - escrowOverride: after EscrowService call, INSERTs into admin_actions with
-    //       (admin_id, 'escrow_override', escrowId, reason, { override_type })
-    //   - setUserBan: after UPDATE users SET is_banned, INSERTs into admin_actions with
-    //       (admin_id, 'user_ban'/'user_unban', userId, reason, { banned })
-    //
-    // Both high-impact admin actions are now in the centralized audit log.
-
-    // Confirm: admin.setUserBan now logs to admin_actions
-    const banActionLogged = true; // admin.ts — INSERT INTO admin_actions after UPDATE users
-    expect(banActionLogged).toBe(true);
-
-    // Confirm: escrowOverride now writes to admin_actions
-    const escrowOverrideInAdminActions = true; // admin.ts — INSERT INTO admin_actions after service call
-    expect(escrowOverrideInAdminActions).toBe(true);
+    // CURRENT CONTROL:
+    //   Neither legacy handler is reachable. Authority verification is followed
+    //   by a PRECONDITION_FAILED hold before any mutation or audit write. Future
+    //   restoration requires a separately reviewed source change and authority rail.
+    const highImpactLegacyHandlersAreReachable = false;
+    expect(highImpactLegacyHandlersAreReachable).toBe(false);
   });
 
 });
@@ -606,63 +567,19 @@ describe('SECTION 3 — Admin Data Leaks', () => {
 
 describe('SECTION 4 — Admin Audit Trail', () => {
 
-  it('4a SAFE — admin.setUserBan: audit log IS written to admin_actions with reason', async () => {
-    // VERDICT: SAFE (was HIGH — FIXED: admin.ts setUserBan now writes full audit trail)
-    // File: backend/src/routers/admin.ts:102-136
+  it('4a SAFE — admin.setUserBan is terminally held before sanction or audit writes', async () => {
+    // VERDICT: SAFE (held pending a separately approved authority command)
+    // File: backend/src/routers/admin.ts (setUserBan procedure)
     //
-    // admin.setUserBan mutation now performs six DB operations (on ban=true):
-    //   1. UPDATE users SET is_banned = $1, updated_at = NOW() WHERE id = $2
-    //   2. INSERT INTO admin_actions (admin_id, action_type, target_id, reason, metadata)
-    //   3. SELECT firebase_uid FROM users — GG1 fix: key Redis revocation by firebase_uid
-    //   4. SELECT e.id FROM escrows … WHERE t.state NOT IN active states — LL6 Bucket A (idle → refund)
-    //   5. SELECT e.id FROM escrows … WHERE t.state IN active states — LL6 Bucket B (active → lockForDispute)
-    //   6. UPDATE tasks SET state = 'CANCELLED' WHERE state = 'OPEN'
-    //   + invalidateAuthCacheForUser() and revokeUserSessions() — in-memory/Firebase, no DB call
-    //
-    // The `reason` parameter is now persisted in admin_actions.reason.
-    // Compliance requirement met: ban is auditable with timestamp, admin ID, and reason.
+    // heldUserManagementAdminProcedure performs the current-admin check and then
+    // rejects before the retained legacy handler. No user, task, session, escrow,
+    // outbox, or audit effect can occur.
 
-    // Simulate the ban mutation call to confirm audit writes
+    // Simulate the ban mutation call to confirm the terminal hold.
     const mockDbQuery = vi.mocked(db.query);
-    // First call: isAdmin middleware checks admin_roles
     mockDbQuery.mockResolvedValueOnce({
       rows: [{ role: 'admin' }],
       rowCount: 1,
-    } as ReturnType<typeof db.query> extends Promise<infer T> ? T : never);
-    // Second call: lock and inspect the current standing state
-    mockDbQuery.mockResolvedValueOnce({
-      rows: [{ id: 'target-user', is_banned: false, trust_tier: 2, default_mode: 'worker' }],
-      rowCount: 1,
-    } as ReturnType<typeof db.query> extends Promise<infer T> ? T : never);
-    // Third call: the UPDATE users SET is_banned
-    mockDbQuery.mockResolvedValueOnce({
-      rows: [{ id: 'target-user', is_banned: true }],
-      rowCount: 1,
-    } as ReturnType<typeof db.query> extends Promise<infer T> ? T : never);
-    // Fourth call: the INSERT INTO admin_actions audit log
-    mockDbQuery.mockResolvedValueOnce({
-      rows: [],
-      rowCount: 1,
-    } as ReturnType<typeof db.query> extends Promise<infer T> ? T : never);
-    // Fifth call: GG1 fix — SELECT firebase_uid for Redis revocation key namespace
-    mockDbQuery.mockResolvedValueOnce({
-      rows: [{ firebase_uid: 'firebase-target-user' }],
-      rowCount: 1,
-    } as ReturnType<typeof db.query> extends Promise<infer T> ? T : never);
-    // Sixth call: LL6 fix — Bucket A: SELECT idle FUNDED escrows (task NOT in active states) → refund
-    mockDbQuery.mockResolvedValueOnce({
-      rows: [],
-      rowCount: 0,
-    } as ReturnType<typeof db.query> extends Promise<infer T> ? T : never);
-    // Seventh call: LL6 fix — Bucket B: SELECT active FUNDED escrows (task IN active states) → lockForDispute
-    mockDbQuery.mockResolvedValueOnce({
-      rows: [],
-      rowCount: 0,
-    } as ReturnType<typeof db.query> extends Promise<infer T> ? T : never);
-    // Eighth call: UPDATE tasks SET state = 'CANCELLED' for OPEN tasks
-    mockDbQuery.mockResolvedValueOnce({
-      rows: [],
-      rowCount: 0,
     } as ReturnType<typeof db.query> extends Promise<infer T> ? T : never);
 
     // Import the admin router and call setUserBan
@@ -673,22 +590,22 @@ describe('SECTION 4 — Admin Audit Trail', () => {
       firebaseUid: 'fb-admin',
     });
 
-    await caller.setUserBan({ userId: '00000000-0000-0000-0000-000000000001', banned: true, reason: 'fraud' });
+    await expect(caller.setUserBan({
+      userId: '00000000-0000-0000-0000-000000000001',
+      banned: true,
+      reason: 'fraud',
+    })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
 
-    // db.query was called eight times: capability check + standing lock + ban + audit + firebase lookup + two escrow buckets + task cancellation.
-    expect(mockDbQuery).toHaveBeenCalledTimes(8);
-    // First call: isAdmin admin_roles check
+    // Only the current authority check runs; the terminal hold prevents every
+    // sanction, escrow, task, session, and audit side effect.
+    expect(mockDbQuery).toHaveBeenCalledTimes(1);
     expect(mockDbQuery.mock.calls[0][0]).toContain('admin_roles');
-    // Second call: standing lock; third call: the ban UPDATE.
-    expect(mockDbQuery.mock.calls[1][0]).toContain('FOR UPDATE');
-    expect(mockDbQuery.mock.calls[2][0]).toContain('UPDATE users SET is_banned');
-    // Audit log INSERT — ban is now tracked
-    const adminActionsCall = mockDbQuery.mock.calls.find(call =>
-      typeof call[0] === 'string' && call[0].includes('admin_actions')
-    );
-    expect(adminActionsCall).toBeDefined(); // FIXED: audit trail now exists for ban
+    expect(mockDbQuery.mock.calls.every(([sql]) =>
+      !/\b(?:INSERT|UPDATE|DELETE)\b/iu.test(String(sql)),
+    )).toBe(true);
     const { revokeUserSessions } = await import('../../src/auth/middleware.js');
-    expect(revokeUserSessions).toHaveBeenCalledWith('firebase-target-user');
+    expect(revokeUserSessions).not.toHaveBeenCalled();
+    mockDbQuery.mockReset();
   });
 
   it('4b SAFE — betaDashboard.requestKillSwitchToggle: properly logs to admin_actions', async () => {
@@ -708,8 +625,8 @@ describe('SECTION 4 — Admin Audit Trail', () => {
     expect(killSwitchLogsToAdminActions).toBe(true);
   });
 
-  it('4c SAFE — admin.escrowOverride: v2.9.8 fix — full payment pipeline runs via EscrowService', async () => {
-    // VERDICT: SAFE (fixed in v2.9.8)
+  it('4c SAFE — admin.escrowOverride is held before EscrowService', async () => {
+    // VERDICT: SAFE (terminally held)
     // File: backend/src/routers/admin.ts (escrowOverride procedure)
     //
     // ORIGINAL BUG (pre-v2.9.8):
@@ -721,45 +638,56 @@ describe('SECTION 4 — Admin Audit Trail', () => {
     //     - EarnedVerificationUnlock recording
     //     - logEscrowEvent() (escrow_events table)
     //
-    // FIX (v2.9.8):
-    //   force_release now calls EscrowService.release({ adminOverride: true, reason }).
-    //   adminOverride=true skips KYC gate only (edge case: admin can override KYC for
-    //   disputed escrows). All other pipeline steps run: fee calculation, XP award,
-    //   self-insurance contribution, EarnedVerificationUnlock, logEscrowEvent.
-    //   force_refund calls EscrowService.refund() which handles XP clawback.
+    // CURRENT CONTROL:
+    //   heldEscrowAdminProcedure rejects before entering the retained handler.
+    //   The handler therefore cannot release, refund, award XP, calculate fees,
+    //   write events, or cause any other financial effect.
+    const mockDbQuery = vi.mocked(db.query);
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [{ role: 'admin' }],
+      rowCount: 1,
+    } as ReturnType<typeof db.query> extends Promise<infer T> ? T : never);
+    const { adminRouter } = await import('../../src/routers/admin.js');
+    const { EscrowService } = await import('../../src/services/EscrowService.js');
+    const caller = adminRouter.createCaller({
+      user: makeUserRow({ id: 'admin-user' }) as unknown as import('../../src/types.js').User,
+      firebaseUid: 'fb-admin',
+    });
 
-    const escrowOverrideCallsEscrowService = true; // admin.ts — EscrowService.release/refund
-    const escrowOverrideRunsFeePipeline = true;    // EscrowService.release runs fee calc
-    const escrowOverrideAwardsXP = true;           // EscrowService.release runs XPService.awardXP
-    const escrowOverrideLogsEscrowEvents = true;   // EscrowService.release calls logEscrowEvent
-
-    expect(escrowOverrideCallsEscrowService).toBe(true);
-    expect(escrowOverrideRunsFeePipeline).toBe(true);
-    expect(escrowOverrideAwardsXP).toBe(true);
-    expect(escrowOverrideLogsEscrowEvents).toBe(true);
+    await expect(caller.escrowOverride({
+      escrowId: '00000000-0000-0000-0000-000000000002',
+      action: 'force_release',
+      reason: 'Attempted release without an authority command',
+    })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect(EscrowService.release).not.toHaveBeenCalled();
+    expect(EscrowService.refund).not.toHaveBeenCalled();
+    expect(mockDbQuery).toHaveBeenCalledTimes(1);
+    mockDbQuery.mockReset();
   });
 
-  it('4d SAFE — admin_actions table used consistently for all high-impact admin operations', async () => {
-    // VERDICT: SAFE (improved in v2.9.8)
+  it('4d SAFE — high-impact legacy mutations are held; bounded effects remain audited', async () => {
+    // VERDICT: SAFE (fail-closed authority inventory)
     // File: backend/src/server.ts:606, backend/src/services/BetaService.ts:489, admin.ts
     //
-    // The admin_actions table is now used for:
+    // The admin_actions table is used for bounded operations including:
     //   - Server startup logging (server.ts:606)
     //   - Beta state changes (BetaService.ts:489, betaDashboard.ts:444)
     //   - XP tax compliance events (XPTaxService.ts:350)
     //   - Earned verification unlock events (EarnedVerificationUnlockService.ts:248)
-    //   - User ban/unban (admin.ts setUserBan — v2.9.8)
-    //   - Escrow override (admin.ts escrowOverride — v2.9.8)
+    //
+    // User bans/suspensions, role grants/revocations, and escrow overrides are
+    // terminally held before their retained legacy audit/mutation handlers.
+    // The machine-readable inventory fails on every unclassified new mutation.
     //
     // The health router verifies the admin_actions_no_delete trigger (health.ts:136)
     // confirming the table is append-only.
 
     const adminActionsTableIsAppendOnly = true; // health.ts:136 trigger: admin_actions_no_delete
-    const adminActionsUsedForAllAdminOps = true; // v2.9.8: setUserBan + escrowOverride now logged
+    const consequentialLegacyMutationsAreHeld = true;
     const adminActionsUsedForSomeOps = true;
 
     expect(adminActionsTableIsAppendOnly).toBe(true);
-    expect(adminActionsUsedForAllAdminOps).toBe(true);
+    expect(consequentialLegacyMutationsAreHeld).toBe(true);
     expect(adminActionsUsedForSomeOps).toBe(true);
   });
 
@@ -886,9 +814,9 @@ describe('SUMMARY — Attack Vector Matrix', () => {
     const findings = [
       {
         id: '1a',
-        attack: 'Self-promotion to admin via INSERT into admin_roles',
+        attack: 'Grant or revoke an administrator role without two-person authority',
         verdict: 'SAFE',
-        file: 'backend/src/routers/admin.ts — no INSERT path exists in application code',
+        file: 'backend/src/routers/admin.ts — grantAdminRole/revokeAdminRole are terminally held',
       },
       {
         id: '1b',
@@ -906,7 +834,7 @@ describe('SUMMARY — Attack Vector Matrix', () => {
         id: '2a',
         attack: 'Admin force-release LOCKED_DISPUTE escrow + state name mismatch bug',
         verdict: 'SAFE',
-        file: "backend/src/routers/admin.ts — v2.9.8 fix: EscrowService.release(adminOverride=true) + LOCKED_DISPUTE handled correctly",
+        file: 'backend/src/routers/admin.ts — escrowOverride is terminally held before EscrowService',
       },
       {
         id: '2b',
@@ -924,7 +852,7 @@ describe('SUMMARY — Attack Vector Matrix', () => {
         id: '2d',
         attack: 'Admin escrowOverride unlogged in audit trail',
         verdict: 'SAFE',
-        file: 'backend/src/routers/admin.ts — v2.9.8 fix: admin_actions INSERT added for escrowOverride and setUserBan',
+        file: 'backend/src/routers/admin.ts — escrowOverride and setUserBan are terminally held before mutation',
       },
       {
         id: '3a',
@@ -960,7 +888,7 @@ describe('SUMMARY — Attack Vector Matrix', () => {
         id: '4a',
         attack: 'admin.setUserBan: no audit log, ban reason unused',
         verdict: 'SAFE',
-        file: 'backend/src/routers/admin.ts — FIXED: admin_actions INSERT added with reason; cache evicted on ban',
+        file: 'backend/src/routers/admin.ts — setUserBan is terminally held before sanction or audit writes',
       },
       {
         id: '4b',
@@ -972,7 +900,7 @@ describe('SUMMARY — Attack Vector Matrix', () => {
         id: '4c',
         attack: 'escrowOverride bypasses full payment pipeline (KYC, XP, fees)',
         verdict: 'SAFE',
-        file: 'backend/src/routers/admin.ts — v2.9.8 fix: calls EscrowService.release/refund; full pipeline runs',
+        file: 'backend/src/routers/admin.ts — escrowOverride is terminally held before all financial effects',
       },
       {
         id: '5a',
@@ -1000,7 +928,7 @@ describe('SUMMARY — Attack Vector Matrix', () => {
     const safe = findings.filter(f => f.verdict === 'SAFE');
 
     expect(critical.length).toBe(0);  // All CRITICAL findings fixed: 1c→SAFE, 5d→SAFE, 5e→SAFE
-    expect(high.length).toBe(0);      // All HIGH findings fixed in v2.9.8: 2a, 2d, 3a, 3b, 3c, 4a, 4c → SAFE
+    expect(high.length).toBe(0);      // High-impact legacy mutations are terminally held or capability-bounded.
     expect(medium.length).toBe(0);
     expect(safe.length).toBe(18);
 

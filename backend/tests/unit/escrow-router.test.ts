@@ -14,7 +14,8 @@
  * with a fake user context to bypass middleware.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 // ---------------------------------------------------------------------------
 // Mocks — must come before any imports that transitively touch these modules
@@ -114,6 +115,14 @@ const mockDb = vi.mocked(db);
 const mockEscrowService = vi.mocked(EscrowService);
 const mockStripeService = vi.mocked(StripeService);
 const mockXPService = vi.mocked(XPService);
+
+beforeEach(() => {
+  enableControlledStripePaymentTestCohortV7();
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -461,6 +470,21 @@ describe('escrow.createPaymentIntent', () => {
   });
 
   describe('return shape', () => {
+    it('fails frozen authority before task, escrow, or provider work', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('ENGINE_API_MODE', 'production');
+      vi.stubEnv('STRIPE_MODE', 'live');
+      vi.stubEnv('STRIPE_SECRET_KEY', 'sk_live_forbidden');
+      vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'enabled');
+      await expect(makeCaller(POSTER_ID).createPaymentIntent({ taskId: TASK_ID, amount: 5000 }))
+        .rejects.toMatchObject({
+          code: 'PRECONDITION_FAILED',
+          cause: { applicationCode: 'PAYMENT_CREATION_FROZEN' },
+        });
+      expect(mockDb.query).not.toHaveBeenCalled();
+      expect(mockStripeService.createPaymentIntent).not.toHaveBeenCalled();
+    });
+
     it('returns the iOS PaymentIntentResponse shape on success with explicit amount', async () => {
       mockStripeService.isConfigured.mockReturnValue(true);
       // Router queries task price first
@@ -540,14 +564,22 @@ describe('escrow.createPaymentIntent', () => {
   });
 
   describe('stripe configuration guard', () => {
-    it('throws PRECONDITION_FAILED when Stripe is not configured', async () => {
-      mockStripeService.isConfigured.mockReturnValue(false);
+    it('preserves the provider configuration failure without inventing a payment', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: ESCROW_ID }], rowCount: 1 } as any);
+      mockStripeService.createPaymentIntent.mockResolvedValueOnce({
+        success: false,
+        error: {
+          code: 'STRIPE_NOT_CONFIGURED',
+          message: 'Stripe is not configured',
+        },
+      });
 
       const caller = makeCaller(POSTER_ID);
       await expect(caller.createPaymentIntent({ taskId: TASK_ID, amount: 5000 }))
         .rejects.toMatchObject({
-          code: 'PRECONDITION_FAILED',
-          message: 'Payment processing is not configured',
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Stripe is not configured',
         });
     });
   });
@@ -686,6 +718,46 @@ describe('escrow.confirmFunding', () => {
   });
 
   describe('return shape', () => {
+    it('fails frozen authority before verification or escrow funding', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('ENGINE_API_MODE', 'production');
+      vi.stubEnv('STRIPE_MODE', 'live');
+      vi.stubEnv('STRIPE_SECRET_KEY', 'sk_live_forbidden');
+      vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'enabled');
+      mockEscrowService.getById.mockResolvedValueOnce({
+        success: true,
+        data: makeEscrow({ state: 'PENDING', stripe_payment_intent_id: null }) as any,
+      });
+      await expect(makeCaller(POSTER_ID).confirmFunding({
+        escrowId: ESCROW_ID,
+        stripePaymentIntentId: 'pi_forbidden',
+      })).rejects.toMatchObject({
+        code: 'PRECONDITION_FAILED',
+        cause: { applicationCode: 'PAYMENT_CREATION_FROZEN' },
+      });
+      expect(mockEscrowService.getById).toHaveBeenCalledOnce();
+      expect(mockStripePaymentIntentsRetrieve).not.toHaveBeenCalled();
+      expect(mockEscrowService.fund).not.toHaveBeenCalled();
+    });
+
+    it('replays an already-funded exact payment while frozen without provider or mutation work', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('ENGINE_API_MODE', 'production');
+      vi.stubEnv('STRIPE_MODE', 'live');
+      vi.stubEnv('STRIPE_SECRET_KEY', 'sk_live_forbidden');
+      vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'enabled');
+      const funded = makeEscrow({ state: 'FUNDED', stripe_payment_intent_id: 'pi_existing' });
+      mockEscrowService.getById.mockResolvedValueOnce({ success: true, data: funded as any });
+      const result = await makeCaller(POSTER_ID).confirmFunding({
+        escrowId: ESCROW_ID,
+        stripePaymentIntentId: 'pi_existing',
+      });
+      expect(result).toEqual(funded);
+      expect(mockStripePaymentIntentsRetrieve).not.toHaveBeenCalled();
+      expect(mockDb.query).not.toHaveBeenCalled();
+      expect(mockEscrowService.fund).not.toHaveBeenCalled();
+    });
+
     it('returns funded escrow data on success', async () => {
       const fundedEscrow = makeEscrow({ state: 'FUNDED' });
       mockEscrowService.getById.mockResolvedValueOnce({
@@ -1626,7 +1698,7 @@ describe('SECURITY FIX v2.9.4 — confirmFunding: Stripe PI verification', () =>
       stripePaymentIntentId: 'pi_fake_123',
     })).rejects.toMatchObject({
       code: 'PRECONDITION_FAILED',
-      message: 'Payment intent not found or could not be verified',
+      message: 'Payment intent could not be verified',
     });
 
     // EscrowService.fund must NOT be called — escrow stays PENDING

@@ -12,6 +12,14 @@ import {
   disputeAdminProcedure,
   escrowAdminProcedure,
   financialAdminProcedure,
+  heldAdminOrEngineBridgeProcedure,
+  heldEscrowAdminProcedure,
+  heldFinancialAdminProcedure,
+  heldOperationsAdminProcedure,
+  heldPlatformAdminProcedure,
+  heldSafetyAdminProcedure,
+  heldTrustAdminProcedure,
+  heldUserManagementAdminProcedure,
   platformAdminProcedure,
   router,
   safetyAdminProcedure,
@@ -19,6 +27,12 @@ import {
 } from '../../src/trpc';
 
 const mockDb = vi.mocked(db);
+let heldHandlerInvocations = 0;
+
+function heldHandler() {
+  heldHandlerInvocations += 1;
+  return 'must-not-run';
+}
 
 const probeRouter = router({
   platform: platformAdminProcedure.query(() => 'platform'),
@@ -28,6 +42,14 @@ const probeRouter = router({
   disputes: disputeAdminProcedure.query(() => 'disputes'),
   safety: safetyAdminProcedure.query(() => 'safety'),
   bridgeEquivalent: adminOrEngineBridgeProcedure.query(() => 'bridge-equivalent'),
+  heldPlatform: heldPlatformAdminProcedure.mutation(heldHandler),
+  heldFinancial: heldFinancialAdminProcedure.mutation(heldHandler),
+  heldEscrow: heldEscrowAdminProcedure.mutation(heldHandler),
+  heldUsers: heldUserManagementAdminProcedure.mutation(heldHandler),
+  heldTrust: heldTrustAdminProcedure.mutation(heldHandler),
+  heldSafety: heldSafetyAdminProcedure.mutation(heldHandler),
+  heldOperations: heldOperationsAdminProcedure.mutation(heldHandler),
+  heldBridgeEquivalent: heldAdminOrEngineBridgeProcedure.mutation(heldHandler),
 });
 
 function caller(isAdmin: boolean | undefined = true) {
@@ -38,6 +60,14 @@ function caller(isAdmin: boolean | undefined = true) {
       full_name: 'Operator',
       firebase_uid: 'operator-firebase',
       is_admin: isAdmin,
+    },
+    firebaseUid: 'operator-firebase',
+    identityAssurance: {
+      authenticatedAtSeconds: Math.floor(Date.now() / 1000),
+      tokenExpiresAtSeconds: Math.floor(Date.now() / 1000) + 3_600,
+      signInProvider: 'password',
+      secondFactor: 'phone',
+      mfaVerified: true,
     },
   } as any);
 }
@@ -50,7 +80,10 @@ function roleRow(role: string, capabilityGranted = false) {
 }
 
 describe('administrator capability procedures', () => {
-  beforeEach(() => vi.resetAllMocks());
+  beforeEach(() => {
+    vi.resetAllMocks();
+    heldHandlerInvocations = 0;
+  });
 
   it.each(['admin', 'founder'])('allows %s break-glass access to platform control', async (role) => {
     roleRow(role);
@@ -117,6 +150,23 @@ describe('administrator capability procedures', () => {
     } as any);
     await expect(bridge.bridgeEquivalent()).resolves.toBe('bridge-equivalent');
     expect(mockDb.query).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'heldPlatform',
+    'heldFinancial',
+    'heldEscrow',
+    'heldUsers',
+    'heldTrust',
+    'heldSafety',
+    'heldOperations',
+    'heldBridgeEquivalent',
+  ] as const)('terminally holds %s after current authority checks and before its handler', async (route) => {
+    roleRow('admin', true);
+    await expect(caller()[route]()).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+    });
+    expect(heldHandlerInvocations).toBe(0);
   });
 });
 

@@ -38,18 +38,21 @@ const { mockClientQuery, mockClientRelease, mockPoolConnect, mockPoolEnd, mockPo
 // Mock pg BEFORE any imports so the module-level Pool constructor is faked.
 // ---------------------------------------------------------------------------
 
-vi.mock('pg', () => ({
-  default: {
-    Pool: vi.fn().mockImplementation(() => ({
-      connect: mockPoolConnect,
-      end: mockPoolEnd,
-      on: mockPoolOn,
-      totalCount: 3,
-      idleCount: 1,
-      waitingCount: 0,
-    })),
-  },
-}));
+vi.mock('pg', () => {
+  // Vitest 4 preserves JavaScript constructor semantics for `new Pool()` and
+  // correctly rejects an arrow-function mock implementation as non-
+  // constructable. Model the pg surface with a real test-only constructor.
+  class MockPool {
+    connect = mockPoolConnect;
+    end = mockPoolEnd;
+    on = mockPoolOn;
+    totalCount = 3;
+    idleCount = 1;
+    waitingCount = 0;
+  }
+
+  return { default: { Pool: MockPool } };
+});
 
 // Mock logger so we don't get pino initialisation side-effects
 vi.mock('../../src/logger', () => ({

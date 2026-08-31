@@ -8,13 +8,27 @@ import {
   localCertificationPaymentEnabled,
   LocalCertificationPaymentProvider,
 } from '../services/LocalCertificationPaymentProvider.js';
-import { paymentCreationErrorCause } from '../services/NewPaymentCreationGuard.js';
+import {
+  newPaymentCreationFailure,
+  paymentCreationErrorCause,
+  type NewPaymentLane,
+} from '../services/NewPaymentCreationGuard.js';
 import { resolvePaymentProvider } from '../services/payment/PaymentProviderResolver.js';
 import { posterProcedure, Schemas } from '../trpc.js';
 
 function canonicalPrice(raw: number | string | null): number | null {
   if (raw == null || !Number.isFinite(Number(raw))) return null;
   return Math.round(Number(raw));
+}
+
+function requirePaymentCreation(lane: NewPaymentLane): void {
+  const frozen = newPaymentCreationFailure(lane);
+  if (!frozen) return;
+  throw new TRPCError({
+    code: 'PRECONDITION_FAILED',
+    message: frozen.error.message,
+    cause: paymentCreationErrorCause(frozen.error.code),
+  });
 }
 
 export const escrowPaymentProcedures = {
@@ -26,6 +40,7 @@ export const escrowPaymentProcedures = {
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      requirePaymentCreation('escrow_funding');
       const taskRow = await db.query<{
         price: number | string | null;
         automation_classification: string | null;
@@ -143,6 +158,7 @@ export const escrowPaymentProcedures = {
         .strict(),
     )
     .mutation(async ({ ctx, input }) => {
+      requirePaymentCreation('escrow_funding');
       const result = await LocalCertificationPaymentProvider.confirmIntent({
         paymentIntentId: input.paymentIntentId,
         clientSecret: input.clientSecret,
@@ -177,6 +193,15 @@ export const escrowPaymentProcedures = {
           message: 'Only the escrow creator can confirm funding',
         });
       }
+
+      if (
+        result.data.state === 'FUNDED'
+        && result.data.stripe_payment_intent_id === input.stripePaymentIntentId
+      ) {
+        return result.data;
+      }
+
+      requirePaymentCreation('escrow_funding');
 
       const escrow = result.data as typeof result.data & {
         amount: number;

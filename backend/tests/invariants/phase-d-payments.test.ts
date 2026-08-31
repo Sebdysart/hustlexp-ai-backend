@@ -223,7 +223,13 @@ describe.skipIf(!hasDb)('Payment Invariant 5: LOCKED_DISPUTE cannot transition t
     // The state machine does not allow LOCKED_DISPUTE → RELEASED
     await expect(
       pool.query(
-        `UPDATE escrows SET state = 'RELEASED', released_at = NOW() WHERE id = $1`,
+        `UPDATE escrows
+            SET state = 'RELEASED', released_at = NOW(),
+                payout_provider = 'MANUAL_RECONCILIATION',
+                provider_transfer_id = 'manual_phase_d_' || replace(id::text, '-', ''),
+                provider_transfer_status = 'manual_reconciliation',
+                provider_transfer_paid_at = NULL
+          WHERE id = $1`,
         [escrowId]
       )
     ).rejects.toMatchObject({

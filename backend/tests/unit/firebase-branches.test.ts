@@ -41,20 +41,20 @@ vi.mock('../../src/logger', () => ({
   authLogger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
+vi.mock('../../src/config', () => ({
+  config: {
+    firebase: {
+      projectId: 'test-project',
+      clientEmail: 'test@test.iam.gserviceaccount.com',
+      privateKey: 'test-private-key',
+    },
+  },
+}));
+
 beforeEach(() => vi.clearAllMocks());
 
 describe('firebase auth — configured path', () => {
   it('verifyIdToken calls auth.verifyIdToken when configured', async () => {
-    vi.mock('../../src/config', () => ({
-      config: {
-        firebase: {
-          projectId: 'test-project',
-          clientEmail: 'test@test.iam.gserviceaccount.com',
-          privateKey: 'test-private-key',
-        },
-      },
-    }));
-
     const decoded = { uid: 'fb-123', email: 'user@test.com' };
     mockVerifyIdToken.mockResolvedValueOnce(decoded);
 

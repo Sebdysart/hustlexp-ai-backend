@@ -38,11 +38,12 @@ export async function startServer(): Promise<void> {
     startLog.info('Database connected');
   } catch (error) {
     startLog.error({ err: error }, 'Database connection failed');
+    throw error;
   }
   await runStartupMigrations(startLog);
   startLog.info({
     environment: config.app.env,
     port: config.app.port,
     endpoints,
-  }, `HustleXP server listening on http://localhost:${config.app.port}`);
+  }, `Startup attestation complete; HTTP listener authorized on port ${config.app.port}`);
 }

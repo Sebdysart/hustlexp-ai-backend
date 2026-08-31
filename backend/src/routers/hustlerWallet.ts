@@ -15,6 +15,7 @@ const PRECONDITION_CODES = new Set([
   'BELOW_MINIMUM',
   'INSUFFICIENT_AVAILABLE_BALANCE',
   'IDEMPOTENCY_CONFLICT',
+  'PAYMENT_CREATION_FROZEN',
 ]);
 
 export const hustlerWalletRouter = router({

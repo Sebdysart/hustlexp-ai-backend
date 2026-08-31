@@ -370,6 +370,26 @@ describe('aiRateLimitMiddleware', () => {
     expect(next).toHaveBeenCalledOnce();
   });
 
+  it('never trusts the in-memory identity when the revocation GET rejects', async () => {
+    const token = 'authority-read-rejection-token';
+    const uid = 'uid-authority-read-rejection';
+    mockFirebaseAuth.verifyIdToken.mockResolvedValue({ uid } as any);
+    mockCheckRateLimit.mockResolvedValue({ allowed: true, remaining: 19 });
+    const middleware = await aiRateLimitMiddleware('openai');
+
+    const first = createMockContext({ headers: { authorization: `Bearer ${token}` } });
+    await middleware(first.ctx as any, vi.fn().mockResolvedValue(undefined));
+
+    mockRedis.get.mockRejectedValueOnce(new Error('redis GET rejected'));
+    const second = createMockContext({ headers: { authorization: `Bearer ${token}` } });
+    const next = vi.fn().mockResolvedValue(undefined);
+    await middleware(second.ctx as any, next);
+
+    expect(mockRedis.get).toHaveBeenCalledWith(`auth:revoked:${uid}`, 'authority');
+    expect(mockFirebaseAuth.verifyIdToken).toHaveBeenCalledTimes(2);
+    expect(next).toHaveBeenCalledOnce();
+  });
+
   it('returns 429 when AI rate limit is exceeded for a verified user', async () => {
     const uid = 'firebase-uid-xyz';
     mockFirebaseAuth.verifyIdToken.mockResolvedValue({ uid } as any);

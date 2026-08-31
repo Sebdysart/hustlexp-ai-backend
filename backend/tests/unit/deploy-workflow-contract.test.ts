@@ -4,27 +4,35 @@ import { describe, expect, it } from 'vitest';
 
 const workflow = readFileSync(resolve(process.cwd(), '.github/workflows/deploy.yml'), 'utf8');
 
-describe('production deploy workflow contract', () => {
-  it('uses the application upload command and the only real Railway environment', () => {
-    expect(workflow).toContain('railway up --ci');
-    expect(workflow).not.toMatch(/railway deploy\b/u);
-    expect(workflow).toContain('RAILWAY_ENVIRONMENT: production');
-    expect(workflow).not.toMatch(/--environment[= ]staging/u);
+describe('production release hold workflow contract', () => {
+  it('contains no Railway mutation or deploy credential', () => {
+    expect(workflow).not.toMatch(/railway\s+(?:up|deploy|variable|service)/iu);
+    expect(workflow).not.toContain('RAILWAY_TOKEN');
+    expect(workflow).not.toMatch(/^\s*environment:\s*production\s*$/mu);
+    expect(workflow).toContain('Production deployment is deliberately unavailable');
   });
 
-  it('deploys web and worker from one exact revision', () => {
-    expect(workflow).toContain('RAILWAY_WEB_SERVICE: hustlexp-ai-backend-staging');
-    expect(workflow).toContain('RAILWAY_WORKER_SERVICE: hustlexp-automation-worker');
-    expect(workflow).toContain('HX_BUILD_REVISION=${GITHUB_SHA}');
-    expect(workflow).toContain('HX_BUILD_SOURCE_CLEAN=true');
-    expect(workflow.match(/railway up --ci/gu)).toHaveLength(2);
+  it('verifies one exact immutable revision without persisting checkout credentials', () => {
+    expect(workflow).toContain('ref: ${{ github.sha }}');
+    expect(workflow).toContain('persist-credentials: false');
+    expect(workflow).not.toContain('HX_BUILD_REVISION: ${{ github.sha }}');
+    expect(workflow).not.toContain("HX_BUILD_SOURCE_CLEAN: 'true'");
+    expect(workflow).toContain('identity.revision !== process.env.GITHUB_SHA');
+    expect(workflow).toContain("identity.source !== 'GITHUB_SHA'");
+    expect(workflow).toContain('isTrustedBuildIdentity(identity)');
+    expect(workflow).toContain('Verify exact candidate excludes bundled local tooling');
+    expect(workflow).toContain('HX_EXACT_CANDIDATE_SHA: ${{ github.sha }}');
+    expect(workflow).toContain('run: node scripts/verify-local-tools-absence.mjs');
+    expect(workflow.indexOf('run: node scripts/verify-local-tools-absence.mjs')).toBeLessThan(
+      workflow.indexOf('- run: npm ci')
+    );
+    expect(workflow).not.toContain('continue-on-error');
   });
 
-  it('fails unless public health and worker state match the release contract', () => {
-    expect(workflow).toContain('.build.revision == $sha');
-    expect(workflow).toContain('.build.clean_source == true');
-    expect(workflow).toContain('.build.service == "hustlexp-engine"');
-    expect(workflow).toContain('railway service status');
-    expect(workflow).toContain('.replicas.running >= 1');
+  it('proves the held artifact cannot create new customer money', () => {
+    expect(workflow).toContain('HX_PAYMENT_CREATION_MODE: frozen');
+    expect(workflow).toContain('newPaymentCreationMode(process.env)');
+    expect(workflow).toContain("!== 'frozen'");
+    expect(workflow).toContain('no Railway credential, command, or deployment job');
   });
 });

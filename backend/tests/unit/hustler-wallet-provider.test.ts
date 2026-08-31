@@ -1,8 +1,12 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 import {
   createStripeWalletProvider,
   mapStripePayoutState,
 } from '../../src/services/HustlerWalletProvider';
+
+beforeEach(() => enableControlledStripePaymentTestCohortV7());
+afterEach(() => vi.unstubAllEnvs());
 
 describe('Stripe Hustler wallet provider', () => {
   it('maps provider status without treating pending or transit as bank paid', () => {
@@ -78,5 +82,17 @@ describe('Stripe Hustler wallet provider', () => {
         connect_account_id: 'acct_1', wallet_request_id: 'req-1', worker_id: 'worker-1',
       }),
     }), { stripeAccount: 'acct_1', idempotencyKey: 'wallet:worker:key' });
+  });
+
+  it('refuses a real provider payout before calling Stripe while money is frozen', async () => {
+    vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'frozen');
+    const create = vi.fn();
+    const provider = createStripeWalletProvider({ payouts: { create } } as never);
+
+    await expect(provider.createStandardPayout({
+      accountId: 'acct_1', amountCents: 5000, destinationId: 'ba_1',
+      idempotencyKey: 'wallet:worker:key', requestId: 'req-1', workerId: 'worker-1',
+    })).rejects.toMatchObject({ code: 'PAYMENT_CREATION_FROZEN' });
+    expect(create).not.toHaveBeenCalled();
   });
 });

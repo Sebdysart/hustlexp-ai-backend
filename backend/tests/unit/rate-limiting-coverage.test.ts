@@ -20,6 +20,8 @@ const orderedPatterns = [
   { pattern: '/trpc/escrow.release*', category: 'financial' },
   { pattern: '/trpc/stripe.*', category: 'financial' },
   { pattern: '/trpc/stripeConnect.*', category: 'financial' },
+  { pattern: '/trpc/finance.*', category: 'financial' },
+  { pattern: '/trpc/syntheticFinance.*', category: 'financial' },
   { pattern: '/trpc/fraud.*', category: 'financial' },
   // Tier 3: AI (20/min)
   { pattern: '/trpc/ai.*', category: 'ai' },
@@ -64,6 +66,8 @@ describe('Rate Limiting Coverage', () => {
       '/trpc/betaDashboard.requestKillSwitchToggle',
       '/trpc/fraud.reportAbuse',
       '/trpc/stripeConnect.createAccount',
+      '/trpc/finance.executeEvent',
+      '/trpc/syntheticFinance.executeEvent',
       '/trpc/biometric.verify',
       '/trpc/disputeAI.judge',
       '/trpc/matchmaker.findMatch',
@@ -103,6 +107,8 @@ describe('Rate Limiting Coverage', () => {
     expect(firstMatch('/trpc/escrow.releaseFunds')).toBe('financial');
     expect(firstMatch('/trpc/stripe.createConnectAccount')).toBe('financial');
     expect(firstMatch('/trpc/stripe.createPaymentIntent')).toBe('financial');
+    expect(firstMatch('/trpc/finance.executeEvent')).toBe('financial');
+    expect(firstMatch('/trpc/syntheticFinance.reconcile')).toBe('financial');
     expect(firstMatch('/trpc/escrow.fund')).toBe('escrow');
     expect(firstMatch('/trpc/escrow.getStatus')).toBe('escrow');
   });

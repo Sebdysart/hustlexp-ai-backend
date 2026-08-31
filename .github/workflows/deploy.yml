@@ -1,88 +1,62 @@
-name: Deploy exact engine revision
+name: Production release hold evidence
 
-# One explicit release transaction for the existing Railway production
-# environment. There is no Railway staging environment; local/CI verification
-# is the pre-production gate. GitHub's production environment owns approval.
+# Production deployment is deliberately unavailable from this repository.
+# This manual workflow proves only that the selected commit is attributable,
+# compiles, and keeps new customer-money creation frozen. A future deployment
+# workflow requires a separately approved exact release manifest, staging
+# acceptance, environment approval, and live Railway autodeploy readback.
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
-  group: hustlexp-engine-production
+  group: hustlexp-engine-production-hold
   cancel-in-progress: false
 
 env:
   NODE_VERSION: '22'
-  RAILWAY_WEB_SERVICE: hustlexp-ai-backend-staging
-  RAILWAY_WORKER_SERVICE: hustlexp-automation-worker
-  RAILWAY_ENVIRONMENT: production
-  PRODUCTION_URL: https://hustlexp-ai-backend-production.up.railway.app
+  HX_PAYMENT_CREATION_MODE: frozen
 
 jobs:
-  verify-exact-revision:
-    name: Verify dispatched revision
+  verify-held-revision:
+    name: Verify exact held revision; no deployment
     runs-on: ubuntu-latest
     steps:
       - name: Checkout dispatched commit
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+      - name: Verify exact candidate excludes bundled local tooling
+        env:
+          HX_EXACT_CANDIDATE_SHA: ${{ github.sha }}
+        run: node scripts/verify-local-tools-absence.mjs
       - run: npm ci
       - run: npm run typecheck
-      - run: npm run verify:build-identity
-      - name: Compile an attributable production artifact
+      - run: npm run lint -- --max-warnings=0
+      - name: Compile an attributable held artifact
         run: npm run compile
         env:
           HX_BUILD_ENVIRONMENT: production
-          HX_BUILD_REVISION: ${{ github.sha }}
-          HX_BUILD_SOURCE_CLEAN: 'true'
-      - name: Verify compiled identity
+      - name: Verify exact build and production money freeze
         run: |
-          node -e "const i=require('./dist/hx-build-identity.json'); if(i.revision!==process.env.GITHUB_SHA||i.clean_source!==true||i.service!=='hustlexp-engine') process.exit(1)"
-
-  deploy-production:
-    name: Deploy web and worker to Railway production
-    needs: verify-exact-revision
-    runs-on: ubuntu-latest
-    environment: production
-    steps:
-      - name: Checkout the verified commit
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-      - name: Install pinned Railway CLI
-        run: npm install --global @railway/cli@4.66.0
-      - name: Create release identity
-        run: echo "HX_RELEASE_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
-      - name: Stage identical provenance for web and worker
-        run: |
-          railway variable set "HX_BUILD_REVISION=${GITHUB_SHA}" HX_BUILD_SOURCE_CLEAN=true "HX_BUILD_TIMESTAMP=${HX_RELEASE_TIMESTAMP}" --service "$RAILWAY_WEB_SERVICE" --environment "$RAILWAY_ENVIRONMENT" --skip-deploys
-          railway variable set "HX_BUILD_REVISION=${GITHUB_SHA}" HX_BUILD_SOURCE_CLEAN=true "HX_BUILD_TIMESTAMP=${HX_RELEASE_TIMESTAMP}" --service "$RAILWAY_WORKER_SERVICE" --environment "$RAILWAY_ENVIRONMENT" --skip-deploys
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-      - name: Deploy web from the verified checkout
-        run: railway up --ci --service "$RAILWAY_WEB_SERVICE" --environment "$RAILWAY_ENVIRONMENT" --message "engine ${GITHUB_SHA}"
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-      - name: Deploy worker from the verified checkout
-        run: railway up --ci --service "$RAILWAY_WORKER_SERVICE" --environment "$RAILWAY_ENVIRONMENT" --message "worker ${GITHUB_SHA}"
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-      - name: Require exact public engine identity
-        run: |
-          for attempt in 1 2 3 4 5 6 7 8 9 10; do
-            payload="$(curl -fsS --connect-timeout 5 --max-time 15 "$PRODUCTION_URL/health" || true)"
-            if jq -e --arg sha "$GITHUB_SHA" '.status == "healthy" and .build.revision == $sha and .build.clean_source == true and .build.service == "hustlexp-engine"' <<<"$payload" >/dev/null; then
-              exit 0
-            fi
-            sleep 10
-          done
-          echo "Production health never reported the dispatched revision"
-          exit 1
-      - name: Require successful worker deployment
-        run: railway service status --service "$RAILWAY_WORKER_SERVICE" --environment "$RAILWAY_ENVIRONMENT" --json | jq -e '.status == "SUCCESS" and .replicas.running >= 1'
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          node --input-type=module <<'NODE'
+          import { isTrustedBuildIdentity, readBuildIdentity } from './dist/backend/src/buildIdentity.js';
+          import { newPaymentCreationMode } from './dist/backend/src/services/NewPaymentCreationGuard.js';
+          const identity = readBuildIdentity();
+          if (identity.revision !== process.env.GITHUB_SHA) throw new Error('revision mismatch');
+          if (identity.source !== 'GITHUB_SHA') throw new Error('revision did not come from GitHub runner provenance');
+          if (!isTrustedBuildIdentity(identity)) throw new Error('compiled artifact measurement is not trusted');
+          if (identity.service !== 'hustlexp-engine') throw new Error('service mismatch');
+          if (newPaymentCreationMode(process.env) !== 'frozen') throw new Error('money creation is not frozen');
+          NODE
+      - name: Record the deliberate production hold
+        run: >-
+          echo "Production deployment remains held for ${GITHUB_SHA};
+          this workflow has no Railway credential, command, or deployment job."

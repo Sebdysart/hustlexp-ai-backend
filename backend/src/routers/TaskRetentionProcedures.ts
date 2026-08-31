@@ -1,6 +1,7 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { CompletionRetentionService } from '../services/CompletionRetentionService.js';
+import { LEGACY_TASK_MATERIALIZATION_FROZEN_CODE } from '../services/LegacyTaskMaterializationGuard.js';
 import { posterProcedure, Schemas } from '../trpc.js';
 
 function errorCode(code: string): 'NOT_FOUND' | 'FORBIDDEN' | 'PRECONDITION_FAILED' | 'CONFLICT' | 'INTERNAL_SERVER_ERROR' {
@@ -26,7 +27,13 @@ export const TaskRetentionProcedures = {
         scheduledFor: input.scheduledFor ? new Date(input.scheduledFor) : undefined,
       });
       if (!result.success) {
-        throw new TRPCError({ code: errorCode(result.error.code), message: result.error.message });
+        throw new TRPCError({
+          code: errorCode(result.error.code),
+          message: result.error.message,
+          ...(result.error.code === LEGACY_TASK_MATERIALIZATION_FROZEN_CODE
+            ? { cause: { applicationCode: result.error.code } }
+            : {}),
+        });
       }
       return result.data;
     }),

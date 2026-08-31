@@ -1,6 +1,7 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { Schemas } from '../trpc.js';
+import { LEGACY_TASK_MATERIALIZATION_FROZEN_CODE } from '../services/LegacyTaskMaterializationGuard.js';
 
 const hhmm = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -84,7 +85,13 @@ export function controlledResult<T>(
   const code = error.code === 'NOT_FOUND'
     ? 'NOT_FOUND'
     : error.code.includes('FAILED') ? 'INTERNAL_SERVER_ERROR' : 'PRECONDITION_FAILED';
-  throw new TRPCError({ code, message: error.message });
+  throw new TRPCError({
+    code,
+    message: error.message,
+    ...(error.code === LEGACY_TASK_MATERIALIZATION_FROZEN_CODE
+      ? { cause: { applicationCode: error.code } }
+      : {}),
+  });
 }
 
 export interface SeriesRow {

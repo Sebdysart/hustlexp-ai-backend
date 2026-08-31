@@ -54,6 +54,7 @@ export interface WalletProviderPayoutResult {
 }
 
 export interface WalletProvider {
+  readonly providerKind: 'FAKE' | 'APPROVED_PROVIDER';
   isConfigured(): boolean;
   getSnapshot(accountId: string): Promise<WalletProviderSnapshot>;
   createStandardPayout(input: {

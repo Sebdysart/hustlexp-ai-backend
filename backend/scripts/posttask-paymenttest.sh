@@ -2,6 +2,9 @@
 
 set -euo pipefail
 
+echo "LEGACY_NON_EXECUTABLE: pay-first quote creation/finalization is tombstoned; use the Universal V1 fake-finance lifecycle." >&2
+exit 78
+
 BASE_URL="http://localhost:5000"
 AUTH_TOKEN="JWT BEARER TOKEN HERE"
 

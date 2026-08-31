@@ -61,8 +61,9 @@ export function registerActionLinkRoutes(app: HustleApp): void {
     const body = await context.req.json().catch(() => ({})) as {
       token?: string;
       action?: string;
+      note?: string;
     };
-    const result = await handleActionLinkPost(body.token ?? '', body.action ?? '');
+    const result = await handleActionLinkPost(body.token ?? '', body.action ?? '', body.note);
     if (!result.ok && result.code === 'expired') return context.json(result, 410);
     return context.json(result, result.ok ? 200 : 400);
   });

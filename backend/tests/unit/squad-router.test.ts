@@ -588,6 +588,27 @@ describe('squad.createTeamTask — creation via TaskService + compensation', () 
     expect(mockTaskService.cancel).toHaveBeenCalledWith('task-from-service', 'organizer-1');
   });
 
+  it('maps the legacy task-materialization freeze to PRECONDITION_FAILED', async () => {
+    dbMocks.query.mockResolvedValueOnce({
+      rows: [{ id: TEAM_TASK_INPUT.squadId }],
+      rowCount: 1,
+    } as any);
+    mockTaskService.create.mockResolvedValueOnce({
+      success: false,
+      error: {
+        code: 'LEGACY_TASK_MATERIALIZATION_FROZEN',
+        message: 'Legacy task creation is frozen.',
+      },
+    } as any);
+
+    await expect(makePosterCaller().createTeamTask(TEAM_TASK_INPUT)).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: 'Could not create squad task: Legacy task creation is frozen.',
+      cause: { applicationCode: 'LEGACY_TASK_MATERIALIZATION_FROZEN' },
+    });
+    expect(dbMocks.transaction).not.toHaveBeenCalled();
+  });
+
   it('does not create any task when the caller is not the squad organizer', async () => {
     dbMocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // organizer check fails
 

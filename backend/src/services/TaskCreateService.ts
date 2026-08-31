@@ -7,6 +7,10 @@ import type { ServiceError, ServiceResult, Task } from '../types.js';
 import { ErrorCodes } from '../types.js';
 import { PlanService } from './PlanService.js';
 import {
+  legacyTaskMaterializationFailure,
+  type LegacyTaskMaterializationLane,
+} from './LegacyTaskMaterializationGuard.js';
+import {
   evaluateTaskAgainstRegionPolicy,
   resolveRegionPolicy,
   type RegionPolicyTaskSnapshot,
@@ -46,6 +50,11 @@ class CreateFailure extends Error {
 
 function fail(code: string, message: string, details?: Record<string, unknown>): never {
   throw new CreateFailure({ code, message, details });
+}
+
+function assertLegacyMaterializationPermitted(lane: LegacyTaskMaterializationLane): void {
+  const frozen = legacyTaskMaterializationFailure(lane);
+  if (frozen) throw new CreateFailure(frozen.error);
 }
 
 function validateDispatchExpiry(params: CreateTaskParams): void {
@@ -238,9 +247,6 @@ async function existingOutcome(
   requestHash: string | null
 ): Promise<Exclude<CreateOutcome, { kind: 'created' }> | null> {
   if (!params.clientIdempotencyKey || !requestHash) return null;
-  await query(`SELECT pg_advisory_xact_lock(hashtext('task-create'), hashtext($1))`, [
-    `${params.posterId}:${params.clientIdempotencyKey}`,
-  ]);
   const result = await query<Task & { request_hash: string }>(
     `SELECT t.*, r.request_hash FROM task_create_requests r JOIN tasks t ON t.id = r.task_id
      WHERE r.poster_id = $1 AND r.idempotency_key = $2`,
@@ -252,6 +258,18 @@ async function existingOutcome(
   const { request_hash: _hash, ...task } = row;
   void _hash;
   return { kind: 'replay', task };
+}
+
+async function lockedExistingOutcome(
+  query: Query,
+  params: CreateTaskParams,
+  requestHash: string | null,
+): Promise<Exclude<CreateOutcome, { kind: 'created' }> | null> {
+  if (!params.clientIdempotencyKey || !requestHash) return null;
+  await query(`SELECT pg_advisory_xact_lock(hashtext('task-create'), hashtext($1))`, [
+    `${params.posterId}:${params.clientIdempotencyKey}`,
+  ]);
+  return existingOutcome(query, params, requestHash);
 }
 
 type InitialScope = TaskInitialScope;
@@ -287,8 +305,9 @@ async function persistTask(
 ): Promise<CreateOutcome> {
   const requestHash = params.clientIdempotencyKey ? buildTaskCreateRequestHash(params) : null;
   return db.transaction(async (query) => {
-    const prior = await existingOutcome(query, params, requestHash);
+    const prior = await lockedExistingOutcome(query, params, requestHash);
     if (prior) return prior;
+    assertLegacyMaterializationPermitted('task_create');
     const scope = initialScope(params, money.price);
     const task = await insertCanonicalTask(query, { params, money, instantMode, scope, regionPolicy });
     await insertTaskDependents(query, {
@@ -428,6 +447,9 @@ function errorResult(error: unknown): ServiceResult<Task> {
 
 async function create(params: CreateTaskParams): Promise<ServiceResult<Task>> {
   try {
+    const requestHash = params.clientIdempotencyKey ? buildTaskCreateRequestHash(params) : null;
+    const prior = await existingOutcome(db.query, params, requestHash);
+    if (prior) return materializeOutcome(prior, params.posterId);
     const prepared = materializeTemplatePolicy(params);
     validateDispatchExpiry(prepared.params);
     validateQuoteEconomics(prepared.params);
@@ -448,11 +470,20 @@ async function create(params: CreateTaskParams): Promise<ServiceResult<Task>> {
 async function createInTransaction(
   query: TaskCreateQuery,
   params: CreateTaskParams,
-): Promise<ServiceResult<Task> & {
-  replayed?: boolean;
-}> {
+): Promise<ServiceResult<Task>> {
   let savepointOpen = false;
   try {
+    await query('SAVEPOINT hustlexp_task_create');
+    savepointOpen = true;
+    const preflightRequestHash = params.clientIdempotencyKey
+      ? buildTaskCreateRequestHash(params)
+      : null;
+    const preflight = await existingOutcome(query, params, preflightRequestHash);
+    if (preflight) {
+      await query('RELEASE SAVEPOINT hustlexp_task_create');
+      savepointOpen = false;
+      return materializeOutcome(preflight, params.posterId);
+    }
     const prepared = materializeTemplatePolicy(params);
     validateDispatchExpiry(prepared.params);
     validateQuoteEconomics(prepared.params);
@@ -463,20 +494,14 @@ async function createInTransaction(
     await assertPosterTrustHold(prepared.params, query);
     const regionPolicy = await resolveTaskRegionPolicy(prepared.params, money.price, prepared.policy);
     await assertPlan(prepared.params);
-    await query('SAVEPOINT hustlexp_task_create');
-    savepointOpen = true;
     const requestHash = prepared.params.clientIdempotencyKey ? buildTaskCreateRequestHash(prepared.params) : null;
-    const prior = await existingOutcome(query, prepared.params, requestHash);
+    const prior = await lockedExistingOutcome(query, prepared.params, requestHash);
     if (prior) {
       await query('RELEASE SAVEPOINT hustlexp_task_create');
       savepointOpen = false;
-
-      const result = materializeOutcome(prior, prepared.params.posterId);
-
-      return result.success
-        ? { ...result, replayed: prior.kind === 'replay' }
-        : result;
+      return materializeOutcome(prior, prepared.params.posterId);
     }
+    assertLegacyMaterializationPermitted('task_create_in_transaction');
     const scope = initialScope(prepared.params, money.price);
     const task = await insertCanonicalTask(query, {
       params: prepared.params, money, instantMode: false, scope, regionPolicy,
@@ -486,7 +511,7 @@ async function createInTransaction(
     });
     await query('RELEASE SAVEPOINT hustlexp_task_create');
     savepointOpen = false;
-    return { success: true, data: task, replayed: false };
+    return { success: true, data: task };
   } catch (error) {
     if (savepointOpen) {
       try {

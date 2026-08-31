@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { QueryFn } from '../db.js';
 import { localCertificationPayoutEnabled } from './LocalCertificationPayoutProvider.js';
+import { hardAssignmentFailure } from './HardAssignmentGuard.js';
 import {
   reservationError,
   type ReservationError,
@@ -262,6 +263,12 @@ export async function commitReservation(
   requestHash: string,
 ): Promise<ReservationSuccess | ReservationError> {
   const business = params.serviceBusiness;
+  const frozen = hardAssignmentFailure(
+    business ? 'service_business_assignment' : 'engine_reservation',
+  );
+  if (frozen) {
+    return reservationError(frozen.error.code, frozen.error.message, frozen.error.details);
+  }
   if (business) {
     const assignment = await query<{ assignment_id: string; fulfiller_user_id: string }>(
       `SELECT assignment_id,fulfiller_user_id,payout_recipient_user_id

@@ -1,6 +1,8 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { Context } from 'hono';
 import { logger } from './logger.js';
+import { completionDeliveryWebhook } from './serverCompletionDeliveryWebhook.js';
+import { syntheticFinancialWebhook } from './serverSyntheticFinancialWebhook.js';
 import type { HustleApp } from './serverTypes.js';
 
 type CheckrPayload = {
@@ -38,11 +40,14 @@ async function stripeWebhook(context: Context) {
     }
     return context.json({ error: 'Webhook processing failed' }, 500);
   }
-  return context.json({
-    received: true,
-    eventId: result.stripeEventId,
-    stored: result.stripeEventId !== undefined,
-  }, 200);
+  return context.json(
+    {
+      received: true,
+      eventId: result.stripeEventId,
+      stored: result.stripeEventId !== undefined,
+    },
+    200
+  );
 }
 
 async function verifiedCheckrPayload(context: Context): Promise<CheckrPayload | Response> {
@@ -51,7 +56,7 @@ async function verifiedCheckrPayload(context: Context): Promise<CheckrPayload | 
     logger.warn('CHECKR_WEBHOOK_SECRET is not configured — rejecting Checkr webhook');
     return context.json(
       { error: 'Service Unavailable', message: 'Webhook secret not configured' },
-      503,
+      503
     );
   }
   const rawBody = await context.req.text().catch(() => null);
@@ -81,7 +86,10 @@ async function processCheckrPayload(context: Context, payload: CheckrPayload) {
   if (!status) return context.json({ received: true, processed: true }, 200);
   const reportId = payload.data?.object?.id;
   if (!reportId) {
-    logger.warn({ type: payload.type }, 'Checkr webhook missing report ID — skipping status update');
+    logger.warn(
+      { type: payload.type },
+      'Checkr webhook missing report ID — skipping status update'
+    );
     return context.json({ received: true, processed: false, reason: 'missing report id' }, 200);
   }
   const { updateBackgroundCheckStatus } = await import('./services/BackgroundCheckService.js');
@@ -97,7 +105,7 @@ async function checkrWebhook(context: Context) {
   } catch (error) {
     logger.error(
       { error: error instanceof Error ? error.message : String(error) },
-      'Checkr webhook processing failed',
+      'Checkr webhook processing failed'
     );
     return context.json({ error: 'Webhook processing failed' }, 500);
   }
@@ -106,4 +114,6 @@ async function checkrWebhook(context: Context) {
 export function registerWebhookRoutes(app: HustleApp): void {
   app.post('/webhooks/stripe', stripeWebhook);
   app.post('/webhooks/checkr', checkrWebhook);
+  app.post('/webhooks/fake-financial', syntheticFinancialWebhook);
+  app.post('/webhooks/completion-delivery', completionDeliveryWebhook);
 }

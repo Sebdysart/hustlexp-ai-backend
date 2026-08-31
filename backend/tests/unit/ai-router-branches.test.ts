@@ -30,6 +30,12 @@ const {
   mockCheckUserBudget,
   mockTrackUserCost,
   mockTrackGlobalCost,
+  mockCheckAgentBudget,
+  mockReserveSpend,
+  mockSettleSpend,
+  mockMarkUnknown,
+  mockReleaseSpend,
+  mockFailOperation,
   mockGroqCreate,
   mockOpenAICreate,
 } = vi.hoisted(() => ({
@@ -41,6 +47,12 @@ const {
   mockCheckUserBudget:   vi.fn(),
   mockTrackUserCost:     vi.fn(),
   mockTrackGlobalCost:   vi.fn(),
+  mockCheckAgentBudget:  vi.fn(),
+  mockReserveSpend:      vi.fn(),
+  mockSettleSpend:       vi.fn(),
+  mockMarkUnknown:       vi.fn(),
+  mockReleaseSpend:      vi.fn(),
+  mockFailOperation:     vi.fn(),
   mockGroqCreate:        vi.fn(),
   mockOpenAICreate:      vi.fn(),
 }));
@@ -54,6 +66,14 @@ vi.mock('@upstash/redis', () => ({
     get    = mockGet;
     incrby = mockIncrby;
     expire = mockExpire;
+    multi = () => {
+      const chain = {
+        incrby: (key: string, value: number) => { mockIncrby(key, value); return chain; },
+        expire: (key: string, seconds: number) => { mockExpire(key, seconds); return chain; },
+        exec: vi.fn().mockResolvedValue([1, 1]),
+      };
+      return chain;
+    };
     constructor(_opts: unknown) {}
   },
 }));
@@ -79,11 +99,23 @@ vi.mock('../../src/ai/UserAIBudget', () => ({
   checkUserBudget:   mockCheckUserBudget,
   trackUserCost:     mockTrackUserCost,
   trackGlobalCost:   mockTrackGlobalCost,
+  checkAgentBudget: mockCheckAgentBudget,
+  failAIOperation: mockFailOperation,
+}));
+vi.mock('../../src/ai/AISpendAttemptLedger', () => ({
+  reserveAIProviderAttempt: mockReserveSpend,
+  settleAIProviderAttempt: mockSettleSpend,
+  markAIProviderAttemptUnknown: mockMarkUnknown,
+  releaseAIProviderAttempt: mockReleaseSpend,
+}));
+vi.mock('../../src/ai/ExternalAIProviderAuthority', () => ({
+  assertExternalAIProviderIOAuthorized: vi.fn(),
 }));
 
 // AUDIT FIX H6: AIRouter now imports circuit breakers (module chain pulls in
 // logger → real config). Pass-through mock keeps this suite hermetic.
 vi.mock('../../src/middleware/circuit-breaker', () => ({
+  CircuitOpenError: class CircuitOpenError extends Error {},
   openaiBreaker: { execute: (fn: () => unknown) => fn() },
   groqBreaker: { execute: (fn: () => unknown) => fn() },
   deepseekBreaker: { execute: (fn: () => unknown) => fn() },
@@ -108,7 +140,15 @@ vi.mock('openai', () => ({
 // System-under-test (import AFTER mocks are registered)
 // ---------------------------------------------------------------------------
 
-import { callAI, getBudgetStatus, getCostDashboard, checkCostAlerts } from '../../src/ai/AIRouter';
+import { callAI as callAIRaw, getBudgetStatus, getCostDashboard, checkCostAlerts } from '../../src/ai/AIRouter';
+
+let operationSequence = 0;
+const callAI = (agent: string, userId: string, prompt: string) => callAIRaw(
+  agent,
+  userId,
+  prompt,
+  { operationId: `unit-branches-${++operationSequence}` },
+);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -136,12 +176,22 @@ function makeOpenAIResponse(text = 'openai response', tokens = 150) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  operationSequence = 0;
 
   // Budgets pass by default
   mockCheckGlobalBudget.mockResolvedValue({ allowed: true, spent: 0, limit: 50000 });
   mockCheckUserBudget.mockResolvedValue({ allowed: true, spent: 0, limit: 500 });
   mockTrackUserCost.mockResolvedValue(undefined);
   mockTrackGlobalCost.mockResolvedValue(undefined);
+  mockCheckAgentBudget.mockImplementation(async (_agent: string, _userId: string, limit: number) => {
+    const spent = Number(await mockGet() ?? 0);
+    return { allowed: spent < limit, spent, limit };
+  });
+  mockReserveSpend.mockResolvedValue({ status: 'reserved', reservedCents: 4 });
+  mockSettleSpend.mockResolvedValue(undefined);
+  mockMarkUnknown.mockResolvedValue(undefined);
+  mockReleaseSpend.mockResolvedValue(undefined);
+  mockFailOperation.mockResolvedValue(undefined);
 
   // Agent-level Redis budget: 0 spent (no budget exceeded)
   mockGet.mockResolvedValue(null);
@@ -162,15 +212,14 @@ beforeEach(() => {
 // ===========================================================================
 
 describe('callAI — Redis fail-closed (checkBudget catch branch)', () => {
-  it('blocks the call (TRPCError) when Redis.get throws during agent budget check', async () => {
-    // Redis.get rejects → checkBudget() catch block → returns { allowed: false }
-    // This is fail-CLOSED behavior: Redis outage must not silently allow unlimited AI spend.
-    mockGet.mockRejectedValue(new Error('Redis connection refused'));
+  it('blocks the call before provider I/O when reservation throws', async () => {
+    mockReserveSpend.mockRejectedValue(new Error('Redis connection refused'));
 
     await expect(callAI('judge', USER_ID, 'test prompt')).rejects.toMatchObject({
-      code: 'TOO_MANY_REQUESTS',
-      message: expect.stringContaining('HX701'),
+      code: 'INTERNAL_SERVER_ERROR',
+      message: expect.stringContaining('HX705'),
     });
+    expect(mockGroqCreate).not.toHaveBeenCalled();
   });
 });
 
@@ -198,11 +247,11 @@ describe('callAI — happy path', () => {
 
     expect(result.provider).toBe('openai');
     expect(result.text).toBe('openai fallback text');
-    expect(result.attempts).toBe(2);
+    expect(result.attempts).toBe(3);
   });
 
   it('throws HX703 when global budget is exceeded', async () => {
-    mockCheckGlobalBudget.mockResolvedValue({ allowed: false, spent: 50000, limit: 50000 });
+    mockReserveSpend.mockResolvedValue({ status: 'limit', scope: 'global', spent: 50000, limit: 50000 });
 
     await expect(callAI('judge', USER_ID, 'test')).rejects.toMatchObject({
       code: 'TOO_MANY_REQUESTS',
@@ -211,7 +260,7 @@ describe('callAI — happy path', () => {
   });
 
   it('throws HX704 when per-user budget is exceeded', async () => {
-    mockCheckUserBudget.mockResolvedValue({ allowed: false, spent: 500, limit: 500 });
+    mockReserveSpend.mockResolvedValue({ status: 'limit', scope: 'user', spent: 500, limit: 500 });
 
     await expect(callAI('judge', USER_ID, 'test')).rejects.toMatchObject({
       code: 'TOO_MANY_REQUESTS',
@@ -220,8 +269,7 @@ describe('callAI — happy path', () => {
   });
 
   it('throws HX701 when per-agent daily budget (Redis) is exceeded', async () => {
-    // reputation: dailyBudgetPerUser = 5; Redis returns 10 → spent > limit
-    mockGet.mockResolvedValue(10);
+    mockReserveSpend.mockResolvedValue({ status: 'limit', scope: 'agent', spent: 5, limit: 5 });
 
     await expect(callAI('reputation', USER_ID, 'test')).rejects.toMatchObject({
       code: 'TOO_MANY_REQUESTS',
@@ -253,7 +301,7 @@ describe('callAI — happy path', () => {
 
 describe('getBudgetStatus', () => {
   it('returns remaining=0 when spent exceeds limit (overspent clamp)', async () => {
-    mockGet.mockResolvedValue(200); // spent=200, judge limit=50
+    mockGet.mockResolvedValue('200'); // raw Redis string: spent=200, judge limit=50
 
     const status = await getBudgetStatus('judge', USER_ID);
 
@@ -263,7 +311,7 @@ describe('getBudgetStatus', () => {
   });
 
   it('returns positive remaining when under budget', async () => {
-    mockGet.mockResolvedValue(20); // spent=20, judge limit=50
+    mockGet.mockResolvedValue('20'); // raw Redis string: spent=20, judge limit=50
 
     const status = await getBudgetStatus('judge', USER_ID);
 
@@ -273,7 +321,7 @@ describe('getBudgetStatus', () => {
   });
 
   it('uses default config for unknown agent', async () => {
-    mockGet.mockResolvedValue(0);
+    mockGet.mockResolvedValue('0');
 
     const status = await getBudgetStatus('unknown_agent_xyz', USER_ID);
 
@@ -281,7 +329,7 @@ describe('getBudgetStatus', () => {
   });
 
   it('returns resetAt as tomorrow ISO timestamp', async () => {
-    mockGet.mockResolvedValue(0);
+    mockGet.mockResolvedValue('0');
 
     const status = await getBudgetStatus('judge', USER_ID);
 

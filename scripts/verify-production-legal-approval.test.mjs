@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import {
   EXPECTED_CATEGORIES,
   auditProductionLegalApproval,
@@ -187,9 +188,9 @@ test('local artifact hashes are recomputed and path traversal is rejected', asyn
   valid.controlled_artifacts[0].sha256 = HEX_A;
   let reads = 0;
   const expectedPaths = new Set([
-    '/repo/backend/database/migrations/20260718_region_policy_contract.sql',
-    '/repo/backend/database/migrations/20260720_region_policy_price_book_alignment.sql',
-    '/repo/backend/src/services/RegionPolicyService.ts',
+    resolve('/repo', 'backend/database/migrations/20260718_region_policy_contract.sql'),
+    resolve('/repo', 'backend/database/migrations/20260720_region_policy_price_book_alignment.sql'),
+    resolve('/repo', 'backend/src/services/RegionPolicyService.ts'),
   ]);
   const healthy = await auditProductionLegalApproval({
     packet: valid,

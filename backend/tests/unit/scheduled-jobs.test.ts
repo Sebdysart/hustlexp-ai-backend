@@ -7,17 +7,20 @@
  * @see backend/src/jobs/workers.ts (registerScheduledJobs)
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ── Track all Queue.add calls ───────────────────────────────────────────────
-const queueAddCalls: Array<{ queueName: string; jobName: string; data: unknown; opts: unknown }> = [];
+const queueAddCalls: Array<{ queueName: string; jobName: string; data: unknown; opts: unknown }> =
+  [];
 
 vi.mock('../../src/jobs/queues', () => {
   return {
-    enqueueRepeatableJob: vi.fn(async (queueName: string, jobName: string, data: unknown, pattern: string) => {
-      queueAddCalls.push({ queueName, jobName, data, opts: { repeat: { pattern } } });
-      return { id: `mock-job-${queueName}-${jobName}` };
-    }),
+    enqueueRepeatableJob: vi.fn(
+      async (queueName: string, jobName: string, data: unknown, pattern: string) => {
+        queueAddCalls.push({ queueName, jobName, data, opts: { repeat: { pattern } } });
+        return { id: `mock-job-${queueName}-${jobName}` };
+      }
+    ),
     createWorker: vi.fn(() => ({
       name: 'mock-worker',
       close: vi.fn(),
@@ -29,6 +32,78 @@ vi.mock('../../src/jobs/queues', () => {
 
 vi.mock('../../src/jobs/outbox-worker', () => ({
   startOutboxWorker: vi.fn(),
+}));
+
+vi.mock('../../src/lib/redis-runtime-shutdown', () => ({
+  closeRedisRuntime: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('../../src/serverStartupMigrations', () => ({
+  runStartupMigrations: vi.fn().mockResolvedValue(undefined),
+}));
+
+// startWorkers also owns the fail-closed nonproduction recovery runtimes. This
+// suite tests only scheduler activation, so keep those imported boundaries
+// synthetic and pin HX_ENVIRONMENT below to the non-deployed test posture.
+vi.mock('../../src/jobs/provider-event-replay-worker', () => ({
+  startProviderEventReplayWorker: vi.fn(),
+}));
+
+vi.mock('../../src/jobs/financial-provider-command-recovery-worker', () => ({
+  ExactFakeFinancialCommandRecoveryExecutor: class {},
+  NonproductionFakeFinancialCommandRecoveryWorker: class {},
+  startNonproductionFakeFinancialCommandRecoveryPoller: vi.fn(),
+}));
+
+vi.mock('../../src/jobs/universal-v1-work-order-compensation-worker', () => ({
+  PostgresUniversalV1WorkOrderCompensationRepository: class {},
+  UniversalV1WorkOrderCompensationWorker: class {},
+  startUniversalV1WorkOrderCompensationPoller: vi.fn(),
+}));
+
+vi.mock('../../src/jobs/universal-v1-change-order-recovery-worker', () => ({
+  UniversalV1ChangeOrderRecoveryWorker: class {},
+  startUniversalV1ChangeOrderRecoveryPoller: vi.fn(),
+}));
+
+vi.mock('../../src/services/UniversalV1ChangeOrderRecovery', () => ({
+  PostgresUniversalV1ChangeOrderRecoveryRepository: class {},
+  UniversalV1ChangeOrderRecoveryService: class {},
+}));
+
+vi.mock('../../src/services/UniversalV1ChangeOrderPostgresRepository', () => ({
+  PostgresUniversalV1ChangeOrderRepository: class {},
+}));
+
+vi.mock('../../src/services/payment/UniversalV1FinancialApplicationService', () => ({
+  createUniversalV1FakeFinancialApplicationService: vi.fn(),
+}));
+
+vi.mock('../../src/services/payment/FakeFinancialProvider', () => ({
+  PostgresFakeFinancialOperationRepository: class {},
+}));
+
+vi.mock('../../src/services/payment/FinancialProviderCommandRecovery', () => ({
+  PostgresFinancialProviderCommandRecoveryRepository: class {},
+}));
+
+vi.mock('../../src/services/payment/NonproductionFinancialAuthorization', () => ({
+  assertNonproductionFakeFinanceAuthorized: vi.fn(),
+}));
+
+vi.mock('../../src/services/payment/NonproductionFinancialBootstrapReadiness', () => ({
+  readNonproductionFinancialBootstrapReadiness: vi.fn().mockResolvedValue({
+    ready: true,
+    status: 'ready',
+  }),
+}));
+
+vi.mock('../../src/buildIdentity', () => ({
+  buildIdentity: { revision: 'scheduled-jobs-unit-test' },
+}));
+
+vi.mock('../../src/releaseManifest', () => ({
+  readReleaseManifest: vi.fn(() => ({ status: 'valid' })),
 }));
 
 vi.mock('../../src/jobs/export-worker', () => ({
@@ -91,8 +166,13 @@ vi.mock('../../src/services/NotificationService', () => ({
 
 describe('Scheduled Jobs Registration', () => {
   beforeEach(() => {
+    vi.stubEnv('HX_ENVIRONMENT', 'test');
     vi.clearAllMocks();
     queueAddCalls.length = 0;
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it('startWorkers registers scheduled jobs', async () => {
@@ -108,11 +188,13 @@ describe('Scheduled Jobs Registration', () => {
     await startWorkers();
 
     const recoverJob = queueAddCalls.find(
-      c => c.queueName === 'maintenance' && c.jobName === 'recover_stuck_stripe_events'
+      (c) => c.queueName === 'maintenance' && c.jobName === 'recover_stuck_stripe_events'
     );
     expect(recoverJob).toBeDefined();
     expect((recoverJob!.opts as Record<string, unknown>).repeat).toBeDefined();
-    expect(((recoverJob!.opts as Record<string, Record<string, string>>).repeat).pattern).toBe('*/10 * * * *');
+    expect((recoverJob!.opts as Record<string, Record<string, string>>).repeat.pattern).toBe(
+      '*/10 * * * *'
+    );
     expect((recoverJob!.data as Record<string, unknown>).timeoutMinutes).toBe(10);
   });
 
@@ -121,10 +203,12 @@ describe('Scheduled Jobs Registration', () => {
     await startWorkers();
 
     const expiryJob = queueAddCalls.find(
-      c => c.queueName === 'maintenance' && c.jobName === 'dispatch.expire_unfilled'
+      (c) => c.queueName === 'maintenance' && c.jobName === 'dispatch.expire_unfilled'
     );
     expect(expiryJob).toBeDefined();
-    expect(((expiryJob!.opts as Record<string, Record<string, string>>).repeat).pattern).toBe('* * * * *');
+    expect((expiryJob!.opts as Record<string, Record<string, string>>).repeat.pattern).toBe(
+      '* * * * *'
+    );
     expect((expiryJob!.data as Record<string, unknown>).limit).toBe(100);
   });
 
@@ -133,10 +217,12 @@ describe('Scheduled Jobs Registration', () => {
     await startWorkers();
 
     const expiryJob = queueAddCalls.find(
-      c => c.queueName === 'maintenance' && c.jobName === 'media.expire_uploads'
+      (c) => c.queueName === 'maintenance' && c.jobName === 'media.expire_uploads'
     );
     expect(expiryJob).toBeDefined();
-    expect(((expiryJob!.opts as Record<string, Record<string, string>>).repeat).pattern).toBe('* * * * *');
+    expect((expiryJob!.opts as Record<string, Record<string, string>>).repeat.pattern).toBe(
+      '* * * * *'
+    );
     expect((expiryJob!.data as Record<string, unknown>).limit).toBe(100);
   });
 
@@ -145,10 +231,12 @@ describe('Scheduled Jobs Registration', () => {
     await startWorkers();
 
     const escalationJob = queueAddCalls.find(
-      c => c.queueName === 'maintenance' && c.jobName === 'safety.escalate_overdue_checkins'
+      (c) => c.queueName === 'maintenance' && c.jobName === 'safety.escalate_overdue_checkins'
     );
     expect(escalationJob).toBeDefined();
-    expect(((escalationJob!.opts as Record<string, Record<string, string>>).repeat).pattern).toBe('* * * * *');
+    expect((escalationJob!.opts as Record<string, Record<string, string>>).repeat.pattern).toBe(
+      '* * * * *'
+    );
     expect((escalationJob!.data as Record<string, unknown>).limit).toBe(100);
   });
 
@@ -157,9 +245,11 @@ describe('Scheduled Jobs Registration', () => {
     await startWorkers();
 
     for (const jobName of ['recurring.generate_due', 'recurring.advance_reservations']) {
-      const job = queueAddCalls.find(c => c.queueName === 'maintenance' && c.jobName === jobName);
+      const job = queueAddCalls.find((c) => c.queueName === 'maintenance' && c.jobName === jobName);
       expect(job).toBeDefined();
-      expect(((job!.opts as Record<string, Record<string, string>>).repeat).pattern).toBe('* * * * *');
+      expect((job!.opts as Record<string, Record<string, string>>).repeat.pattern).toBe(
+        '* * * * *'
+      );
       expect((job!.data as Record<string, unknown>).limit).toBe(100);
     }
   });
@@ -169,10 +259,10 @@ describe('Scheduled Jobs Registration', () => {
     await startWorkers();
 
     const job = queueAddCalls.find(
-      call => call.queueName === 'maintenance' && call.jobName === 'completion.complete_due'
+      (call) => call.queueName === 'maintenance' && call.jobName === 'completion.complete_due'
     );
     expect(job).toBeDefined();
-    expect(((job!.opts as Record<string, Record<string, string>>).repeat).pattern).toBe('* * * * *');
+    expect((job!.opts as Record<string, Record<string, string>>).repeat.pattern).toBe('* * * * *');
     expect((job!.data as Record<string, unknown>).limit).toBe(100);
   });
 
@@ -181,10 +271,12 @@ describe('Scheduled Jobs Registration', () => {
     await startWorkers();
 
     const expiryJob = queueAddCalls.find(
-      c => c.queueName === 'maintenance' && c.jobName === 'safety.expire_location_evidence'
+      (c) => c.queueName === 'maintenance' && c.jobName === 'safety.expire_location_evidence'
     );
     expect(expiryJob).toBeDefined();
-    expect(((expiryJob!.opts as Record<string, Record<string, string>>).repeat).pattern).toBe('15 * * * *');
+    expect((expiryJob!.opts as Record<string, Record<string, string>>).repeat.pattern).toBe(
+      '15 * * * *'
+    );
     expect((expiryJob!.data as Record<string, unknown>).limit).toBe(100);
   });
 
@@ -193,10 +285,12 @@ describe('Scheduled Jobs Registration', () => {
     await startWorkers();
 
     const cleanupJob = queueAddCalls.find(
-      c => c.queueName === 'maintenance' && c.jobName === 'cleanup_expired_exports'
+      (c) => c.queueName === 'maintenance' && c.jobName === 'cleanup_expired_exports'
     );
     expect(cleanupJob).toBeDefined();
-    expect(((cleanupJob!.opts as Record<string, Record<string, string>>).repeat).pattern).toBe('0 */6 * * *');
+    expect((cleanupJob!.opts as Record<string, Record<string, string>>).repeat.pattern).toBe(
+      '0 */6 * * *'
+    );
   });
 
   it('registers cleanup_expired_notifications on maintenance queue', async () => {
@@ -204,10 +298,12 @@ describe('Scheduled Jobs Registration', () => {
     await startWorkers();
 
     const notifJob = queueAddCalls.find(
-      c => c.queueName === 'maintenance' && c.jobName === 'cleanup_expired_notifications'
+      (c) => c.queueName === 'maintenance' && c.jobName === 'cleanup_expired_notifications'
     );
     expect(notifJob).toBeDefined();
-    expect(((notifJob!.opts as Record<string, Record<string, string>>).repeat).pattern).toBe('30 */6 * * *');
+    expect((notifJob!.opts as Record<string, Record<string, string>>).repeat.pattern).toBe(
+      '30 */6 * * *'
+    );
   });
 
   it('registers notification delivery recovery every minute', async () => {
@@ -215,10 +311,12 @@ describe('Scheduled Jobs Registration', () => {
     await startWorkers();
 
     const recoveryJob = queueAddCalls.find(
-      c => c.queueName === 'maintenance' && c.jobName === 'notification.recover_due'
+      (c) => c.queueName === 'maintenance' && c.jobName === 'notification.recover_due'
     );
     expect(recoveryJob).toBeDefined();
-    expect(((recoveryJob!.opts as Record<string, Record<string, string>>).repeat).pattern).toBe('* * * * *');
+    expect((recoveryJob!.opts as Record<string, Record<string, string>>).repeat.pattern).toBe(
+      '* * * * *'
+    );
     expect((recoveryJob!.data as Record<string, unknown>).limit).toBe(100);
   });
 
@@ -227,10 +325,12 @@ describe('Scheduled Jobs Registration', () => {
     await startWorkers();
 
     const releaseJob = queueAddCalls.find(
-      c => c.queueName === 'maintenance' && c.jobName === 'notification.release_focus_deferred'
+      (c) => c.queueName === 'maintenance' && c.jobName === 'notification.release_focus_deferred'
     );
     expect(releaseJob).toBeDefined();
-    expect(((releaseJob!.opts as Record<string, Record<string, string>>).repeat).pattern).toBe('* * * * *');
+    expect((releaseJob!.opts as Record<string, Record<string, string>>).repeat.pattern).toBe(
+      '* * * * *'
+    );
     expect((releaseJob!.data as Record<string, unknown>).limit).toBe(100);
   });
 
@@ -239,10 +339,12 @@ describe('Scheduled Jobs Registration', () => {
     await startWorkers();
 
     const digestJob = queueAddCalls.find(
-      c => c.queueName === 'maintenance' && c.jobName === 'notification.business_weekly_digest'
+      (c) => c.queueName === 'maintenance' && c.jobName === 'notification.business_weekly_digest'
     );
     expect(digestJob).toBeDefined();
-    expect(((digestJob!.opts as Record<string, Record<string, string>>).repeat).pattern).toBe('0 15 * * 1');
+    expect((digestJob!.opts as Record<string, Record<string, string>>).repeat.pattern).toBe(
+      '0 15 * * 1'
+    );
     expect((digestJob!.data as Record<string, unknown>).limit).toBe(100);
   });
 
@@ -251,10 +353,12 @@ describe('Scheduled Jobs Registration', () => {
     await startWorkers();
 
     const fraudJob = queueAddCalls.find(
-      c => c.queueName === 'critical_trust' && c.jobName === 'fraud.scan_requested'
+      (c) => c.queueName === 'critical_trust' && c.jobName === 'fraud.scan_requested'
     );
     expect(fraudJob).toBeDefined();
-    expect(((fraudJob!.opts as Record<string, Record<string, string>>).repeat).pattern).toBe('*/5 * * * *');
+    expect((fraudJob!.opts as Record<string, Record<string, string>>).repeat.pattern).toBe(
+      '*/5 * * * *'
+    );
   });
 
   it('uses unique jobIds to prevent duplicate schedules on restart', async () => {
@@ -264,12 +368,12 @@ describe('Scheduled Jobs Registration', () => {
     // Scheduled jobs now rely on BullMQ repeat keys for deduplication (W-19: custom jobId removed)
     // Verify that scheduled jobs are registered with repeat options
     const scheduledJobs = queueAddCalls.filter(
-      c => (c.opts as Record<string, unknown>).repeat != null
+      (c) => (c.opts as Record<string, unknown>).repeat != null
     );
     expect(scheduledJobs.length).toBeGreaterThanOrEqual(4);
 
     // Job names should be unique across scheduled jobs
-    const jobNames = scheduledJobs.map(j => j.jobName);
+    const jobNames = scheduledJobs.map((j) => j.jobName);
     expect(new Set(jobNames).size).toBe(jobNames.length);
   });
 });
@@ -278,7 +382,10 @@ describe('Worker Routing', () => {
   it('maintenance worker routes both controlled recurring loops', async () => {
     const fs = await import('fs');
     const path = await import('path');
-    const source = fs.readFileSync(path.resolve(__dirname, '../../src/jobs/maintenance-worker.ts'), 'utf-8');
+    const source = fs.readFileSync(
+      path.resolve(__dirname, '../../src/jobs/maintenance-worker.ts'),
+      'utf-8'
+    );
     expect(source).toContain("'recurring.generate_due': generateRecurringDue");
     expect(source).toContain('generateDueControlledRecurringOccurrences');
     expect(source).toContain("'recurring.advance_reservations': advanceRecurringReservations");

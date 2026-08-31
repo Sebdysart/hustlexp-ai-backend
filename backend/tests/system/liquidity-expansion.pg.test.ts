@@ -4,9 +4,11 @@ import { db } from '../../src/db.js';
 import { LiquidityCellService } from '../../src/services/LiquidityCellService.js';
 
 const enabled = process.env.HX_ALLOW_E2E_LIQUIDITY_EXPANSION === '1';
-const describePg = enabled ? describe : describe.skip;
 
 function assertDisposableDatabase(databaseUrl: string): void {
+  if (!databaseUrl) {
+    throw new Error('DATABASE_URL is required for the liquidity expansion contract');
+  }
   const parsed = new URL(databaseUrl);
   const loopback = parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost';
   const disposableName = /(?:e2e|test|startup)/i.test(parsed.pathname.slice(1));
@@ -15,7 +17,7 @@ function assertDisposableDatabase(databaseUrl: string): void {
   }
 }
 
-describePg('HX/OS PostgreSQL adjacent expansion contract', () => {
+describe('HX/OS PostgreSQL adjacent expansion contract', () => {
   const databaseUrl = process.env.DATABASE_URL ?? '';
   const runId = randomUUID();
   const suffix = runId.slice(0, 8);
@@ -25,6 +27,9 @@ describePg('HX/OS PostgreSQL adjacent expansion contract', () => {
   let approvedTargetId = '';
 
   beforeAll(async () => {
+    if (!enabled) {
+      throw new Error('HX_ALLOW_E2E_LIQUIDITY_EXPANSION=1 is required for this destructive disposable-DB contract');
+    }
     assertDisposableDatabase(databaseUrl);
     await db.query(
       `INSERT INTO zone_category_cells
@@ -32,17 +37,24 @@ describePg('HX/OS PostgreSQL adjacent expansion contract', () => {
           launch_cell_enabled,green_category,metrics_computed_at,evaluated_at,stable_since,
           state_reasons,completed_tasks_total,paid_tasks_30d,fill_rate_30d,
           active_verified_providers,anchor_demand_accounts,average_contribution_cents,
+          minimum_provider_net_hourly_cents,provider_earnings_policy_version,
+          provider_earnings_policy_state,provider_earnings_policy_reference,
+          provider_earnings_sample_size,average_provider_net_hourly_cents,
           dispute_rate_30d,no_show_rate_30d,cancellation_rate_30d,repeat_demand_rate_30d,
-          dispatch_allowed,public_instant_requests_allowed,expansion_eligible,max_concurrent_dispatches)
+          dispatch_allowed,public_instant_requests_allowed,expansion_eligible,max_concurrent_dispatches,
+          environment,is_test)
        VALUES ($1,$2,$3,'moving','Daily 08:00-18:00','OPEN','hxos-launch-cell-v1',
           TRUE,TRUE,NOW(),NOW(),NOW()-INTERVAL '20 days','["controlled_expansion_source"]',
-          40,30,0.90,5,2,1400,0.03,0.03,0.05,0.25,TRUE,TRUE,TRUE,5)`,
+          40,30,0.90,5,2,1400,
+          2000,'hxos-provider-economics-approved-test-v1','APPROVED',
+          'required-liquidity-expansion-fixture',30,3500,
+          0.03,0.03,0.05,0.25,TRUE,TRUE,TRUE,5,'PRODUCTION',FALSE)`,
       [sourceId, `source-${suffix}`, `Source ${suffix}`],
     );
   });
 
   afterAll(async () => {
-    if (enabled) await db.close();
+    await db.close();
   });
 
   it('creates an eligible adjacent target only as seeding and replays exactly', async () => {

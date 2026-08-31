@@ -51,8 +51,18 @@ export async function authenticateRequest(
     return null;
   }
 
-  // 🔥 Attempt Redis cache (5 minute sessions — keeps revocation window ≤5 min)
-  const cachedSession = await redis.get<string>(CACHE_KEYS.sessionToken(token));
+  // 🔥 Attempt Redis cache (5 minute sessions — keeps revocation window ≤5 min).
+  // An authority-read failure is not a cache miss: bypass the cached identity
+  // and require Firebase + DB verification instead.
+  let cachedSession: string | null = null;
+  try {
+    cachedSession = await redis.get<string>(CACHE_KEYS.sessionToken(token), 'authority');
+  } catch (err) {
+    authLogger.warn(
+      { err },
+      '[auth] Redis session authority unavailable — bypassing cache and re-verifying with Firebase',
+    );
+  }
   if (cachedSession) {
     const user = decryptSession<AuthenticatedUser>(cachedSession);
     if (!user) {
@@ -61,10 +71,22 @@ export async function authenticateRequest(
       // Fall through to Firebase verification
     } else {
       // Check if user's tokens have been revoked since caching
-      const revokedAt = await redis.get<string>(REVOKED_KEY(user.uid));
-      if (revokedAt) {
+      let revokedAt: string | null = null;
+      let revocationReadFailed = false;
+      try {
+        revokedAt = await redis.get<string>(REVOKED_KEY(user.uid), 'authority');
+      } catch (err) {
+        revocationReadFailed = true;
+        authLogger.warn(
+          { err, uid: user.uid },
+          '[auth] Redis revocation authority unavailable — rejecting cached identity and re-verifying with Firebase',
+        );
+      }
+      if (revokedAt || revocationReadFailed) {
         // Token was cached before revocation — invalidate and re-verify
-        authLogger.info({ uid: user.uid }, "Cached session invalidated by revocation");
+        if (revokedAt) {
+          authLogger.info({ uid: user.uid }, "Cached session invalidated by revocation");
+        }
         try {
           await redis.del(CACHE_KEYS.sessionToken(token));
         } catch (err) {

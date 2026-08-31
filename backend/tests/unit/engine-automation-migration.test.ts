@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Client } from 'pg';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
@@ -100,7 +100,6 @@ import {
   REGION_POLICY_LEGAL_APPROVAL_ACTIVATION_MIGRATION,
   RECURRING_PAYMENT_DISPATCH_GATE_MIGRATION,
   SERVICE_BUSINESS_ASSIGNMENT_CONTRACT_MIGRATION,
-  OPS_WEB_HARDENING_MIGRATION,
   applyEngineAutomationMigration,
   backfillLegacyTaskLocations,
   loadMigrationSql,
@@ -110,7 +109,13 @@ import {
   type MigrationRuntime,
 } from '../../src/jobs/engine-automation-migration.js';
 
-function clientWithQueries(existing = false): MigrationClient & { queries: string[] } {
+function sha256(sql: string): string {
+  return createHash('sha256').update(sql, 'utf8').digest('hex');
+}
+
+function clientWithQueries(
+  existingSha256?: string | null
+): MigrationClient & { queries: string[] } {
   const queries: string[] = [];
   return {
     queries,
@@ -120,7 +125,9 @@ function clientWithQueries(existing = false): MigrationClient & { queries: strin
       queries.push(sql);
       return {
         rows:
-          sql.startsWith('SELECT name') && existing ? [{ name: ENGINE_AUTOMATION_MIGRATION }] : [],
+          sql.startsWith('SELECT name, sha256') && existingSha256 !== undefined
+            ? [{ name: ENGINE_AUTOMATION_MIGRATION, sha256: existingSha256 }]
+            : [],
       };
     }) as MigrationClient['query'],
   };
@@ -264,42 +271,107 @@ describe('required engine automation migration', () => {
       REGION_POLICY_LEGAL_APPROVAL_ACTIVATION_MIGRATION,
       RECURRING_PAYMENT_DISPATCH_GATE_MIGRATION,
       SERVICE_BUSINESS_ASSIGNMENT_CONTRACT_MIGRATION,
-      OPS_WEB_HARDENING_MIGRATION,
+      '010_web_platform_tables',
+      '20260814_quote_price_book',
+      '20260814_price_book_quote_decisions',
+      '20260814_task_supply_confidence',
+      '20260815_quote_columns_extra_v4',
+      '20260819_quote_payments',
+      '20260823_quote_payment_recovery',
+      '20260827_universal_v1_lifecycle_contract',
+      '20260828_operator_authority_contract',
+      '20260829_task_matching_state_contract',
+      '20260830_ai_agent_judge_audit_convergence',
+      '20260831_provider_neutral_outbound_communication',
+      '20260901_universal_v1_lead_ingress_port',
+      '20260902_universal_v1_task_draft_public_port',
+      '20260903_universal_v1_task_draft_account_claim',
+      '20260904_canonical_user_email_identity',
+      '20260905_universal_v1_task_draft_legacy_claim_import_repair',
+      '20260906_universal_v1_estimate_acceptance_materialization',
+      '20260907_universal_v1_provider_estimate_invitation',
+      '20260908_universal_v1_provider_work_order_authority',
+      '20260909_universal_v1_reconciliation_alias_repair',
+      '20260911_universal_v1_change_order_application',
+      '20260912_universal_v1_work_order_execution_facts',
+      '20260913_universal_v1_completion_delivery_receipt',
+      '20260914_notification_provider_in_flight',
+      '20260915_ai_spend_attempt_ledger',
+      '20260916_provider_event_inbox_v1',
+      '20260917_financial_provider_command_journal_v1',
+      '20260918_universal_v1_prepared_financial_command_v1',
+      '20260919_provider_event_processing_v1',
+      '20260920_financial_provider_command_recovery_v1',
+      '20260923_legacy_escrow_insert_containment_v1',
+      '20260924_universal_v1_task_draft_route_context_v1',
+      '20260925_universal_v1_work_order_compensation_v1',
+      '20260928_provider_observation_normalization_v1',
+      '20260929_universal_v1_double_entry_ledger_v1',
+      '20260930_universal_v1_ops_cases_v1',
+      '20261001_universal_v1_relationship_origin_v1',
+      '20261002_universal_v1_dispute_recovery_v1',
+      '20261003_universal_v1_task_opportunities_v1',
+      '20261004_universal_v1_completion_notice_dispatch_v1',
+      '20261005_universal_v1_occurrence_access_audit_v1',
+      '20261006_stage1_legacy_authority_containment_v1',
     ]);
-    expect(actual.bootstrapSpec?.candidatePaths).toContain(
+    const normalizePath = (candidatePath: string) => candidatePath.replaceAll('\\', '/');
+    expect(actual.bootstrapSpec?.candidatePaths.map(normalizePath)).toContain(
       '/app/backend/database/constitutional-schema.sql'
     );
-    expect(actual.migrationSpecs[0].candidatePaths).toContain(
+    expect(actual.migrationSpecs[0].candidatePaths.map(normalizePath)).toContain(
       '/app/backend/database/migrations/add_missing_tables_v2.sql'
     );
-    expect(actual.migrationSpecs.at(-1)?.candidatePaths).toContain(
-      '/app/backend/database/migrations/20260819_ops_web_hardening.sql'
+    expect(
+      actual.migrationSpecs
+        .find((spec) => spec.name === SERVICE_BUSINESS_ASSIGNMENT_CONTRACT_MIGRATION)
+        ?.candidatePaths.map(normalizePath)
+    ).toContain(
+      '/app/backend/database/migrations/20260722_service_business_assignment_contract.sql'
     );
+    expect(
+      actual.migrationSpecs
+        .find((spec) => spec.name === '20260823_quote_payment_recovery')
+        ?.candidatePaths.map(normalizePath)
+    ).toContain('/app/backend/database/migrations/20260823_quote_payment_recovery.sql');
     await expect(actual.readText(actual.migrationSpecs[1].candidatePaths[0]!)).resolves.toContain(
       'CREATE TABLE IF NOT EXISTS task_reservations'
     );
-    expect(actual.createClient('postgres://runtime')).toBeInstanceOf(Client);
+    expect(actual.createClient('postgres://runtime')).toEqual({
+      connect: expect.any(Function),
+      end: expect.any(Function),
+      query: expect.any(Function),
+    });
   });
 
   it('packages every required migration in the production image', () => {
     const dockerfile = readFileSync(resolve(process.cwd(), 'Dockerfile'), 'utf8');
-    expect(dockerfile).toContain('/app/backend/database/constitutional-schema.sql');
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
+    );
     for (const spec of productionMigrationRuntime().migrationSpecs) {
-      const fileName = spec.candidatePaths[0]!.split('/').at(-1)!;
-      expect(dockerfile).toContain(`/app/backend/database/migrations/${fileName}`);
+      expect(
+        spec.candidatePaths.map((candidatePath) => candidatePath.replaceAll('\\', '/'))
+      ).toEqual(
+        expect.arrayContaining([expect.stringMatching(/^\/app\/backend\/database\/migrations\//)])
+      );
     }
   });
 
-  it('keeps the fresh-upgrade convergence count aligned with the required chain', () => {
+  it('keeps the frozen pre-audit upgrade convergence count aligned with its predecessor chain', () => {
     const assertionSql = readFileSync(
       resolve(process.cwd(), 'backend/tests/integration/upgrade-convergence-assert.pg.sql'),
       'utf8'
     );
-    const requiredCount = productionMigrationRuntime().migrationSpecs.length;
-    expect(assertionSql).toContain(
-      `count(*)=${requiredCount} AND count(DISTINCT name)=${requiredCount}`
+    const migrationSpecs = productionMigrationRuntime().migrationSpecs;
+    const occurrenceAuditIndex = migrationSpecs.findIndex(
+      ({ name }) => name === '20261005_universal_v1_occurrence_access_audit_v1'
     );
-    expect(assertionSql).toContain(`the exact ${requiredCount}-migration engine chain`);
+    expect(occurrenceAuditIndex).toBe(migrationSpecs.length - 2);
+    expect(assertionSql).toContain(
+      `count(*)=${occurrenceAuditIndex} AND count(DISTINCT name)=${occurrenceAuditIndex}`
+    );
+    expect(assertionSql).toContain(`the exact ${occurrenceAuditIndex}-migration engine chain`);
   });
 
   it('keeps the restored foundational-table migration PostgreSQL-valid', () => {
@@ -308,9 +380,7 @@ describe('required engine automation migration', () => {
       'utf8'
     );
     expect(migrationSql).toContain('CREATE TABLE IF NOT EXISTS worker_skills');
-    expect(migrationSql).toContain(
-      'ON plan_entitlements(user_id, risk_level, expires_at)'
-    );
+    expect(migrationSql).toContain('ON plan_entitlements(user_id, risk_level, expires_at)');
     expect(migrationSql).not.toContain('WHERE expires_at > NOW()');
   });
 
@@ -356,26 +426,43 @@ describe('required engine automation migration', () => {
 
   it('applies and records the migration atomically', async () => {
     const client = clientWithQueries();
-    const outcome = await applyEngineAutomationMigration(
-      client,
-      'ALTER TABLE tasks ADD COLUMN demo TEXT;',
-      '/migration.sql'
-    );
+    const sql = 'ALTER TABLE tasks ADD COLUMN demo TEXT;';
+    const outcome = await applyEngineAutomationMigration(client, sql, '/migration.sql');
     expect(outcome.status).toBe('applied');
-    expect(client.queries).toContain('ALTER TABLE tasks ADD COLUMN demo TEXT;');
+    expect(outcome.sha256).toBe(sha256(sql));
+    expect(client.queries).toContain(sql);
+    expect(client.queries).toContain(
+      'INSERT INTO applied_migrations (name, sha256) VALUES ($1, $2)'
+    );
     expect(client.queries.at(-1)).toBe('COMMIT');
   });
 
   it('replays without executing the migration SQL', async () => {
-    const client = clientWithQueries(true);
-    const outcome = await applyEngineAutomationMigration(
-      client,
-      'SHOULD NOT RUN',
-      '/migration.sql'
-    );
+    const sql = 'SHOULD NOT RUN';
+    const client = clientWithQueries(sha256(sql));
+    const outcome = await applyEngineAutomationMigration(client, sql, '/migration.sql');
     expect(outcome.status).toBe('already_applied');
-    expect(client.queries).not.toContain('SHOULD NOT RUN');
+    expect(outcome.sha256).toBe(sha256(sql));
+    expect(client.queries).not.toContain(sql);
     expect(client.queries.at(-1)).toBe('COMMIT');
+  });
+
+  it('fails closed when a legacy applied migration has no checksum evidence', async () => {
+    const client = clientWithQueries(null);
+    await expect(
+      applyEngineAutomationMigration(client, 'SELECT 1;', '/migration.sql')
+    ).rejects.toThrow('MIGRATION_CHECKSUM_MISSING');
+    expect(client.queries).not.toContain('SELECT 1;');
+    expect(client.queries.at(-1)).toBe('ROLLBACK');
+  });
+
+  it('fails closed when the exact migration SQL drifts after application', async () => {
+    const client = clientWithQueries(sha256('SELECT original;'));
+    await expect(
+      applyEngineAutomationMigration(client, 'SELECT changed;', '/migration.sql')
+    ).rejects.toThrow('MIGRATION_CHECKSUM_DRIFT');
+    expect(client.queries).not.toContain('SELECT changed;');
+    expect(client.queries.at(-1)).toBe('ROLLBACK');
   });
 
   it('rolls back and preserves the original migration failure', async () => {

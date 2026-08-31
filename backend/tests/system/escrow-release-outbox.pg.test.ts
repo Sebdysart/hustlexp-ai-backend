@@ -86,7 +86,10 @@ describePg('PostgreSQL escrow release outbox contract', () => {
     await client.query('BEGIN');
     await client.query(
       `UPDATE escrows
-       SET state = 'RELEASED', stripe_transfer_id = 'tr_trigger_exact', version = version + 1
+       SET state = 'RELEASED', stripe_transfer_id = 'tr_trigger_exact',
+           payout_provider = 'STRIPE', provider_transfer_id = 'tr_trigger_exact',
+           provider_transfer_status = 'paid', provider_transfer_paid_at = NOW(),
+           version = version + 1
        WHERE id = $1`,
       [escrowId],
     );
@@ -107,7 +110,10 @@ describePg('PostgreSQL escrow release outbox contract', () => {
 
     await client.query(
       `UPDATE escrows
-       SET state = 'RELEASED', stripe_transfer_id = 'tr_trigger_exact', version = version + 1
+       SET state = 'RELEASED', stripe_transfer_id = 'tr_trigger_exact',
+           payout_provider = 'STRIPE', provider_transfer_id = 'tr_trigger_exact',
+           provider_transfer_status = 'paid', provider_transfer_paid_at = NOW(),
+           version = version + 1
        WHERE id = $1`,
       [escrowId],
     );

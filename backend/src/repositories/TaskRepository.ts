@@ -7,6 +7,15 @@
 
 import { BaseRepository, type RepositoryContext } from './BaseRepository.js';
 import type { Task, TaskState } from '../types.js';
+import { hardAssignmentFailure } from '../services/HardAssignmentGuard.js';
+
+function requireRepositoryAssignment(): void {
+  const frozen = hardAssignmentFailure('repository_assignment');
+  if (!frozen) return;
+  throw Object.assign(new Error(frozen.error.message), {
+    code: frozen.error.code,
+  });
+}
 
 export class TaskRepository extends BaseRepository<Task> {
   protected readonly tableName = 'tasks';
@@ -81,6 +90,7 @@ export class TaskRepository extends BaseRepository<Task> {
     newState: TaskState,
     ctx?: RepositoryContext
   ): Promise<Task | null> {
+    if (newState === 'ACCEPTED') requireRepositoryAssignment();
     const query = this.getQuery(ctx);
     const result = await query<Task>(
       `UPDATE ${this.tableName} SET state = $1, updated_at = NOW() WHERE id = $2 RETURNING *`,
@@ -97,6 +107,7 @@ export class TaskRepository extends BaseRepository<Task> {
     workerId: string,
     ctx?: RepositoryContext
   ): Promise<Task | null> {
+    requireRepositoryAssignment();
     const query = this.getQuery(ctx);
     const result = await query<Task>(
       `UPDATE ${this.tableName} SET worker_id = $1, state = 'ACCEPTED', accepted_at = NOW(), updated_at = NOW() WHERE id = $2 RETURNING *`,

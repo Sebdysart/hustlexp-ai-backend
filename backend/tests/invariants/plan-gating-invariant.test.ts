@@ -11,22 +11,33 @@
  * - UI can make rendering decisions based on plan, but data is never hidden
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import pg from 'pg';
-import { db, hasDb } from '../../src/db';
+import { describe, it, expect, beforeAll } from 'vitest';
+import { db } from '../../src/db';
 import { TaskService } from '../../src/services/TaskService';
 import { PlanService } from '../../src/services/PlanService';
 import type { User } from '../../src/types';
-import { createTestPool, createTestTask } from '../setup';
 
-describe.skipIf(!hasDb)('Plan Gating Invariant: Data Truth vs Delivery', () => {
+function assertDisposableDatabase(databaseUrl: string): void {
+  if (!databaseUrl) {
+    throw new Error('DATABASE_URL is required for the plan-gating invariant');
+  }
+  const parsed = new URL(databaseUrl);
+  const loopback = parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost';
+  const disposableName = /(?:e2e|test|startup)/i.test(parsed.pathname.slice(1));
+  if (!loopback || !disposableName) {
+    throw new Error(
+      `Refusing plan-gating invariant against non-disposable target ${parsed.hostname}/${parsed.pathname.slice(1)}`,
+    );
+  }
+}
+
+describe('Plan Gating Invariant: Data Truth vs Delivery', () => {
   let freeUser: User;
   let premiumUser: User;
   let taskId: string;
-  let pool: pg.Pool;
 
   beforeAll(async () => {
-    pool = createTestPool();
+    assertDisposableDatabase(process.env.DATABASE_URL ?? '');
     const runId = `${Date.now()}-${crypto.randomUUID()}`;
     // Create test users
     const freeResult = await db.query<User>(
@@ -47,34 +58,41 @@ describe.skipIf(!hasDb)('Plan Gating Invariant: Data Truth vs Delivery', () => {
     );
     premiumUser = premiumResult.rows[0];
 
-    // Create a policy-bound task with a current offer decision and accepted worker.
-    const task = await createTestTask(pool, {
+    const created = await TaskService.create({
       posterId: premiumUser.id,
-      workerId: freeUser.id,
-      state: 'ACCEPTED',
+      title: 'Plan delivery truth fixture',
+      description: 'Controlled local fixture for plan-neutral task progress reads.',
+      price: 5_000,
+      hustlerPayoutCents: 4_000,
+      platformMarginCents: 1_000,
+      requirements: 'Expose the same persisted progress truth to every plan.',
+      location: '101 Test Avenue, Seattle, WA 98101',
+      roughArea: 'Seattle, WA',
+      regionCode: 'US-WA',
+      category: 'moving',
+      deadline: new Date(Date.now() + 60 * 60_000),
+      dispatchExpiresAt: new Date(Date.now() + 30 * 60_000),
+      requiresProof: true,
+      riskLevel: 'LOW',
+      mode: 'STANDARD',
+      automationClassification: 'CONTROLLED_TEST',
+      proofSteps: ['Read the persisted progress state.'],
+      estimatedDurationMinutes: 60,
+      requiredTools: ['none'],
+      clientIdempotencyKey: `plan-gating-${runId}`,
     });
-    taskId = task.id;
+    if (!created.success) throw new Error(created.error.message);
+    taskId = created.data.id;
 
-    const acceptedProgress = await TaskService.advanceProgress({
-      taskId,
-      to: 'ACCEPTED',
-      actor: { type: 'system' },
-    });
-    if (!acceptedProgress.success) throw new Error(acceptedProgress.error.message);
-
-    // Advance progress to TRAVELING
-    const travelingProgress = await TaskService.advanceProgress({
-      taskId,
-      to: 'TRAVELING',
-      actor: { type: 'worker', userId: freeUser.id },
-    });
-    if (!travelingProgress.success) throw new Error(travelingProgress.error.message);
-  });
-
-  afterAll(async () => {
-    // Offer decisions emit append-only offer events, so these uniquely named
-    // fixtures intentionally remain in the disposable invariant database.
-    await pool.end();
+    // This suite owns delivery/read behavior, not assignment authority. Seed
+    // the persisted progress projection directly while the canonical lifecycle
+    // suites independently prove every authorized transition.
+    await db.query(
+      `UPDATE tasks
+          SET progress_state = 'TRAVELING', progress_updated_at = NOW(), updated_at = NOW()
+        WHERE id = $1`,
+      [taskId],
+    );
   });
 
   it('REST endpoint returns full progress_state for free users', async () => {

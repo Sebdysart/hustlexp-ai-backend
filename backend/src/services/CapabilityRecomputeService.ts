@@ -19,7 +19,8 @@
  * 
  * 2. ATOMIC:
  *    ✅ All writes in single transaction
- *    ✅ verified_trades rebuilt (DELETE + INSERT), not patched
+ *    ✅ Legacy verified_trades rebuilt (DELETE + INSERT), not patched
+ *    ✅ Universal V1 verified-trade projections remain untouched
  *    ✅ capability_profiles updated atomically
  * 
  * 3. SOURCE OF TRUTH:
@@ -158,7 +159,7 @@ export async function recomputeCapabilityProfile(
     WHERE user_id = $1
       AND status = 'APPROVED'
       AND (expiration_date IS NULL OR expiration_date > CURRENT_DATE)
-    ORDER BY trade_type, issuing_state
+    ORDER BY trade_type, issuing_state, expiration_date DESC NULLS FIRST, id
     `,
     [userId]
   );
@@ -268,26 +269,33 @@ export async function recomputeCapabilityProfile(
     ]
   );
 
-  // 7.2: Rebuild verified_trades (DELETE + INSERT pattern)
-  // N2.4 ENFORCEMENT: Always rebuild, never patch
+  // 7.2: Rebuild legacy verified_trades (DELETE + INSERT pattern).
+  // Universal V1 rows are independently projected from business_credentials
+  // and must remain byte-for-byte outside this legacy recompute authority.
+  // N2.4 ENFORCEMENT: Always rebuild legacy rows, never patch them.
   await query(
     `
     DELETE FROM verified_trades
     WHERE user_id = $1
+      AND universal_contract_version = 0
     `,
     [userId]
   );
 
-  // Insert verified trades
+  // Insert legacy verified trades. The table's historical unique key spans
+  // every contract version, so a Universal V1 projection can legitimately
+  // occupy the same (user, trade, state) key. In that case the legacy row is
+  // omitted; it must never update or downgrade the Universal projection.
   if (verifiedTrades.length > 0) {
     for (const trade of verifiedTrades) {
       await query(
         `
-        INSERT INTO verified_trades (user_id, trade, state, expires_at, license_verification_id, created_at)
-        VALUES ($1, $2, $3, $4, $5, NOW())
-        ON CONFLICT (user_id, trade, state) DO UPDATE SET
-          expires_at = EXCLUDED.expires_at,
-          license_verification_id = EXCLUDED.license_verification_id
+        INSERT INTO verified_trades (
+          user_id, trade, state, expires_at, license_verification_id,
+          universal_contract_version, created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, 0, NOW())
+        ON CONFLICT (user_id, trade, state) DO NOTHING
         `,
         [
           userId,

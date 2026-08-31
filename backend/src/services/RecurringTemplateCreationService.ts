@@ -222,12 +222,12 @@ export async function createRecurringTemplateAuthorized(
            budget_cap_cents,approver_id,escalation_rules,invoice_grouping,next_review_date,pause_code,
            business_organization_id,business_location_id,recurring_po_number,recurring_cost_center
          ) VALUES (
-           ${idP},${posterP},${patternP},${dayOfWeekP},${dayOfMonthP},${timeP},${startP},${endP},
-           ${titleP},${descriptionP},${totalP},${roughP},${categoryP},${durationLabelP},${tierP},
-           'paused',((${startP}::date + ${timeP}::time) AT TIME ZONE ${timezoneP}),2,
-           ${principalTypeP},${principalIdP},${lineageP},${regionP},${riskP},${roughP},${locationCipherP},
+           ${idP},${posterP},${patternP},${dayOfWeekP},${dayOfMonthP},${timeP}::text,${startP},${endP},
+           ${titleP},${descriptionP},${totalP},${roughP}::text,${categoryP},${durationLabelP},${tierP},
+           'paused',((${startP}::date + ${timeP}::text::time) AT TIME ZONE ${timezoneP}::text),2,
+           ${principalTypeP},${principalIdP},${lineageP},${regionP},${riskP},${roughP}::text,${locationCipherP},
            ${locationNonceP},${locationTagP},${locationKeyP},${locationFingerP},${accessCipherP},
-           ${accessNonceP},${accessTagP},${accessKeyP},${accessFingerP},${recipeP},${timezoneP},
+           ${accessNonceP},${accessTagP},${accessKeyP},${accessFingerP},${recipeP},${timezoneP}::text,
            ${windowStartP},${windowEndP},${durationP},${corridorMinP},${corridorMaxP},${adjustmentP},
            ${payoutP},${marginP},${licenseP},${insuranceP},${credentialP},${toolsP},${vehicleP},
            ${checklistP},${preferredP},${backupsP},${cancellationP},${holidayP},${budgetP},${approverP},

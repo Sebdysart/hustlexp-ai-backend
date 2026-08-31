@@ -199,6 +199,7 @@ beforeEach(() => {
 
 describe('registerConnection', () => {
   it('calls pipeline.exec once with correct keys', async () => {
+    mockPipelineExec.mockResolvedValue(['OK', 1, 1, 1, 1, 'OK']);
     await registerConnection('conn-1', 'user-1', 'inst-1', {
       clientInfo: { userAgent: 'TestAgent' },
       channels: ['ch-a'],
@@ -215,6 +216,7 @@ describe('registerConnection', () => {
   });
 
   it('works with empty metadata defaults', async () => {
+    mockPipelineExec.mockResolvedValue(['OK', 1, 1, 1, 1, 'OK']);
     await registerConnection('conn-2', 'user-2', 'inst-2');
     expect(mockPipelineExec).toHaveBeenCalledOnce();
   });

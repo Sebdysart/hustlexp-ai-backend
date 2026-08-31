@@ -4,6 +4,7 @@ import { db } from '../db.js';
 import { logger } from '../logger.js';
 import { posterProcedure, Schemas } from '../trpc.js';
 import { ComplianceGuardianService } from '../services/ComplianceGuardianService.js';
+import { LEGACY_TASK_MATERIALIZATION_FROZEN_CODE } from '../services/LegacyTaskMaterializationGuard.js';
 import { TaskService } from '../services/TaskService.js';
 import { assertEliteTier } from './squadPolicy.js';
 
@@ -87,8 +88,13 @@ export const squadTaskCreateProcedures = {
       });
       if (!created.success) {
         throw new TRPCError({
-          code: 'BAD_REQUEST',
+          code: created.error.code === LEGACY_TASK_MATERIALIZATION_FROZEN_CODE
+            ? 'PRECONDITION_FAILED'
+            : 'BAD_REQUEST',
           message: `Could not create squad task: ${created.error.message}`,
+          ...(created.error.code === LEGACY_TASK_MATERIALIZATION_FROZEN_CODE
+            ? { cause: { applicationCode: created.error.code } }
+            : {}),
         });
       }
       const taskId = created.data.id;

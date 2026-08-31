@@ -18,6 +18,7 @@ import { db } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { stripeBreaker } from '../middleware/circuit-breaker.js';
 import { stripeLogger } from '../logger.js';
+import { newPaymentCreationFailure } from './NewPaymentCreationGuard.js';
 
 // ============================================================================
 // INITIALIZATION
@@ -180,6 +181,8 @@ async function getOrCreateConnectAccount(
   email: string,
   fullName: string
 ): Promise<ServiceResult<{ accountId: string; isNew: boolean }>> {
+  const frozen = newPaymentCreationFailure('connect_account');
+  if (frozen) return frozen;
   // Check if user already has a connect account
   const userResult = await db.query<{ stripe_connect_id: string | null }>(
     'SELECT stripe_connect_id FROM users WHERE id = $1',
@@ -348,6 +351,9 @@ export const StripeConnectService = {
   }): Promise<ServiceResult<OnboardingLinkResult>> => {
     const { userId, email, fullName, refreshUrl, returnUrl, collectTaxInfo = true } = params;
 
+    const frozen = newPaymentCreationFailure('connect_onboarding');
+    if (frozen) return frozen;
+
     if (!stripe) {
       return {
         success: false,
@@ -411,6 +417,9 @@ export const StripeConnectService = {
         error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe is not configured' },
       };
     }
+
+    const frozen = newPaymentCreationFailure('connect_login_link');
+    if (frozen) return frozen;
 
     try {
       const loginLink = await stripeBreaker.execute(() =>
@@ -505,6 +514,9 @@ export const StripeConnectService = {
     monthlyAnchor?: number;
   }): Promise<ServiceResult<PayoutSettings>> => {
     const { userId, schedule, interval, weeklyAnchor, monthlyAnchor } = params;
+
+    const frozen = newPaymentCreationFailure('connect_payout_settings');
+    if (frozen) return frozen;
 
     const accountId = await getConnectAccountId(userId);
 
@@ -880,6 +892,8 @@ export const StripeConnectService = {
     refreshUrl: string;
     returnUrl: string;
   }): Promise<ServiceResult<OnboardingLinkResult>> => {
+    const frozen = newPaymentCreationFailure('connect_onboarding');
+    if (frozen) return frozen;
     // This is essentially the same as createOnboardingLink
     // Get user details first
     const userResult = await db.query<{ email: string; full_name: string }>(

@@ -1,11 +1,9 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import crypto from 'node:crypto';
-import { router, publicProcedure } from '../../trpc.js';
-import { db } from '../../db.js';
-import { QuoteGenerationService } from '../../services/QuoteGenerationService.js';
 
-const PostTaskSchema = z.object({
+import { publicProcedure, router } from '../../trpc.js';
+
+const LegacyPostTaskSchema = z.object({
   lead: z.object({
     submission_id: z.string().uuid(),
     lead_type: z.enum(['poster', 'hustler', 'business', 'founder']),
@@ -19,7 +17,6 @@ const PostTaskSchema = z.object({
     consent_version: z.literal('v1'),
     ip_hash: z.string().optional(),
   }),
-
   task: z.object({
     category: z.string().trim().min(1).max(100),
     title: z.string().trim().min(1).max(255),
@@ -37,194 +34,25 @@ const PostTaskSchema = z.object({
   }),
 });
 
-type PostTaskInput = z.infer<typeof PostTaskSchema>;
-
-function generateCardToken(): { raw: string; hash: string } {
-  const raw = crypto.randomBytes(32).toString('hex');
-  const hash = crypto.createHash('sha256').update(raw).digest('hex');
-  return { raw, hash };
-}
-
-async function handlePostTask({
-    input,
-    }: {
-    input: PostTaskInput;
-    }) {
-  const correlationId = crypto.randomUUID();
-  try {  
-    const result = await db.transaction(async (query) => {
-        // 1. Replay check.
-        const existingLead = await query<{ id: string }>(
-        `SELECT id
-        FROM leads
-        WHERE submission_id = $1
-        LIMIT 1`,
-        [input.lead.submission_id],
-        );
-
-        if (existingLead.rows[0]) {
-            const existingDraft = await query<{ id: string; quote_id: string | null }>(
-                `SELECT id, quote_id
-                FROM task_drafts
-                WHERE submission_id = $1
-                LIMIT 1`,
-                [input.lead.submission_id],
-            );
-
-        if (existingDraft.rows[0]) {
-            return {
-            leadId: existingLead.rows[0].id,
-            taskDraftId: existingDraft.rows[0].id,
-            quoteId: existingDraft.rows[0].quote_id,
-            replayed: true,
-            };
-        }
-
-        return {
-            leadId: existingLead.rows[0].id,
-            taskDraftId: null,
-            quoteId: null,
-            replayed: true,
-        };
-        }
-
-        // 2. Create lead.
-        const lead = await query<{ id: string }>(
-        `INSERT INTO leads (
-            submission_id,
-            lead_type,
-            email,
-            name,
-            phone,
-            region,
-            zip,
-            answers,
-            utm,
-            consent_version,
-            source,
-            ip_hash,
-            correlation_id
-        )
-        VALUES (
-            $1, $2, $3, $4, $5, $6, $7,
-            $8::jsonb, $9::jsonb, $10, 'website', $11, $12
-        )
-        RETURNING id`,
-        [
-            input.lead.submission_id,
-            input.lead.lead_type,
-            input.lead.email.trim().toLowerCase(),
-            input.lead.name?.trim() ?? null,
-            input.lead.phone?.trim() ?? null,
-            input.lead.region ?? null,
-            input.lead.zip ?? null,
-            JSON.stringify(input.lead.answers),
-            JSON.stringify(input.lead.utm),
-            input.lead.consent_version,
-            input.lead.ip_hash ?? null,
-            correlationId,
-        ],
-        );
-
-        const leadId = lead.rows[0]?.id;
-
-        if (!leadId) {
-        throw new TRPCError({
-            code: 'INTERNAL_SERVER_ERROR',
-            message: 'Failed to create lead',
-        });
-        }
-
-        // 3. Create task draft linked to lead.
-        const { raw: cardToken, hash: cardTokenHash } = generateCardToken();
-        const draft = await query<{
-            id: string;
-            quote_id: string | null;
-            }>(
-            `INSERT INTO task_drafts (
-                submission_id,
-                card_token_hash,
-                category,
-                title,
-                raw_input,
-                scope_summary,
-                structured,
-                est_price_min_cents,
-                est_price_max_cents,
-                photo_count,
-                zip,
-                region,
-                status,
-                source,
-                utm,
-                ip_hash,
-                lead_id
-            )
-            VALUES (
-                $1, $2, $3, $4, $5, $6, $7::jsonb,
-                $8, $9, $10, $11, $12,
-                'draft', $13, $14::jsonb, $15, $16
-            )
-            RETURNING id, quote_id`,
-            [
-                input.lead.submission_id,
-                cardTokenHash,
-                input.task.category,
-                input.task.title,
-                input.task.raw_input ?? null,
-                input.task.scope_summary ?? null,
-                JSON.stringify(input.task.structured),
-                input.task.est_price_min_cents ?? null,
-                input.task.est_price_max_cents ?? null,
-                input.task.photo_count,
-                input.task.zip ?? null,
-                input.task.region ?? null,
-                input.task.source,
-                JSON.stringify(input.task.utm),
-                input.task.ip_hash ?? null,
-                leadId,
-            ],
-        );
-
-        const taskDraftId = draft.rows[0]?.id;
-
-        if (!taskDraftId) {
-        throw new TRPCError({
-            code: 'INTERNAL_SERVER_ERROR',
-            message: 'Failed to create task draft',
-        });
-        }
-        
-        return {
-            leadId,
-            taskDraftId,
-            quoteId: draft.rows[0]?.quote_id ?? null,
-            cardToken,
-            replayed: false,
-        };
-    });
-    /* const quote = await QuoteGenerationService.generateForDraft(
-    result.taskDraftId,
-    {
-        executionEnvironment: 'TEST',
-        record: true,
-    },
-    ); */
-    return {
-        ok: true,
-        ...result,
-        correlation_id: correlationId,
-    };
-    } catch (error) {
-        console.error('[webPostTask.start] DB/transaction failure:', error);
-        throw error;
-    }
+/**
+ * Historical compatibility boundary. `webTaskDrafts.submit` is the sole public
+ * TaskDraft writer and owns privacy minimization, bot protection, parsing,
+ * versioning, idempotency, and the six-way routing fact. This route must never
+ * recreate the former lead + draft + generated-quote side channel.
+ */
+function throwLegacyPostTaskTombstone(): never {
+  throw new TRPCError({
+    code: 'PRECONDITION_FAILED',
+    message:
+      'Legacy post-task intake is retired. Submit the request through the Universal V1 TaskDraft intake.',
+    cause: { applicationCode: 'LEGACY_TASK_DRAFT_WRITER_TOMBSTONED' },
+  });
 }
 
 export const webPostTaskRouter = router({
   start: publicProcedure
-    .input(PostTaskSchema)
-    .mutation(handlePostTask),
+    .input(LegacyPostTaskSchema)
+    .mutation(throwLegacyPostTaskTombstone),
 });
 
 export type WebPostTaskRouter = typeof webPostTaskRouter;

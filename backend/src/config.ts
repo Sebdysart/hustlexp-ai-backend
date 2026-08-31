@@ -6,6 +6,15 @@
  * @see ARCHITECTURE.md
  */
 
+import { buildIdentity, type BuildIdentity } from './buildIdentity.js';
+import {
+  readReleaseManifest,
+  RELEASE_CHARTER_AUTHORITY,
+  type ReleaseManifestEvidence,
+} from './releaseManifest.js';
+import { assertNonproductionFakeFinanceAuthorized } from './services/payment/NonproductionFinancialAuthorization.js';
+import { deployedSyntheticProviderConfigurationErrors } from './deployedSyntheticProviderPolicy.js';
+
 export const config = {
   // Database (standard PostgreSQL; Railway in production)
   database: {
@@ -13,17 +22,19 @@ export const config = {
     pgbouncer: process.env.DB_PGBOUNCER === 'true',
   },
 
-  // Cache (Upstash Redis)
+  // Redis transports. The provider-neutral TCP URL is the canonical portable
+  // path for every Redis command consumer, BullMQ, and realtime pub/sub. The
+  // Upstash REST pair is an explicit legacy alternate transport. It is not
+  // runtime failover. Never
+  // infer one transport's credentials from the other: redis:// is not an HTTP
+  // endpoint and an ambiguous REDIS_TOKEN is not an Upstash REST bearer token.
   redis: {
-    // REST API (for @upstash/redis client - caching, rate limiting)
-    restUrl: process.env.UPSTASH_REDIS_REST_URL || process.env.REDIS_URL || '',
-    restToken: process.env.UPSTASH_REDIS_REST_TOKEN || process.env.REDIS_TOKEN || '',
-    // Direct TCP (for BullMQ/ioredis - job queues)
-    // Upstash provides both REST and direct TCP endpoints
-    // Use UPSTASH_REDIS_URL (direct TCP connection string) for BullMQ
-    // Format: redis://default:{password}@{endpoint}:6379
-    // OR use separate Redis instance: REDIS_URL=redis://localhost:6379
-    url: process.env.UPSTASH_REDIS_URL || process.env.REDIS_URL || '', // Direct TCP connection string
+    // Explicit REST-only compatibility credentials.
+    restUrl: process.env.UPSTASH_REDIS_REST_URL || '',
+    restToken: process.env.UPSTASH_REDIS_REST_TOKEN || '',
+    // Direct TCP connection string. REDIS_URL is canonical; the vendor-named
+    // alias remains accepted only for backwards-compatible deployments.
+    url: process.env.REDIS_URL || process.env.UPSTASH_REDIS_URL || '',
   },
 
   // Payments (Stripe)
@@ -86,16 +97,6 @@ export const config = {
       secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY || '',
       bucketName: process.env.R2_BUCKET_NAME || process.env.BUCKET_NAME || 'hustlexp-storage',
       region: process.env.R2_REGION || process.env.AWS_DEFAULT_REGION || 'auto',
-    },
-  },
-  
-  backblaze: {
-    b2: {
-      endpoint: process.env.B2_ENDPOINT || '',
-      region: process.env.B2_REGION || '',
-      keyId: process.env.B2_KEY_ID || '',
-      applicationKey: process.env.B2_APPLICATION_KEY || '',
-      bucketName: process.env.B2_BUCKET_NAME || '',
     },
   },
 
@@ -259,6 +260,11 @@ function paymentCreationModeErrors(): string[] {
   if (mode && mode !== 'enabled' && mode !== 'frozen') {
     return ['HX_PAYMENT_CREATION_MODE must be either enabled or frozen'];
   }
+  if (mode === 'enabled') {
+    return [
+      'HX_PAYMENT_CREATION_MODE=enabled is forbidden while underwriting decisions remain unresolved',
+    ];
+  }
   return [];
 }
 
@@ -294,10 +300,40 @@ function stripeConfigurationErrors(): string[] {
 
 function redisConfigurationErrors(): string[] {
   const errors: string[] = [];
-  if (!config.redis.restUrl)
-    errors.push('UPSTASH_REDIS_REST_URL is required for caching/rate limiting');
+  if (Boolean(config.redis.restUrl) !== Boolean(config.redis.restToken)) {
+    errors.push(
+      'UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN must be configured together when using the legacy REST alternate',
+    );
+  }
   if (!config.redis.url)
-    errors.push('UPSTASH_REDIS_URL or REDIS_URL is required for BullMQ job queues');
+    errors.push('REDIS_URL (or legacy UPSTASH_REDIS_URL) is required for Redis commands, BullMQ, and realtime');
+  else {
+    try {
+      const redisUrl = new URL(config.redis.url);
+      if (!['redis:', 'rediss:'].includes(redisUrl.protocol) || !redisUrl.hostname) {
+        errors.push('REDIS_URL (or legacy UPSTASH_REDIS_URL) must use redis: or rediss: with a hostname');
+      }
+    } catch {
+      errors.push('REDIS_URL (or legacy UPSTASH_REDIS_URL) must be a valid Redis URL');
+    }
+  }
+  if (config.redis.restUrl) {
+    try {
+      const restUrl = new URL(config.redis.restUrl);
+      if (
+        restUrl.protocol !== 'https:'
+        || !restUrl.hostname
+        || restUrl.username
+        || restUrl.password
+        || restUrl.search
+        || restUrl.hash
+      ) {
+        errors.push('UPSTASH_REDIS_REST_URL must be an HTTPS URL without embedded credentials, query, or fragment');
+      }
+    } catch {
+      errors.push('UPSTASH_REDIS_REST_URL must be a valid HTTPS URL');
+    }
+  }
   return errors;
 }
 
@@ -370,11 +406,164 @@ function productionConfigurationErrors(): string[] {
   ];
 }
 
+type DeployedSyntheticEnvironment = 'preview' | 'staging';
+
+export interface ConfigValidationOptions {
+  release?: ReleaseManifestEvidence;
+  identity?: BuildIdentity;
+}
+
+function deployedSyntheticEnvironment(): DeployedSyntheticEnvironment | null {
+  const value = process.env.HX_ENVIRONMENT?.trim().toLowerCase();
+  return value === 'preview' || value === 'staging' ? value : null;
+}
+
+function remoteUrlErrors(
+  name: string,
+  value: string | undefined,
+  protocols: readonly string[],
+  railwayInternal = false,
+): string[] {
+  const errors: string[] = [];
+  if (!value?.trim()) return [`${name} is required in deployed synthetic nonproduction`];
+  try {
+    const parsed = new URL(value);
+    if (!protocols.includes(parsed.protocol)) {
+      errors.push(`${name} must use ${protocols.join(' or ')}`);
+    }
+    if (['localhost', '127.0.0.1', '::1'].includes(parsed.hostname.toLowerCase())) {
+      errors.push(`${name} may not use loopback in deployed synthetic nonproduction`);
+    }
+    if (railwayInternal && !parsed.hostname.toLowerCase().endsWith('.railway.internal')) {
+      errors.push(`${name} must use isolated Railway private networking`);
+    }
+  } catch {
+    errors.push(`${name} must be a valid URL`);
+  }
+  return errors;
+}
+
+function exactHttpsOrigin(value: string | undefined): string | null {
+  if (!value?.trim()) return null;
+  try {
+    const parsed = new URL(value);
+    if (
+      parsed.protocol !== 'https:'
+      || parsed.username
+      || parsed.password
+      || parsed.pathname !== '/'
+      || parsed.search
+      || parsed.hash
+      || ['localhost', '127.0.0.1', '::1'].includes(parsed.hostname.toLowerCase())
+      || parsed.origin !== value
+    ) return null;
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+function deployedSyntheticOriginErrors(): string[] {
+  const errors: string[] = [];
+  const apiOrigin = exactHttpsOrigin(process.env.HX_NONPROD_API_ORIGIN);
+  const webOrigin = exactHttpsOrigin(process.env.HX_NONPROD_WEB_ORIGIN);
+  if (!apiOrigin) errors.push('HX_NONPROD_API_ORIGIN must be an exact remote HTTPS origin');
+  if (!webOrigin) errors.push('HX_NONPROD_WEB_ORIGIN must be an exact remote HTTPS origin');
+  if (apiOrigin && webOrigin && apiOrigin === webOrigin) {
+    errors.push('nonproduction API and web origins must be distinct');
+  }
+  if (webOrigin && (
+    config.app.allowedOrigins.length !== 1
+    || config.app.allowedOrigins[0] !== webOrigin
+  )) {
+    errors.push('ALLOWED_ORIGINS must equal the exact nonproduction web origin');
+  }
+  const railwayPublicDomain = process.env.RAILWAY_PUBLIC_DOMAIN?.trim();
+  if (apiOrigin && railwayPublicDomain && apiOrigin !== `https://${railwayPublicDomain}`) {
+    errors.push('HX_NONPROD_API_ORIGIN must match the Railway API public domain');
+  }
+  return errors;
+}
+
+function encryptionConfigurationErrors(): string[] {
+  const errors = [...taxConfigurationErrors()];
+  if (!/^[0-9a-fA-F]{64}$/u.test(process.env.SESSION_ENCRYPTION_KEY ?? '')) {
+    errors.push('SESSION_ENCRYPTION_KEY must be exactly 64 hex characters in deployed synthetic nonproduction');
+  }
+  try {
+    const raw = process.env.TASK_LOCATION_ENCRYPTION_KEY ?? '';
+    if (!raw || Buffer.from(raw, 'base64').length !== 32) throw new Error('invalid');
+  } catch {
+    errors.push('TASK_LOCATION_ENCRYPTION_KEY must encode exactly 32 bytes in deployed synthetic nonproduction');
+  }
+  if (!/^[A-Za-z0-9._-]{3,64}$/u.test(process.env.TASK_LOCATION_ENCRYPTION_KEY_ID ?? '')) {
+    errors.push('TASK_LOCATION_ENCRYPTION_KEY_ID is required in deployed synthetic nonproduction');
+  }
+  return errors;
+}
+
+function deployedSyntheticConfigurationErrors(
+  environment: DeployedSyntheticEnvironment,
+  options: ConfigValidationOptions,
+): string[] {
+  const errors: string[] = [];
+  if (process.env.NODE_ENV !== 'production') {
+    errors.push('NODE_ENV must be production for deployed synthetic nonproduction');
+  }
+  const release = options.release ?? readReleaseManifest();
+  const identity = options.identity ?? buildIdentity;
+  const role = process.env.SERVICE_ROLE?.trim().toLowerCase();
+  if (!role || !['api', 'backend', 'worker', 'migration'].includes(role)) {
+    errors.push('SERVICE_ROLE must be api, backend, worker, or migration in deployed synthetic nonproduction');
+  }
+  const component = role === 'worker' ? 'worker' : role === 'migration' ? 'migration' : 'backend';
+  try {
+    assertNonproductionFakeFinanceAuthorized({
+      env: process.env,
+      release,
+      identity,
+      component,
+    });
+  } catch (error) {
+    errors.push(error instanceof Error ? error.message : 'exact nonproduction release authority is invalid');
+  }
+  if (release.source !== 'HX_RELEASE_MANIFEST_JSON') {
+    errors.push('deployed synthetic nonproduction requires HX_RELEASE_MANIFEST_JSON');
+  }
+  if (release.manifest?.environment !== environment) {
+    errors.push('exact release manifest environment does not match HX_ENVIRONMENT');
+  }
+  const authority = release.manifest?.authority;
+  if (
+    authority?.document !== RELEASE_CHARTER_AUTHORITY.document
+    || authority?.charterVersion !== RELEASE_CHARTER_AUTHORITY.version
+    || authority?.charterRevision !== RELEASE_CHARTER_AUTHORITY.revision
+    || !/^sha256:(?!0{64}$)[0-9a-f]{64}$/u.test(authority?.capabilityPolicyDigest ?? '')
+  ) {
+    errors.push('exact release manifest must bind the signed Charter and capability policy');
+  }
+  if (process.env.ENGINE_API_MODE !== 'test') errors.push('ENGINE_API_MODE must be test');
+  errors.push(...remoteUrlErrors('DATABASE_URL', process.env.DATABASE_URL, ['postgres:', 'postgresql:'], true));
+  errors.push(...remoteUrlErrors('REDIS_URL', config.redis.url, ['redis:', 'rediss:'], true));
+  if ((process.env.QUEUE_HMAC_SECRET?.trim().length ?? 0) < 32) {
+    errors.push('QUEUE_HMAC_SECRET must contain at least 32 characters in deployed synthetic nonproduction');
+  }
+  errors.push(...deployedSyntheticOriginErrors());
+  errors.push(...encryptionConfigurationErrors());
+  errors.push(...deployedSyntheticProviderConfigurationErrors(process.env));
+  return [...new Set(errors)];
+}
+
 /** Validate required configuration and fail closed in production. */
-export function validateConfig(): { valid: boolean; errors: string[]; warnings: string[] } {
+export function validateConfig(
+  options: ConfigValidationOptions = {},
+): { valid: boolean; errors: string[]; warnings: string[] } {
   const errors = config.database.url ? [] : ['DATABASE_URL is required'];
   const warnings: string[] = [];
-  if (config.app.isProduction) {
+  const syntheticEnvironment = deployedSyntheticEnvironment();
+  if (syntheticEnvironment) {
+    errors.push(...deployedSyntheticConfigurationErrors(syntheticEnvironment, options));
+  } else if (config.app.isProduction) {
     errors.push(...productionConfigurationErrors());
     warnings.push(...productionConfigurationWarnings());
   }
@@ -383,7 +572,7 @@ export function validateConfig(): { valid: boolean; errors: string[]; warnings: 
   // process immediately rather than silently continuing. A misconfigured
   // deployment (e.g. missing Firebase credentials) would otherwise serve every
   // authenticated request as a 401 with no alerting.
-  if (config.app.isProduction && errors.length > 0) {
+  if ((config.app.isProduction || syntheticEnvironment) && errors.length > 0) {
     // eslint-disable-next-line no-console
     console.error(
       '[FATAL] Production startup aborted — missing required configuration:\n' +
@@ -396,4 +585,3 @@ export function validateConfig(): { valid: boolean; errors: string[]; warnings: 
 }
 
 export default config;
-

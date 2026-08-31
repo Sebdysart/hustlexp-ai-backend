@@ -909,6 +909,22 @@ describe('task.create', () => {
     await expect(makeCallerAsPoster().create(validInput)).rejects.toThrow('Live violation');
   });
 
+  it('maps the legacy task-materialization freeze to PRECONDITION_FAILED', async () => {
+    mockTaskService.create.mockResolvedValueOnce({
+      success: false,
+      error: {
+        code: 'LEGACY_TASK_MATERIALIZATION_FROZEN',
+        message: 'Legacy task creation is frozen.',
+      },
+    });
+
+    await expect(makeCallerAsPoster().create(validInput)).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: 'Legacy task creation is frozen.',
+      cause: { applicationCode: 'LEGACY_TASK_MATERIALIZATION_FROZEN' },
+    });
+  });
+
   it('rejects input with empty title', async () => {
     await expect(
       makeCallerAsPoster().create({ ...validInput, title: '' })

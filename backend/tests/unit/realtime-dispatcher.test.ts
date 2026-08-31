@@ -16,10 +16,17 @@ vi.mock('../../src/logger', () => ({
 const mockGetConnections = vi.fn();
 const mockGetAllConnections = vi.fn();
 const mockForceDisconnectUser = vi.fn();
+const mockTeardownConnection = vi.fn();
 vi.mock('../../src/realtime/connection-registry', () => ({
   getConnections: (...args: unknown[]) => mockGetConnections(...args),
   getAllConnections: (...args: unknown[]) => mockGetAllConnections(...args),
   forceDisconnectUser: (...args: unknown[]) => mockForceDisconnectUser(...args),
+  teardownConnection: (...args: unknown[]) => mockTeardownConnection(...args),
+}));
+
+const mockPublishUserRealtimeEvent = vi.fn();
+vi.mock('../../src/realtime/redis-pubsub', () => ({
+  publishUserRealtimeEvent: (...args: unknown[]) => mockPublishUserRealtimeEvent(...args),
 }));
 
 const mockCanReceiveProgressEvent = vi.fn();
@@ -73,6 +80,7 @@ describe('Realtime Dispatcher', () => {
     mockGetConnections.mockReturnValue(undefined);
     mockGetAllConnections.mockReturnValue(new Map());
     mockCanReceiveProgressEvent.mockResolvedValue(true);
+    mockPublishUserRealtimeEvent.mockResolvedValue(undefined);
   });
 
   // ===========================================================================
@@ -92,7 +100,7 @@ describe('Realtime Dispatcher', () => {
       await expect(dispatchTaskProgress(event)).resolves.toBeUndefined();
     });
 
-    it('sends to poster and worker when both are connected', async () => {
+    it('publishes canonical personal events for poster and worker', async () => {
       (db.query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
         rows: [{ poster_id: 'poster-1', worker_id: 'worker-1', risk_level: 'low' }],
       });
@@ -100,22 +108,25 @@ describe('Realtime Dispatcher', () => {
       mockNotBanned();
       mockNotBanned();
 
-      const posterConn = createMockConn();
-      const workerConn = createMockConn();
+      const event = createMockEvent();
+      await dispatchTaskProgress(event);
 
-      mockGetConnections.mockImplementation((userId: string) => {
-        if (userId === 'poster-1') return new Set([posterConn]);
-        if (userId === 'worker-1') return new Set([workerConn]);
-        return undefined;
-      });
-
-      await dispatchTaskProgress(createMockEvent());
-
-      expect(posterConn._enqueue).toHaveBeenCalled();
-      expect(workerConn._enqueue).toHaveBeenCalled();
+      expect(mockPublishUserRealtimeEvent).toHaveBeenCalledTimes(2);
+      expect(mockPublishUserRealtimeEvent).toHaveBeenCalledWith(
+        'poster-1',
+        'task.progress_updated',
+        event.payload,
+        event.payload.occurredAt,
+      );
+      expect(mockPublishUserRealtimeEvent).toHaveBeenCalledWith(
+        'worker-1',
+        'task.progress_updated',
+        event.payload,
+        event.payload.occurredAt,
+      );
     });
 
-    it('skips users without active connections', async () => {
+    it('publishes without relying on process-local worker connections', async () => {
       (db.query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
         rows: [{ poster_id: 'poster-1', worker_id: null, risk_level: 'low' }],
       });
@@ -125,9 +136,16 @@ describe('Realtime Dispatcher', () => {
       mockGetConnections.mockReturnValue(undefined);
 
       await expect(dispatchTaskProgress(createMockEvent())).resolves.toBeUndefined();
+      expect(mockPublishUserRealtimeEvent).toHaveBeenCalledOnce();
+      expect(mockPublishUserRealtimeEvent).toHaveBeenCalledWith(
+        'poster-1',
+        'task.progress_updated',
+        expect.objectContaining({ taskId: 'task-123' }),
+        expect.any(String),
+      );
     });
 
-    it('skips closed connections', async () => {
+    it('does not consult stale process-local connections before Redis publication', async () => {
       (db.query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
         rows: [{ poster_id: 'poster-1', worker_id: null, risk_level: 'low' }],
       });
@@ -139,24 +157,19 @@ describe('Realtime Dispatcher', () => {
 
       await dispatchTaskProgress(createMockEvent());
       expect(closedConn._enqueue).not.toHaveBeenCalled();
+      expect(mockPublishUserRealtimeEvent).toHaveBeenCalledOnce();
     });
 
-    it('marks connection as closed on write error', async () => {
+    it('propagates Redis publication failure so the worker job does not report success', async () => {
       (db.query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
         rows: [{ poster_id: 'poster-1', worker_id: null, risk_level: 'low' }],
       });
       // ban check: poster not banned
       mockNotBanned();
 
-      const badConn = {
-        userId: 'poster-1',
-        controller: { enqueue: vi.fn().mockImplementation(() => { throw new Error('write error'); }) },
-        closed: false,
-      };
-      mockGetConnections.mockReturnValue(new Set([badConn]));
+      mockPublishUserRealtimeEvent.mockRejectedValueOnce(new Error('Redis publish failed'));
 
-      await dispatchTaskProgress(createMockEvent());
-      expect(badConn.closed).toBe(true);
+      await expect(dispatchTaskProgress(createMockEvent())).rejects.toThrow('Redis publish failed');
     });
 
     it('respects PlanService filtering', async () => {
@@ -172,6 +185,7 @@ describe('Realtime Dispatcher', () => {
       await dispatchTaskProgress(createMockEvent());
       // Poster was filtered out by PlanService (ban check is not reached when PlanService returns false)
       expect(posterConn._enqueue).not.toHaveBeenCalled();
+      expect(mockPublishUserRealtimeEvent).not.toHaveBeenCalled();
     });
 
     it('skips banned users and does not write to their connections', async () => {
@@ -189,6 +203,7 @@ describe('Realtime Dispatcher', () => {
       // forceDisconnectUser called and no enqueue sent
       expect(mockForceDisconnectUser).toHaveBeenCalledWith('poster-banned');
       expect(posterConn._enqueue).not.toHaveBeenCalled();
+      expect(mockPublishUserRealtimeEvent).not.toHaveBeenCalled();
     });
   });
 
@@ -267,6 +282,28 @@ describe('Realtime Dispatcher', () => {
 
       expect(mockForceDisconnectUser).toHaveBeenCalledWith('banned-recipient');
       expect(conn._enqueue).not.toHaveBeenCalled();
+    });
+
+    it('tears down the exact connection when enqueue fails', async () => {
+      mockNotBanned();
+      const enqueueError = new Error('controller closed');
+      const conn = {
+        userId: 'recipient-failed',
+        controller: { enqueue: vi.fn(() => { throw enqueueError; }) },
+        closed: false,
+      };
+      mockGetConnections.mockReturnValue(new Set([conn]));
+
+      await dispatchNewMessage({
+        messageId: 'msg-failed',
+        taskId: 'task-failed',
+        senderId: 'sender-failed',
+        recipientId: 'recipient-failed',
+        createdAt: new Date().toISOString(),
+      });
+
+      expect(mockTeardownConnection).toHaveBeenCalledOnce();
+      expect(mockTeardownConnection).toHaveBeenCalledWith('recipient-failed', conn);
     });
   });
 

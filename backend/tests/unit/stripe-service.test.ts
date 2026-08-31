@@ -4,7 +4,8 @@
  * Tests payment intent creation, amount validation, webhook verification,
  * idempotent event processing, transfer/refund stubbing, and circuit breaker integration.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -50,6 +51,11 @@ const mockDb = vi.mocked(db);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  enableControlledStripePaymentTestCohortV7();
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe('StripeService', () => {
@@ -79,6 +85,22 @@ describe('StripeService', () => {
   // createTransfer — with HX_STRIPE_STUB
   // -------------------------------------------------------------------------
   describe('createTransfer (stub mode)', () => {
+    it('does not let the local Stripe stub bypass the real-settlement freeze', async () => {
+      process.env.HX_STRIPE_STUB = '1';
+      vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'frozen');
+
+      const result = await StripeService.createTransfer({
+        escrowId: 'esc-frozen', taskId: 'task-frozen', workerId: 'worker-frozen',
+        workerStripeAccountId: 'acct_test', amount: 4000,
+      });
+
+      expect(result).toMatchObject({
+        success: false,
+        error: { code: 'PAYMENT_CREATION_FROZEN' },
+      });
+      delete process.env.HX_STRIPE_STUB;
+    });
+
     it('returns stub transfer when HX_STRIPE_STUB=1', async () => {
       process.env.HX_STRIPE_STUB = '1';
 

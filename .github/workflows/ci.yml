@@ -20,12 +20,18 @@ on:
         description: "Build job result"
         value: ${{ jobs.build.result }}
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   NODE_VERSION: 22
+  HX_CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  HX_BUILD_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+  HX_BUILD_SOURCE_CLEAN: 'true'
 
 jobs:
   typecheck:
@@ -33,10 +39,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ env.HX_CANDIDATE_SHA }}
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+      - name: Verify exact candidate excludes bundled local tooling
+        env:
+          HX_EXACT_CANDIDATE_SHA: ${{ env.HX_CANDIDATE_SHA }}
+        run: node scripts/verify-local-tools-absence.mjs
       - run: npm ci
       - name: "TypeScript — zero errors (backend/src/)"
         run: npx tsc --noEmit
@@ -46,10 +59,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ env.HX_CANDIDATE_SHA }}
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+      - name: Verify exact candidate excludes bundled local tooling
+        env:
+          HX_EXACT_CANDIDATE_SHA: ${{ env.HX_CANDIDATE_SHA }}
+        run: node scripts/verify-local-tools-absence.mjs
       - run: npm ci
       - name: "Lint — zero warnings (backend/src/)"
         run: npx eslint backend/src/ --ext .ts --max-warnings 0
@@ -58,22 +78,61 @@ jobs:
     name: "Tests — zero failures"
     runs-on: ubuntu-latest
     needs: typecheck
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: hx_ci_runner
+          POSTGRES_PASSWORD: hx_ci_password
+          POSTGRES_DB: hx_ci_admin_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hx_ci_runner -d hx_ci_admin_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 16379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     env:
       NODE_ENV: test
-      DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
-      UPSTASH_REDIS_REST_URL: ${{ secrets.TEST_UPSTASH_REDIS_REST_URL }}
-      UPSTASH_REDIS_REST_TOKEN: ${{ secrets.TEST_UPSTASH_REDIS_REST_TOKEN }}
-      FIREBASE_PROJECT_ID: test-project
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ env.HX_CANDIDATE_SHA }}
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+      - name: Verify exact candidate excludes bundled local tooling
+        env:
+          HX_EXACT_CANDIDATE_SHA: ${{ env.HX_CANDIDATE_SHA }}
+        run: node scripts/verify-local-tools-absence.mjs
       - run: npm ci
-      - name: "Tests — zero failures"
-        run: npx vitest run --reporter=verbose
-        timeout-minutes: 10
+      - name: "Tests — zero failures and zero skipped/todo"
+        env:
+          DATABASE_URL: postgresql://hx_ci_runner:hx_ci_password@127.0.0.1:5432/hx_ci_admin_test
+          REDIS_URL: redis://127.0.0.1:16379
+          HX_ALLOW_CI_DB_RECREATE: 'true'
+          HX_EXACT_CANDIDATE_SHA: ${{ env.HX_CANDIDATE_SHA }}
+        run: npm run test:required
+        timeout-minutes: 60
+      - name: Preserve exact Vitest evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vitest-${{ env.HX_CANDIDATE_SHA }}
+          path: reports/vitest-required.json
+          if-no-files-found: error
+          retention-days: 30
       - name: Production role readiness contract
         run: npm run verify:production-role-readiness:contract
       - name: Production legal approval contract
@@ -84,10 +143,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ env.HX_CANDIDATE_SHA }}
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+      - name: Verify exact candidate excludes bundled local tooling
+        env:
+          HX_EXACT_CANDIDATE_SHA: ${{ env.HX_CANDIDATE_SHA }}
+        run: node scripts/verify-local-tools-absence.mjs
       - run: npm ci
       - name: "Security audit — production dependencies"
         run: npm audit --omit=dev --audit-level=high
@@ -96,12 +162,58 @@ jobs:
     name: Build Validation
     runs-on: ubuntu-latest
     needs: [typecheck, test]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: hx_ci_runner
+          POSTGRES_PASSWORD: hx_ci_password
+          POSTGRES_DB: hx_ci_admin_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hx_ci_runner -d hx_ci_admin_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ env.HX_CANDIDATE_SHA }}
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+      - name: Verify exact candidate excludes bundled local tooling
+        env:
+          HX_EXACT_CANDIDATE_SHA: ${{ env.HX_CANDIDATE_SHA }}
+        run: node scripts/verify-local-tools-absence.mjs
       - run: npm ci
       - name: Validate build compiles cleanly
         run: npm run compile
+      - name: Execute fresh, upgrade, replay, and recovery migrations on PostgreSQL
+        env:
+          NODE_ENV: test
+          DATABASE_URL: postgresql://hx_ci_runner:hx_ci_password@127.0.0.1:5432/hx_ci_admin_test
+          HX_ALLOW_CI_DB_RECREATE: 'true'
+          TASK_LOCATION_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+          TASK_LOCATION_ENCRYPTION_KEY_ID: hx-ci-location-v1
+        run: node scripts/verify-engine-migrations-postgres.mjs
+      - name: Build production container
+        env:
+          IMAGE_TAG: hustlexp-backend-ci:${{ env.HX_CANDIDATE_SHA }}
+        run: |
+          docker build \
+            --build-arg GITHUB_SHA="${HX_CANDIDATE_SHA}" \
+            --tag "${IMAGE_TAG}" \
+            .
+      - name: Verify exact production image migration artifact
+        env:
+          IMAGE_TAG: hustlexp-backend-ci:${{ env.HX_CANDIDATE_SHA }}
+        run: |
+          expected_digest="$(tr -d '[:space:]' < backend/database/engine-migration-artifact.sha256)"
+          source_digest="$(node dist/backend/src/jobs/engine-migration-manifest.js)"
+          image_digest="$(docker run --rm --entrypoint node "${IMAGE_TAG}" dist/backend/src/jobs/engine-migration-manifest.js)"
+          test "$source_digest" = "$expected_digest"
+          test "$image_digest" = "$expected_digest"

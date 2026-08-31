@@ -1,32 +1,17 @@
-import type { ServiceResult } from '../../types.js';
+/**
+ * Deprecated import bridge for the historical quote-payment recovery lane.
+ * New financial effects use FinancialProviderPorts and the Universal V1
+ * financial application service.
+ */
+export type {
+  LegacyQuotePaymentRecoveryPort,
+  QuotePaymentRecoveryReason,
+  RecoverLegacyQuoteFinancialSecurityInput,
+  RecoverLegacyQuoteFinancialSecurityResult,
+} from './LegacyQuotePaymentRecoveryPort.js';
 
-export interface CreateQuotePaymentInput {
-  quoteId: string;
-  quoteVersionId: string;
-  posterId: string;
-  amountCents: number;
-  platformFeeCents?: number | null;
-  description?: string;
-}
-
-export interface VerifyQuotePaymentInput {
-  paymentIntentId: string;
-  quoteId: string;
-  quoteVersionId: string;
-  posterId: string;
-  amountCents: number;
-}
-
-export interface QuotePaymentProvider {
-  createPaymentIntent(
-    input: CreateQuotePaymentInput,
-  ): Promise<ServiceResult<{
-    paymentIntentId: string;
-    clientSecret: string;
-    amountCents: number;
-  }>>;
-
-  verifySucceededPayment(
-    input: VerifyQuotePaymentInput,
-  ): Promise<ServiceResult<void>>;
-}
+export type {
+  LegacyQuotePaymentRecoveryPort as QuotePaymentProvider,
+  RecoverLegacyQuoteFinancialSecurityInput as RecoverQuotePaymentInput,
+  RecoverLegacyQuoteFinancialSecurityResult as RecoverQuotePaymentResult,
+} from './LegacyQuotePaymentRecoveryPort.js';

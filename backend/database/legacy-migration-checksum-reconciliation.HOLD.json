@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "hustlexp.legacy-migration-checksum-reconciliation/v1",
+  "status": "HOLD",
+  "payload": {
+    "sourceCommitSha": "0000000000000000000000000000000000000000",
+    "preparedBy": "UNASSIGNED_PREPARER",
+    "reviewedBy": "UNASSIGNED_REVIEWER",
+    "preparedAt": "1970-01-01T00:00:00.000Z",
+    "reviewedAt": "1970-01-01T00:00:00.000Z",
+    "target": {
+      "environmentId": "UNASSIGNED_TARGET",
+      "databaseName": "UNASSIGNED_DATABASE",
+      "roleName": "UNASSIGNED_ROLE",
+      "serverAddress": "UNASSIGNED_ADDRESS",
+      "serverPort": 0,
+      "serverVersionNum": "UNASSIGNED_VERSION",
+      "clusterName": "UNASSIGNED_CLUSTER",
+      "fingerprint": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "migrations": []
+  },
+  "authorization": null
+}

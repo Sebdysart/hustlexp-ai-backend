@@ -78,6 +78,7 @@ function makeAdminCaller() {
 describe('insurance router', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockDb.query.mockReset();
   });
 
   // =========================================================================
@@ -187,45 +188,13 @@ describe('insurance router', () => {
   // reviewClaim (admin)
   // =========================================================================
   describe('reviewClaim', () => {
-    it('approves claim and returns success', async () => {
-      mockInsurance.reviewClaim.mockResolvedValue({ success: true, data: true } as any);
-
-      const caller = makeAdminCaller();
-      const result = await caller.reviewClaim({
+    it.each([true, false])('holds approved=%s before claim state can change', async (approved) => {
+      await expect(makeAdminCaller().reviewClaim({
         claim_id: UUID2,
-        approved: true,
-        review_notes: 'Looks legitimate and well documented',
-      });
-
-      expect(result.success).toBe(true);
-      expect(result.message).toBe('Claim approved');
-    });
-
-    it('denies claim and returns message', async () => {
-      mockInsurance.reviewClaim.mockResolvedValue({ success: true, data: true } as any);
-
-      const caller = makeAdminCaller();
-      const result = await caller.reviewClaim({
-        claim_id: UUID2,
-        approved: false,
-        review_notes: 'Insufficient evidence provided for claim',
-      });
-
-      expect(result.message).toBe('Claim denied');
-    });
-
-    it('throws on service failure', async () => {
-      mockInsurance.reviewClaim.mockResolvedValue({
-        success: false,
-        error: { message: 'Claim not found' },
-      } as any);
-
-      const caller = makeAdminCaller();
-      await expect(caller.reviewClaim({
-        claim_id: UUID2,
-        approved: true,
-        review_notes: 'Claim review notes here',
-      })).rejects.toThrow('Claim not found');
+        approved,
+        review_notes: 'Claim decisions require a separately approved authority command.',
+      })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+      expect(mockInsurance.reviewClaim).not.toHaveBeenCalled();
     });
   });
 
@@ -233,25 +202,10 @@ describe('insurance router', () => {
   // payClaim (admin)
   // =========================================================================
   describe('payClaim', () => {
-    it('pays claim on success', async () => {
-      mockInsurance.payClaim.mockResolvedValue({ success: true, data: true } as any);
-
-      const caller = makeAdminCaller();
-      const result = await caller.payClaim({ claim_id: UUID2 });
-
-      expect(result.success).toBe(true);
-      expect(result.message).toBe('Claim paid successfully');
-    });
-
-    it('throws on failure', async () => {
-      mockInsurance.payClaim.mockResolvedValue({
-        success: false,
-        error: { message: 'Insufficient funds' },
-      } as any);
-
-      const caller = makeAdminCaller();
-      await expect(caller.payClaim({ claim_id: UUID2 }))
-        .rejects.toThrow('Insufficient funds');
+    it('holds payout and replay paths before the insurance service can create a value effect', async () => {
+      await expect(makeAdminCaller().payClaim({ claim_id: UUID2 }))
+        .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+      expect(mockInsurance.payClaim).not.toHaveBeenCalled();
     });
   });
 });

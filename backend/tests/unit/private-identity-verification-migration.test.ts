@@ -2,10 +2,13 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-const sql = readFileSync(resolve(
-  process.cwd(),
-  'backend/database/migrations/20260721_private_identity_verification_contract.sql',
-), 'utf8');
+const sql = readFileSync(
+  resolve(
+    process.cwd(),
+    'backend/database/migrations/20260721_private_identity_verification_contract.sql'
+  ),
+  'utf8'
+);
 
 describe('private identity verification migration', () => {
   it('stores provider evidence without documents, selfies, raw payloads, or public URLs', () => {
@@ -30,7 +33,9 @@ describe('private identity verification migration', () => {
     expect(sql).toContain('identity_verification_is_current_v1');
     expect(sql).toContain("NEW.automation_classification = 'CONTROLLED_TEST'");
     expect(sql).toContain('HXIDV20: assigned worker lacks current % identity evidence');
-    expect(sql).toContain('HXIDV21: accept-ready offer lacks environment-matched identity evidence');
+    expect(sql).toContain(
+      'HXIDV21: accept-ready offer lacks environment-matched identity evidence'
+    );
   });
 
   it('is append-only, replay-safe, consent-bound, expiring, and revocable', () => {
@@ -45,15 +50,17 @@ describe('private identity verification migration', () => {
     const runner = [
       readFileSync(
         resolve(process.cwd(), 'backend/src/jobs/engine-automation-migration.ts'),
-        'utf8',
+        'utf8'
       ),
       readFileSync(
         resolve(process.cwd(), 'backend/src/jobs/engine-automation-migration-files.ts'),
-        'utf8',
+        'utf8'
       ),
     ].join('\n');
     const dockerfile = readFileSync(resolve(process.cwd(), 'Dockerfile'), 'utf8');
     expect(runner).toContain('20260721_private_identity_verification_contract');
-    expect(dockerfile).toContain('20260721_private_identity_verification_contract.sql');
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
+    );
   });
 });

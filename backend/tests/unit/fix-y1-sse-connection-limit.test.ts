@@ -16,6 +16,7 @@ const {
   mockDbQuery,
   mockAddConnection,
   mockRemoveConnection,
+  mockTeardownConnection,
   mockSubscribeToRoom,
   mockUnsubscribeAllRooms,
   mockGetUserRoomKey,
@@ -25,6 +26,7 @@ const {
   mockDbQuery: vi.fn(),
   mockAddConnection: vi.fn(),
   mockRemoveConnection: vi.fn(),
+  mockTeardownConnection: vi.fn(),
   mockSubscribeToRoom: vi.fn(),
   mockUnsubscribeAllRooms: vi.fn(),
   mockGetUserRoomKey: vi.fn((userId: string) => `room:user:${userId}`),
@@ -42,6 +44,7 @@ vi.mock('../../src/db', () => ({
 vi.mock('../../src/realtime/connection-registry', () => ({
   addConnection: mockAddConnection,
   removeConnection: mockRemoveConnection,
+  teardownConnection: mockTeardownConnection,
   getConnections: vi.fn().mockReturnValue(undefined),
   getAllConnections: vi.fn().mockReturnValue(new Map()),
 }));
@@ -108,6 +111,12 @@ function setupAuthSuccess() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockTeardownConnection.mockImplementation((userId, conn) => {
+    if (conn.teardownComplete) return;
+    conn.teardownComplete = true;
+    conn.closed = true;
+    mockRemoveConnection(userId, conn);
+  });
   mockInitializePubSub.mockImplementation(() => { /* no-op */ });
 });
 
@@ -195,7 +204,7 @@ describe('Bug 3 – SSE addConnection limit closes stream gracefully, no unhandl
     // Read the initial 'connected' event to trigger start()
     const reader = response.body!.getReader();
     await reader.read();
-    reader.cancel();
+    await reader.cancel();
 
     expect(mockAddConnection).toHaveBeenCalledWith(
       mockUser.id,
@@ -216,7 +225,7 @@ describe('Bug 3 – SSE addConnection limit closes stream gracefully, no unhandl
 
     const reader = response.body!.getReader();
     const { value } = await reader.read();
-    reader.cancel();
+    await reader.cancel();
 
     expect(value).toBeInstanceOf(Uint8Array);
     const text = new TextDecoder().decode(value);

@@ -131,6 +131,8 @@ export interface ControlledOccurrenceResult {
   occurrenceId?: string;
   occurrenceNumber?: number;
   pauseCode?: string;
+  bridgeIntentSha256?: string;
+  blockerCodes?: string[];
   approvalRequestId?: string;
   scheduleExceptionId?: string;
 }

@@ -8,7 +8,7 @@
 
 import { TRPCError } from '@trpc/server';
 import { router, publicProcedure, protectedProcedure, hustlerProcedure, Schemas } from '../trpc.js';
-import { db } from '../db.js';
+import { db, isUniqueViolation } from '../db.js';
 import { logger } from '../logger.js';
 import { XPService } from '../services/XPService.js';
 import { EarnedVerificationUnlockService } from '../services/EarnedVerificationUnlockService.js';
@@ -76,6 +76,7 @@ async function toMobileUser(user: User) {
     // Extra fields the app may need
     hasCompletedOnboarding: user.onboarding_completed_at != null,
     defaultMode: user.default_mode,
+    profileRequiresCompletion: user.is_minor === true,
   };
 }
 
@@ -278,8 +279,9 @@ export const userRouter = router({
       // Without this, an attacker can supply their own valid Firebase token (for
       // their UID) but a victim's email address, causing the OR-based SELECT below
       // to return the victim's profile row and leak it to the attacker.
-      // Sign-in-with-Apple and some OAuth providers omit email from the token —
-      // fail-open for those cases (decodedToken.email is undefined/null).
+      // Sign-in-with-Apple and some OAuth providers omit email from the token.
+      // That does not block UID-owned registration, but an email claim is never
+      // sufficient authority to retrieve or relink an existing profile.
       // --------------------------------------------------------------------------
       if (decodedToken.email && decodedToken.email.toLowerCase() !== input.email.toLowerCase()) {
         throw new TRPCError({
@@ -357,7 +359,7 @@ export const userRouter = router({
       // row when it is NOT banned — a legitimately erased non-banned user. A row that
       // is DELETED AND banned still triggers the FORBIDDEN guard.
       const bannedByEmail = await db.query<{ id: string }>(
-        `SELECT id FROM users WHERE email = $1
+        `SELECT id FROM users WHERE lower(email) = lower($1)
           AND (is_banned = true OR account_status = 'SUSPENDED')
           AND NOT (account_status = 'DELETED' AND is_banned = false)`,
         [input.email]
@@ -369,22 +371,14 @@ export const userRouter = router({
       // Normalize role: iOS sends "hustler" but DB stores "worker"
       const dbMode = normalizeRole(input.defaultMode);
 
-      // A64-1 FIX: When decodedToken.email is absent (anonymous, phone, or
-      // Sign-in-with-Apple auth), the email guard above was skipped. To prevent
-      // IDOR — an attacker supplying a victim's email with their own valid token —
-      // we only match by firebase_uid when the token has no email. Matching by
-      // email without a token-verified email would allow any anonymous-auth user
-      // to claim another user's profile just by knowing their email address.
-      // Check if user already exists
-      const existing = decodedToken.email
-        ? await db.query<User>(
-            'SELECT * FROM users WHERE firebase_uid = $1 OR email = $2',
-            [input.firebaseUid, input.email]
-          )
-        : await db.query<User>(
-            'SELECT * FROM users WHERE firebase_uid = $1',
-            [input.firebaseUid]
-          );
+      // Profile retrieval is UID-only. Even a verified token email is not
+      // relink authority: an address can be recycled, stale, or already bound
+      // to a different Firebase identity. Such collisions must use a separately
+      // reviewed account-recovery flow and can never return another profile.
+      const existing = await db.query<User>(
+        'SELECT * FROM users WHERE firebase_uid = $1',
+        [input.firebaseUid]
+      );
 
       if (existing.rows.length > 0) {
         let existingUser: User | null = existing.rows[0];
@@ -420,16 +414,40 @@ export const userRouter = router({
           if (existingUser.is_minor === true && existingUser.firebase_uid === input.firebaseUid) {
             const verified = await db.query<User>(
               `UPDATE users
-                  SET date_of_birth = $2, is_minor = false, updated_at = NOW()
-                WHERE id = $1 AND firebase_uid = $3
+                  SET full_name = $2,
+                      default_mode = $3,
+                      date_of_birth = $4,
+                      is_minor = false,
+                      updated_at = NOW()
+                WHERE id = $1 AND firebase_uid = $5
                 RETURNING *`,
-              [existingUser.id, input.dateOfBirth, input.firebaseUid],
+              [
+                existingUser.id,
+                input.fullName,
+                dbMode,
+                input.dateOfBirth,
+                input.firebaseUid,
+              ],
             );
             existingUser = verified.rows[0] ?? existingUser;
+            await invalidateAuthCacheForUser(existingUser.id, input.firebaseUid, false);
           }
           // Return existing user instead of error (handles re-registration from social auth)
           return await toMobileUser(existingUser);
         }
+      }
+
+      const emailCollision = await db.query<{ id: string }>(
+        `SELECT id FROM users
+          WHERE lower(email) = lower($1) AND firebase_uid IS DISTINCT FROM $2
+          LIMIT 1`,
+        [input.email, input.firebaseUid]
+      );
+      if (emailCollision.rows.length > 0) {
+        throw new TRPCError({
+          code: 'CONFLICT',
+          message: 'Account identity requires recovery before registration can continue.',
+        });
       }
 
       // Phone-less registrations start at trust_tier=0 (UNVERIFIED) to restrict
@@ -443,7 +461,15 @@ export const userRouter = router({
          ON CONFLICT (firebase_uid) DO NOTHING
          RETURNING *`,
         [input.firebaseUid, input.email, input.fullName, dbMode, input.dateOfBirth, age < 18, initialTrustTier]
-      );
+      ).catch((error: unknown) => {
+        if (isUniqueViolation(error)) {
+          throw new TRPCError({
+            code: 'CONFLICT',
+            message: 'Account identity requires recovery before registration can continue.',
+          });
+        }
+        throw error;
+      });
 
       if (result.rows.length === 0) {
         // Concurrent registration — another request inserted the same firebase_uid first.

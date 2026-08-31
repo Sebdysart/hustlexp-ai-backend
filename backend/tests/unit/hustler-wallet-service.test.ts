@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 vi.mock('../../src/config', () => ({
   config: { stripe: { secretKey: 'placeholder', platformFeePercent: 15 } },
@@ -57,6 +58,7 @@ function snapshot(overrides: Partial<WalletProviderSnapshot> = {}): WalletProvid
 
 function provider(overrides: Partial<WalletProvider> = {}): WalletProvider {
   return {
+    providerKind: 'APPROVED_PROVIDER',
     isConfigured: () => true,
     getSnapshot: vi.fn(async () => snapshot()),
     createStandardPayout: vi.fn(async () => ({
@@ -116,8 +118,11 @@ function baseQuery(sql: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  enableControlledStripePaymentTestCohortV7();
   mockDb.query.mockImplementation(async (sql: string) => baseQuery(sql) as never);
 });
+
+afterEach(() => vi.unstubAllEnvs());
 
 describe('HustlerWalletService.getOverview', () => {
   it('returns unknown provider balances instead of fabricated zero before setup', async () => {
@@ -227,6 +232,23 @@ describe('HustlerWalletService.reviewCashOut', () => {
 });
 
 describe('HustlerWalletService.requestCashOut', () => {
+  it('fails before provider or database access while real payouts are frozen', async () => {
+    vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'frozen');
+    const payoutProvider = provider();
+
+    const result = await HustlerWalletService.requestCashOut({
+      workerId: 'worker-1', amountCents: 5_000, idempotencyKey: 'cashout-key-frozen',
+    }, payoutProvider);
+
+    expect(result).toMatchObject({
+      success: false,
+      error: { code: 'PAYMENT_CREATION_FROZEN' },
+    });
+    expect(payoutProvider.getSnapshot).not.toHaveBeenCalled();
+    expect(payoutProvider.createStandardPayout).not.toHaveBeenCalled();
+    expect(mockDb.query).not.toHaveBeenCalled();
+  });
+
   it('records initiating before provider submission and returns only provider-backed submitted state', async () => {
     const calls: string[] = [];
     let inserted = false;

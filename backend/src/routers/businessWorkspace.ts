@@ -39,12 +39,16 @@ import {
   listBusinessRecurringTemplates,
 } from '../services/BusinessRecurringService.js';
 import { workspaceErrorCode } from './BusinessWorkspaceRouterErrors.js';
+import { LEGACY_TASK_MATERIALIZATION_FROZEN_CODE } from '../services/LegacyTaskMaterializationGuard.js';
 
 function unwrapWorkspace<T>(result: ServiceResult<T>): T {
   if (!result.success) {
     throw new TRPCError({
       code: workspaceErrorCode(result.error.code),
       message: result.error.message,
+      ...(result.error.code === LEGACY_TASK_MATERIALIZATION_FROZEN_CODE
+        ? { cause: { applicationCode: result.error.code } }
+        : {}),
     });
   }
   return result.data;

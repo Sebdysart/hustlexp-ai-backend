@@ -5,7 +5,12 @@
 
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { router, financialAdminProcedure, hustlerProcedure } from '../trpc.js';
+import {
+  financialAdminProcedure,
+  forbiddenConsequentialAdminMutation,
+  hustlerProcedure,
+  router,
+} from '../trpc.js';
 import { db } from '../db.js';
 
 /**
@@ -198,10 +203,7 @@ export const referralRouter = router({
         rewardCents: z.number().int().positive().default(500),
       }),
     )
-    .mutation(() => {
-      throw new TRPCError({
-        code: 'PRECONDITION_FAILED',
-        message: 'Cash referral rewards are not available in the Build-Now release.',
-      });
-    }),
+    .mutation(() => forbiddenConsequentialAdminMutation(
+      'Cash referral rewards are not available in the Build-Now release.',
+    )),
 });

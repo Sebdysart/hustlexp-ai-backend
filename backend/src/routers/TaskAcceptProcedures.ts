@@ -6,12 +6,24 @@ import { notifyTaskAccepted } from '../lib/task-lifecycle-notifications.js';
 import { TaskService } from '../services/TaskService.js';
 import { assertTaskMutationEligibility } from '../services/TaskEligibilityPolicy.js';
 import { getManifest } from '../services/TaskTemplateRegistry.js';
+import { hardAssignmentFailure, type HardAssignmentLane } from '../services/HardAssignmentGuard.js';
 import { hustlerProcedure, protectedProcedure, publicProcedure, Schemas } from '../trpc.js';
+
+function requireHardAssignment(lane: HardAssignmentLane): void {
+  const frozen = hardAssignmentFailure(lane);
+  if (!frozen) return;
+  throw new TRPCError({
+    code: 'PRECONDITION_FAILED',
+    message: frozen.error.message,
+    cause: { applicationCode: frozen.error.code },
+  });
+}
 
 export const TaskAcceptProcedures = {
 acceptWithConsent: hustlerProcedure
     .input(Schemas.acceptWithConsent)
     .mutation(async ({ ctx, input }) => {
+      requireHardAssignment('mutual_consent_accept');
       // MM6 FIX: All reads (template_slug, poster_id) moved INSIDE the transaction,
       // AFTER the SELECT FOR UPDATE lock, to eliminate the TOCTOU window where a
       // concurrent actor could change poster_id or template_slug between the pre-lock
@@ -123,6 +135,7 @@ getComplianceStatus: protectedProcedure
 accept: hustlerProcedure
     .input(z.object({ taskId: Schemas.uuid }))
     .mutation(async ({ ctx, input }) => {
+      requireHardAssignment('instant_accept');
       const result = await TaskService.accept({
         taskId: input.taskId,
         workerId: ctx.user.id,

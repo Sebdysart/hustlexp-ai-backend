@@ -56,6 +56,16 @@ vi.mock('@upstash/redis', () => ({
   },
 }));
 
+vi.mock('../../src/config', () => ({
+  config: {
+    redis: {
+      url: '',
+      restUrl: 'https://redis.upstash.io',
+      restToken: 'test-token',
+    },
+  },
+}));
+
 // ---------------------------------------------------------------------------
 // System-under-test — imported AFTER mocks
 // ---------------------------------------------------------------------------

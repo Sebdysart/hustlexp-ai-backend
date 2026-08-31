@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { db, type QueryFn } from '../db.js';
 import type { ServiceResult } from '../types.js';
+import { hardAssignmentFailure } from './HardAssignmentGuard.js';
 import { preparePublicClarification } from './TaskClarificationPolicy.js';
 import { TaskReservationService } from './TaskReservationService.js';
 import {
@@ -218,6 +219,8 @@ export async function acceptServiceBusinessOpportunity(input: {
   crewAssignmentId: string; offerDecisionId: string;
   taskId: string; idempotencyKey: string;
 }): Promise<ServiceResult<{ action: 'ACCEPTED'; reservationId: string; idempotencyReplayed: boolean }>> {
+  const frozen = hardAssignmentFailure('service_business_assignment');
+  if (frozen) return frozen;
   let evaluation: AssignmentEvaluation;
   try {
     evaluation = await evaluateAssignment(db.query.bind(db), {

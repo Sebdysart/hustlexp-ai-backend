@@ -19,6 +19,7 @@ const ALL_ACTIONS: BusinessAction[] = [
   'VIEW_BILLING',
   'MANAGE_BILLING',
   'ASSIGN_CREW',
+  'SUBMIT_ESTIMATE',
   'SUBMIT_PROOF',
 ];
 
@@ -55,6 +56,9 @@ describe('business workspace role policy', () => {
     expect(allowed('REQUESTER')).toEqual(['READ_WORKSPACE', 'CREATE_WORK_ORDER']);
     expect(allowed('VIEWER')).toEqual(['READ_WORKSPACE', 'VIEW_BILLING']);
     expect(allowed('CREW')).toEqual(['READ_WORKSPACE', 'SUBMIT_PROOF']);
+    for (const role of ['DISPATCHER', 'CREW', 'VIEWER'] as const) {
+      expect(businessRoleAllows(role, 'SUBMIT_ESTIMATE')).toBe(false);
+    }
   });
 
   it('allows only an owner to grant, revoke, or transfer ownership', () => {

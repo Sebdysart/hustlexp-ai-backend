@@ -24,6 +24,10 @@
  */
 
 import pg from 'pg';
+import {
+  assertDisposableLoadTestAuthority,
+  assertDisposableLoadTestReadback,
+} from './disposable-load-test-policy.js';
 
 // ============================================================================
 // CONFIG
@@ -34,6 +38,7 @@ if (!DATABASE_URL) {
   console.error('ERROR: DATABASE_URL environment variable required');
   process.exit(1);
 }
+const disposableAuthority = assertDisposableLoadTestAuthority(DATABASE_URL);
 
 const args = process.argv.slice(2);
 const scenarioArg = args.find((_, i) => args[i - 1] === '--scenario') || 'all';
@@ -702,12 +707,17 @@ async function getLockMetrics(pool: pg.Pool): Promise<{
 async function main() {
   const pool = new pg.Pool({
     connectionString: DATABASE_URL,
-    ssl: { rejectUnauthorized: false },
+    ssl: false,
     max: Math.min(DEFAULT_CONCURRENCY + 5, 50), // Cap pool size
     idleTimeoutMillis: 30000,
   });
 
   try {
+    const identity = await pool.query<{
+      database_name: string;
+      database_role: string;
+    }>('SELECT current_database() AS database_name, current_user AS database_role');
+    assertDisposableLoadTestReadback(disposableAuthority, identity.rows[0] ?? {});
     console.log('='.repeat(80));
     console.log('HUSTLEXP CONCURRENCY LOAD TEST');
     console.log('='.repeat(80));

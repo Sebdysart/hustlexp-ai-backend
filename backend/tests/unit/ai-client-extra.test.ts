@@ -22,6 +22,9 @@ import { z } from 'zod';
 // but use the real implementation for output-validation tests.
 // We hoist a spy ref that tests can override per-test.
 const mockValidateAIOutput = vi.fn();
+const spendMocks = vi.hoisted(() => ({
+  reserve: vi.fn(), settle: vi.fn(), unknown: vi.fn(), release: vi.fn(), fail: vi.fn(), query: vi.fn(),
+}));
 
 vi.mock('../../src/middleware/ai-guard', () => ({
   validateAIOutput: (output: string) => mockValidateAIOutput(output),
@@ -74,6 +77,11 @@ vi.mock('../../src/cache/redis', () => ({
   },
 }));
 
+vi.mock('../../src/ai/ExternalAIProviderAuthority', () => ({
+  assertExternalAIProviderIOAuthorized: vi.fn(),
+  isExternalAIProviderConfigured: () => true,
+}));
+
 vi.mock('../../src/logger', () => ({
   aiLogger: { child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() }) },
   logger:   { child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() }) },
@@ -85,20 +93,34 @@ vi.mock('../../src/logger', () => ({
 vi.mock('../../src/services/AIObservabilityService', () => ({
   AIObservabilityService: { record: vi.fn() },
 }));
+vi.mock('../../src/db', () => ({ db: { query: spendMocks.query } }));
+vi.mock('../../src/ai/UserAIBudget', () => ({
+  failAIOperation: spendMocks.fail,
+}));
+vi.mock('../../src/ai/AISpendAttemptLedger', () => ({
+  reserveAIProviderAttempt: spendMocks.reserve,
+  settleAIProviderAttempt: spendMocks.settle,
+  markAIProviderAttemptUnknown: spendMocks.unknown,
+  releaseAIProviderAttempt: spendMocks.release,
+}));
 
 vi.mock('../../src/middleware/circuit-breaker', () => ({
+  CircuitOpenError: class CircuitOpenError extends Error {},
   openaiBreaker:   { execute: vi.fn((fn: () => Promise<unknown>) => fn()) },
   groqBreaker:     { execute: vi.fn((fn: () => Promise<unknown>) => fn()) },
   deepseekBreaker: { execute: vi.fn((fn: () => Promise<unknown>) => fn()) },
   anthropicBreaker:{ execute: vi.fn((fn: () => Promise<unknown>) => fn()) },
+  alibabaBreaker:  { execute: vi.fn((fn: () => Promise<unknown>) => fn()) },
 }));
 
 // ─── Imports ──────────────────────────────────────────────────────────────────
-import { AIClient, call, callJSON, isConfigured } from '../../src/services/AIClient';
+import { AIClient, call as rawCall, callJSON as rawCallJSON, isConfigured } from '../../src/services/AIClient';
 import { redis } from '../../src/cache/redis';
 
 const mockRedisGet = vi.mocked(redis.get);
 const mockRedisSet = vi.mocked(redis.set);
+const call = (options: Record<string, unknown>) => rawCall({ operationId: `extra:${String(options.prompt)}`, ...options } as never);
+const callJSON = (options: Record<string, unknown>) => rawCallJSON({ operationId: `extra-json:${String(options.prompt)}`, ...options } as never);
 
 // Default validateAIOutput behaviour: pass-through (valid, no violations)
 function makePassThrough(output: string) {
@@ -117,6 +139,12 @@ beforeEach(() => {
   });
   // Default: pass everything through unchanged
   mockValidateAIOutput.mockImplementation(makePassThrough);
+  spendMocks.reserve.mockResolvedValue({ status: 'reserved', reservedCents: 11 });
+  spendMocks.settle.mockResolvedValue(undefined);
+  spendMocks.unknown.mockResolvedValue(undefined);
+  spendMocks.release.mockResolvedValue(undefined);
+  spendMocks.fail.mockResolvedValue(undefined);
+  spendMocks.query.mockResolvedValue({ rows: [] });
 });
 
 // ============================================================================
@@ -196,7 +224,7 @@ describe('call — caching', () => {
 
     expect(mockRedisSet).toHaveBeenCalledWith(
       expect.stringContaining('ai:cache:'),
-      'openai-response',
+      expect.stringContaining('"content":"openai-response"'),
       86400
     );
   });
@@ -232,7 +260,8 @@ describe('callJSON', () => {
     expect(mockOpenAICreate).toHaveBeenCalledWith(
       expect.objectContaining({
         response_format: { type: 'json_object' },
-      })
+      }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
 
@@ -303,7 +332,8 @@ describe('call — request parameters', () => {
       expect.objectContaining({
         temperature: 0.1,
         max_tokens: 512,
-      })
+      }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
 
@@ -318,7 +348,8 @@ describe('call — request parameters', () => {
       expect.objectContaining({
         temperature: 0.7,
         max_tokens: 1024,
-      })
+      }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
 
@@ -332,7 +363,8 @@ describe('call — request parameters', () => {
     expect(mockGroqCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         model: 'llama-3.3-70b',
-      })
+      }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
 });
@@ -464,7 +496,7 @@ describe('call — AI output validation', () => {
     // The value stored in cache must be the sanitized string, not the raw one
     expect(mockRedisSet).toHaveBeenCalledWith(
       expect.stringContaining('ai:cache:'),
-      sanitized,
+      expect.stringContaining(`"content":"${sanitized}"`),
       expect.any(Number),
     );
     expect(mockRedisSet).not.toHaveBeenCalledWith(

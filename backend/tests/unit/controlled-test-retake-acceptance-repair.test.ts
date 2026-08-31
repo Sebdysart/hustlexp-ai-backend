@@ -39,19 +39,30 @@ describe('controlled TEST retake acceptance repair', () => {
       expect(sql).toContain('OLD.worker_id IS NOT DISTINCT FROM NEW.worker_id');
     }
     expect(migration).toContain("action.action_type='ACCEPTED'");
-    expect(migration).toContain('HXOR9: controlled TEST task acceptance lacks current explicit worker acceptance');
+    expect(migration).toContain(
+      'HXOR9: controlled TEST task acceptance lacks current explicit worker acceptance'
+    );
     expect(liquidityMigration).toContain('hxos_local_test_liquidity_witness_current_v2');
-    expect(liquidityMigration).toContain('HXPC5: controlled TEST acceptance lacks capability-bound liquidity');
-    expect(convergenceMigration.match(/hxos_same_worker_proof_retake_continuation\(/g)).toHaveLength(5);
+    expect(liquidityMigration).toContain(
+      'HXPC5: controlled TEST acceptance lacks capability-bound liquidity'
+    );
+    expect(
+      convergenceMigration.match(/hxos_same_worker_proof_retake_continuation\(/g)
+    ).toHaveLength(5);
     expect(convergenceMigration).toContain('enforce_task_liquidity_cell_on_accept');
-    expect(convergenceMigration).toContain('HXLQ9: TEST liquidity cannot authorize production work');
+    expect(convergenceMigration).toContain(
+      'HXLQ9: TEST liquidity cannot authorize production work'
+    );
     for (const trigger of [
       'task_region_policy_accept_gate',
       'task_worker_eligibility_accept_gate',
       'task_template_policy_accept_gate',
       'task_clarification_accept_gate',
-    ]) expect(assignmentMigration).toContain(trigger);
-    expect(assignmentMigration.match(/NOT hxos_same_worker_proof_retake_continuation\(/g)).toHaveLength(4);
+    ])
+      expect(assignmentMigration).toContain(trigger);
+    expect(
+      assignmentMigration.match(/NOT hxos_same_worker_proof_retake_continuation\(/g)
+    ).toHaveLength(4);
   });
 
   it('registers and packages the forward migration', () => {
@@ -60,15 +71,22 @@ describe('controlled TEST retake acceptance repair', () => {
     );
     const dockerfile = readFileSync(resolve(process.cwd(), 'Dockerfile'), 'utf8');
 
-    expect(CONTROLLED_TEST_RETAKE_ACCEPTANCE_REPAIR_MIGRATION).toBe('20260721_controlled_test_retake_acceptance_repair');
-    expect(CONTROLLED_TEST_RETAKE_LIQUIDITY_REPAIR_MIGRATION).toBe('20260721_controlled_test_retake_liquidity_repair');
-    expect(CONTROLLED_TEST_RETAKE_GUARD_CONVERGENCE_MIGRATION).toBe('20260721_controlled_test_retake_guard_convergence');
-    expect(SAME_WORKER_RETAKE_ASSIGNMENT_GUARD_REPAIR_MIGRATION).toBe('20260721_same_worker_retake_assignment_guard_repair');
+    expect(CONTROLLED_TEST_RETAKE_ACCEPTANCE_REPAIR_MIGRATION).toBe(
+      '20260721_controlled_test_retake_acceptance_repair'
+    );
+    expect(CONTROLLED_TEST_RETAKE_LIQUIDITY_REPAIR_MIGRATION).toBe(
+      '20260721_controlled_test_retake_liquidity_repair'
+    );
+    expect(CONTROLLED_TEST_RETAKE_GUARD_CONVERGENCE_MIGRATION).toBe(
+      '20260721_controlled_test_retake_guard_convergence'
+    );
+    expect(SAME_WORKER_RETAKE_ASSIGNMENT_GUARD_REPAIR_MIGRATION).toBe(
+      '20260721_same_worker_retake_assignment_guard_repair'
+    );
     expect(spec?.name).toBe(SAME_WORKER_RETAKE_ASSIGNMENT_GUARD_REPAIR_MIGRATION);
     expect(spec?.candidatePaths[0]).toContain(assignmentMigrationFile);
-    expect(dockerfile).toContain(`/app/backend/database/migrations/${migrationFile}`);
-    expect(dockerfile).toContain(`/app/backend/database/migrations/${liquidityMigrationFile}`);
-    expect(dockerfile).toContain(`/app/backend/database/migrations/${convergenceMigrationFile}`);
-    expect(dockerfile).toContain(`/app/backend/database/migrations/${assignmentMigrationFile}`);
+    expect(dockerfile).toContain(
+      'COPY --from=builder /app/backend/database/migrations ./backend/database/migrations'
+    );
   });
 });

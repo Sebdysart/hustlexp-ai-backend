@@ -382,13 +382,10 @@ describe('capability.approveLicense', () => {
     } as any);
   });
 
-  it('approves license verification', async () => {
-    vi.mocked(LicenseVerificationService.approveLicense).mockResolvedValueOnce({ approved: true } as any);
-
-    const result = await makeCaller('test-uid', true).approveLicense({ verificationId: 'ver-1' });
-
-    expect(result).toEqual({ approved: true });
-    expect(LicenseVerificationService.approveLicense).toHaveBeenCalledWith('ver-1', 'test-uid', undefined);
+  it('holds approval before the unversioned verification service can mutate', async () => {
+    await expect(makeCaller('test-uid', true).approveLicense({ verificationId: 'ver-1' }))
+      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect(LicenseVerificationService.approveLicense).not.toHaveBeenCalled();
   });
 });
 
@@ -401,15 +398,12 @@ describe('capability.rejectLicense', () => {
     } as any);
   });
 
-  it('rejects license verification', async () => {
-    vi.mocked(LicenseVerificationService.rejectLicense).mockResolvedValueOnce({ rejected: true } as any);
-
-    const result = await makeCaller('test-uid', true).rejectLicense({
+  it('holds rejection before the unversioned verification service can mutate', async () => {
+    await expect(makeCaller('test-uid', true).rejectLicense({
       verificationId: 'ver-1',
       reason: 'Expired license',
-    });
-
-    expect(result).toEqual({ rejected: true });
+    })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect(LicenseVerificationService.rejectLicense).not.toHaveBeenCalled();
   });
 });
 

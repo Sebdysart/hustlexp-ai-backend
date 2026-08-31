@@ -11,12 +11,14 @@ import type { CapabilityProfile } from '../../src/services/CapabilityProfileServ
 import { queryFeed } from '../../src/services/FeedQueryService';
 import { TaskDiscoveryService } from '../../src/services/TaskDiscoveryService';
 import {
+  attestTestUserIdentity,
   cleanupTestData,
   createTestEscrow,
   createTestPool,
   createTestTask,
   createTestUser,
   hasDb,
+  promoteTestUserTrustSequentially,
 } from '../setup';
 
 let pool: pg.Pool;
@@ -53,26 +55,26 @@ async function createWorker(options: WorkerOptions = {}): Promise<{
   profile: CapabilityProfile;
 }> {
   const { id } = await createTestUser(pool);
+  const trustTier = options.trustTier ?? 2;
+  await promoteTestUserTrustSequentially(pool, id, trustTier);
+  await attestTestUserIdentity(pool, id, 'PRODUCTION');
   await pool.query(
     `UPDATE users
      SET default_mode = 'worker',
-         trust_tier = $2,
          date_of_birth = DATE '1990-01-01',
-         is_minor = $3,
-         is_banned = $4,
-         trust_hold = $5,
-         trust_hold_until = $6,
+         is_minor = $2,
+         is_banned = $3,
+         trust_hold = $4,
+         trust_hold_until = $5,
          account_status = 'ACTIVE',
-         is_verified = TRUE,
          phone = '+1206' || substr(replace(id::text, '-', ''), 1, 7),
-         stripe_connect_id = $7,
-         payouts_enabled = $8,
+         stripe_connect_id = $6,
+         payouts_enabled = $7,
          location_state = 'WA',
          location_city = 'Seattle'
      WHERE id = $1`,
     [
       id,
-      options.trustTier ?? 2,
       options.isMinor ?? false,
       options.isBanned ?? false,
       options.trustHold ?? false,
@@ -81,7 +83,7 @@ async function createWorker(options: WorkerOptions = {}): Promise<{
       options.payoutsEnabled ?? true,
     ],
   );
-  const profile = profileFor(id, options);
+  const profile = profileFor(id, { ...options, trustTier });
   if (options.profile !== false) {
     await pool.query(
       `INSERT INTO capability_profiles (
@@ -105,7 +107,13 @@ async function createPoster(): Promise<string> {
 }
 
 async function createFundedTask(posterId: string, state = 'OPEN', trustTierRequired = 1): Promise<string> {
-  const task = await createTestTask(pool, { posterId, state, trustTierRequired });
+  const task = await createTestTask(pool, {
+    posterId,
+    state,
+    trustTierRequired,
+    automationClassification: 'PRODUCTION',
+    productionPolicyFixture: 'GOVERNED_ISOLATED',
+  });
   await createTestEscrow(pool, task.id, 'FUNDED');
   return task.id;
 }

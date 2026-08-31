@@ -18,6 +18,42 @@ Source-locked scope observed on `2026-08-25` in the clean site worktree at commi
 
 Those counts are source-dated inventory, not proof of live deployment or current callers. Recompute them at the exact cutover candidate.
 
+## Current convergence evidence
+
+The paired web convergence worktree now carries a deterministic machine matrix at
+`hustlexp-site/docs/architecture/supabase-edge-authority-matrix.json`, rendered as
+`SUPABASE_EDGE_AUTHORITY_MATRIX.md` and enforced by
+`verifySupabaseEdgeAuthorityMatrix.mjs`. Its 2026-08-28 local source readback
+classifies all 49 Edge Functions as 16 acquisition/read overlays, three backend
+proxies, 23 competing writers, and seven obsolete functions. It also inventories
+both shared modules, source-observed relation/RPC/storage mutations, and static
+repository callers.
+
+The paired deployment policy permits only eight functions in a nonproduction
+candidate and denies 41. In addition to every competing writer and obsolete
+function, `quote-engine-link` and `inbound-notify` are explicit authentication
+holds: the former still uses a shared engine key (including mutable database
+fallback), while the latter has an `UNSPECIFIED` gateway posture and no
+request-level authentication. Neither may be requested or re-allowlisted until
+a named workload-authentication contract and explicit gateway posture are
+independently approved. The parsed configuration evidence is 26
+`EXPLICIT_FALSE`, zero `EXPLICIT_TRUE`, and 23 `UNSPECIFIED` functions, bound to
+the exact `supabase/config.toml` digest.
+
+That matrix is deliberately not cutover authority. It records zero hosted disable
+receipts and zero functions safe to disable. Hosted deployment, caller, revision,
+and enabled-state truth remain `READBACK_REQUIRED`; the three locally observed
+backend replacements are unsigned context rather than parity certification. The
+current transition ledger is still pinned to its older exact backend evidence and
+is stale relative to this convergence branch. A future release manifest must bind
+the exact signed web and backend revisions plus the regenerated matrix and
+transition receipts before any caller may be redirected or function disabled.
+
+The Edge deployment boundary must also bind the exact `supabase/config.toml`
+digest and every per-function `verify_jwt` posture. Function-directory hashes
+alone are insufficient because gateway authentication can change without an
+Edge source edit.
+
 The canonical engine has already started the replacement:
 
 - `backend/database/migrations/010_web_platform_tables.sql`
@@ -47,8 +83,12 @@ Those routes replace only a subset of the Supabase surface. In particular, `hust
 
 - Freeze new Supabase schema work except production fixes.
 - Export the live schema, row counts, constraints, triggers, functions, cron jobs, storage objects, auth identities, and secret names.
-- Classify each Edge Function as public API, admin API, webhook, scheduled job, worker, or dead code.
-- Record callers for every function. The 145 historical migrations are evidence, not a safe production install script.
+- Classify each Edge Function exactly once as acquisition/read overlay, backend
+  proxy, competing writer, or obsolete, while separately recording its HTTP,
+  webhook, scheduled, worker, and administrative surfaces.
+- Record source operations and callers for every function, both shared-module
+  dependency digests, and the exact gateway-authentication config. The 145
+  historical migrations are evidence, not a safe production install script.
 
 ### 2. Define the Railway contracts
 
@@ -122,12 +162,4 @@ Do not retire Supabase until all are true:
 
 ## Immediate recommendation
 
-<<<<<<< HEAD
-Keep the Supabase website backend operational while building the Railway replacement behind feature flags. The next implementation slice should secure and contract-test the existing `webLeads`, `webOps`, and `webActionLinks` routes, then port action links and surveys first. Lead ingress and lifecycle automation should be the final major cutover, not the first.
-
-## Progress note (2026-08-19)
-
-`webOps` browser procedures now use `operationsAdminProcedure` (Firebase + `can_manage_operations`). `listEngineTasks` remains service-key gated for `engine-bridge-admin` with timing-safe compare. Draft reads are display-safe, quote writes are transactional, hustler roster reads are redacted, liquidity is available via `webOps.getLiquidity` / `GET /admin/liquidity`, and Command-center reads land behind Railway-first `opsApi` with Supabase fallback. Mutation panels stay unmounted until their Railway ports are ready.
-=======
-Keep the Supabase website backend contained while the active task-first fake-FSE PostgreSQL authority node is completed. Freeze new Supabase canonical task/payment/assignment behavior; inventory and quarantine existing bypasses. After the active node and migration lineage are independently accepted, replacement slices must route typed commands through the engine with runtime wiring, authorization, observability, migration proof, and rollback/forward-repair. Lead ingress and lifecycle automation remain late cutover work because moving intake before its dependent automation would silently drop or duplicate effects.
->>>>>>> 5a8675b37473d626efbf4bff8635797ba29db7af
+Keep the Supabase website backend contained while the active task-first fake-FSE PostgreSQL authority node is completed. Freeze new Supabase canonical task/payment/assignment behavior and keep the exact 41-function deny set in force: all 23 competing writers, all seven obsolete functions, the two authentication holds, and the remaining policy-denied overlays/proxies. Treat the generated 49-function authority matrix as source inventory, not hosted truth. After the active node and migration lineage are independently accepted, replacement slices must route typed commands through the engine with runtime wiring, authorization, observability, migration proof, caller readback, and rollback/forward-repair. Lead ingress and lifecycle automation remain late cutover work because moving intake before its dependent automation would silently drop or duplicate effects.

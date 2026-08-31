@@ -9,7 +9,8 @@
  * - getMySubscription: pro plan returns correct limit (999999)
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -57,6 +58,14 @@ import { db } from '../../src/db';
 import { subscriptionRouter } from '../../src/routers/subscription';
 
 const mockDb = vi.mocked(db);
+
+beforeEach(() => {
+  enableControlledStripePaymentTestCohortV7();
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 // ---------------------------------------------------------------------------
 // Helpers

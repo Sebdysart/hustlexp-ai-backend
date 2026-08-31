@@ -3,22 +3,17 @@
 // Replaces in-memory registry for horizontal scaling
 // ============================================================================
 
-import { Redis } from '@upstash/redis';
-import { config } from '../config.js';
 import { logger } from '../logger.js';
+import { getRedisCommandClient } from '../redis/RedisCommandPort.js';
 
 const registryLog = logger.child({ module: 'connection-registry' });
 
-// Initialize Redis client (lazy/guarded — matches pattern in cache/redis.ts)
-let redis: Redis | null = null;
-if (config.redis.restUrl && config.redis.restToken) {
-  redis = new Redis({
-    url: config.redis.restUrl,
-    token: config.redis.restToken,
-  });
-} else {
+// Shared provider-neutral client: portable TCP in local/staging, with the
+// explicit REST pair retained as a compatibility transport.
+const redis = getRedisCommandClient();
+if (!redis) {
   registryLog.warn(
-    'connection-registry-redis: Redis not configured (UPSTASH_REDIS_REST_URL/TOKEN missing) — realtime registry disabled'
+    'connection-registry-redis: Redis command transport not configured — realtime registry disabled'
   );
 }
 
@@ -126,7 +121,7 @@ export async function unregisterConnection(
   }
 
   // Get connection data first
-  const connData = await redis.get<string>(KEYS.connection(connectionId));
+  const connData = await redis.get(KEYS.connection(connectionId));
   
   if (!connData) {
     registryLog.warn({ connectionId }, 'Connection not found for unregister');
@@ -193,7 +188,7 @@ export async function updateHeartbeat(
     return;
   }
 
-  const connData = await redis.get<string>(KEYS.connection(connectionId));
+  const connData = await redis.get(KEYS.connection(connectionId));
   
   if (!connData) {
     registryLog.warn({ connectionId }, 'Connection not found for heartbeat');
@@ -259,7 +254,7 @@ export async function getConnection(connectionId: string): Promise<ConnectionMet
     registryLog.warn('connection-registry-redis: Redis not configured, skipping getConnection');
     return null;
   }
-  const data = await redis.get<string>(KEYS.connection(connectionId));
+  const data = await redis.get(KEYS.connection(connectionId));
   if (!data) return null;
   try {
     return JSON.parse(data) as ConnectionMetadata;
@@ -281,7 +276,7 @@ export async function getUserPresence(userId: string): Promise<{
     registryLog.warn('connection-registry-redis: Redis not configured, skipping getUserPresence');
     return { online: false, lastSeen: 0, connections: 0 };
   }
-  const data = await redis.get<string>(KEYS.userPresence(userId));
+  const data = await redis.get(KEYS.userPresence(userId));
   
   if (data) {
     try {
@@ -309,7 +304,7 @@ export async function subscribeToChannel(
     registryLog.warn('connection-registry-redis: Redis not configured, skipping subscribeToChannel');
     return;
   }
-  const connData = await redis.get<string>(KEYS.connection(connectionId));
+  const connData = await redis.get(KEYS.connection(connectionId));
   
   if (!connData) {
     throw new Error('Connection not found');
@@ -347,7 +342,7 @@ export async function unsubscribeFromChannel(
     registryLog.warn('connection-registry-redis: Redis not configured, skipping unsubscribeFromChannel');
     return;
   }
-  const connData = await redis.get<string>(KEYS.connection(connectionId));
+  const connData = await redis.get(KEYS.connection(connectionId));
   
   if (!connData) {
     return;

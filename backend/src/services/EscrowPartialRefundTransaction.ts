@@ -57,7 +57,6 @@ async function loadPayoutDestination(
   return loadCurrentTaskPayoutDestination(query,{
     taskId,workerId:participants.workerId,
     payoutRecipientUserId:participants.payoutRecipientUserId,
-    kind: 'WORKER',
   });
 }
 

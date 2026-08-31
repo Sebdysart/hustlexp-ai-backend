@@ -8,6 +8,8 @@ import { TaskProgressService } from './TaskProgressService.js';
 import { TaskReadService } from './TaskReadService.js';
 import { assertTaskMutationEligibility } from './TaskEligibilityPolicy.js';
 import type { AcceptTaskParams, TaskRiskLevel } from './TaskServiceShared.js';
+import { hardAssignmentFailure } from './HardAssignmentGuard.js';
+import { controlledTestLiquidityEnabled } from './ControlledTestLiquidityService.js';
 
 const log = taskLogger.child({ service: 'TaskAcceptService' });
 type Query = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -21,6 +23,7 @@ type TaskCandidate = {
   poster_id: string;
   trust_tier_required: number | null;
   mutual_consent_required: boolean;
+  automation_classification: string | null;
 };
 
 class AcceptFailure extends Error {
@@ -36,7 +39,7 @@ function fail(code: string, message: string, details?: Record<string, unknown>):
 async function loadTask(query: Query, taskId: string): Promise<TaskCandidate> {
   const result = await query<TaskCandidate>(
     `SELECT risk_level, instant_mode, sensitive, price, state, worker_id, poster_id,
-            trust_tier_required, mutual_consent_required
+            trust_tier_required, mutual_consent_required, automation_classification
      FROM tasks WHERE id = $1 FOR UPDATE`,
     [taskId]
   );
@@ -183,6 +186,19 @@ async function assertFunded(query: Query, taskId: string): Promise<void> {
   }
 }
 
+async function authorizeControlledTestAssignment(query: Query, task: TaskCandidate): Promise<void> {
+  if (task.automation_classification !== 'CONTROLLED_TEST') return;
+  if (!controlledTestLiquidityEnabled()) {
+    fail(
+      'LOCAL_TEST_LIQUIDITY_DISABLED',
+      'Controlled-test assignment requires the explicitly enabled local certification lane.'
+    );
+  }
+  // The database trigger also verifies the TEST cell and a current worker-bound
+  // witness. This transaction-scoped marker cannot authorize production work.
+  await query(`SELECT set_config('hustlexp.local_test_liquidity_enabled', 'true', true)`);
+}
+
 async function recordRace(task: TaskCandidate, taskId: string, workerId: string): Promise<never> {
   const existing = await TaskReadService.getById(taskId);
   if (!existing.success) throw new AcceptFailure(existing.error);
@@ -217,15 +233,19 @@ async function acceptTransaction(query: Query, params: AcceptTaskParams): Promis
   await assertFraudRisk(params.taskId, params.workerId);
   await assertBackgroundCheck(task, params.taskId, params.workerId);
   await assertFunded(query, params.taskId);
+  await authorizeControlledTestAssignment(query, task);
   const accepted = await assignTask(query, task, params.taskId, params.workerId);
   return { success: true, data: accepted };
 }
 
 async function accept(params: AcceptTaskParams): Promise<ServiceResult<Task>> {
+  const frozen = hardAssignmentFailure('instant_accept');
+  if (frozen) return frozen;
   try {
     return await db.transaction((query) => acceptTransaction(query, params));
   } catch (error) {
     if (error instanceof AcceptFailure) return { success: false, error: error.serviceError };
+    log.error({ err: error, taskId: params.taskId, workerId: params.workerId }, 'Task acceptance transaction failed');
     return { success: false, error: { code: 'DB_ERROR', message: 'A database error occurred. Please try again.' } };
   }
 }

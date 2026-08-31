@@ -48,34 +48,6 @@ export class EscrowRepository extends BaseRepository<Escrow> {
   }
 
   /**
-   * Create a new escrow record. Returns the created escrow.
-   */
-  async create(
-    data: {
-      id: string;
-      task_id: string;
-      amount: number;
-      stripe_payment_intent_id?: string;
-    },
-    ctx?: RepositoryContext
-  ): Promise<Escrow> {
-    const query = this.getQuery(ctx);
-    const result = await query<Escrow>(
-      `INSERT INTO ${this.tableName} (
-        id, task_id, amount, stripe_payment_intent_id, state, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, 'PENDING', NOW(), NOW())
-      RETURNING *`,
-      [
-        data.id,
-        data.task_id,
-        data.amount,
-        data.stripe_payment_intent_id ?? null,
-      ]
-    );
-    return result.rows[0];
-  }
-
-  /**
    * Update escrow state. Returns the updated escrow or null if not found.
    * Note: amount is immutable (INV-4 enforced by DB trigger).
    */

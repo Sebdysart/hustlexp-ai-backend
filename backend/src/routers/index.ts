@@ -73,6 +73,14 @@ import { assignmentRouter } from './assignment.js';
 import { automationRouter } from './automation.js';
 import { businessWorkspaceRouter } from './businessWorkspace.js';
 import { serviceBusinessRouter } from './serviceBusiness.js';
+import {
+  syntheticFinanceRouter,
+  universalFinanceRouter,
+} from './syntheticFinance.js';
+import { universalContractRouter } from './universalContract.js';
+import { universalV1DisputeRecoveryRouter } from './universalV1DisputeRecovery.js';
+import { universalOccurrenceRouter } from './universalOccurrence.js';
+import { universalV1TaskOpportunitiesRouter } from './universalV1TaskOpportunities.js';
 
 // ── ADMIN DOMAIN ────────────────────────────────────────────────────────
 // Requires admin_roles table entry. Platform operations.
@@ -99,9 +107,6 @@ import { webPostTaskRouter } from './web/postTask.js';
 import { quotePaymentRouter } from './quotePayment.js';
 
 import { testPayoutRouter } from './testPayout.js';
-
-import { businessClaimRouter } from './businessClaim.js';
-
 
 // ============================================================================
 // APP ROUTER
@@ -159,6 +164,12 @@ export const appRouter = router({
   automation: automationRouter,
   businessWorkspace: businessWorkspaceRouter,
   serviceBusiness: serviceBusinessRouter,
+  universalContract: universalContractRouter,
+  universalV1DisputeRecovery: universalV1DisputeRecoveryRouter,
+  universalOccurrence: universalOccurrenceRouter,
+  universalV1TaskOpportunities: universalV1TaskOpportunitiesRouter,
+  finance: universalFinanceRouter,
+  syntheticFinance: syntheticFinanceRouter,
 
   // ── Admin Domain ───────────────────────────────────────────────────────
   admin: adminRouter,
@@ -183,11 +194,10 @@ export const appRouter = router({
 
   testPayout: testPayoutRouter,
   
-  businessClaim: businessClaimRouter,
-  
   // ── Web Platform Domain ─────────────────────────────────────────────────
   // Replaces Supabase edge functions for the website and ops cockpit.
   webLeads: (await import('./web/leads.js')).webLeadsRouter,
+  webTaskDrafts: (await import('./web/taskDrafts.js')).webTaskDraftsRouter,
   webActionLinks: (await import('./web/actionLinks.js')).webActionLinksRouter,
   webOps: (await import('./web/ops.js')).webOpsRouter,
 });

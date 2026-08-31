@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   query: vi.fn(),
-  createInTransaction: vi.fn(),
   encryptTaskLocation: vi.fn((id: string, value: string) => ({
     ciphertext: `cipher:${id}`,
     nonce: `nonce:${id}`,
@@ -10,9 +9,8 @@ const mocks = vi.hoisted(() => ({
     keyId: 'key-v1',
     fingerprint: `finger:${id}:${value.length}`,
   })),
-  decryptTaskLocation: vi.fn((id: string) => id.endsWith(':access') ? 'Use the rear gate' : '42 Private Lane'),
 }));
-const { query, createInTransaction, encryptTaskLocation, decryptTaskLocation } = mocks;
+const { query, encryptTaskLocation } = mocks;
 vi.mock('../../src/db.js', () => ({
   db: {
     query: mocks.query,
@@ -20,13 +18,8 @@ vi.mock('../../src/db.js', () => ({
   },
 }));
 
-vi.mock('../../src/services/TaskCreateService.js', () => ({
-  TaskCreateService: { createInTransaction: mocks.createInTransaction },
-}));
-
 vi.mock('../../src/services/TaskLocationCrypto.js', () => ({
   encryptTaskLocation: mocks.encryptTaskLocation,
-  decryptTaskLocation: mocks.decryptTaskLocation,
 }));
 
 vi.mock('../../src/logger.js', () => ({
@@ -41,6 +34,11 @@ import {
   generateControlledRecurringOccurrence,
   type ControlledRecurringTemplateInput,
 } from '../../src/services/RecurringWorkService.js';
+import {
+  buildRecurringUniversalV1BridgeEvidence,
+  RECURRING_UNIVERSAL_V1_BRIDGE_BLOCKERS,
+  RECURRING_UNIVERSAL_V1_BRIDGE_PAUSE_CODE,
+} from '../../src/services/RecurringUniversalV1BridgeContainment.js';
 
 const POSTER = '00000000-0000-0000-0000-000000000001';
 const WORKER = '00000000-0000-0000-0000-000000000002';
@@ -201,19 +199,15 @@ describe('controlled recurring work orchestration', () => {
     });
 
     expect(result).toEqual({ success: true, data: { outcome: 'paused', pauseCode: 'BUDGET_WOULD_EXCEED' } });
-    expect(createInTransaction).not.toHaveBeenCalled();
+    expect(query.mock.calls.some((call) => /INSERT INTO (?:public\.)?tasks/iu.test(String(call[0])))).toBe(false);
   });
 
-  it('atomically creates one canonical task, occurrence witness, and preferred reservation', async () => {
+  it('contains due recurrence before TaskDraft, legacy Task, provider, approval, or money effects', async () => {
     query
       .mockResolvedValueOnce({ rows: [controlledRow()] })
       .mockResolvedValueOnce({ rows: [{ reason: null }] })
       .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [{ id: '21000000-0000-0000-0000-000000000001' }] })
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [] });
-    createInTransaction.mockResolvedValueOnce({ success: true, data: { id: TASK } });
+      .mockResolvedValueOnce({ rows: [{ paused: true }] });
 
     const result = await generateControlledRecurringOccurrence({
       seriesId: SERIES,
@@ -223,28 +217,34 @@ describe('controlled recurring work orchestration', () => {
 
     expect(result).toMatchObject({
       success: true,
-      data: { outcome: 'generated', taskId: TASK, occurrenceNumber: 1 },
+      data: {
+        outcome: 'paused',
+        pauseCode: RECURRING_UNIVERSAL_V1_BRIDGE_PAUSE_CODE,
+        bridgeIntentSha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        blockerCodes: RECURRING_UNIVERSAL_V1_BRIDGE_BLOCKERS,
+      },
     });
-    expect(createInTransaction).toHaveBeenCalledWith(query, expect.objectContaining({
-      posterId: POSTER,
-      location: '42 Private Lane\nAccess procedure: Use the rear gate',
-      regionCode: 'US-WA',
-      price: 10_000,
-      hustlerPayoutCents: 8_000,
-      platformMarginCents: 2_000,
-      preferredWorkerId: WORKER,
-      clientIdempotencyKey: expect.stringMatching(/^recurring:/),
-    }));
-    expect(query.mock.calls.some((call) => String(call[0]).includes('recurring_task_occurrences'))).toBe(true);
-    expect(query.mock.calls.some((call) => String(call[0]).includes('recurring_provider_reservations'))).toBe(true);
-    expect(query.mock.calls.some((call) => String(call[0]).includes("'AWAITING_PAYMENT'"))).toBe(true);
-    expect(query.mock.calls.some((call) => Array.isArray(call[1])
-      && call[1].includes('PREFERRED_AWAITING_PAYMENT'))).toBe(true);
-    expect(query.mock.calls.some((call) => String(call[0]).includes('budget_spend_cents=budget_spend_cents+payment_cents'))).toBe(true);
+    const sql = query.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(sql).not.toMatch(/INSERT INTO (?:public\.)?task_drafts/iu);
+    expect(sql).not.toMatch(/INSERT INTO (?:public\.)?tasks/iu);
+    expect(sql).not.toMatch(/INSERT INTO recurring_task_occurrences/iu);
+    expect(sql).not.toMatch(/INSERT INTO recurring_provider_reservations/iu);
+    expect(sql).not.toContain('request_business_spend');
+    expect(sql).not.toContain('budget_spend_cents=budget_spend_cents+payment_cents');
+    const holdParams = query.mock.calls[3]?.[1] as unknown[];
+    expect(holdParams[0]).toBe(SERIES);
+    expect(holdParams[1]).toBe(RECURRING_UNIVERSAL_V1_BRIDGE_PAUSE_CODE);
+    expect(JSON.parse(String(holdParams[2]))).toMatchObject({
+      disposition: 'CONTAINED_NO_DRAFT_NO_TASK',
+      privacy_posture: 'NO_SCOPE_OR_LOCATION_COPIED',
+      blocker_codes: RECURRING_UNIVERSAL_V1_BRIDGE_BLOCKERS,
+      payment_creation_frozen: true,
+      provider_selection_created: false,
+      hard_assignment_created: false,
+    });
   });
 
-  it('holds an organization occurrence for approval without creating a task or advancing schedule', async () => {
-    const approvalId = '50000000-0000-0000-0000-000000000001';
+  it('contains organization recurrence before requesting spend approval or advancing schedule', async () => {
     query
       .mockResolvedValueOnce({ rows: [controlledRow({
         client_principal_type: 'ORGANIZATION', business_organization_id: '60000000-0000-0000-0000-000000000001',
@@ -253,18 +253,20 @@ describe('controlled recurring work orchestration', () => {
       })] })
       .mockResolvedValueOnce({ rows: [{ reason: null }] })
       .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [{
-        approval_request_id: approvalId, approval_status: 'PENDING_APPROVAL', approval_blockers: [],
-      }] });
+      .mockResolvedValueOnce({ rows: [{ paused: true }] });
 
     const result = await generateControlledRecurringOccurrence({
       seriesId: SERIES, actorId: null, evaluateAt: new Date('2026-07-25T15:00:00.000Z'),
     });
 
-    expect(result).toEqual({
-      success: true, data: { outcome: 'approval_required', approvalRequestId: approvalId },
+    expect(result).toMatchObject({
+      success: true,
+      data: {
+        outcome: 'paused',
+        pauseCode: RECURRING_UNIVERSAL_V1_BRIDGE_PAUSE_CODE,
+      },
     });
-    expect(createInTransaction).not.toHaveBeenCalled();
+    expect(query.mock.calls.some((call) => String(call[0]).includes('request_business_spend'))).toBe(false);
     expect(query.mock.calls.some((call) => String(call[0]).includes('UPDATE recurring_task_series SET occurrence_count'))).toBe(false);
   });
 
@@ -286,7 +288,6 @@ describe('controlled recurring work orchestration', () => {
       success: true,
       data: { outcome: 'skipped', scheduleExceptionId: '80000000-0000-0000-0000-000000000001' },
     });
-    expect(createInTransaction).not.toHaveBeenCalled();
     expect(query.mock.calls.some((call) => String(call[0]).includes('budget_spend_cents'))).toBe(false);
   });
 
@@ -306,40 +307,36 @@ describe('controlled recurring work orchestration', () => {
       success: true,
       data: { outcome: 'completed', scheduleExceptionId: '80000000-0000-0000-0000-000000000002' },
     });
-    expect(createInTransaction).not.toHaveBeenCalled();
     expect(query.mock.calls.some((call) => String(call[0]).includes("status='completed'"))).toBe(true);
   });
 
-  it('binds approved organization demand before inserting the recurring occurrence witness', async () => {
-    const approvalId = '50000000-0000-0000-0000-000000000001';
-    query
-      .mockResolvedValueOnce({ rows: [controlledRow({
-        client_principal_type: 'ORGANIZATION', business_organization_id: '60000000-0000-0000-0000-000000000001',
-        business_location_id: '70000000-0000-0000-0000-000000000001', recurring_po_number: 'PO-1',
-        recurring_cost_center: 'OPS',
-      })] })
-      .mockResolvedValueOnce({ rows: [{ reason: null }] })
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [{
-        approval_request_id: approvalId, approval_status: 'APPROVED', approval_blockers: [],
-      }] })
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [{ canonical_task_id: TASK, idempotency_replayed: false }] })
-      .mockResolvedValueOnce({ rows: [{ id: '21000000-0000-0000-0000-000000000001' }] })
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [] });
-    createInTransaction.mockResolvedValueOnce({ success: true, data: { id: TASK } });
-
-    const result = await generateControlledRecurringOccurrence({
-      seriesId: SERIES, actorId: null, evaluateAt: new Date('2026-07-25T15:00:00.000Z'),
+  it('derives stable privacy-safe blocker evidence from recurrence identity only', () => {
+    const context = {
+      row: controlledRow(),
+      evaluatedAt: new Date('2026-07-25T15:00:00.000Z'),
+      scheduledStart: new Date('2026-07-25T16:00:00.000Z'),
+      generationKey: `recurring:${SERIES}:${REVISION}:2026-07-25`,
+    };
+    const first = buildRecurringUniversalV1BridgeEvidence(context);
+    const second = buildRecurringUniversalV1BridgeEvidence({
+      ...context,
+      evaluatedAt: new Date('2026-07-25T15:59:59.000Z'),
     });
-
-    expect(result).toMatchObject({ success: true, data: { outcome: 'generated', taskId: TASK } });
-    const bindIndex = query.mock.calls.findIndex((call) => String(call[0]).includes('bind_business_work_order'));
-    const occurrenceIndex = query.mock.calls.findIndex((call) => String(call[0]).includes('INSERT INTO recurring_task_occurrences'));
-    expect(bindIndex).toBeGreaterThan(-1);
-    expect(occurrenceIndex).toBeGreaterThan(bindIndex);
-    expect(query.mock.calls[occurrenceIndex][1]).toContain(approvalId);
+    expect(second).toEqual(first);
+    expect(first.bridge_intent_sha256).toMatch(/^[a-f0-9]{64}$/u);
+    const serialized = JSON.stringify(first);
+    for (const privateOrUntrusted of [
+      COMPLETE.title,
+      COMPLETE.description,
+      COMPLETE.roughLocation,
+      'cipher:location',
+      WORKER,
+    ]) {
+      expect(serialized).not.toContain(privateOrUntrusted);
+    }
+    expect(Object.keys(first).join(' ')).not.toMatch(
+      /title|description|location|price|amount|cents|payout|provider_id/iu,
+    );
   });
 
   it('returns the existing task without creating another on an idempotent replay', async () => {
@@ -355,18 +352,14 @@ describe('controlled recurring work orchestration', () => {
     });
 
     expect(result).toMatchObject({ success: true, data: { outcome: 'replayed', taskId: TASK } });
-    expect(createInTransaction).not.toHaveBeenCalled();
   });
 
-  it('writes no occurrence when canonical task creation fails', async () => {
+  it('fails closed if the durable recurrence hold cannot be recorded', async () => {
     query
       .mockResolvedValueOnce({ rows: [controlledRow()] })
       .mockResolvedValueOnce({ rows: [{ reason: null }] })
-      .mockResolvedValueOnce({ rows: [] });
-    createInTransaction.mockResolvedValueOnce({
-      success: false,
-      error: { code: 'REGION_POLICY_DENIED', message: 'blocked' },
-    });
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ paused: false }] });
 
     const result = await generateControlledRecurringOccurrence({
       seriesId: SERIES,
@@ -374,7 +367,10 @@ describe('controlled recurring work orchestration', () => {
       evaluateAt: new Date('2026-07-25T15:00:00.000Z'),
     });
 
-    expect(result).toMatchObject({ success: false, error: { code: 'REGION_POLICY_DENIED' } });
+    expect(result).toMatchObject({
+      success: false,
+      error: { code: 'RECURRING_UNIVERSAL_V1_CONTAINMENT_FAILED' },
+    });
     expect(query.mock.calls.some((call) => String(call[0]).includes('INSERT INTO recurring_task_occurrences'))).toBe(false);
   });
 

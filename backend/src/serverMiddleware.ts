@@ -116,6 +116,8 @@ function registerSpecificRateLimits(app: HustleApp): void {
     '/trpc/escrow.release*',
     '/trpc/stripe.*',
     '/trpc/stripeConnect.*',
+    '/trpc/finance.*',
+    '/trpc/syntheticFinance.*',
     '/trpc/subscription.*',
     '/trpc/fraud.*',
   ];

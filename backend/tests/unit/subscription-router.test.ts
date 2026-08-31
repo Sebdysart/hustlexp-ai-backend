@@ -12,6 +12,7 @@
  */
 
 import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -57,6 +58,10 @@ import { db } from '../../src/db';
 import { subscriptionRouter } from '../../src/routers/subscription';
 
 const mockDb = vi.mocked(db);
+
+beforeEach(() => {
+  enableControlledStripePaymentTestCohortV7();
+});
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -274,6 +279,21 @@ describe('subscription.cancel', () => {
 
 describe('subscription.confirmSubscription', () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it('blocks a newly presented subscription while frozen before database or provider work', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('ENGINE_API_MODE', 'production');
+    vi.stubEnv('STRIPE_MODE', 'live');
+    vi.stubEnv('STRIPE_SECRET_KEY', 'sk_live_forbidden');
+    vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'enabled');
+    await expect(
+      makeCaller().confirmSubscription({ stripeSubscriptionId: 'sub_forbidden' })
+    ).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      cause: { applicationCode: 'PAYMENT_CREATION_FROZEN' },
+    });
+    expect(mockDb.query).not.toHaveBeenCalled();
+  });
 
   it('throws INTERNAL_SERVER_ERROR when Stripe not configured (placeholder key)', async () => {
     // With placeholder key, the router skips Stripe logic and throws

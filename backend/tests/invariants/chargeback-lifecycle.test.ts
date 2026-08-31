@@ -155,7 +155,12 @@ describe.skipIf(!hasDb)('Chargeback: escrow release blocked when payouts_locked 
     // Attempt escrow release — must succeed
     const result = await pool.query(
       `UPDATE escrows
-       SET state = 'RELEASED', released_at = NOW()
+       SET state = 'RELEASED',
+           released_at = NOW(),
+           payout_provider = 'MANUAL_RECONCILIATION',
+           provider_transfer_id = 'manual_chargeback_' || REPLACE(id::text, '-', ''),
+           provider_transfer_status = 'manual_reconciliation',
+           provider_transfer_paid_at = NULL
        WHERE id = $1 AND state = 'FUNDED'
        RETURNING state`,
       [escrow.id]

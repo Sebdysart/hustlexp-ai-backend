@@ -1,0 +1,9 @@
+.git
+node_modules
+.local-tools
+dist
+coverage
+.env
+.env.*
+!.env.template
+*.log

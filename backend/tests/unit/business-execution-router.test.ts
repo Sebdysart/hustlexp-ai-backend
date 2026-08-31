@@ -63,6 +63,36 @@ describe('business canonical execution authenticated router', () => {
     } as any)).rejects.toThrow();
   });
 
+  it('maps the legacy task-materialization freeze through workspaceErrorCode', async () => {
+    execution.createBusinessWorkOrder.mockResolvedValue({
+      success: false,
+      error: {
+        code: 'LEGACY_TASK_MATERIALIZATION_FROZEN',
+        message: 'Legacy task creation is frozen.',
+      },
+    });
+
+    await expect(caller.createWorkOrder({
+      organizationId: ORG,
+      approvalRequestId: APPROVAL,
+      title: 'Repair storefront fixture',
+      description: 'Repair the approved storefront fixture and document completion.',
+      requirements: null,
+      serviceWindowStart: '2026-07-20T16:00:00.000Z',
+      serviceWindowEnd: '2026-07-20T18:00:00.000Z',
+      expectedDurationMinutes: 120,
+      requiredTools: ['drill'],
+      proofChecklist: ['Complete repair'],
+      insideHome: false,
+      peoplePresent: true,
+      petsPresent: false,
+      caregiving: false,
+    })).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: 'Legacy task creation is frozen.',
+    });
+  });
+
   it('sets provider preference by email without browser actor or assignment authority', async () => {
     execution.setBusinessProviderPreferenceByEmail.mockResolvedValue({
       success: true, data: { id: 'preference-id', priority: 'PRIMARY' },

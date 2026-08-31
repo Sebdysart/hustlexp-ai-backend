@@ -36,6 +36,7 @@ import {
   cleanupTestData, 
   createTestUser,
   hasDb,
+  promoteTestUserTrustSequentially,
 } from '../setup';
 
 let pool: pg.Pool;
@@ -156,10 +157,7 @@ describe.skipIf(!hasDb)('INV-N2.4-3: Recompute is deterministic (same inputs →
     const userId = await createTestUser(pool, `test-user-${Date.now()}@hustlexp.test`);
     
     // Set up user with trust tier
-    await pool.query(
-      `UPDATE users SET trust_tier = 4 WHERE id = $1`,
-      [userId]
-    );
+    await promoteTestUserTrustSequentially(pool, userId, 4);
     
     // Create approved license verification
     const licenseResult = await pool.query(
@@ -201,10 +199,7 @@ describe.skipIf(!hasDb)('INV-N2.4-3: Recompute is deterministic (same inputs →
   it('MUST PASS: Recompute with no verifications produces empty verified_trades', async () => {
     const userId = await createTestUser(pool, `test-user-${Date.now()}@hustlexp.test`);
     
-    await pool.query(
-      `UPDATE users SET trust_tier = 4 WHERE id = $1`,
-      [userId]
-    );
+    await promoteTestUserTrustSequentially(pool, userId, 4);
     
     await recomputeCapabilityProfile(userId, { reason: 'TEST' });
     
@@ -226,10 +221,7 @@ describe.skipIf(!hasDb)('INV-N2.4-4: Expired verifications remove capability', (
   it('MUST PASS: Expired license removes verified trade', async () => {
     const userId = await createTestUser(pool, `test-user-${Date.now()}@hustlexp.test`);
     
-    await pool.query(
-      `UPDATE users SET trust_tier = 4 WHERE id = $1`,
-      [userId]
-    );
+    await promoteTestUserTrustSequentially(pool, userId, 4);
     
     // Create approved license with future expiration
     const futureDate = new Date();
@@ -279,10 +271,7 @@ describe.skipIf(!hasDb)('INV-N2.4-4: Expired verifications remove capability', (
   it('MUST PASS: Expired insurance removes insurance_valid flag', async () => {
     const userId = await createTestUser(pool, `test-user-${Date.now()}@hustlexp.test`);
     
-    await pool.query(
-      `UPDATE users SET trust_tier = 4 WHERE id = $1`,
-      [userId]
-    );
+    await promoteTestUserTrustSequentially(pool, userId, 4);
     
     // Create approved insurance with future expiration
     const futureDate = new Date();

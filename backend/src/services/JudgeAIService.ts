@@ -21,6 +21,7 @@
 import { db, type QueryFn } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { AIClient } from './AIClient.js';
+import { aiOperationId } from '../ai/AIOperationIdentity.js';
 import { aiObservation } from './AIObservabilityPolicy.js';
 import { JudgeVerdictSchema } from '../lib/ai-response-schemas.js';
 import { scrubPII } from '../lib/pii-scrubber.js';
@@ -270,6 +271,7 @@ async function synthesizeVerdict(input: JudgeInput): Promise<ServiceResult<Judge
     if (AIClient.isConfigured()) {
       try {
         const aiResult = await AIClient.callJSON<JudgeVerdict>({
+          operationId: aiOperationId('proof-judge-advisory', input.proof_id, input),
           observability: aiObservation('AI-PROOF-JUDGE-ADVISORY', {
             affectedObjectType: 'PROOF',
             affectedObjectId: input.proof_id,

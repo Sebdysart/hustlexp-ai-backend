@@ -5,22 +5,17 @@
 # For every changed source file in backend/src/services/ or backend/src/routers/,
 # verify that a corresponding test file was also modified in the same PR.
 #
-# Escape hatch: include [skip-tdad] in any commit message to bypass.
+# The gate is fail-closed: commit messages cannot bypass it, and inability to
+# resolve the comparison base is a hard failure rather than "no changes".
 # ────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
 BASE_BRANCH="${TDAD_BASE_BRANCH:-origin/main}"
 
-# ── Escape hatch ────────────────────────────────────────────────────────────
-if git log "${BASE_BRANCH}...HEAD" --pretty=format:"%s" 2>/dev/null | grep -q '\[skip-tdad\]'; then
-  echo "TDAD check skipped via [skip-tdad] commit message"
-  exit 0
-fi
-
 # ── Gather changed source files ────────────────────────────────────────────
 CHANGED_SRC=$(git diff --name-only "${BASE_BRANCH}...HEAD" -- \
   'backend/src/services/*.ts' \
-  'backend/src/routers/*.ts' 2>/dev/null || true)
+  'backend/src/routers/*.ts')
 
 if [ -z "$CHANGED_SRC" ]; then
   echo "TDAD: No service or router source files changed — nothing to check."
@@ -28,7 +23,7 @@ if [ -z "$CHANGED_SRC" ]; then
 fi
 
 # ── Gather all changed files (for test lookup) ─────────────────────────────
-ALL_CHANGED=$(git diff --name-only "${BASE_BRANCH}...HEAD" 2>/dev/null || true)
+ALL_CHANGED=$(git diff --name-only "${BASE_BRANCH}...HEAD")
 
 MISSING=()
 
@@ -107,6 +102,6 @@ echo "backend/tests/unit/ or backend/tests/integration/."
 echo ""
 echo "Run 'npm run generate:test-stubs' to auto-generate skeletons."
 echo ""
-echo "To bypass this check, add [skip-tdad] to a commit message."
+echo "This protected gate has no commit-message bypass."
 echo "============================================================"
 exit 1

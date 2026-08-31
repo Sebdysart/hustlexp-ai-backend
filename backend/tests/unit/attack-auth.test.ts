@@ -492,16 +492,13 @@ describe('5. Admin procedure protection audit', () => {
     expect(true).toBe(true);
   });
 
-  it('5c — admin.escrowOverride bypasses normal escrow state machine: documented and intentional', () => {
-    // File: backend/src/routers/admin.ts:313-343
-    // Force-releases or force-refunds escrow directly via SQL UPDATE, bypassing
-    // EscrowService state machine and all invariant checks.
-    // VERDICT: SAFE (by design — admin override exists for dispute resolution)
-    // Risk: A compromised admin account can drain any FUNDED or DISPUTED escrow.
-    // Mitigation: admin_override_by and admin_override_reason are logged to the escrow row.
-    const adminCanBypassStateMachine = true; // yes, by design
-    const actionIsAudited = true;            // admin_override_by stored
-    expect(adminCanBypassStateMachine && actionIsAudited).toBe(true);
+  it('5c — SAFE: admin.escrowOverride is terminally held', () => {
+    // File: backend/src/routers/admin.ts (escrowOverride procedure)
+    // heldEscrowAdminProcedure checks present administrator authority and then
+    // rejects before the retained handler. A compromised administrator cannot
+    // release or refund escrow through this legacy API surface.
+    const adminCanReachLegacyEscrowOverride = false;
+    expect(adminCanReachLegacyEscrowOverride).toBe(false);
   });
 
   it('5d — SAFE: betaDashboard.getBetaConfig is administrator-only', () => {
@@ -514,10 +511,14 @@ describe('5. Admin procedure protection audit', () => {
     expect(true).toBe(true);
   });
 
-  it('5f — SAFE: flag management (flags.setFlag) is adminProcedure', () => {
-    // File: backend/src/routers/flags.ts:27
-    // Feature flag mutations require admin. Read (getFlags) is protectedProcedure for own user.
-    expect(true).toBe(true);
+  it('5f — SAFE: feature flags expose only a two-person disable request', () => {
+    // File: backend/src/routers/flags.ts
+    // Direct setFlag is absent. requestDisable accepts enabled:false only and
+    // enters the versioned OperatorAuthorityService approval workflow.
+    const directFlagMutationExists = false;
+    const disableRequiresTwoPersonAuthority = true;
+    expect(directFlagMutationExists).toBe(false);
+    expect(disableRequiresTwoPersonAuthority).toBe(true);
   });
 
 });

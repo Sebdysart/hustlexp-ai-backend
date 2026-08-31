@@ -26,8 +26,13 @@ SELECT pg_temp.hxupgrade_assert(
   'legacy safety case must remain an explicit v0 record'
 );
 SELECT pg_temp.hxupgrade_assert(
-  (SELECT count(*)=97 AND count(DISTINCT name)=97 FROM applied_migrations),
-  'the exact 97-migration engine chain must be recorded once'
+  (SELECT count(*)=138 AND count(DISTINCT name)=138 FROM applied_migrations),
+  'the exact 138-migration engine chain must be recorded once'
+);
+SELECT pg_temp.hxupgrade_assert(
+  (SELECT name='20261004_universal_v1_completion_notice_dispatch_v1'
+     FROM applied_migrations ORDER BY applied_at DESC,name DESC LIMIT 1),
+  'ordinal 138 completion-notice dispatch must be the recorded migration tail'
 );
 SELECT pg_temp.hxupgrade_assert(
   (SELECT count(*)=19 FROM major_action_class_contracts),

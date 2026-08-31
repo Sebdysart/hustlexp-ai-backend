@@ -2,6 +2,7 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { adminOrEngineBridgeProcedure, router, Schemas } from '../trpc.js';
 import { TaskReservationService } from '../services/TaskReservationService.js';
+import { hardAssignmentFailure } from '../services/HardAssignmentGuard.js';
 
 const idempotencyKey = z
   .string()
@@ -19,6 +20,14 @@ export const assignmentRouter = router({
       idempotencyKey,
     }))
     .mutation(async ({ ctx, input }) => {
+      const frozen = hardAssignmentFailure('engine_reservation');
+      if (frozen) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: frozen.error.message,
+          cause: { applicationCode: frozen.error.code },
+        });
+      }
       const actorId = ctx.user?.id ?? ctx.engineBridgeActorId;
       if (!actorId) {
         throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Reservation actor missing' });

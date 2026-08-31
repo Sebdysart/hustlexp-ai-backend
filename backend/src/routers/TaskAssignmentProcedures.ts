@@ -5,6 +5,7 @@ import { db, type QueryFn } from '../db.js';
 import { localCertificationAuthEnabled } from '../auth/local-certification-token.js';
 import { notifyWorkerAssigned } from '../lib/task-lifecycle-notifications.js';
 import { assertTaskMutationEligibility } from '../services/TaskEligibilityPolicy.js';
+import { hardAssignmentFailure } from '../services/HardAssignmentGuard.js';
 import { hustlerProcedure, posterProcedure, Schemas, type AuthedContext } from '../trpc.js';
 
 interface AssignmentInput { taskId: string; workerId: string }
@@ -101,6 +102,14 @@ async function commitAssignment(txn: QueryFn, input: AssignmentInput, applicatio
 }
 
 async function assignWorker(ctx: AuthedContext, input: AssignmentInput) {
+  const frozen = hardAssignmentFailure('poster_assignment');
+  if (frozen) {
+    throw new TRPCError({
+      code: 'PRECONDITION_FAILED',
+      message: frozen.error.message,
+      cause: { applicationCode: frozen.error.code },
+    });
+  }
   if (input.workerId === ctx.user.id) {
     throw new TRPCError({ code: 'BAD_REQUEST', message: 'Cannot assign yourself as worker' });
   }

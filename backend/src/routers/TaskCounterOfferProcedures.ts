@@ -1,6 +1,7 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { WorkerCounterOfferService } from '../services/WorkerCounterOfferService.js';
+import { LEGACY_TASK_MATERIALIZATION_FROZEN_CODE } from '../services/LegacyTaskMaterializationGuard.js';
 import { hustlerProcedure, posterProcedure, protectedProcedure, Schemas } from '../trpc.js';
 
 function unwrap<T>(result: Awaited<ReturnType<
@@ -14,9 +15,19 @@ function unwrap<T>(result: Awaited<ReturnType<
     : result.error.code === 'FORBIDDEN' ? 'FORBIDDEN'
       : ['CONFLICT', 'COUNTER_ALREADY_AUTHORIZED', 'COUNTER_ALREADY_PENDING'].includes(result.error.code) ? 'CONFLICT'
         : ['INVALID_INPUT', 'COUNTER_OUT_OF_BOUNDS'].includes(result.error.code) ? 'BAD_REQUEST'
-          : ['INVALID_STATE', 'REFUND_REQUIRED'].includes(result.error.code) ? 'PRECONDITION_FAILED'
+          : [
+            'INVALID_STATE',
+            'REFUND_REQUIRED',
+            LEGACY_TASK_MATERIALIZATION_FROZEN_CODE,
+          ].includes(result.error.code) ? 'PRECONDITION_FAILED'
             : 'INTERNAL_SERVER_ERROR';
-  throw new TRPCError({ code, message: result.error.message });
+  throw new TRPCError({
+    code,
+    message: result.error.message,
+    ...(result.error.code === LEGACY_TASK_MATERIALIZATION_FROZEN_CODE
+      ? { cause: { applicationCode: result.error.code } }
+      : {}),
+  });
 }
 
 export const TaskCounterOfferProcedures = {

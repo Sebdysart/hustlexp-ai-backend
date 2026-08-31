@@ -1,8 +1,23 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { db } from '../../src/db.js';
+import { ControlledTestDurationEvidenceService } from '../../src/services/ControlledTestDurationEvidenceService.js';
+import { ControlledTestLiquidityService } from '../../src/services/ControlledTestLiquidityService.js';
+import { ControlledTestOfferReviewService } from '../../src/services/ControlledTestOfferReviewService.js';
+import { ControlledTestProviderCapabilityService } from '../../src/services/ControlledTestProviderCapabilityService.js';
+import { HustlerIdentityLinkService } from '../../src/services/HustlerIdentityLinkService.js';
+import { LocalCertificationIdentityProvider } from '../../src/services/LocalCertificationIdentityProvider.js';
+import { LocalCertificationPayoutProvider } from '../../src/services/LocalCertificationPayoutProvider.js';
+import { LocalCertificationScreeningProvider } from '../../src/services/LocalCertificationScreeningProvider.js';
 import { TaskService } from '../../src/services/TaskService.js';
 import type { CreateTaskParams } from '../../src/services/TaskServiceShared.js';
+import { grantScreeningConsent } from '../../src/services/WorkerScreeningRightsService.js';
+import {
+  LOCAL_CERTIFICATION_SCREENING_DISCLOSURE_HASH,
+  LOCAL_CERTIFICATION_SCREENING_DISCLOSURE_VERSION,
+  LOCAL_CERTIFICATION_SCREENING_PROVIDER,
+  LOCAL_CERTIFICATION_SCREENING_PURPOSE,
+} from '../../src/services/WorkerScreeningRightsPolicy.js';
 import { WorkerCounterOfferService } from '../../src/services/WorkerCounterOfferService.js';
 import type { ServiceResult } from '../../src/types.js';
 
@@ -24,41 +39,113 @@ function successData<T>(result: ServiceResult<T>, label: string): T {
   return result.data;
 }
 
-async function insertCounterPrerequisiteOffer(
-  task: {
-    id: string;
-    price: number;
-    hustler_payout_cents: number | null;
-    estimated_duration_minutes: number | null;
-    scope_hash: string | null;
-    cancellation_policy_version: string | null;
-  },
-  workerId: string,
-): Promise<void> {
-  const payloadHash = createHash('sha256')
-    .update(JSON.stringify({ purpose: 'worker-counter-e2e-prerequisite', taskId: task.id, workerId }))
-    .digest('hex');
-  await db.query(
-    `INSERT INTO worker_offer_decisions(
-       task_id,worker_id,policy_version,payload_hash,decision_ready,blocking_reasons,
-       customer_total_cents,payout_cents,estimated_net_hourly_cents,
-       estimated_duration_minutes,scope_hash,cancellation_policy_version,
-       rank_reasons,paid_promotion_affects_rank,passing_has_rank_penalty,snapshot,expires_at
-     ) VALUES($1,$2,'worker-counter-e2e-prerequisite-v1',$3,TRUE,'[]'::jsonb,
-       $4,$5,$6,$7,$8,$9,'[]'::jsonb,FALSE,FALSE,$10::jsonb,NOW()+INTERVAL '30 minutes')`,
-    [
-      task.id,
-      workerId,
-      payloadHash,
-      task.price,
-      task.hustler_payout_cents,
-      task.hustler_payout_cents,
-      task.estimated_duration_minutes,
-      task.scope_hash,
-      task.cancellation_policy_version,
-      JSON.stringify({ environment: 'E2E', purpose: 'worker-counter-prerequisite' }),
-    ],
+async function verifyControlledTestIdentity(userId: string, key: string): Promise<void> {
+  const prepared = successData(
+    await LocalCertificationIdentityProvider.prepare({ userId, idempotencyKey: key }),
+    'controlled TEST identity prepare',
   );
+  const completed = successData(
+    await LocalCertificationIdentityProvider.completeVerified({
+      userId,
+      caseId: prepared.caseId,
+      actorId: userId,
+      idempotencyKey: `${key}-verified`,
+    }),
+    'controlled TEST identity complete',
+  );
+  expect(completed).toMatchObject({
+    status: 'VERIFIED',
+    environment: 'CONTROLLED_TEST',
+    isTest: true,
+  });
+}
+
+async function prepareControlledTestProvider(
+  workerId: string,
+  phone: string,
+  key: string,
+): Promise<void> {
+  successData(await HustlerIdentityLinkService.link({
+    engineHustlerRef: workerId,
+    phoneE164: phone,
+    providerClaimId: randomUUID(),
+  }), 'controlled TEST hustler identity link');
+  const consent = await grantScreeningConsent({
+    workerId,
+    provider: LOCAL_CERTIFICATION_SCREENING_PROVIDER,
+    purpose: LOCAL_CERTIFICATION_SCREENING_PURPOSE,
+    disclosureVersion: LOCAL_CERTIFICATION_SCREENING_DISCLOSURE_VERSION,
+    disclosureHash: LOCAL_CERTIFICATION_SCREENING_DISCLOSURE_HASH,
+    disclosurePresentedStandalone: true,
+    consentGranted: true,
+    purposeAcknowledged: true,
+    rightsSummaryAcknowledged: true,
+    providerNamed: true,
+    idempotencyKey: `${key}-screening-consent`,
+  });
+  const screening = successData(await LocalCertificationScreeningProvider.initiate({
+    workerId,
+    consentId: consent.consentId,
+    idempotencyKey: `${key}-screening-start`,
+  }), 'controlled TEST screening initiate');
+  successData(await LocalCertificationScreeningProvider.completeClear({
+    backgroundCheckId: screening.backgroundCheckId,
+    workerId,
+    actorId: workerId,
+    idempotencyKey: `${key}-screening-clear`,
+  }), 'controlled TEST screening complete');
+  successData(
+    await LocalCertificationPayoutProvider.activateDestination(workerId, workerId),
+    'controlled TEST payout destination',
+  );
+}
+
+async function prepareCounterPrerequisiteOffer(
+  taskId: string,
+  workerId: string,
+  key: string,
+  includeDurationEvidence: boolean,
+): Promise<void> {
+  if (includeDurationEvidence) {
+    successData(await ControlledTestDurationEvidenceService.apply({
+      taskId,
+      actorId: workerId,
+      sourceQuoteVersionId: randomUUID(),
+      minimumMinutes: 45,
+      expectedMinutes: 60,
+      maximumMinutes: 90,
+      policyVersion: 'price-book-duration-v1',
+      sourceEvidenceHash: 'b'.repeat(64),
+      sourceEnvironment: 'TEST',
+      idempotencyKey: `${key}-duration`,
+    }), 'counter duration evidence');
+  }
+  successData(await ControlledTestProviderCapabilityService.record({
+    taskId,
+    workerId,
+    actorId: workerId,
+    sourceHustlerId: workerId,
+    category: 'moving',
+    tools: ['hand truck'],
+    serviceCity: 'Seattle',
+    serviceState: 'WA',
+    serviceRadiusMiles: 10,
+    sourcePolicyVersion: 'hxos-counter-capability-test-v1',
+    sourceEvidenceHash: 'c'.repeat(64),
+    sourceExpiresAt: new Date(Date.now() + 2 * 60 * 60_000).toISOString(),
+    idempotencyKey: `${key}-capability`,
+  }), 'counter provider capability');
+  successData(await ControlledTestLiquidityService.prepareAndBind({
+    taskId,
+    workerId,
+    actorId: workerId,
+    idempotencyKey: `${key}-liquidity`,
+  }), 'counter liquidity');
+  successData(await ControlledTestOfferReviewService.review({
+    taskId,
+    workerId,
+    idempotencyKey: `${key}-offer-reviewed`,
+  }), 'counter offer review');
 }
 
 describePg('HX/OS worker counter PostgreSQL lifecycle', () => {
@@ -79,20 +166,41 @@ describePg('HX/OS worker counter PostgreSQL lifecycle', () => {
 
   it('requires bounded proposal, singular Poster approval, refund evidence, and fresh payment authorization', async () => {
     const basePhone = BigInt(`1${runId.replaceAll('-', '').replace(/\D/gu, '').padEnd(9, '0').slice(0, 9)}`);
+    const posterPhone = `+${basePhone}`;
+    const firstWorkerPhone = `+${basePhone + 1n}`;
+    const secondWorkerPhone = `+${basePhone + 2n}`;
     await db.query(
       `INSERT INTO users(
          id,email,full_name,default_mode,date_of_birth,is_minor,is_verified,phone,
          account_status,trust_tier,trust_hold,is_banned,plan
        ) VALUES
-         ($1,$2,'HX Counter Poster','poster','1990-01-01',FALSE,TRUE,$7,'ACTIVE',2,FALSE,FALSE,'free'),
-         ($3,$4,'HX Counter Worker A','worker','1990-01-01',FALSE,TRUE,$8,'ACTIVE',2,FALSE,FALSE,'free'),
-         ($5,$6,'HX Counter Worker B','worker','1990-01-01',FALSE,TRUE,$9,'ACTIVE',2,FALSE,FALSE,'free')`,
+         ($1,$2,'HX Counter Poster','poster','1990-01-01',FALSE,FALSE,$7,'ACTIVE',2,FALSE,FALSE,'free'),
+         ($3,$4,'HX Counter Worker A','worker','1990-01-01',FALSE,FALSE,$8,'ACTIVE',2,FALSE,FALSE,'free'),
+         ($5,$6,'HX Counter Worker B','worker','1990-01-01',FALSE,FALSE,$9,'ACTIVE',2,FALSE,FALSE,'free')`,
       [
         posterId, `counter-poster-${runId}@e2e.invalid`,
         firstWorkerId, `counter-worker-a-${runId}@e2e.invalid`,
         secondWorkerId, `counter-worker-b-${runId}@e2e.invalid`,
-        `+${basePhone}`, `+${basePhone + 1n}`, `+${basePhone + 2n}`,
+        posterPhone, firstWorkerPhone, secondWorkerPhone,
       ],
+    );
+    await verifyControlledTestIdentity(firstWorkerId, `counter-worker-a-${runId}`);
+    await verifyControlledTestIdentity(secondWorkerId, `counter-worker-b-${runId}`);
+    await db.query(
+      `INSERT INTO capability_profiles(
+         user_id,trust_tier,risk_clearance,location_state,location_city,updated_at
+       ) VALUES
+         ($1,2,ARRAY['low','medium']::text[],'WA','Seattle',NOW()),
+         ($2,2,ARRAY['low','medium']::text[],'WA','Seattle',NOW())`,
+      [firstWorkerId, secondWorkerId],
+    );
+    await prepareControlledTestProvider(firstWorkerId, firstWorkerPhone, `counter-worker-a-${runId}`);
+    await prepareControlledTestProvider(secondWorkerId, secondWorkerPhone, `counter-worker-b-${runId}`);
+    await db.query(
+      `UPDATE capability_profiles
+       SET location_state='WA',location_city='Seattle',updated_at=NOW()
+       WHERE user_id = ANY($1::uuid[])`,
+      [[firstWorkerId, secondWorkerId]],
     );
 
     const createParams: CreateTaskParams = {
@@ -118,15 +226,14 @@ describePg('HX/OS worker counter PostgreSQL lifecycle', () => {
     };
     const task = successData(await TaskService.create(createParams), 'source task create');
 
-    await insertCounterPrerequisiteOffer(task, firstWorkerId);
-    await insertCounterPrerequisiteOffer(task, secondWorkerId);
-
     const paymentIntentId = `pi_counter_${runId.replaceAll('-', '')}`;
     await db.query(
       `UPDATE escrows SET state='FUNDED',stripe_payment_intent_id=$2,funded_at=NOW(),version=version+1
         WHERE task_id=$1`,
       [task.id, paymentIntentId],
     );
+    await prepareCounterPrerequisiteOffer(task.id, firstWorkerId, `counter-a-${runId}`, true);
+    await prepareCounterPrerequisiteOffer(task.id, secondWorkerId, `counter-b-${runId}`, false);
 
     await expect(WorkerCounterOfferService.submit({
       taskId: task.id,

@@ -867,20 +867,9 @@ describe('FlagsService.getUserFlags', () => {
   });
 });
 
-describe('FlagsService.setFlag', () => {
-  it('upserts flag and returns the resulting row', async () => {
-    const flagRow = {
-      id: 'f-new', name: 'new_feature', enabled: true,
-      rollout_percentage: 50, user_allowlist: [], user_blocklist: [], metadata: {},
-    };
-    mockQuery.mockResolvedValueOnce({ rows: [flagRow], rowCount: 1 });
-
-    const result = await FlagsService.setFlag({ name: 'new_feature', enabled: true, rolloutPercentage: 50 });
-    expect(result).toEqual(flagRow);
-    expect(mockQuery).toHaveBeenCalledWith(
-      expect.stringContaining('INSERT INTO feature_flags'),
-      expect.arrayContaining(['new_feature', true, 50])
-    );
+describe('FlagsService mutation authority', () => {
+  it('does not expose the removed direct setFlag mutation', () => {
+    expect((FlagsService as Record<string, unknown>).setFlag).toBeUndefined();
   });
 });
 

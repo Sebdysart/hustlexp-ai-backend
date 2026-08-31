@@ -2,6 +2,7 @@ import { db } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { scrubPII } from '../lib/pii-scrubber.js';
 import { AIClient } from './AIClient.js';
+import { aiOperationId } from '../ai/AIOperationIdentity.js';
 import { aiObservation } from './AIObservabilityPolicy.js';
 import { generateExplanation } from './TaskDiscoveryScoring.js';
 import { calculateMatchingScore } from './TaskDiscoveryScoreService.js';
@@ -23,6 +24,7 @@ async function aiExplanation(
 ): Promise<string> {
   try {
     const result = await AIClient.call({
+      operationId: aiOperationId('task-discovery-explanation', taskId, hustlerId, task, context, expertise),
       observability: aiObservation('AI-DISCOVERY-EXPLANATION', {
         actorUserId: hustlerId,
         affectedObjectType: 'TASK',

@@ -6,6 +6,7 @@ import { ScoperAIService } from '../services/ScoperAIService.js';
 import { AIObservabilityService } from '../services/AIObservabilityService.js';
 import { TaskLocationService } from '../services/TaskLocationService.js';
 import { assertImplementedFields } from '../services/TaskCreationPolicy.js';
+import { LEGACY_TASK_MATERIALIZATION_FROZEN_CODE } from '../services/LegacyTaskMaterializationGuard.js';
 import { TaskService } from '../services/TaskService.js';
 import type { CreateTaskParams } from '../services/TaskServiceShared.js';
 import { getTemplate } from '../services/TaskTemplateRegistry.js';
@@ -124,9 +125,19 @@ function requiredTemplate(templateSlug: string) {
 function unwrapCreated(result: Awaited<ReturnType<typeof TaskService.create>>): Task {
   if (result.success) return result.data;
   let code: 'BAD_REQUEST' | 'PRECONDITION_FAILED' | 'CONFLICT' = 'BAD_REQUEST';
-  if (result.error.code === 'HX902' || result.error.code === 'HX901') code = 'PRECONDITION_FAILED';
+  if (
+    result.error.code === 'HX902'
+    || result.error.code === 'HX901'
+    || result.error.code === LEGACY_TASK_MATERIALIZATION_FROZEN_CODE
+  ) code = 'PRECONDITION_FAILED';
   if (result.error.code === 'IDEMPOTENCY_CONFLICT') code = 'CONFLICT';
-  throw new TRPCError({ code, message: result.error.message });
+  throw new TRPCError({
+    code,
+    message: result.error.message,
+    ...(result.error.code === LEGACY_TASK_MATERIALIZATION_FROZEN_CODE
+      ? { cause: { applicationCode: result.error.code } }
+      : {}),
+  });
 }
 
 async function handleCreateTask({ ctx, input }: { ctx: AuthedContext; input: CreateInput }): Promise<Task> {

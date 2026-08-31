@@ -13,6 +13,7 @@ import { initTRPC, TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { db } from './db.js';
 import { PAYMENT_CREATION_FROZEN_CODE } from './services/NewPaymentCreationGuard.js';
+import { hasFreshOperatorStepUp } from './auth/operator-identity-assurance.js';
 import { type AuthedContext, type Context } from './trpc-context.js';
 
 // Re-export so existing callers (admin.ts etc.) don't need to change their import.
@@ -183,7 +184,68 @@ export const userManagementAdminProcedure = protectedProcedure.use(capabilityAdm
 export const disputeAdminProcedure = protectedProcedure.use(capabilityAdminMiddleware('can_resolve_disputes'));
 export const trustAdminProcedure = protectedProcedure.use(capabilityAdminMiddleware('can_modify_trust'));
 export const safetyAdminProcedure = protectedProcedure.use(capabilityAdminMiddleware('can_manage_incidents'));
-export const operationsAdminProcedure = protectedProcedure.use(capabilityAdminMiddleware('can_manage_operations'));
+
+const freshOperatorStepUpMiddleware = t.middleware(async ({ ctx, next }) => {
+  if (!ctx.firebaseUid || !hasFreshOperatorStepUp(ctx.identityAssurance)) {
+    throw new TRPCError({
+      code: 'PRECONDITION_FAILED',
+      message: 'Fresh multi-factor step-up is required.',
+    });
+  }
+  return next({ ctx: { ...ctx, user: ctx.user } as AuthedContext });
+});
+
+/**
+ * Every Operations surface requires current scoped RBAC plus a recent
+ * multi-factor assertion taken only from the verified Firebase token. The
+ * write-specific alias keeps consequential routes explicit in source review.
+ */
+export const operationsAdminProcedure = protectedProcedure
+  .use(capabilityAdminMiddleware('can_manage_operations'))
+  .use(freshOperatorStepUpMiddleware);
+export const operationsStepUpProcedure = operationsAdminProcedure;
+
+/**
+ * A route using one of these procedures is deliberately non-executable.  The
+ * original handler remains in source as incident/reconstruction evidence, but
+ * this terminal middleware runs before it and cannot be enabled with an
+ * environment variable.  Restoring one of these mutations therefore requires
+ * a reviewed source change and the normal protected-release process.
+ */
+const consequentialAdminMutationHold = t.middleware(() => {
+  throw new TRPCError({
+    code: 'PRECONDITION_FAILED',
+    message:
+      'This consequential administrator mutation is held pending an approved, versioned authority command.',
+  });
+});
+
+export const heldPlatformAdminProcedure = platformAdminProcedure.use(
+  consequentialAdminMutationHold,
+);
+export const heldFinancialAdminProcedure = financialAdminProcedure.use(
+  consequentialAdminMutationHold,
+);
+export const heldEscrowAdminProcedure = escrowAdminProcedure.use(
+  consequentialAdminMutationHold,
+);
+export const heldUserManagementAdminProcedure = userManagementAdminProcedure.use(
+  consequentialAdminMutationHold,
+);
+export const heldTrustAdminProcedure = trustAdminProcedure.use(
+  consequentialAdminMutationHold,
+);
+export const heldSafetyAdminProcedure = safetyAdminProcedure.use(
+  consequentialAdminMutationHold,
+);
+export const heldOperationsAdminProcedure = operationsAdminProcedure.use(
+  consequentialAdminMutationHold,
+);
+
+/** A policy-forbidden administrator effect with no restoration switch. */
+export function forbiddenConsequentialAdminMutation(message: string): never {
+  throw new TRPCError({ code: 'PRECONDITION_FAILED', message });
+}
 
 const isAdminOrEngineBridge = t.middleware(async ({ ctx, next }) => {
   if (ctx.engineBridgeAuthorized === true && ctx.engineBridgeActorId) {
@@ -212,6 +274,9 @@ const isAdminOrEngineBridge = t.middleware(async ({ ctx, next }) => {
 });
 
 export const adminOrEngineBridgeProcedure = t.procedure.use(isAdminOrEngineBridge);
+export const heldAdminOrEngineBridgeProcedure = adminOrEngineBridgeProcedure.use(
+  consequentialAdminMutationHold,
+);
 
 // Middleware: require Hustler role (default_mode = 'worker') — composed on top of isAuthenticated.
 // Ban/suspension/auth checks are already handled by isAuthenticated; this only does the role check.

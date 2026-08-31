@@ -8,6 +8,8 @@ import {
   type CashOutRow,
 } from './HustlerWalletData.js';
 import { HUSTLER_WALLET_POLICY_VERSION } from './HustlerWalletPolicy.js';
+import { localCertificationPayoutEnabled } from './LocalCertificationPayoutProvider.js';
+import { newPaymentCreationFailure } from './NewPaymentCreationGuard.js';
 import type {
   CashOutRecord,
   CashOutReview,
@@ -25,6 +27,21 @@ function isUniqueViolation(error: unknown): boolean {
   return typeof error === 'object'
     && error !== null
     && (error as { code?: string }).code === '23505';
+}
+
+function isolatedVitestRunner(): boolean {
+  const runnerEvidence = [...process.argv, ...process.execArgv]
+    .some((argument) => /(?:^|\/)(?:@?vitest|vite-node)(?:\/|\.|$)/u.test(argument));
+  const stackEvidence = new Error().stack?.includes('/node_modules/@vitest/') === true;
+  return process.env.VITEST === 'true'
+    && typeof process.env.VITEST_WORKER_ID === 'string'
+    && (runnerEvidence || stackEvidence);
+}
+
+function syntheticWalletPayoutPermitted(provider: WalletProvider): boolean {
+  return provider.providerKind === 'FAKE'
+    && isolatedVitestRunner()
+    && localCertificationPayoutEnabled();
 }
 
 async function findIdempotentRequest(
@@ -203,6 +220,8 @@ export async function requestHustlerCashOut(
   input: { workerId: string; amountCents: number; idempotencyKey: string },
   provider: WalletProvider,
 ): Promise<ServiceResult<CashOutRecord>> {
+  const frozen = newPaymentCreationFailure('provider_payout');
+  if (frozen && !syntheticWalletPayoutPermitted(provider)) return frozen;
   try {
     const context = await buildCashOutReviewContext(
       input.workerId,

@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { Client } from 'pg';
 import { REQUIRED_MIGRATION_FILES } from './engine-automation-migration-files.js';
 import { workerLogger } from '../logger.js';
@@ -150,7 +151,6 @@ export const REGION_POLICY_LEGAL_APPROVAL_ACTIVATION_MIGRATION =
 export const RECURRING_PAYMENT_DISPATCH_GATE_MIGRATION = '20260722_recurring_payment_dispatch_gate';
 export const SERVICE_BUSINESS_ASSIGNMENT_CONTRACT_MIGRATION =
   '20260722_service_business_assignment_contract';
-export const OPS_WEB_HARDENING_MIGRATION = '20260819_ops_web_hardening';
 
 type QueryResult<Row extends Record<string, unknown> = Record<string, unknown>> = {
   rows: Row[];
@@ -182,6 +182,7 @@ export type MigrationOutcome = {
   status: 'applied' | 'already_applied';
   migration: string;
   sourcePath: string;
+  sha256: string;
 };
 
 export async function backfillLegacyTaskLocations(client: MigrationClient): Promise<number> {
@@ -308,30 +309,75 @@ export async function applyEngineAutomationMigration(
   sourcePath: string,
   migrationName: string = ENGINE_AUTOMATION_MIGRATION
 ): Promise<MigrationOutcome> {
+  const sha256 = createHash('sha256').update(sql, 'utf8').digest('hex');
   await client.query('BEGIN');
   try {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [migrationName]);
     await client.query(`CREATE TABLE IF NOT EXISTS applied_migrations (
       name TEXT PRIMARY KEY,
+      sha256 CHAR(64) NOT NULL CHECK (sha256 ~ '^[a-f0-9]{64}$'),
       applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`);
-    const existing = await client.query<{ name: string }>(
-      'SELECT name FROM applied_migrations WHERE name = $1',
+    await client.query(
+      'ALTER TABLE applied_migrations ADD COLUMN IF NOT EXISTS sha256 CHAR(64)'
+    );
+    const existing = await client.query<{ name: string; sha256: string | null }>(
+      'SELECT name, sha256 FROM applied_migrations WHERE name = $1',
       [migrationName]
     );
     if (existing.rows.length > 0) {
+      const recordedSha256 = existing.rows[0]?.sha256?.trim();
+      if (!recordedSha256) {
+        throw new Error(
+          `MIGRATION_CHECKSUM_MISSING: ${migrationName} requires explicit checksum reconciliation`
+        );
+      }
+      if (recordedSha256 !== sha256) {
+        throw new Error(
+          `MIGRATION_CHECKSUM_DRIFT: ${migrationName} recorded ${recordedSha256} but exact SQL is ${sha256}`
+        );
+      }
       await client.query('COMMIT');
-      return { status: 'already_applied', migration: migrationName, sourcePath };
+      return { status: 'already_applied', migration: migrationName, sourcePath, sha256 };
     }
 
     await client.query(sql);
-    await client.query('INSERT INTO applied_migrations (name) VALUES ($1)', [migrationName]);
+    await client.query(
+      'INSERT INTO applied_migrations (name, sha256) VALUES ($1, $2)',
+      [migrationName, sha256]
+    );
     await client.query('COMMIT');
-    return { status: 'applied', migration: migrationName, sourcePath };
+    return { status: 'applied', migration: migrationName, sourcePath, sha256 };
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
   }
+}
+
+export async function runEngineAutomationMigrationsOnConnectedClient(
+  client: MigrationClient,
+  runtime: MigrationRuntime,
+): Promise<MigrationOutcome[]> {
+  assertTaskLocationCryptoConfigured();
+  await ensureConstitutionalBaseline(client, runtime);
+  const outcomes: MigrationOutcome[] = [];
+  for (const spec of runtime.migrationSpecs) {
+    const migration = await loadMigrationSql(runtime, spec);
+    const outcome = await applyEngineAutomationMigration(
+      client,
+      migration.sql,
+      migration.sourcePath,
+      spec.name
+    );
+    outcomes.push(outcome);
+    workerLogger.info(outcome, 'Required engine migration verified');
+  }
+  const backfilledLocationCount = await backfillLegacyTaskLocations(client);
+  workerLogger.info(
+    { backfilledLocationCount },
+    'Legacy exact-location encryption backfill verified'
+  );
+  return outcomes;
 }
 
 export async function runEngineAutomationMigration(
@@ -344,25 +390,7 @@ export async function runEngineAutomationMigration(
   const client = runtime.createClient(runtime.databaseUrl);
   await client.connect();
   try {
-    await ensureConstitutionalBaseline(client, runtime);
-    const outcomes: MigrationOutcome[] = [];
-    for (const spec of runtime.migrationSpecs) {
-      const migration = await loadMigrationSql(runtime, spec);
-      const outcome = await applyEngineAutomationMigration(
-        client,
-        migration.sql,
-        migration.sourcePath,
-        spec.name
-      );
-      outcomes.push(outcome);
-      workerLogger.info(outcome, 'Required engine migration verified');
-    }
-    const backfilledLocationCount = await backfillLegacyTaskLocations(client);
-    workerLogger.info(
-      { backfilledLocationCount },
-      'Legacy exact-location encryption backfill verified'
-    );
-    return outcomes;
+    return await runEngineAutomationMigrationsOnConnectedClient(client, runtime);
   } catch (error) {
     workerLogger.fatal({ err: error }, 'Required engine migration failed');
     throw error;

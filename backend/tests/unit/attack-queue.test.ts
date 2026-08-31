@@ -14,6 +14,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { createHash } from 'crypto';
 
 const payoutDestination = vi.hoisted(() => vi.fn());
 
@@ -147,6 +148,39 @@ function makeJob<T>(name: string, data: T, id = 'job-1'): Job<T> {
 function makeSignedPayload(fields: Record<string, unknown>): Record<string, unknown> {
   const sig = signJobPayload(fields);
   return { ...fields, _sig: sig };
+}
+
+function deterministicOutboxJobId(idempotencyKey: string, attempt = 1): string {
+  const digest = createHash('sha256').update(idempotencyKey).digest('hex');
+  return attempt === 1
+    ? `outbox-${digest}`
+    : `outbox-${digest}-dispatch-${attempt}`;
+}
+
+function mockPendingOutboxDispatch(event: Record<string, unknown>): void {
+  (db.query as ReturnType<typeof vi.fn>).mockImplementation(
+    async (sql: string, params: unknown[] = []) => {
+      if (sql.includes("error_message='pre_provider_dispatch_attempts_exhausted'")) {
+        return { rows: [], rowCount: 0 };
+      }
+      if (sql.includes('SELECT * FROM outbox_events')) {
+        return { rows: [event], rowCount: 1 };
+      }
+      if (sql.includes('RETURNING *')) {
+        return {
+          rows: [{
+            ...event,
+            status: 'enqueued',
+            attempts: params[1],
+            bullmq_job_id: params[2],
+            dispatch_attempt_id: params[3],
+          }],
+          rowCount: 1,
+        };
+      }
+      return { rows: [], rowCount: 1 };
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -457,9 +491,9 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
      * for the same logical event without a deterministic jobId.
      *
      * FINDING (from queues.ts + outbox-worker.ts):
-     * - All jobs enqueued via the outbox path use
-     *     jobId: event.idempotency_key
-     *   which is deterministic (eventType:aggregateId:version).
+     * - All jobs enqueued via the outbox path derive a deterministic,
+     *   colon-free transport jobId from the immutable idempotency key and
+     *   durable dispatch attempt. The immutable key remains in the payload.
      *   BullMQ treats duplicate jobIds as no-ops → only one job runs.
      *
      * - Jobs enqueued via workers.ts `registerScheduledJobs` use static
@@ -471,40 +505,39 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
      * VERDICT: FIXED — all supported one-off producers require deduplication.
      */
     it('outbox path uses deterministic jobId (deduplication is guaranteed)', async () => {
-      // Simulate one pending outbox event
       const idempotencyKey = 'escrow.release_requested:e6:1';
+      const expectedJobId = deterministicOutboxJobId(idempotencyKey);
+      mockPendingOutboxDispatch({
+        id: 'ob1',
+        event_type: 'escrow.release_requested',
+        aggregate_type: 'escrow',
+        aggregate_id: 'e6',
+        event_version: 1,
+        idempotency_key: idempotencyKey,
+        payload: { escrow_id: 'e6' },
+        queue_name: 'critical_payments',
+        status: 'pending',
+        attempts: 0,
+        bullmq_job_id: null,
+        dispatch_attempt_id: null,
+      });
 
-      (db.query as any)
-        // SELECT pending outbox events
-        .mockResolvedValueOnce({
-          rows: [{
-            id: 'ob1',
-            event_type: 'escrow.release_requested',
-            aggregate_type: 'escrow',
-            aggregate_id: 'e6',
-            event_version: 1,
-            idempotency_key: idempotencyKey,
-            payload: { escrow_id: 'e6' },
-            queue_name: 'critical_payments',
-            status: 'pending',
-          }],
-          rowCount: 1,
-        })
-        // UPDATE outbox_events SET status='enqueued'
-        .mockResolvedValueOnce({ rowCount: 1 });
-
-      mockQueueAdd.mockResolvedValueOnce({ id: idempotencyKey });
+      mockQueueAdd.mockResolvedValueOnce({ id: expectedJobId });
 
       const result = await processOutboxEvents(10);
 
       expect(result.processed).toBe(1);
 
-      // jobId must equal the idempotency_key — guarantees BullMQ deduplication
       expect(mockQueueAdd).toHaveBeenCalledWith(
         'escrow.release_requested',
-        expect.any(Object),
-        expect.objectContaining({ jobId: idempotencyKey }),
+        expect.objectContaining({
+          outbox_idempotency_key: idempotencyKey,
+          outbox_dispatch_attempt_id: expect.any(String),
+          outbox_bullmq_job_id: expectedJobId,
+        }),
+        expect.objectContaining({ jobId: expectedJobId }),
       );
+      expect(expectedJobId).not.toContain(':');
     });
 
     it('rejects a one-off producer call without a deterministic jobId', async () => {
@@ -582,24 +615,24 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
      * We verify that outbox events are enqueued without a priority field.
      */
     it('outbox enqueue does not set priority field', async () => {
-      (db.query as any)
-        .mockResolvedValueOnce({
-          rows: [{
-            id: 'ob2',
-            event_type: 'escrow.release_requested',
-            aggregate_type: 'escrow',
-            aggregate_id: 'e7',
-            event_version: 1,
-            idempotency_key: 'escrow.release_requested:e7:1',
-            payload: {},
-            queue_name: 'critical_payments',
-            status: 'pending',
-          }],
-          rowCount: 1,
-        })
-        .mockResolvedValueOnce({ rowCount: 1 });
+      const idempotencyKey = 'escrow.release_requested:e7:1';
+      const expectedJobId = deterministicOutboxJobId(idempotencyKey);
+      mockPendingOutboxDispatch({
+        id: 'ob2',
+        event_type: 'escrow.release_requested',
+        aggregate_type: 'escrow',
+        aggregate_id: 'e7',
+        event_version: 1,
+        idempotency_key: idempotencyKey,
+        payload: {},
+        queue_name: 'critical_payments',
+        status: 'pending',
+        attempts: 0,
+        bullmq_job_id: null,
+        dispatch_attempt_id: null,
+      });
 
-      mockQueueAdd.mockResolvedValueOnce({ id: 'escrow.release_requested:e7:1' });
+      mockQueueAdd.mockResolvedValueOnce({ id: expectedJobId });
 
       await processOutboxEvents(1);
 

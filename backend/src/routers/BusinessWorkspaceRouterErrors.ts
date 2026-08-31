@@ -14,9 +14,11 @@ const ERROR_CODES: Readonly<Record<string, WorkspaceErrorCode>> = {
   BUSINESS_RECURRING_TASK_CAP_EXCEEDED: 'PRECONDITION_FAILED',
   BUSINESS_RECURRING_PO_REQUIRED: 'PRECONDITION_FAILED',
   BUSINESS_RECURRING_COST_CENTER_REQUIRED: 'PRECONDITION_FAILED',
+  [LEGACY_TASK_MATERIALIZATION_FROZEN_CODE]: 'PRECONDITION_FAILED',
 };
 
 export function workspaceErrorCode(code: string): WorkspaceErrorCode {
   return ERROR_CODES[code]
     ?? (code.endsWith('_FAILED') ? 'INTERNAL_SERVER_ERROR' : 'BAD_REQUEST');
 }
+import { LEGACY_TASK_MATERIALIZATION_FROZEN_CODE } from '../services/LegacyTaskMaterializationGuard.js';

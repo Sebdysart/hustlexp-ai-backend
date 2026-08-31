@@ -24,14 +24,6 @@ vi.mock('../../src/logger', () => ({
   },
 }));
 
-vi.mock('../../src/services/AIClient', () => ({
-  AIClient: {
-    isConfigured: vi.fn(() => false),
-    call: vi.fn(),
-    callJSON: vi.fn(),
-  },
-}));
-
 import { db } from '../../src/db';
 
 const mockQuery = vi.mocked(db.query);
@@ -68,8 +60,6 @@ describe('diagnoseIncident — rule-based', () => {
     });
     // Correlated events
     mockReadQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-    // Recent incidents for AI context
-    mockReadQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
     // Store diagnosis
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
   }
@@ -86,6 +76,7 @@ describe('diagnoseIncident — rule-based', () => {
       expect(result.data.diagnosisMethod).toBe('rule_based');
       expect(result.data.confidence).toBeGreaterThan(0);
     }
+    expect(mockReadQuery).toHaveBeenCalledTimes(2);
   });
 
   it('diagnoses error_spike with correct root cause', async () => {
@@ -144,7 +135,6 @@ describe('diagnoseIncident — persistence', () => {
       rowCount: 1,
     });
     mockReadQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-    mockReadQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
     await diagnoseIncident('incident-1');
@@ -153,6 +143,7 @@ describe('diagnoseIncident — persistence', () => {
       expect.stringContaining('UPDATE incident_events SET diagnosis'),
       expect.arrayContaining(['incident-1'])
     );
+    expect(mockReadQuery).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -196,7 +187,6 @@ describe('diagnoseIncident — correlated events', () => {
       rows: [{ id: 'corr-1' }, { id: 'corr-2' }],
       rowCount: 2,
     });
-    mockReadQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
     mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
     const result = await diagnoseIncident('incident-1');
@@ -205,5 +195,6 @@ describe('diagnoseIncident — correlated events', () => {
     if (result.success) {
       expect(result.data.correlatedEvents).toEqual(['corr-1', 'corr-2']);
     }
+    expect(mockReadQuery).toHaveBeenCalledTimes(2);
   });
 });

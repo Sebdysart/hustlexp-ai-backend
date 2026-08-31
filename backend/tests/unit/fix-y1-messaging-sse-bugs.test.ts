@@ -30,9 +30,11 @@ vi.mock('@upstash/redis', () => ({
   Redis: vi.fn().mockImplementation(() => ({ publish: vi.fn().mockResolvedValue(1) })),
 }));
 vi.mock('../../src/config', () => ({ config: { redis: { restUrl: null, restToken: null } } }));
+vi.mock('../../src/redis/RedisCommandPort', () => ({
+  getRedisCommandClient: vi.fn().mockReturnValue(null),
+}));
 vi.mock('../../src/cache/redis', () => ({
-  incr: vi.fn().mockResolvedValue(1),
-  expire: vi.fn().mockResolvedValue(undefined),
+  incrWithTtl: vi.fn().mockResolvedValue(1),
   redis: {},
   checkRateLimit: vi.fn(),
 }));
@@ -64,6 +66,7 @@ const msgRow = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(db.query).mockReset();
 });
 
 // ============================================================================

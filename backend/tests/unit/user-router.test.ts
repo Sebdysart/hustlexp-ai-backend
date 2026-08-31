@@ -29,6 +29,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../src/db', () => {
   const queryFn = vi.fn();
   return {
+    isUniqueViolation: (error: unknown) => (
+      error instanceof Error
+      && 'code' in error
+      && (error as Error & { code?: string }).code === '23505'
+    ),
     db: {
       query: queryFn,
       // T53-2: serializableTransaction delegates to queryFn so existing
@@ -609,6 +614,7 @@ describe('user.badges', () => {
 describe('user.register', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockDb.query.mockReset();
     // Default: token verifies successfully and UID matches validInput.firebaseUid
     mockFirebaseAuth.verifyIdToken.mockResolvedValue({ uid: 'fb-new-user' } as any);
   });
@@ -636,6 +642,8 @@ describe('user.register', () => {
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       // Check existing → no rows
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      // Different-UID email collision check → no rows
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       // INSERT RETURNING
       mockDb.query.mockResolvedValueOnce({ rows: [newUser], rowCount: 1 } as any);
       // toMobileUser stats query
@@ -655,13 +663,14 @@ describe('user.register', () => {
       // Email ban check → not banned
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockDb.query.mockResolvedValueOnce({ rows: [newUser], rowCount: 1 } as any);
       setupStatsQuery();
 
       await makePublicCaller().register(validInput);
 
-      // The INSERT call is the third db.query call (index 2)
-      const [, params] = (mockDb.query as any).mock.calls[2];
+      // The INSERT follows ban, UID-only, and email-collision checks.
+      const [, params] = (mockDb.query as any).mock.calls[3];
       expect(params).toContain('worker');
     });
   });
@@ -680,6 +689,8 @@ describe('user.register', () => {
       // Email ban check → returns empty (DELETED row excluded by fix)
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       // Existing user check → no active row found
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      // Different-UID email collision check → no active row found
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       // INSERT RETURNING
       mockDb.query.mockResolvedValueOnce({ rows: [newUser], rowCount: 1 } as any);
@@ -705,6 +716,7 @@ describe('user.register', () => {
     it('returns existing user instead of creating a duplicate', async () => {
       const existingUser = makeFakeUser({
         id: 'existing-user-id',
+        firebase_uid: validInput.firebaseUid,
         email: 'newuser@hustlexp.com',
       });
 
@@ -718,6 +730,66 @@ describe('user.register', () => {
       const result = await makePublicCaller().register(validInput);
 
       expect(result).toHaveProperty('id', 'existing-user-id');
+      expect(mockDb.query).toHaveBeenCalledWith(
+        'SELECT * FROM users WHERE firebase_uid = $1',
+        [validInput.firebaseUid],
+      );
+    });
+
+    it('never returns a profile owned by a different Firebase UID with the same email', async () => {
+      mockFirebaseAuth.verifyIdToken.mockResolvedValueOnce({
+        uid: validInput.firebaseUid,
+        email: validInput.email,
+        email_verified: false,
+      } as any);
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // ban check
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // UID-only profile lookup
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'victim-user-id' }], rowCount: 1 } as any);
+
+      await expect(makePublicCaller().register(validInput)).rejects.toMatchObject({
+        code: 'CONFLICT',
+        message: 'Account identity requires recovery before registration can continue.',
+      });
+      expect(mockDb.query).toHaveBeenNthCalledWith(
+        2,
+        'SELECT * FROM users WHERE firebase_uid = $1',
+        [validInput.firebaseUid],
+      );
+      expect(mockDb.query).toHaveBeenCalledTimes(3);
+    });
+
+    it('fails closed for a case-variant legacy email whose Firebase UID is NULL', async () => {
+      mockFirebaseAuth.verifyIdToken.mockResolvedValueOnce({
+        uid: validInput.firebaseUid,
+        email: validInput.email.toUpperCase(),
+        email_verified: false,
+      } as any);
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // case-insensitive ban check
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // UID-only profile lookup
+      mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'legacy-null-uid' }], rowCount: 1 } as any);
+
+      await expect(makePublicCaller().register(validInput)).rejects.toMatchObject({
+        code: 'CONFLICT',
+      });
+      const [banSql] = (mockDb.query as any).mock.calls[0];
+      const [collisionSql] = (mockDb.query as any).mock.calls[2];
+      expect(banSql).toContain('lower(email) = lower($1)');
+      expect(collisionSql).toContain('firebase_uid IS DISTINCT FROM $2');
+      expect(mockDb.query).toHaveBeenCalledTimes(3);
+    });
+
+    it('maps a database-enforced canonical-email race to a generic conflict', async () => {
+      const uniqueViolation = Object.assign(new Error('duplicate key'), { code: '23505' });
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // ban check
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // UID-only profile lookup
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // collision preflight
+      mockDb.query.mockRejectedValueOnce(uniqueViolation); // database race authority
+
+      await expect(makePublicCaller().register(validInput)).rejects.toMatchObject({
+        code: 'CONFLICT',
+        message: 'Account identity requires recovery before registration can continue.',
+      });
+      expect(mockDb.query).toHaveBeenCalledTimes(4);
     });
 
     it('replaces fail-closed lazy age state after the same Firebase identity supplies an adult DOB', async () => {
@@ -727,7 +799,13 @@ describe('user.register', () => {
         email: 'newuser@hustlexp.com',
         is_minor: true,
       });
-      const verifiedAdult = { ...lazyUser, date_of_birth: validInput.dateOfBirth, is_minor: false };
+      const verifiedAdult = {
+        ...lazyUser,
+        full_name: validInput.fullName,
+        default_mode: 'worker',
+        date_of_birth: validInput.dateOfBirth,
+        is_minor: false,
+      };
 
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockDb.query.mockResolvedValueOnce({ rows: [lazyUser], rowCount: 1 } as any);
@@ -737,9 +815,16 @@ describe('user.register', () => {
       const result = await makePublicCaller().register(validInput);
 
       expect(result).toHaveProperty('id', 'lazy-user-id');
+      expect(result).toHaveProperty('profileRequiresCompletion', false);
       expect(mockDb.query).toHaveBeenCalledWith(
-        expect.stringContaining('SET date_of_birth = $2, is_minor = false'),
-        ['lazy-user-id', validInput.dateOfBirth, validInput.firebaseUid],
+        expect.stringContaining('SET full_name = $2'),
+        [
+          'lazy-user-id',
+          validInput.fullName,
+          'worker',
+          validInput.dateOfBirth,
+          validInput.firebaseUid,
+        ],
       );
     });
 
@@ -802,6 +887,8 @@ describe('user.register', () => {
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       // Existing user check → no active row found
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      // Different-UID email collision check → deleted non-banned row is reusable
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       // INSERT RETURNING
       mockDb.query.mockResolvedValueOnce({ rows: [newUser], rowCount: 1 } as any);
       setupStatsQuery();
@@ -826,6 +913,8 @@ describe('user.register', () => {
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       // Existing check → no match
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      // Different-UID email collision check → no match
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       // INSERT → 0 rows (conflict, another request won)
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       // Fallback SELECT → returns the banned winner row
@@ -848,6 +937,8 @@ describe('user.register', () => {
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       // Existing check → no match
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      // Different-UID email collision check → no match
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       // INSERT → 0 rows (conflict)
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       // Fallback SELECT → returns the suspended winner row
@@ -869,6 +960,8 @@ describe('user.register', () => {
       // Email ban check → clear
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       // Existing check → no match
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      // Different-UID email collision check → no match
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       // INSERT → 0 rows (conflict)
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
@@ -912,6 +1005,7 @@ describe('user.register', () => {
       // Email ban check → not banned
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockDb.query.mockResolvedValueOnce({ rows: [newUser], rowCount: 1 } as any);
       setupStatsQuery();
 
@@ -920,7 +1014,7 @@ describe('user.register', () => {
         dateOfBirth: '1990-05-15',
       });
 
-      const [, params] = (mockDb.query as any).mock.calls[2];
+      const [, params] = (mockDb.query as any).mock.calls[3];
       expect(params).toContain(false); // is_minor
     });
 
@@ -975,6 +1069,7 @@ describe('user.register', () => {
       const newUser = makeFakeUser({ id: 'new-user-id', firebase_uid: 'fb-new-user' });
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // ban check
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // existing check
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // email collision check
       mockDb.query.mockResolvedValueOnce({ rows: [newUser], rowCount: 1 } as any); // INSERT
       setupStatsQuery();
 
@@ -993,6 +1088,7 @@ describe('user.register', () => {
       const newUser = makeFakeUser({ id: 'new-user-id', firebase_uid: 'fb-new-user' });
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // ban check
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // existing check
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // email collision check
       mockDb.query.mockResolvedValueOnce({ rows: [newUser], rowCount: 1 } as any); // INSERT
       setupStatsQuery();
 
@@ -1010,6 +1106,7 @@ describe('user.register', () => {
 
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // ban check
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // existing check
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // email collision check
       mockDb.query.mockResolvedValueOnce({ rows: [newUser], rowCount: 1 } as any); // INSERT
       setupStatsQuery();
 
@@ -1020,6 +1117,7 @@ describe('user.register', () => {
     it('calls firebaseAuth.verifyIdToken with the provided idToken', async () => {
       const newUser = makeFakeUser();
 
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockDb.query.mockResolvedValueOnce({ rows: [newUser], rowCount: 1 } as any);

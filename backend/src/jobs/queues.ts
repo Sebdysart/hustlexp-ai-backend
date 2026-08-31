@@ -9,6 +9,7 @@
  * - user_notifications: Email/SMS/push fanout (rate-limited)
  * - exports: CSV/PDF generation, R2 uploads, signed URL creation
  * - maintenance: Cleanup, TTL expiry, backfills
+ * - synthetic_finance: signed nonproduction fake-value lifecycle commands only
  * 
  * Hard rule: Payment and XP awarding must run in critical_payments only.
  * All handlers must be idempotent by construction (at-least-once processing assumed).
@@ -25,27 +26,20 @@ import { logger as rootLogger } from '../logger.js';
 const dlqLog = rootLogger.child({ subsystem: 'dlq-monitor' });
 
 // ============================================================================
-// REDIS CONNECTION (Upstash)
+// REDIS CONNECTION (provider-neutral TCP)
 // ============================================================================
 
 /**
  * Create Redis connection for BullMQ
  * BullMQ requires ioredis-compatible connection (TCP, not REST API)
  * 
- * Upstash provides both:
- * - REST API (UPSTASH_REDIS_REST_URL) - for @upstash/redis client (caching, rate limiting)
- * - Direct TCP (UPSTASH_REDIS_URL) - for ioredis/BullMQ (job queues)
- * 
- * Hard rule: Use direct TCP connection for BullMQ, REST API for caching
- * 
- * For Upstash: Get direct TCP connection string from Upstash dashboard
- * Format: redis://default:{password}@{endpoint}.upstash.io:{port}
- * 
- * Alternatively: Use separate Redis instance for BullMQ (recommended for production)
+ * REDIS_URL is the canonical portable connection. UPSTASH_REDIS_URL remains a
+ * legacy alias resolved centrally by config.ts. REST credentials are a
+ * separate compatibility transport and are never valid BullMQ inputs.
  */
 function createRedisConnection(): Redis {
   if (!config.redis.url) {
-    throw new Error('Redis configuration missing (UPSTASH_REDIS_URL or REDIS_URL required for BullMQ). Get direct TCP connection string from Upstash dashboard.');
+    throw new Error('Redis configuration missing (REDIS_URL or legacy UPSTASH_REDIS_URL required for BullMQ).');
   }
   
   const redisUrl = config.redis.url;
@@ -59,8 +53,9 @@ function createRedisConnection(): Redis {
     maxRetriesPerRequest: null,
     enableReadyCheck: true,
     lazyConnect: true,
-    // Upstash-specific settings: requires TLS for direct TCP connections
-    tls: redisUrl.includes('upstash.io') ? {} : undefined,
+    // TLS follows the explicit URI scheme; never infer transport security from
+    // a vendor hostname and silently rewrite a redis:// connection.
+    ...(redisUrl.startsWith('rediss://') ? { tls: {} } : {}),
   });
   
   return redis;
@@ -79,7 +74,8 @@ export type QueueName =
   | 'tax_reporting'
   | 'biometric_analysis'
   | 'expertise_recalc'
-  | 'xp_tax_reminders';
+  | 'xp_tax_reminders'
+  | 'synthetic_finance';
 
 interface QueueConfig {
   name: QueueName;
@@ -292,6 +288,26 @@ export const QUEUE_CONFIGS: Record<QueueName, QueueConfig> = {
       maxStalledCount: 1,
     },
   },
+  synthetic_finance: {
+    name: 'synthetic_finance',
+    defaultJobOptions: {
+      attempts: 3,
+      backoff: {
+        type: 'exponential',
+        delay: 1000,
+      },
+      removeOnComplete: {
+        age: 24 * 60 * 60,
+        count: 1000,
+      },
+      removeOnFail: {
+        age: 7 * 24 * 60 * 60,
+      },
+    },
+    workerOptions: {
+      maxStalledCount: 1,
+    },
+  },
 };
 
 // ============================================================================
@@ -303,22 +319,107 @@ const queueInstances = new Map<QueueName, Queue>();
 // Tracks every ioredis connection created by getQueue / createWorker so they
 // can all be cleanly disconnected on graceful shutdown (W-06 fix).
 const connectionInstances = new Map<string, Redis>();
+export const BULLMQ_SHUTDOWN_TIMEOUT_MS = 5_000;
+
+let closeAllConnectionsPromise: Promise<void> | undefined;
+
+async function runWithShutdownDeadline(
+  operation: () => Promise<unknown> | unknown,
+  timeoutLabel: string,
+): Promise<void> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      reject(new Error(
+        `${timeoutLabel}: resource did not close within ${BULLMQ_SHUTDOWN_TIMEOUT_MS}ms`,
+      ));
+    }, BULLMQ_SHUTDOWN_TIMEOUT_MS);
+    timeout.unref();
+  });
+
+  try {
+    await Promise.race([
+      Promise.resolve().then(operation),
+      deadline,
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+async function quitRedisConnection(connectionKey: string, connection: Redis): Promise<void> {
+  try {
+    await runWithShutdownDeadline(
+      () => connection.quit(),
+      `BULLMQ_REDIS_QUIT_TIMEOUT:${connectionKey}`,
+    );
+  } catch (quitError) {
+    try {
+      // quit() can wait forever on an unhealthy network path. disconnect()
+      // synchronously tears down the local socket and prevents that client from
+      // keeping the process alive after the graceful deadline has expired.
+      connection.disconnect(false);
+    } catch (disconnectError) {
+      throw new AggregateError(
+        [quitError, disconnectError],
+        `Redis ${connectionKey} failed graceful quit and forced disconnect`,
+      );
+    }
+    throw quitError;
+  }
+}
+
+async function closeTrackedConnections(): Promise<void> {
+  // Snapshot and clear synchronously so concurrent/later close calls cannot
+  // operate on the same resources twice.
+  const queues = [...queueInstances.entries()];
+  const connections = [...connectionInstances.entries()];
+  queueInstances.clear();
+  connectionInstances.clear();
+
+  const errors: unknown[] = [];
+  const queueResults = await Promise.allSettled(
+    queues.map(([queueName, queue]) => runWithShutdownDeadline(
+      () => queue.close(),
+      `BULLMQ_QUEUE_CLOSE_TIMEOUT:${queueName}`,
+    )),
+  );
+  queueResults.forEach((result, index) => {
+    if (result.status === 'rejected') {
+      const [queueName] = queues[index];
+      rootLogger.warn({ err: result.reason, queueName }, 'Error closing BullMQ queue');
+      errors.push(result.reason);
+    }
+  });
+
+  const connectionResults = await Promise.allSettled(
+    connections.map(([connectionKey, connection]) => (
+      quitRedisConnection(connectionKey, connection)
+    )),
+  );
+  connectionResults.forEach((result, index) => {
+    if (result.status === 'rejected') {
+      const [connectionKey] = connections[index];
+      rootLogger.warn({ err: result.reason, connectionKey }, 'Error closing Redis connection');
+      errors.push(result.reason);
+    }
+  });
+
+  if (errors.length > 0) {
+    throw new AggregateError(errors, 'Failed to close one or more BullMQ queues or Redis connections');
+  }
+}
 
 /**
- * Close all tracked ioredis connections.
- * Call this during graceful shutdown before the process exits.
+ * Close all queue producers, then every tracked ioredis connection.
+ * Worker instances are drained by the worker lifecycle before this terminal
+ * queue boundary runs.
  */
-export async function closeAllConnections(): Promise<void> {
-  const closePromises: Promise<void>[] = [];
-  for (const [key, conn] of connectionInstances.entries()) {
-    closePromises.push(
-      conn.quit().then(() => undefined).catch((err: unknown) => {
-        rootLogger.warn({ err, connectionKey: key }, 'Error closing Redis connection');
-      })
-    );
+export function closeAllConnections(): Promise<void> {
+  if (!closeAllConnectionsPromise) {
+    closeAllConnectionsPromise = closeTrackedConnections();
   }
-  await Promise.all(closePromises);
-  connectionInstances.clear();
+  return closeAllConnectionsPromise;
 }
 
 /**
@@ -326,6 +427,9 @@ export async function closeAllConnections(): Promise<void> {
  * Singleton pattern to ensure one queue instance per name
  */
 function getQueue(queueName: QueueName): Queue {
+  if (closeAllConnectionsPromise) {
+    throw new Error('BULLMQ_RUNTIME_CLOSED: cannot create a queue after shutdown has started');
+  }
   if (queueInstances.has(queueName)) {
     return queueInstances.get(queueName)!;
   }
@@ -456,6 +560,9 @@ export function createWorker(
   processor: (job: Job) => Promise<void>,
   options?: Partial<WorkerOptions>
 ): Worker {
+  if (closeAllConnectionsPromise) {
+    throw new Error('BULLMQ_RUNTIME_CLOSED: cannot create a worker after shutdown has started');
+  }
   const queueConfig = QUEUE_CONFIGS[queueName];
   const connection = createRedisConnection();
   // Use a unique key per worker in case multiple workers share the same queue name
@@ -532,26 +639,7 @@ export function createWorker(
 // ============================================================================
 // HMAC PAYLOAD SIGNING (Attack 12 — Redis injection defence)
 // ============================================================================
-function canonicalizeForSigning(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(canonicalizeForSigning);
-  }
 
-  if (value !== null && typeof value === 'object') {
-    const object = value as Record<string, unknown>;
-
-    return Object.fromEntries(
-      Object.keys(object)
-        .sort()
-        .map((key) => [
-          key,
-          canonicalizeForSigning(object[key]),
-        ]),
-    );
-  }
-
-  return value;
-}
 /**
  * Sign a financial job payload with HMAC-SHA256.
  * Returns a 64-character hex digest that must be stored as `_sig` in the job.
@@ -559,11 +647,8 @@ function canonicalizeForSigning(value: unknown): unknown {
  * Hard rule: Only call this for FINANCIAL jobs (critical_payments escrow events).
  */
 export function signJobPayload(payload: Record<string, unknown>): string {
-  const body = JSON.stringify(canonicalizeForSigning(payload));
-
-  return createHmac('sha256', config.queue.hmacSecret)
-    .update(body)
-    .digest('hex');
+  const body = JSON.stringify(payload);
+  return createHmac('sha256', config.queue.hmacSecret).update(body).digest('hex');
 }
 
 /**
@@ -584,21 +669,8 @@ export function verifyJobSignature(payload: Record<string, unknown>, signature: 
 }
 
 // ============================================================================
-// GRACEFUL SHUTDOWN — close all tracked Redis connections
-// ============================================================================
-
-const shutdownHandler = async (signal: string) => {
-  rootLogger.info({ signal }, 'queues: received shutdown signal, closing Redis connections');
-  await closeAllConnections();
-};
-
-process.on('SIGTERM', () => { void shutdownHandler('SIGTERM'); });
-process.on('SIGINT',  () => { void shutdownHandler('SIGINT'); });
-
-// ============================================================================
 // EXPORTS
 // ============================================================================
 
 export { Queue, Worker };
 export type { QueueOptions, WorkerOptions };
-

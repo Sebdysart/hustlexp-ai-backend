@@ -10,6 +10,7 @@
  * resource_already_exists reversal special case.
  */
 import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 // Controllable mock Stripe client — every method is a spy we can resolve/reject.
 const stripeClient = vi.hoisted(() => ({
@@ -57,6 +58,7 @@ import { StripeService } from '../../src/services/StripeService';
 beforeEach(() => {
   vi.clearAllMocks();
   delete process.env.HX_STRIPE_STUB; // ensure real bodies run, not the stub branch
+  enableControlledStripePaymentTestCohortV7();
 });
 
 afterEach(() => {
@@ -78,7 +80,7 @@ describe('StripeService (configured client) — createPaymentIntent', () => {
   });
 
   it('creates a PI and returns id/clientSecret/amount on success', async () => {
-    stripeClient.paymentIntents.create.mockResolvedValueOnce({ id: 'pi_1', client_secret: 'cs_1' });
+    stripeClient.paymentIntents.create.mockResolvedValueOnce({ id: 'pi_1', client_secret: 'cs_1', amount: 5000 });
     const r = await StripeService.createPaymentIntent({
       taskId: 't1', posterId: 'p1', escrowId: 'e1', amount: 5000, description: 'd',
     });

@@ -1,7 +1,7 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { db } from '../db.js';
-import { hustlerProcedure, trustAdminProcedure } from '../trpc.js';
+import { heldTrustAdminProcedure, hustlerProcedure, trustAdminProcedure } from '../trpc.js';
 import * as CapabilityProfileService from '../services/CapabilityProfileService.js';
 import * as EligibilityResolverService from '../services/EligibilityResolverService.js';
 import * as FeedQueryService from '../services/FeedQueryService.js';
@@ -185,7 +185,7 @@ export const capabilityCoreProcedures = {
     .input(z.void())
     .query(({ ctx }) => InsuranceVerificationService.getUserInsurance(ctx.user.id)),
 
-  approveLicense: trustAdminProcedure
+  approveLicense: heldTrustAdminProcedure
     .input(z.object({ verificationId: z.string(), notes: z.string().optional() }))
     .mutation(({ ctx, input }) => LicenseVerificationService.approveLicense(
       input.verificationId,
@@ -193,7 +193,7 @@ export const capabilityCoreProcedures = {
       input.notes,
     )),
 
-  rejectLicense: trustAdminProcedure
+  rejectLicense: heldTrustAdminProcedure
     .input(z.object({
       verificationId: z.string(),
       reason: z.string(),

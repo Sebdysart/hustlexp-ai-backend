@@ -4,6 +4,7 @@ import type { Escrow, ServiceResult } from '../types.js';
 import { ErrorCodes } from '../types.js';
 import { escrowLogger } from '../logger.js';
 import type { CreateEscrowParams } from './EscrowServiceShared.js';
+import { legacyTaskMaterializationFailure } from './LegacyTaskMaterializationGuard.js';
 
 export const getEscrowById = async (escrowId: string): Promise<ServiceResult<Escrow>> => {
     try {
@@ -72,6 +73,8 @@ export const getEscrowByTaskId = async (taskId: string): Promise<ServiceResult<E
   };
 
 export const createEscrow = async (params: CreateEscrowParams): Promise<ServiceResult<Escrow>> => {
+    const frozen = legacyTaskMaterializationFailure('pending_escrow_create');
+    if (frozen) return frozen;
     const { taskId, amount } = params;
 
     // Validate amount is positive integer (cents)

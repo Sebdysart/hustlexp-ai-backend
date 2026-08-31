@@ -264,6 +264,8 @@ describe('A63-1: concurrent registration conflict path handles DELETED accounts'
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
     // Existing user check → no match
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+    // Case-folded email collision check → no different identity
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
     // INSERT → 0 rows (conflict, another request won the race)
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
     // Fallback SELECT → returns a DELETED user (concurrent winner was a DELETED account)
@@ -310,6 +312,8 @@ describe('A63-1: concurrent registration conflict path handles DELETED accounts'
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
     // Existing user check → no match
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+    // Case-folded email collision check → no different identity
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
     // INSERT → 0 rows (conflict)
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
     // Fallback SELECT → returns the ACTIVE winner
@@ -329,6 +333,8 @@ describe('A63-1: concurrent registration conflict path handles DELETED accounts'
     // Email ban check → clear
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
     // Existing user check → no match
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+    // Case-folded email collision check → no different identity
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
     // INSERT → 0 rows
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);

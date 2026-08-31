@@ -254,6 +254,20 @@ export const TippingService = {
    */
   confirmTip: async (tipId: string, stripePaymentIntentId: string): Promise<ServiceResult<Tip>> => {
     try {
+      const frozen = newPaymentCreationFailure('tip');
+      if (frozen) {
+        const replay = await db.query<Tip>(
+          `SELECT * FROM tips
+           WHERE id = $1
+             AND stripe_payment_intent_id = $2
+             AND status = 'completed'
+           LIMIT 1`,
+          [tipId, stripePaymentIntentId]
+        );
+        if (replay.rows[0]) return { success: true, data: replay.rows[0] };
+        return frozen;
+      }
+
       // H3 FIX: Use module-level Stripe singleton (initialized at module load).
       if (!stripe) {
         return { success: false, error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe not configured' } };

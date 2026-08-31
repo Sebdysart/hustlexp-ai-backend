@@ -14,7 +14,7 @@ import { db } from '../db.js';
 import type { QueryFn } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { logger } from '../logger.js';
-import { StripeService } from './StripeService.js';
+import { permanentlyContainedPositiveMoneyFailure } from './NewPaymentCreationGuard.js';
 
 const log = logger.child({ service: 'SelfInsurancePoolService' });
 
@@ -337,13 +337,12 @@ export const SelfInsurancePoolService = {
   },
 
   /**
-   * Pay an approved claim
-   * Transfers funds from pool to hustler
+   * Historical insurance-payout compatibility boundary.
    *
-   * F-17: Balance check + debit wrapped in a transaction with SELECT FOR UPDATE
-   *       to prevent concurrent double-drain.
-   * F-18: Idempotency check — returns early if claim is already paid.
-   * F-19: Stripe transfer uses Idempotency-Key header based on claimId.
+   * Completed historical payouts remain readable. A legacy `paid` record with
+   * no transfer reference is never retried here because the old implementation
+   * could commit the paid state before the provider effect. New payouts remain
+   * contained until a durable provider-neutral payout saga is certified.
    */
   payClaim: async (claimId: string): Promise<ServiceResult<{ already_paid?: boolean; claim?: InsuranceClaim }>> => {
     try {
@@ -365,287 +364,42 @@ export const SelfInsurancePoolService = {
 
       const claim = claimResult.rows[0];
 
-      // F-18 / F-31: Idempotency — return early only if paid AND Stripe transfer confirmed.
-      // If status='paid' but stripe_transfer_id is NULL, the DB transaction committed but
-      // the Stripe call failed — we must fall through and re-attempt the Stripe transfer.
       if (claim.status === 'paid' && claim.stripe_transfer_id) {
         return { success: true, data: { already_paid: true, claim } };
       }
 
-      // F64-2 FIX: Allow status='paid' with stripe_transfer_id=NULL to fall through
-      // to the transaction+Stripe retry path. When status='paid' AND stripe_transfer_id
-      // is NULL it means the DB committed but Stripe failed — the idempotency check above
-      // already handled the truly-complete case (status='paid' && stripe_transfer_id SET).
-      // Any other non-approved status (denied, pending, withdrawn) is still blocked.
-      if (claim.status !== 'approved' && claim.status !== 'paid') {
+      if (claim.status === 'paid') {
+        return {
+          success: false,
+          error: {
+            code: 'CLAIM_PAYOUT_RECONCILIATION_REQUIRED',
+            message:
+              'The claim is marked paid without a confirmed payout reference. Reconcile the historical record; no payout was retried.',
+            details: {
+              claimId,
+              disposition: 'RECONCILIATION_REQUIRED',
+            },
+          },
+        };
+      }
+
+      if (claim.status !== 'approved') {
         return {
           success: false,
           error: {
             code: 'CLAIM_NOT_APPROVED',
-            message: 'Claim must be approved before payment'
-          }
-        };
-      }
-
-      // F46-4 FIX: Pre-check Stripe Connect ID BEFORE the DB transaction.
-      // Previously the Connect ID was fetched AFTER the DB committed: pool was debited
-      // and claim marked 'paid', but no Stripe transfer occurred — the function then
-      // returned { success: true } with pool funds permanently lost. The idempotency
-      // guard (status='paid' AND stripe_transfer_id set) would never match because
-      // stripe_transfer_id stays NULL, so every retry hit the same dead-end.
-      // Fix: fail fast before any DB writes so the pool is never debited and the
-      // caller can retry after the hustler completes Stripe Connect onboarding.
-      // Note: we still re-verify the Connect ID inside the Stripe try block below
-      // for correctness (concurrent onboarding revocation), but this early check
-      // prevents the irreversible DB commit from happening without a valid account.
-      const preCheckResult = await db.query<{ stripe_connect_id: string | null }>(
-        `SELECT stripe_connect_id FROM users WHERE id = $1`,
-        [claim.hustler_id]
-      );
-      const connectId = preCheckResult.rows[0]?.stripe_connect_id;
-      if (!connectId) {
-        return {
-          success: false,
-          error: {
-            code: 'NO_CONNECT_ACCOUNT',
-            message: `Hustler has no Stripe Connect account — cannot pay claim. Complete Stripe Connect onboarding first.`
-          }
-        };
-      }
-
-      // F-04 FIX: Do NOT fetch coverage_percentage outside the transaction.
-      // coveredAmountCents must be computed from the freshly-locked pool row so that
-      // an admin change to coverage_percentage between this point and the FOR UPDATE
-      // lock cannot produce a stale covered amount (same bug that was fixed for
-      // fileClaim in F-06/R44). The variable is declared here for use in the Stripe
-      // call after the transaction commits.
-      let coveredAmountCents: number = 0;
-
-      // F59-2 FIX: Flag to detect when the transaction finds the claim is already paid.
-      // Previously, status='paid' caused an early `return` inside the transaction, leaving
-      // coveredAmountCents=0. After the transaction, Stripe was called with amount=0.
-      // Now we set this flag instead of returning, and guard against the Stripe call below.
-      let alreadyPaid = false;
-
-      // F-17: Wrap balance check + pool debit + claim status update in a single
-      // transaction with SELECT FOR UPDATE to prevent concurrent double-drain.
-      await db.transaction(async (query: QueryFn) => {
-        // F-25 / F-31: Re-verify claim status under row lock to prevent concurrent double-pay.
-        // Only skip the DB debit if status='paid' AND stripe_transfer_id is set — meaning a
-        // previous call fully completed. If stripe_transfer_id is NULL, DB committed but Stripe
-        // failed; the outer idempotency check allows fall-through for Stripe retry, so here
-        // we just skip the DB portion (pool already debited) by returning early.
-        // F60-3 FIX: Also SELECT covered_amount_cents so we use the stored value rather than
-        // recomputing from a potentially different current coverage_percentage.
-        const claimCheck = await query<{ status: string; stripe_transfer_id: string | null; claim_amount_cents: number; covered_amount_cents: number | null }>(
-          'SELECT status, stripe_transfer_id, claim_amount_cents, covered_amount_cents FROM insurance_claims WHERE id = $1 FOR UPDATE',
-          [claimId]
-        );
-        if (!claimCheck.rows[0]) {
-          return; // Claim locked/deleted by concurrent call — safe to exit
-        }
-        if (claimCheck.rows[0].status === 'paid') {
-          if (claimCheck.rows[0].stripe_transfer_id) {
-            // F59-2 FIX: Set flag instead of returning so coveredAmountCents stays 0
-            // and the caller can detect this path without attempting a Stripe transfer.
-            // Truly idempotent: DB committed AND Stripe transfer succeeded.
-            alreadyPaid = true;
-          } else {
-            // F62-1 FIX: DB committed status='paid' but Stripe transfer never completed
-            // (Stripe failed after the transaction committed). Set coveredAmountCents from
-            // the stored value so the outer code falls through to retry the Stripe transfer.
-            // Do NOT set alreadyPaid — the outer code must proceed to Stripe.
-            coveredAmountCents = claimCheck.rows[0].covered_amount_cents ?? 0;
-          }
-          return; // Exit transaction — no DB mutations needed (pool already debited at filing)
-        }
-        if (claimCheck.rows[0].status !== 'approved') {
-          throw new Error(`CLAIM_NOT_APPROVED:Claim status changed to ${claimCheck.rows[0].status}`);
-        }
-
-        // F-04 FIX: Lock the pool row and re-read BOTH available_balance_cents AND
-        // coverage_percentage atomically under FOR UPDATE. Previously, coverage_percentage
-        // was fetched outside the transaction, leaving a window where an admin update
-        // between the outer SELECT and this lock would produce a stale coveredAmountCents.
-        // available_balance_cents is a computed column: total_deposits_cents - total_claims_cents
-        // F48-2: Also read max_claim_cents under the lock so that a coverage_percentage raise
-        // after claim filing cannot produce a payout that exceeds the pool cap.
-        const poolResult = await query<{ available_balance_cents: number; coverage_percentage: number; max_claim_cents: number }>(
-          'SELECT available_balance_cents, coverage_percentage, max_claim_cents FROM self_insurance_pool FOR UPDATE LIMIT 1'
-        );
-
-        const availableBalanceCents = poolResult.rows[0]?.available_balance_cents ?? 0;
-        // F60-3 FIX: Use stored covered_amount_cents if available (filed at claim time);
-        // fall back to recomputing for legacy rows where the column is NULL.
-        if (claimCheck.rows[0].covered_amount_cents != null) {
-          coveredAmountCents = claimCheck.rows[0].covered_amount_cents;
-        } else {
-          const freshCoveragePercentage = poolResult.rows[0]?.coverage_percentage ?? 80.0;
-          coveredAmountCents = Math.round(claimCheck.rows[0].claim_amount_cents * (freshCoveragePercentage / 100));
-        }
-
-        // F48-2: Guard against coverage_percentage having been raised since claim filing —
-        // throw before the balance check so the pool is never debited beyond the cap.
-        const maxClaimCents = poolResult.rows[0]?.max_claim_cents ?? 500000;
-        if (coveredAmountCents > maxClaimCents) {
-          throw new Error('CLAIM_EXCEEDS_MAX:Covered payout would exceed pool maximum claim limit');
-        }
-
-        if (coveredAmountCents > availableBalanceCents) {
-          throw new Error(`INSUFFICIENT_POOL_BALANCE:Pool balance insufficient. Available: $${(availableBalanceCents / 100).toFixed(2)}, Required: $${(coveredAmountCents / 100).toFixed(2)}`);
-        }
-
-        // F56-1 FIX: Move the Stripe minimum transfer floor check INSIDE the transaction,
-        // BEFORE the pool debit and claim status UPDATE. Previously this check ran after
-        // the transaction committed — the pool was permanently debited and claim marked
-        // 'paid' with stripe_transfer_id=NULL, leaving the claim in an un-retryable limbo
-        // (retry hits status='paid'/no transfer_id → falls through idempotency guard →
-        // hits status guard → CLAIM_NOT_APPROVED permanently). By throwing here, the
-        // transaction rolls back: no pool debit, no claim status change.
-        if (coveredAmountCents < 50) {
-          throw new Error(`TRANSFER_AMOUNT_TOO_LOW:Covered payout of ${coveredAmountCents} cents is below the minimum Stripe transfer amount (50 cents). Claim requires manual review.`);
-        }
-
-        // F58-3 FIX: Do NOT re-debit pool balance here. total_claims_cents was already
-        // incremented by fileClaim at filing time (under the same FOR UPDATE lock) to
-        // prevent concurrent over-commitment. Re-incrementing here would double-count
-        // the reservation and permanently over-report total_claims_cents.
-        // payClaim only needs to mark the claim as paid.
-
-        // Mark claim as paid
-        await query(
-          `UPDATE insurance_claims
-           SET status = 'paid',
-               paid_at = NOW()
-           WHERE id = $1`,
-          [claimId]
-        );
-      });
-
-      // F59-2 FIX: If the transaction detected the claim was already paid by a concurrent
-      // caller, return early here — coveredAmountCents is still 0 at this point, so calling
-      // Stripe with amount=0 would either error or produce a zero-dollar transfer.
-      if (alreadyPaid) {
-        return { success: true, data: { already_paid: true, claim } };
-      }
-
-      // Transfer funds to hustler via Stripe Connect
-      // F-06 FIX: Use StripeService.createTransfer() instead of raw fetch() so the
-      // call goes through the circuit breaker, SDK retry/timeout logic, and test stubs.
-      // F-19: Pass claimId as part of the idempotency key to prevent duplicate transfers.
-      // F53-10 FIX: Do NOT swallow Stripe failures. If Stripe throws or returns
-      // success:false, return a STRIPE_TRANSFER_FAILED error so the caller knows the
-      // worker was not paid. Previously, all Stripe errors were silently caught and the
-      // function returned { success: true } — the DB had already committed status='paid'
-      // but the worker received nothing (permanent money loss).
-      // F46-4 FIX: Re-use the pre-checked connectId from above (no redundant DB query).
-      // The pre-check already returned failure if connectId was null, so here it is
-      // guaranteed non-null.
-      let transferResult: Awaited<ReturnType<typeof StripeService.createTransfer>>;
-      try {
-        transferResult = await StripeService.createTransfer({
-          escrowId: claimId, // use claimId as the correlation key for this payout
-          taskId: claim.task_id,
-          workerId: claim.hustler_id,
-          workerStripeAccountId: connectId,
-          amount: coveredAmountCents,
-          description: `Insurance claim payout: ${claimId}`,
-          idempotencyKeySuffix: `claim_payout_${claimId}`,
-        });
-      } catch (stripeException) {
-        // F53-10 FIX: Stripe threw an exception (network error, SDK error, etc.)
-        // Record it for ops visibility and return a structured failure — do NOT swallow.
-        const errMsg = stripeException instanceof Error ? stripeException.message : String(stripeException);
-        log.error({ err: errMsg, claimId }, 'Stripe threw during claim payout transfer');
-        // Best-effort annotation — ignore any secondary DB failure so the structured error always returns.
-        try {
-          await db.query(
-            `UPDATE insurance_claims SET review_notes = COALESCE(review_notes, '') || ' [STRIPE_TRANSFER_FAILED]' WHERE id = $1`,
-            [claimId]
-          );
-        } catch {
-          // Ignore secondary failures — the primary error is what matters to the caller
-        }
-        return {
-          success: false,
-          error: {
-            code: 'STRIPE_TRANSFER_FAILED',
-            message: `Stripe transfer threw: ${errMsg}`,
+            message: 'Claim must be approved before payment',
           },
         };
       }
 
-      if (!transferResult.success) {
-        // F53-10 FIX: Stripe returned a structured failure — record it for ops visibility
-        // but propagate the error to the caller (do NOT return { success: true }).
-        log.error({ claimId, taskId: claim.task_id, err: transferResult.error.message }, 'Stripe transfer failed for claim payout');
-        await db.query(
-          `UPDATE insurance_claims SET review_notes = COALESCE(review_notes, '') || ' [STRIPE_TRANSFER_FAILED]' WHERE id = $1`,
-          [claimId]
-        );
-        return {
-          success: false,
-          error: {
-            code: 'STRIPE_TRANSFER_FAILED',
-            message: `Stripe transfer failed: ${transferResult.error.message}`,
-          },
-        };
-      }
-
-      // F-31: Record the transfer ID so the idempotency guard can confirm
-      // that the Stripe call succeeded. Without this, a process crash after
-      // DB commit but before Stripe completes leaves the claim in a
-      // status='paid'/stripe_transfer_id=NULL limbo that is un-retryable.
-      await db.query(
-        'UPDATE insurance_claims SET stripe_transfer_id = $1 WHERE id = $2',
-        [transferResult.data.transferId, claimId]
+      return permanentlyContainedPositiveMoneyFailure(
+        'provider_payout',
+        'CONTAINED_PENDING_PROVIDER_NEUTRAL_INSURANCE_PAYOUT_SAGA'
       );
 
-      log.info({ claimId, coveredAmountCents }, 'Paid claim');
-
-      return { success: true, data: {} };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      // Surface structured insufficient-balance errors
-      if (message.startsWith('INSUFFICIENT_POOL_BALANCE:')) {
-        return {
-          success: false,
-          error: {
-            code: 'INSUFFICIENT_POOL_BALANCE',
-            message: message.slice('INSUFFICIENT_POOL_BALANCE:'.length)
-          }
-        };
-      }
-      // Surface F48-2: covered payout exceeds pool cap
-      if (message.startsWith('CLAIM_EXCEEDS_MAX:')) {
-        return {
-          success: false,
-          error: {
-            code: 'CLAIM_EXCEEDS_MAX',
-            message: message.slice('CLAIM_EXCEEDS_MAX:'.length)
-          }
-        };
-      }
-      // Surface F56-1: transfer amount below Stripe minimum floor
-      if (message.startsWith('TRANSFER_AMOUNT_TOO_LOW:')) {
-        return {
-          success: false,
-          error: {
-            code: 'TRANSFER_AMOUNT_TOO_LOW',
-            message: message.slice('TRANSFER_AMOUNT_TOO_LOW:'.length)
-          }
-        };
-      }
-      // Surface claim-status-changed errors (F-25: concurrent double-pay guard)
-      if (message.startsWith('CLAIM_NOT_APPROVED:')) {
-        return {
-          success: false,
-          error: {
-            code: 'CLAIM_NOT_APPROVED',
-            message: message.slice('CLAIM_NOT_APPROVED:'.length)
-          }
-        };
-      }
       log.error({ err: message, claimId }, 'Failed to pay claim');
       return {
         success: false,

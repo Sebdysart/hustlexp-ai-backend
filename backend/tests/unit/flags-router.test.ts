@@ -3,7 +3,7 @@
  *
  * Tests tRPC procedures:
  * - getFlags (protected, query)
- * - setFlag (admin, mutation)
+ * - requestDisable (stepped-up, versioned, two-person mutation request)
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -31,7 +31,12 @@ vi.mock('../../src/logger', () => ({
 vi.mock('../../src/services/FlagsService', () => ({
   FlagsService: {
     getUserFlags: vi.fn(),
-    setFlag: vi.fn(),
+  },
+}));
+
+vi.mock('../../src/services/OperatorAuthorityService', () => ({
+  OperatorAuthorityService: {
+    request: vi.fn(),
   },
 }));
 
@@ -42,9 +47,11 @@ vi.mock('../../src/services/FlagsService', () => ({
 import { db } from '../../src/db';
 import { flagsRouter } from '../../src/routers/flags';
 import { FlagsService } from '../../src/services/FlagsService';
+import { OperatorAuthorityService } from '../../src/services/OperatorAuthorityService';
 
 const mockDb = vi.mocked(db);
 const mockService = vi.mocked(FlagsService);
+const mockOperatorAuthority = vi.mocked(OperatorAuthorityService);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -58,11 +65,22 @@ function makeCaller(userId = 'test-uid') {
 }
 
 function makeAdminCaller(userId = 'admin-uid') {
-  // adminProcedure checks admin_roles table
   return flagsRouter.createCaller({
-    user: { id: userId } as any,
+    user: {
+      id: userId,
+      is_admin: true,
+      is_banned: false,
+      account_status: 'ACTIVE',
+    } as any,
     firebaseUid: 'fb-admin',
-  });
+    identityAssurance: {
+      authenticatedAtSeconds: Math.floor(Date.now() / 1000),
+      tokenExpiresAtSeconds: Math.floor(Date.now() / 1000) + 3_600,
+      signInProvider: 'password',
+      secondFactor: 'phone',
+      mfaVerified: true,
+    },
+  } as any);
 }
 
 // ---------------------------------------------------------------------------
@@ -89,71 +107,65 @@ describe('flags.getFlags', () => {
   });
 });
 
-describe('flags.setFlag', () => {
+describe('flags.requestDisable', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('sets a feature flag (admin)', async () => {
-    // Admin role check
-    mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
+  it('routes only an exact disable request into the two-person command rail', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ role: 'support', capability_granted: true }], rowCount: 1,
+    } as any);
+    mockOperatorAuthority.request.mockResolvedValueOnce({
+      commandId: '22222222-2222-4222-8222-222222222222',
+      status: 'PENDING',
+      version: 1,
+      idempotencyReplayed: false,
+    } as any);
+    const idempotencyKey = '11111111-1111-4111-8111-111111111111';
 
-    const flagData = { name: 'beta_feature', enabled: true };
-    mockService.setFlag.mockResolvedValueOnce(flagData as any);
-
-    const result = await makeAdminCaller().setFlag({
+    await expect(makeAdminCaller().requestDisable({
       name: 'beta_feature',
-      enabled: true,
-    });
+      enabled: false,
+      expectedVersion: 7,
+      reason: 'Disable this feature while the incident is reviewed.',
+      idempotencyKey,
+    })).resolves.toMatchObject({ status: 'PENDING' });
 
-    expect(result).toEqual(flagData);
-    expect(mockService.setFlag).toHaveBeenCalledWith({
-      name: 'beta_feature',
-      enabled: true,
-      rolloutPercentage: 0,
-      userAllowlist: [],
-      userBlocklist: [],
-      metadata: {},
+    expect(mockOperatorAuthority.request).toHaveBeenCalledWith(expect.anything(), {
+      operationType: 'DISABLE_FEATURE_FLAG',
+      targetId: 'beta_feature',
+      targetExpectedVersion: 7,
+      reason: 'Disable this feature while the incident is reviewed.',
+      idempotencyKey,
     });
   });
 
-  it('sets flag with all options', async () => {
-    mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
-    mockService.setFlag.mockResolvedValueOnce({ name: 'rollout' } as any);
-
-    const uuid1 = '11111111-1111-1111-1111-111111111111';
-
-    await makeAdminCaller().setFlag({
-      name: 'rollout_test',
+  it('rejects feature enablement at schema validation before authority execution', async () => {
+    await expect(makeAdminCaller().requestDisable({
+      name: 'beta_feature',
       enabled: true,
-      rolloutPercentage: 50,
-      userAllowlist: [uuid1],
-      userBlocklist: [],
-      metadata: { version: '2.0' },
-    });
-
-    expect(mockService.setFlag).toHaveBeenCalledWith({
-      name: 'rollout_test',
-      enabled: true,
-      rolloutPercentage: 50,
-      userAllowlist: [uuid1],
-      userBlocklist: [],
-      metadata: { version: '2.0' },
-    });
+      expectedVersion: 7,
+      reason: 'Attempt to enable a feature through a disable-only command.',
+      idempotencyKey: '11111111-1111-4111-8111-111111111111',
+    } as any)).rejects.toThrow();
+    expect(mockOperatorAuthority.request).not.toHaveBeenCalled();
+    expect(mockDb.query.mock.calls.every(([sql]) =>
+      !/\b(?:INSERT|UPDATE|DELETE)\b/iu.test(String(sql)),
+    )).toBe(true);
   });
 
-  it('rejects non-admin users', async () => {
-    // Admin role check returns empty
+  it('rejects operators without current Operations capability', async () => {
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
-
-    await expect(
-      makeAdminCaller().setFlag({ name: 'test', enabled: true })
-    ).rejects.toThrow('Platform administrator access required');
+    await expect(makeAdminCaller().requestDisable({
+      name: 'beta_feature',
+      enabled: false,
+      expectedVersion: 7,
+      reason: 'Disable this feature while the incident is reviewed.',
+      idempotencyKey: '11111111-1111-4111-8111-111111111111',
+    })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect(mockOperatorAuthority.request).not.toHaveBeenCalled();
   });
 
-  it('rejects rollout percentage outside range', async () => {
-    mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
-
-    await expect(
-      makeAdminCaller().setFlag({ name: 'test', enabled: true, rolloutPercentage: 101 })
-    ).rejects.toThrow();
+  it('does not expose the removed direct setFlag route', () => {
+    expect((flagsRouter as any)._def.record.setFlag).toBeUndefined();
   });
 });

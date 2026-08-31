@@ -12,11 +12,13 @@ import pg from 'pg';
 import { taskRouter } from '../../src/routers/task';
 import type { User } from '../../src/types';
 import {
+  attestTestUserIdentity,
   createTestEscrow,
   createTestPool,
   createTestTask,
   createTestUser,
   hasDb,
+  promoteTestUserTrustSequentially,
 } from '../setup';
 
 let pool: pg.Pool;
@@ -29,19 +31,20 @@ async function userRow(userId: string): Promise<User> {
 
 async function createWorker(): Promise<string> {
   const worker = await createTestUser(pool);
+  await promoteTestUserTrustSequentially(pool, worker.id, 2);
   await pool.query(
     `UPDATE users
-     SET default_mode = 'worker', trust_tier = 2,
+     SET default_mode = 'worker',
          date_of_birth = DATE '1990-01-01', is_minor = FALSE,
          is_banned = FALSE, trust_hold = FALSE, trust_hold_until = NULL,
          account_status = 'ACTIVE', plan = 'free',
-         is_verified = TRUE,
          phone = '+1206' || substr(replace(id::text, '-', ''), 1, 7),
          stripe_connect_id = 'acct_test_' || replace(id::text, '-', ''),
          payouts_enabled = TRUE
      WHERE id = $1`,
     [worker.id],
   );
+  await attestTestUserIdentity(pool, worker.id, 'PRODUCTION');
   await pool.query(
     `INSERT INTO capability_profiles
        (user_id, trust_tier, risk_clearance, location_state, location_city, updated_at)
@@ -75,7 +78,12 @@ async function createDecisionReadyTask(
     mutualConsentAccepted?: boolean;
   } = {},
 ): Promise<string> {
-  const task = await createTestTask(pool, { posterId, ...policy });
+  const task = await createTestTask(pool, {
+    posterId,
+    ...policy,
+    automationClassification: 'PRODUCTION',
+    productionPolicyFixture: 'GOVERNED_ISOLATED',
+  });
   if (funded) await createTestEscrow(pool, task.id, 'FUNDED');
   return task.id;
 }
@@ -85,16 +93,30 @@ async function createOffer(taskId: string, workerId: string): Promise<void> {
     `INSERT INTO worker_offer_decisions (
        task_id, worker_id, policy_version, payload_hash, decision_ready,
        blocking_reasons, customer_total_cents, payout_cents,
+       insurance_adjustment_cents, net_payout_cents,
        estimated_net_hourly_cents, distance_miles, estimated_duration_minutes,
+       estimated_travel_time_minutes, travel_time_policy_version,
+       minimum_net_hourly_cents, provider_earnings_policy_version,
+       provider_earnings_floor_met, paid_promotion_affects_rank,
+       passing_has_rank_penalty,
        scope_hash, cancellation_policy_version, rank_score, rank_reasons,
        snapshot, expires_at
      )
-     SELECT id, $2, 'hx-n6-v1', repeat('d', 64), TRUE,
-            '[]', price, hustler_payout_cents,
-            hustler_payout_cents, 1, estimated_duration_minutes,
-            scope_hash, cancellation_policy_version, 1, '[]', '{}',
-            NOW() + INTERVAL '1 hour'
-     FROM tasks WHERE id = $1`,
+     SELECT task.id, $2, 'hxos-worker-offer-v3', repeat('d', 64), TRUE,
+            '[]', task.price, task.hustler_payout_cents,
+            ROUND(task.price * 0.02),
+            task.hustler_payout_cents - ROUND(task.price * 0.02),
+            task.hustler_payout_cents - ROUND(task.price * 0.02),
+            1, task.estimated_duration_minutes,
+            15, 'hxos-conservative-travel-v1',
+            cell.minimum_provider_net_hourly_cents,
+            cell.provider_earnings_policy_version,
+            TRUE, FALSE, FALSE,
+            task.scope_hash, task.cancellation_policy_version,
+            1, '[]', '{}', NOW() + INTERVAL '1 hour'
+     FROM tasks task
+     JOIN zone_category_cells cell ON cell.id = task.liquidity_cell_id
+     WHERE task.id = $1`,
     [taskId, workerId],
   );
 }
@@ -189,7 +211,10 @@ describe.skipIf(!hasDb)('INV-N6 mutation eligibility authority', () => {
       await pool.query('DELETE FROM capability_profiles WHERE user_id = $1', [workerId]);
     }],
     ['stale capability trust', 'HXWE7', async (workerId: string) => {
-      await pool.query('UPDATE users SET trust_tier = 1 WHERE id = $1', [workerId]);
+      await pool.query(
+        'UPDATE capability_profiles SET trust_tier = 1 WHERE user_id = $1',
+        [workerId],
+      );
     }],
   ] as const)('database acceptance rejects %s', async (_label, marker, mutation) => {
     await expectAcceptRejected(async workerId => mutation(workerId), marker);

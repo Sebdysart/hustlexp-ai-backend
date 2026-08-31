@@ -46,6 +46,45 @@ async function createAlphaUser(overrides: UserOverrides = {}): Promise<string> {
   return id;
 }
 
+async function recordProductionIdentityFixture(userId: string): Promise<void> {
+  const provider = 'production-test-provider';
+  const policyVersion = 'hx-private-identity-production-test-v1';
+  const providerCaseId = `idv_production_fixture_${userId.replaceAll('-', '')}`;
+
+  await db.transaction(async (query) => {
+    const consent = await query<{ id: string }>(
+      `INSERT INTO identity_verification_consents (
+         user_id, provider, provider_environment, is_test, policy_version,
+         disclosure_hash, purpose, idempotency_key
+       ) VALUES (
+         $1::uuid, $2, 'PRODUCTION', FALSE, $3, repeat('d', 64),
+         'Provider-attested production identity eligibility fixture.',
+         'alpha-production-identity-consent-' || $1::uuid::text
+       )
+       RETURNING id`,
+      [userId, provider, policyVersion],
+    );
+
+    const identityCase = await query<{ case_id: string }>(
+      `SELECT case_id
+       FROM begin_identity_verification_case_v1(
+         $1::uuid, $2::uuid, $3, $4, 'PRODUCTION', FALSE,
+         $5, repeat('e', 64), NOW() + INTERVAL '90 days'
+       )`,
+      [userId, consent.rows[0].id, provider, providerCaseId, policyVersion],
+    );
+
+    await query(
+      `SELECT case_status
+       FROM record_identity_verification_event_v1(
+         $1::uuid, $2::uuid, $3, 'VERIFIED', repeat('f', 64),
+         repeat('a', 64), NOW(), NOW() + INTERVAL '90 days', $1::uuid
+       )`,
+      [userId, identityCase.rows[0].case_id, `identity-verified-${userId}`],
+    );
+  });
+}
+
 async function createAlphaTask(riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' | 'IN_HOME'): Promise<string> {
   const posterId = await createAlphaUser({ trustTier: TrustTier.LICENSED_SPECIALIST });
   await db.query(`UPDATE users SET default_mode = 'poster', plan = 'premium' WHERE id = $1`, [posterId]);
@@ -147,15 +186,41 @@ describe.skipIf(!hasDb)('Trust Tier Alpha Gate Tests', () => {
     it('applies Verified to Home Ready once with current production screening and five completions', async () => {
       const userId = await createAlphaUser({ trustTier: TrustTier.VERIFIED });
       await db.query(
-        `INSERT INTO background_checks(
-           user_id,provider,status,provider_environment,is_test,initiated_at,expires_at
-         ) VALUES($1,'production-test-provider','CLEAR','PRODUCTION',FALSE,NOW(),NOW()+INTERVAL '1 year')`,
+        `WITH consent AS (
+           INSERT INTO worker_screening_consents(
+             worker_id, provider, disclosure_version, disclosure_hash,
+             policy_version, purpose, consent_granted,
+             disclosure_presented_standalone, purpose_acknowledged,
+             rights_summary_acknowledged, request_hash, idempotency_key
+           ) VALUES (
+             $1::uuid, 'production-test-provider', 'hx-worker-screening-rights-v1',
+             '61d054648dabd5b3533337363e87f2a8c628c60878aff6c25f4d2a1fbf88df4f',
+             'hx-alpha-controlled-v1', 'Trust-tier promotion eligibility proof',
+             TRUE, TRUE, TRUE, TRUE, repeat('a', 64),
+             'alpha-screening-consent-' || $1::uuid::text
+           )
+           RETURNING id
+         )
+         INSERT INTO background_checks(
+           user_id, provider, status, provider_environment, is_test,
+           screening_consent_id, initiated_at, expires_at
+         )
+         SELECT $1::uuid, 'production-test-provider', 'CLEAR', 'PRODUCTION', FALSE,
+                id, NOW(), NOW() + INTERVAL '1 year'
+         FROM consent`,
         [userId],
       );
+      await recordProductionIdentityFixture(userId);
       const posterId = await createAlphaUser({ trustTier: TrustTier.LICENSED_SPECIALIST });
       await db.query(`UPDATE users SET default_mode = 'poster' WHERE id = $1`, [posterId]);
       for (let index = 0; index < 5; index += 1) {
-        await createPolicyTask(pool, { posterId, workerId: userId, state: 'COMPLETED' });
+        await createPolicyTask(pool, {
+          posterId,
+          workerId: userId,
+          state: 'COMPLETED',
+          automationClassification: 'PRODUCTION',
+          productionPolicyFixture: 'GOVERNED_ISOLATED',
+        });
       }
 
       const eligibility = await TrustTierService.evaluatePromotion(userId);

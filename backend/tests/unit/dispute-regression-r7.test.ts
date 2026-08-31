@@ -10,9 +10,9 @@
  *     Verifies lockForDispute throws CONFLICT when an open dispute exists,
  *     and TOO_MANY_REQUESTS when a user exceeds 3 open disputes in 24 h.
  *
- *   Bug 3 (HIGH): escrowOverride does not close the dispute row.
- *     Verifies the UPDATE disputes ... SET state = 'RESOLVED' query is
- *     executed after a successful force_release or force_refund.
+ *   Bug 3 (HIGH): escrowOverride can create direct financial effects.
+ *     Verifies the route is terminally held while retaining the historical
+ *     dispute-closure handler solely as reconstruction evidence.
  *
  *   Bug 4 (HIGH): Chargeback LOST path unconditionally unfreezes payouts.
  *     Verifies the `UPDATE users SET payouts_locked = FALSE` query is NOT
@@ -240,23 +240,19 @@ describe('Bug 2 — lockForDispute duplicate & flood guards', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Bug 3: escrowOverride must close the dispute row
+// Bug 3: escrowOverride must remain terminally held
 // ---------------------------------------------------------------------------
 
-describe('Bug 3 — escrowOverride closes open dispute row', () => {
+describe('Bug 3 — escrowOverride is held before any financial effect', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it('executes UPDATE disputes SET state = RESOLVED after force_release', async () => {
+  it('binds escrowOverride to terminal held escrow authority', async () => {
     /**
-     * We verify this by inspecting the SQL calls made to db.query after the
-     * EscrowService.release call returns successfully. The admin router calls
-     * db.query with an UPDATE disputes ... SET state = 'RESOLVED' SQL
-     * string as part of the Bug 3 fix.
-     *
-     * Strategy: import admin router source and assert the UPDATE disputes
-     * query text is present (source-level assertion, DB-independent).
+     * Source-level verification complements the central mutation-inventory
+     * contract: the public route must use the terminal held procedure rather
+     * than a directly executable administrator procedure.
      */
     const src = await import('fs').then(fs =>
       fs.promises.readFile(
@@ -265,54 +261,26 @@ describe('Bug 3 — escrowOverride closes open dispute row', () => {
       )
     );
 
-    // The fix must include an UPDATE on disputes with RESOLVED state
+    expect(src).toMatch(/escrowOverride:\s*heldEscrowAdminProcedure/);
+  });
+
+  it('retains dispute-closure reconstruction evidence behind the hold', async () => {
+    /**
+     * The legacy handler is not executable, but preserving its correct closure
+     * SQL avoids losing independent incident evidence if a future two-person
+     * command is deliberately reconstructed.
+     */
+    const src = await import('fs').then(fs =>
+      fs.promises.readFile(
+        fileURLToPath(new URL('../../src/routers/admin.ts', import.meta.url)),
+        'utf-8'
+      )
+    );
     expect(src).toMatch(/UPDATE disputes/);
     expect(src).toMatch(/state = 'RESOLVED'/);
     expect(src).toMatch(/resolved_at = NOW\(\)/);
-    // It must be conditioned on the escrow_id parameter
     expect(src).toMatch(/escrow_id = \$1/);
-    // It must only update non-resolved rows
     expect(src).toMatch(/state != 'RESOLVED'/);
-  });
-
-  it('dispute closure query fires after successful EscrowService call (integration mock)', async () => {
-    /**
-     * Wire up EscrowService.release to succeed, then call the underlying
-     * admin router query sequence by calling db.query manually in the same
-     * order the router does, and confirm the disputes UPDATE is invoked.
-     */
-    vi.spyOn(EscrowService, 'release').mockResolvedValueOnce({
-      success: true,
-      data: makeEscrow({ state: 'RELEASED' }) as never,
-    });
-
-    // Simulate admin router calling db.query for:
-    //   1. UPDATE disputes (Bug 3 fix)
-    //   2. INSERT admin_actions
-    mockDb.query
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // UPDATE disputes
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // INSERT admin_actions
-
-    // Execute the admin router's post-release logic directly
-    await EscrowService.release({ escrowId: 'esc-1', adminOverride: true });
-    await db.query(
-      `UPDATE disputes
-       SET state = 'RESOLVED',
-           resolved_at = NOW(),
-           resolution_notes = CONCAT('Admin override: escrow ', $2)
-       WHERE escrow_id = $1
-         AND state != 'RESOLVED'`,
-      ['esc-1', 'force_release']
-    );
-
-    // Verify the disputes UPDATE was called with the right escrow_id
-    const disputeUpdateCall = mockDb.query.mock.calls.find(
-      call => typeof call[0] === 'string' && (call[0] as string).includes('UPDATE disputes')
-    );
-    expect(disputeUpdateCall).toBeDefined();
-    const [sql, params] = disputeUpdateCall as [string, unknown[]];
-    expect(sql).toContain("state = 'RESOLVED'");
-    expect(params[0]).toBe('esc-1');
   });
 });
 

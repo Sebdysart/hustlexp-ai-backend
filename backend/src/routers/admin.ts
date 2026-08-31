@@ -21,8 +21,10 @@ import { randomUUID } from 'node:crypto';
 import {
   router,
   disputeAdminProcedure,
-  escrowAdminProcedure,
   financialAdminProcedure,
+  heldEscrowAdminProcedure,
+  heldPlatformAdminProcedure,
+  heldUserManagementAdminProcedure,
   platformAdminProcedure,
   Schemas,
   userManagementAdminProcedure,
@@ -131,7 +133,7 @@ export const adminRouter = router({
   /**
    * Ban or unban a user
    */
-  setUserBan: userManagementAdminProcedure
+  setUserBan: heldUserManagementAdminProcedure
     .input(z.object({
       userId: Schemas.uuid,
       banned: z.boolean(),
@@ -268,7 +270,7 @@ export const adminRouter = router({
           `SELECT e.id
            FROM escrows e
            JOIN tasks t ON t.id = e.task_id
-           WHERE (e.poster_id = $1 OR e.worker_id = $1)
+           WHERE (t.poster_id = $1 OR t.worker_id = $1)
              AND e.state = 'FUNDED'
              AND t.state NOT IN ('ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED', 'COMPLETED')`,
           [input.userId]
@@ -297,7 +299,7 @@ export const adminRouter = router({
           `SELECT e.id
            FROM escrows e
            JOIN tasks t ON t.id = e.task_id
-           WHERE (e.poster_id = $1 OR e.worker_id = $1)
+           WHERE (t.poster_id = $1 OR t.worker_id = $1)
              AND e.state = 'FUNDED'
              AND t.state IN ('ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED', 'COMPLETED')`,
           [input.userId]
@@ -345,7 +347,7 @@ export const adminRouter = router({
    * On suspend: full session revocation + SSE disconnect.
    * On unsuspend: local in-process cache eviction only (no Redis marker written).
    */
-  setSuspension: userManagementAdminProcedure
+  setSuspension: heldUserManagementAdminProcedure
     .input(z.object({
       userId: Schemas.uuid,
       suspended: z.boolean(),
@@ -390,7 +392,7 @@ export const adminRouter = router({
           `SELECT e.id
            FROM escrows e
            JOIN tasks t ON t.id = e.task_id
-           WHERE (e.poster_id = $1 OR e.worker_id = $1)
+           WHERE (t.poster_id = $1 OR t.worker_id = $1)
              AND e.state = 'FUNDED'
              AND t.state NOT IN ('ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED', 'COMPLETED')`,
           [input.userId]
@@ -418,7 +420,7 @@ export const adminRouter = router({
           `SELECT e.id
            FROM escrows e
            JOIN tasks t ON t.id = e.task_id
-           WHERE (e.poster_id = $1 OR e.worker_id = $1)
+           WHERE (t.poster_id = $1 OR t.worker_id = $1)
              AND e.state = 'FUNDED'
              AND t.state IN ('ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED', 'COMPLETED')`,
           [input.userId]
@@ -484,7 +486,7 @@ export const adminRouter = router({
    * so the next request picks up the new is_admin=true status immediately
    * rather than waiting up to 5 minutes for the in-process TTL.
    */
-  grantAdminRole: platformAdminProcedure
+  grantAdminRole: heldPlatformAdminProcedure
     .input(z.object({
       userId: Schemas.uuid,
       role: z.enum(['admin', 'support', 'finance', 'moderator', 'founder']),
@@ -622,7 +624,7 @@ export const adminRouter = router({
    * so the revoked role takes effect immediately — without this, a removed
    * admin retains adminOverride=true access for up to 5 minutes.
    */
-  revokeAdminRole: platformAdminProcedure
+  revokeAdminRole: heldPlatformAdminProcedure
     .input(z.object({
       userId: Schemas.uuid,
       role: z.enum(['admin', 'support', 'finance', 'moderator', 'founder']),
@@ -902,7 +904,7 @@ export const adminRouter = router({
    *   - force_refund now calls EscrowService.refund() (correct state name: LOCKED_DISPUTE).
    *   - Both actions write to admin_actions audit table.
    */
-  escrowOverride: escrowAdminProcedure
+  escrowOverride: heldEscrowAdminProcedure
     .input(z.object({
       escrowId: Schemas.uuid,
       action: z.enum(['force_release', 'force_refund']),

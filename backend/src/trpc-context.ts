@@ -6,6 +6,11 @@ import { redis } from './cache/redis.js';
 import { db } from './db.js';
 import { logger } from './logger.js';
 import { verifyLocalCertificationToken } from './auth/local-certification-token.js';
+import { verifyDeployedSyntheticOperatorToken } from './auth/deployed-synthetic-operator-token.js';
+import {
+  identityAssuranceFromVerifiedToken,
+  type IdentityAssurance,
+} from './auth/operator-identity-assurance.js';
 import type { User } from './types.js';
 
 const log = logger.child({ module: 'trpc-context' });
@@ -15,7 +20,11 @@ const revokedKey = (uid: string) => `auth:revoked:${uid}`;
 export interface Context extends Record<string, unknown> {
   user: User | null;
   firebaseUid: string | null;
+  identityAssurance?: IdentityAssurance;
   ip: string | null;
+  origin?: string | null;
+  userAgent?: string | null;
+  responseHeaders?: Headers;
   engineBridgeAuthorized?: boolean;
   engineBridgeActorId?: string | null;
 }
@@ -47,12 +56,24 @@ function bridgeIdentity(req: Request): Pick<Context, 'engineBridgeAuthorized' | 
   return { engineBridgeAuthorized: authorized, engineBridgeActorId: authorized ? actorId : null };
 }
 
-function requestIdentity(req: Request): Pick<Context, 'ip' | 'engineBridgeAuthorized' | 'engineBridgeActorId'> {
-  return { ip: extractIp(req), ...bridgeIdentity(req) };
+function requestIdentity(
+  req: Request,
+  responseHeaders?: Headers,
+): Pick<
+  Context,
+  'ip' | 'origin' | 'userAgent' | 'responseHeaders' | 'engineBridgeAuthorized' | 'engineBridgeActorId'
+> {
+  return {
+    ip: extractIp(req),
+    origin: req.headers.get('origin'),
+    userAgent: req.headers.get('user-agent'),
+    responseHeaders,
+    ...bridgeIdentity(req),
+  };
 }
 
-function anonymousContext(req: Request): Context {
-  return { user: null, firebaseUid: null, ...requestIdentity(req) };
+function anonymousContext(req: Request, responseHeaders?: Headers): Context {
+  return { user: null, firebaseUid: null, ...requestIdentity(req, responseHeaders) };
 }
 
 function isInactive(user: User): boolean {
@@ -71,20 +92,30 @@ async function applyAdminFlag(user: User): Promise<void> {
   user.is_admin = result.rows.length > 0;
 }
 
-async function loadUser(firebaseUid: string): Promise<User | null> {
+async function loadUser(firebaseUid: string, allowLazyProvisioning = true): Promise<User | null> {
   const result = await db.query<User>('SELECT * FROM users WHERE firebase_uid = $1', [firebaseUid]);
-  const user = result.rows[0] ?? await ensureUserRowForFirebaseUid(firebaseUid);
+  const user = result.rows[0]
+    ?? (allowLazyProvisioning ? await ensureUserRowForFirebaseUid(firebaseUid) : null);
   if (user) await applyAdminFlag(user);
   return user;
 }
 
-async function cachedContext(token: string, req: Request): Promise<Context | null> {
+async function cachedContext(
+  token: string,
+  req: Request,
+  responseHeaders?: Headers,
+): Promise<Context | null> {
   const cached = authCacheGet(token);
   if (!cached) return null;
   try {
-    const revokedAt = await redis.get<string>(revokedKey(cached.firebaseUid));
+    const revokedAt = await redis.get<string>(revokedKey(cached.firebaseUid), 'authority');
     if (!revokedAt) {
-      return { user: cached.user, firebaseUid: cached.firebaseUid, ...requestIdentity(req) };
+      return {
+        user: cached.user,
+        firebaseUid: cached.firebaseUid,
+        identityAssurance: cached.identityAssurance,
+        ...requestIdentity(req, responseHeaders),
+      };
     }
     authCache.delete(authCacheKey(token));
     log.info({ uid: cached.firebaseUid }, 'tRPC cache entry invalidated by revocation marker');
@@ -99,26 +130,43 @@ function safeAuthError(error: unknown): string {
   return message.replace(/eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]*/g, '[REDACTED_TOKEN]');
 }
 
-async function verifiedContext(token: string, req: Request): Promise<Context> {
-  const decoded = verifyLocalCertificationToken(token)
+async function verifiedContext(
+  token: string,
+  req: Request,
+  responseHeaders?: Headers,
+): Promise<Context> {
+  const syntheticOperator = verifyDeployedSyntheticOperatorToken(token);
+  const decoded = syntheticOperator
+    ?? verifyLocalCertificationToken(token)
     ?? await firebaseAuth.verifyIdToken(token, true);
-  const user = await loadUser(decoded.uid);
+  const identityAssurance = identityAssuranceFromVerifiedToken(
+    decoded as unknown as Record<string, unknown>,
+  );
+  // A signed nonprod operator must already be a named seeded user with an
+  // explicit admin_roles row. Unlike Firebase customer auth, this path never
+  // lazy-provisions an account from a bearer token.
+  const user = await loadUser(decoded.uid, syntheticOperator === null);
   if (user && !isInactive(user)) {
-    authCacheSet(token, { user, firebaseUid: decoded.uid }, decoded.exp);
+    authCacheSet(token, { user, firebaseUid: decoded.uid, identityAssurance }, decoded.exp);
   }
-  return { user, firebaseUid: decoded.uid, ...requestIdentity(req) };
+  return {
+    user,
+    firebaseUid: decoded.uid,
+    identityAssurance,
+    ...requestIdentity(req, responseHeaders),
+  };
 }
 
 export async function createContext(opts: { req: Request; resHeaders: Headers }): Promise<Context> {
   const authHeader = opts.req.headers.get('authorization');
-  if (!authHeader?.startsWith('Bearer ')) return anonymousContext(opts.req);
+  if (!authHeader?.startsWith('Bearer ')) return anonymousContext(opts.req, opts.resHeaders);
   const token = authHeader.slice(7);
-  const cached = await cachedContext(token, opts.req);
+  const cached = await cachedContext(token, opts.req, opts.resHeaders);
   if (cached) return cached;
   try {
-    return await verifiedContext(token, opts.req);
+    return await verifiedContext(token, opts.req, opts.resHeaders);
   } catch (error) {
-    log.error({ err: safeAuthError(error) }, 'Firebase token verification failed');
-    return anonymousContext(opts.req);
+    log.error({ err: safeAuthError(error) }, 'Bearer token verification failed');
+    return anonymousContext(opts.req, opts.resHeaders);
   }
 }

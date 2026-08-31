@@ -11,7 +11,8 @@
  * - TwilioSMSService (0%)
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 // ============================================================================
 // ALL MOCKS MUST BE AT THE TOP
@@ -165,6 +166,8 @@ beforeEach(() => {
   // Reset module-level caches between tests
   invalidateAdminCache();
 });
+
+afterEach(() => vi.unstubAllEnvs());
 
 // ============================================================================
 // StripeWebhookService
@@ -493,7 +496,27 @@ describe('StripeConnectService', () => {
   });
 
   describe('createOnboardingLink', () => {
+    it('fails closed before provider work outside the controlled test cohort', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'frozen');
+
+      const result = await StripeConnectService.createOnboardingLink({
+        userId: 'user-1',
+        email: 'test@example.com',
+        fullName: 'Test User',
+        refreshUrl: 'https://example.com/refresh',
+        returnUrl: 'https://example.com/return',
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.code).toBe('PAYMENT_CREATION_FROZEN');
+      }
+      expect(mockDb.query).not.toHaveBeenCalled();
+    });
+
     it('returns STRIPE_NOT_CONFIGURED when Stripe not initialized', async () => {
+      enableControlledStripePaymentTestCohortV7();
       const result = await StripeConnectService.createOnboardingLink({
         userId: 'user-1',
         email: 'test@example.com',
@@ -753,6 +776,7 @@ describe('StripeConnectService', () => {
 
   describe('refreshOnboarding', () => {
     it('returns USER_NOT_FOUND when user does not exist', async () => {
+      enableControlledStripePaymentTestCohortV7();
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
       const result = await StripeConnectService.refreshOnboarding({

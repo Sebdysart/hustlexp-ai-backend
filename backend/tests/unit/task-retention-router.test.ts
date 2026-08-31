@@ -73,6 +73,25 @@ describe('task.rebook Poster contract', () => {
     })).rejects.toMatchObject({ code: 'CONFLICT', message: 'Input changed' });
   });
 
+  it('maps the legacy task-materialization freeze to PRECONDITION_FAILED', async () => {
+    retention.rebook.mockResolvedValue({
+      success: false,
+      error: {
+        code: 'LEGACY_TASK_MATERIALIZATION_FROZEN',
+        message: 'Legacy task creation is frozen.',
+      },
+    });
+
+    await expect(caller().rebook({
+      sourceTaskId: SOURCE_TASK_ID,
+      clientIdempotencyKey: 'rebook-request-frozen-0001',
+    })).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: 'Legacy task creation is frozen.',
+      cause: { applicationCode: 'LEGACY_TASK_MATERIALIZATION_FROZEN' },
+    });
+  });
+
   it('rejects unrecognized fields and malformed idempotency keys', async () => {
     await expect(caller().rebook({
       sourceTaskId: SOURCE_TASK_ID,

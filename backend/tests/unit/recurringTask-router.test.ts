@@ -195,6 +195,15 @@ function makePosterCaller(userId = 'poster-abc') {
   });
 }
 
+function makeEngineBridgeCaller(actorId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa') {
+  return recurringTaskRouter.createCaller({
+    user: null,
+    firebaseUid: null,
+    engineBridgeAuthorized: true,
+    engineBridgeActorId: actorId,
+  } as any);
+}
+
 const CONTROLLED_INPUT = {
   title: 'Weekly common-area clean',
   description: 'Complete the approved common-area cleaning recipe.',
@@ -371,6 +380,34 @@ describe('recurringTask.createControlled — server-owned economics', () => {
       riskLevel: 'LOW',
     } as never)).rejects.toMatchObject({ code: 'BAD_REQUEST' });
     expect(controlledMocks.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('recurringTask.generateControlled — frozen legacy materialization', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('maps the legacy task-materialization freeze through controlledResult', async () => {
+    controlledMocks.generate.mockResolvedValue({
+      success: false,
+      error: {
+        code: 'LEGACY_TASK_MATERIALIZATION_FROZEN',
+        message: 'Legacy task creation is frozen.',
+      },
+    });
+
+    await expect(makeEngineBridgeCaller().generateControlled({
+      seriesId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      lookaheadHours: 24,
+    })).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: 'Legacy task creation is frozen.',
+      cause: { applicationCode: 'LEGACY_TASK_MATERIALIZATION_FROZEN' },
+    });
+    expect(controlledMocks.generate).toHaveBeenCalledWith({
+      seriesId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      actorId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      lookaheadHours: 24,
+    });
   });
 });
 

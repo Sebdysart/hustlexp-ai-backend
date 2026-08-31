@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   fraud: vi.fn(),
   maintenance: vi.fn(),
   tax: vi.fn(),
+  syntheticFinance: vi.fn(),
   info: vi.fn(),
   error: vi.fn(),
 }));
@@ -56,6 +57,9 @@ vi.mock('../../src/jobs/trust-worker', () => ({ processTrustJob: mocks.trust }))
 vi.mock('../../src/jobs/fraud-detection-worker', () => ({ processFraudDetectionJob: mocks.fraud }));
 vi.mock('../../src/jobs/maintenance-worker', () => ({ processMaintenanceJob: mocks.maintenance }));
 vi.mock('../../src/jobs/tax-reporting-worker', () => ({ processTaxReportingJob: mocks.tax }));
+vi.mock('../../src/jobs/synthetic-financial-worker', () => ({
+  processSyntheticFinancialJob: mocks.syntheticFinance,
+}));
 
 import type { Job, Worker } from 'bullmq';
 import { registerWorkers } from '../../src/jobs/worker-registration';
@@ -74,7 +78,7 @@ function registeredHandlers(): Map<string, Handler> {
   });
   const active: Worker[] = [];
   registerWorkers(active);
-  expect(active).toHaveLength(9);
+  expect(active).toHaveLength(10);
   return handlers;
 }
 
@@ -166,5 +170,11 @@ describe('worker registration executable routing', () => {
     await handlers.get('tax_reporting')!(job('tax.annual_filing_requested'));
     expect(mocks.maintenance).toHaveBeenCalledOnce();
     expect(mocks.tax).toHaveBeenCalledOnce();
+  });
+
+  it('isolates synthetic finance work in its dedicated queue', async () => {
+    const handler = registeredHandlers().get('synthetic_finance')!;
+    await handler(job('synthetic_finance.event'));
+    expect(mocks.syntheticFinance).toHaveBeenCalledOnce();
   });
 });

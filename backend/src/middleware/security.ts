@@ -278,7 +278,7 @@ export function aiRateLimitMiddleware(provider: keyof typeof AI_RATE_LIMITS) {
       // fail safe by evicting the cache entry and falling through to Firebase verification.
       let isRevoked = false;
       try {
-        const revokedAt = await redis.get(`auth:revoked:${cached.uid}`);
+        const revokedAt = await redis.get(`auth:revoked:${cached.uid}`, 'authority');
         if (revokedAt) {
           isRevoked = true;
           aiAuthCache.delete(token);

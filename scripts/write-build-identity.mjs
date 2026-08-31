@@ -1,10 +1,44 @@
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const REVISION = /^[0-9a-f]{40}$/u;
 const TRUSTED_CLEAN_SOURCES = new Set(['RAILWAY_GIT_COMMIT_SHA', 'GITHUB_SHA', 'SOURCE_VERSION']);
+const EXCLUDED_ARTIFACT_FILES = new Set([
+  'hx-build-identity.json',
+  'hx-release-manifest.json',
+  'hx-release-manifest.json.sig',
+]);
+
+function artifactEntries(root, directory = root) {
+  const entries = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const absolutePath = resolve(directory, entry.name);
+    if (entry.isDirectory()) {
+      entries.push(...artifactEntries(root, absolutePath));
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    const artifactPath = relative(root, absolutePath).replaceAll('\\', '/');
+    if (EXCLUDED_ARTIFACT_FILES.has(artifactPath)) continue;
+    entries.push({
+      path: artifactPath,
+      sha256: createHash('sha256').update(readFileSync(absolutePath)).digest('hex'),
+    });
+  }
+  return entries;
+}
+
+function hasExecutableArtifacts(root) {
+  return artifactEntries(root).length > 0;
+}
+
+export function compiledArtifactDigest(root) {
+  const entries = artifactEntries(root).sort((left, right) => left.path.localeCompare(right.path));
+  return `sha256:${createHash('sha256').update(JSON.stringify(entries), 'utf8').digest('hex')}`;
+}
 
 function defaultGit(args) {
   try {
@@ -64,6 +98,8 @@ export function resolveBuildIdentity({
     environment,
     clean_source: cleanSource,
     source: source || 'none',
+    artifact_digest: 'unattributed',
+    artifact_verified: false,
   };
 }
 
@@ -71,8 +107,18 @@ export function writeBuildIdentity({
   output = resolve(process.cwd(), 'dist/hx-build-identity.json'),
   ...options
 } = {}) {
-  const identity = resolveBuildIdentity(options);
-  mkdirSync(dirname(output), { recursive: true });
+  const artifactRoot = dirname(output);
+  // Clean verification images may run TypeScript with `--noEmit`, leaving no
+  // dist directory. Create the empty root before measuring it so provenance
+  // never depends on stale compiler output.
+  mkdirSync(artifactRoot, { recursive: true });
+  const identity = {
+    ...resolveBuildIdentity(options),
+    artifact_digest: compiledArtifactDigest(artifactRoot),
+    // Empty trees are measurable for no-emit test runs, but never constitute
+    // a trusted executable artifact.
+    artifact_verified: hasExecutableArtifacts(artifactRoot),
+  };
   writeFileSync(output, `${JSON.stringify(identity, null, 2)}\n`, 'utf8');
   return identity;
 }

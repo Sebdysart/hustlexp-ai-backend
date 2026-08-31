@@ -2,7 +2,7 @@
  * outbox-worker-lock.test.ts
  *
  * W47-1 FIX: Verifies that the Redis distributed lock release in startOutboxWorker
- * uses the @upstash/redis array-based eval signature:
+ * uses the provider-neutral Redis command-port eval signature:
  *   eval(script, keys: string[], args: string[])
  * NOT the ioredis positional signature:
  *   eval(script, numkeys, key, arg)  ← was silently broken
@@ -24,8 +24,8 @@ const WORKER_PATH = path.resolve(
 describe('W47-1: Lua CAS-delete Redis eval signature', () => {
   const source = fs.readFileSync(WORKER_PATH, 'utf8');
 
-  it('uses array-based eval(script, [key], [arg]) — @upstash/redis API', () => {
-    // The correct @upstash/redis signature passes keys and args as arrays.
+  it('uses normalized array-based eval(script, [key], [arg])', () => {
+    // The command port exposes keys and args as arrays for every transport.
     // Regex: eval(luaScript, [TRUST_TIER_LOCK_KEY], [LOCK_HOLDER_ID])
     expect(source).toMatch(
       /redisClient\.eval\(\s*luaScript\s*,\s*\[TRUST_TIER_LOCK_KEY\]\s*,\s*\[LOCK_HOLDER_ID\]\s*\)/
@@ -34,7 +34,7 @@ describe('W47-1: Lua CAS-delete Redis eval signature', () => {
 
   it('does NOT use ioredis-style positional eval(script, 1, key, arg)', () => {
     // The broken form: eval(luaScript, 1, TRUST_TIER_LOCK_KEY, LOCK_HOLDER_ID)
-    // passes a numeric numkeys as second arg — wrong for @upstash/redis.
+    // bypasses the normalized provider-neutral command-port contract.
     expect(source).not.toMatch(
       /redisClient\.eval\(\s*luaScript\s*,\s*1\s*,\s*TRUST_TIER_LOCK_KEY/
     );

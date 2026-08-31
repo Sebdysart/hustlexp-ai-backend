@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { db } from '../db.js';
 import { AIClient } from './AIClient.js';
+import { aiOperationId } from '../ai/AIOperationIdentity.js';
 import { PromptInjectionGuard } from '../ai/PromptInjectionGuard.js';
 import { logger } from '../logger.js';
 import { scrubPII } from '../lib/pii-scrubber.js';
@@ -568,6 +569,7 @@ export const ComplianceGuardianService = {
       deception_detected: boolean;
       is_genuinely_bizarre: boolean;
     }>({
+      operationId: aiOperationId('compliance-advisory', userId, safeDesc),
       observability: aiObservation('AI-COMPLIANCE-ADVISORY', {
         actorUserId: userId,
         affectedObjectType: 'TASK_DRAFT',

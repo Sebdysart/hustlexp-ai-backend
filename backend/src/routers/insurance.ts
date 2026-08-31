@@ -12,8 +12,15 @@
  */
 
 import { TRPCError } from '@trpc/server';
-import { router, escrowAdminProcedure, financialAdminProcedure, hustlerProcedure, Schemas } from '../trpc.js';
+import {
+  heldEscrowAdminProcedure,
+  heldFinancialAdminProcedure,
+  hustlerProcedure,
+  router,
+  Schemas,
+} from '../trpc.js';
 import { SelfInsurancePoolService } from '../services/SelfInsurancePoolService.js';
+import { paymentCreationErrorCause } from '../services/NewPaymentCreationGuard.js';
 import { z } from 'zod';
 import { db } from '../db.js';
 
@@ -140,7 +147,7 @@ export const insuranceRouter = router({
   /**
    * Review a claim (admin only)
    */
-  reviewClaim: financialAdminProcedure
+  reviewClaim: heldFinancialAdminProcedure
     .input(
       z.object({
         claim_id: Schemas.uuid,
@@ -173,7 +180,7 @@ export const insuranceRouter = router({
   /**
    * Pay an approved claim (admin only)
    */
-  payClaim: escrowAdminProcedure
+  payClaim: heldEscrowAdminProcedure
     .input(
       z.object({
         claim_id: Schemas.uuid
@@ -186,13 +193,16 @@ export const insuranceRouter = router({
       if (!result.success) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
-          message: result.error?.message || 'Failed to pay claim'
+          message: result.error?.message || 'Failed to pay claim',
+          cause: paymentCreationErrorCause(result.error?.code || '')
         });
       }
 
       return {
         success: true,
-        message: 'Claim paid successfully'
+        message: result.data.already_paid
+          ? 'Claim payout already recorded'
+          : 'Claim payout state unchanged'
       };
     })
 });

@@ -597,7 +597,7 @@ export const TrustTierService = {
       const posterEscrows = await db.query<{ escrow_id: string; task_id: string }>(
         `SELECT e.id as escrow_id, t.id as task_id FROM escrows e
          JOIN tasks t ON t.id = e.task_id
-         WHERE e.poster_id = $1
+         WHERE t.poster_id = $1
            AND e.state = 'FUNDED'
            AND t.state NOT IN ('ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED', 'COMPLETED')`,
         [userId]
@@ -624,7 +624,7 @@ export const TrustTierService = {
       const activePosterEscrows = await db.query<{ escrow_id: string; task_id: string }>(
         `SELECT e.id as escrow_id, t.id as task_id FROM escrows e
          JOIN tasks t ON t.id = e.task_id
-         WHERE e.poster_id = $1
+         WHERE t.poster_id = $1
            AND e.state = 'FUNDED'
            AND t.state IN ('ACCEPTED', 'IN_PROGRESS', 'PROOF_SUBMITTED')`,
         [userId]

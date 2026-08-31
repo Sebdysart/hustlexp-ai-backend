@@ -54,8 +54,9 @@ describe('transaction-bound task creation atomicity', () => {
   it('rolls back its savepoint when a dependent write fails after task insertion', async () => {
     mocks.query
       .mockResolvedValueOnce({ rows: [] }) // SAVEPOINT
+      .mockResolvedValueOnce({ rows: [] }) // read-only idempotency preflight
       .mockResolvedValueOnce({ rows: [] }) // advisory idempotency lock
-      .mockResolvedValueOnce({ rows: [] }) // no prior request
+      .mockResolvedValueOnce({ rows: [] }) // locked idempotency recheck
       .mockResolvedValueOnce({ rows: [{
         id: '20000000-0000-4000-8000-000000000001',
         poster_id: '00000000-0000-4000-8000-000000000001',

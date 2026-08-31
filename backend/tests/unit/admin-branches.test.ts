@@ -2,10 +2,10 @@
  * Admin Router Branch Coverage Tests
  *
  * Targets uncovered branches in admin.ts:
- * - setUserBan: NOT_FOUND when user not found
+ * - setUserBan/setSuspension: terminal authority hold before side effects
  * - revenueBreakdown: all parsed fields, zero values
  * - aiCostSummary: model breakdown, empty breakdown, zero cost
- * - escrowOverride: NOT_FOUND, force_release vs force_refund enum
+ * - escrowOverride: terminal authority hold for release and refund
  * - listUsers: isBanned=false filter (distinct from undefined), total fallback '0'
  * - listTasks: no state filter (no extra condition)
  * - listDisputes: no status filter
@@ -90,110 +90,47 @@ function prependAdminCheck() {
   mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
 }
 
+function resetRouterMocks() {
+  vi.clearAllMocks();
+  mockDb.query.mockReset();
+  mockDb.transaction.mockImplementation(async (work: any) => work(mockDb.query));
+}
+
 // ---------------------------------------------------------------------------
 // setUserBan
 // ---------------------------------------------------------------------------
 
 describe('admin.setUserBan branches', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(resetRouterMocks);
 
-  it('returns updated row on success (ban=true)', async () => {
+  it.each([true, false])('terminally holds banned=%s before any sanction or recovery write', async (banned) => {
     prependAdminCheck();
-    // SELECT current status under lock
-    mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: USER_UUID, is_banned: false, trust_tier: 2, default_mode: 'worker' }], rowCount: 1,
-    } as any);
-    // UPDATE users SET is_banned
-    mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: USER_UUID, is_banned: true }],
-      rowCount: 1,
-    } as any);
-    // INSERT admin_actions
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
-    // GG1 fix: SELECT firebase_uid for Redis revocation key namespace
-    mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-test-uid' }], rowCount: 1 } as any);
-    // LL6 fix — Bucket A: SELECT idle FUNDED escrows (task NOT in active states) → refund
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
-    // LL6 fix — Bucket B: SELECT active FUNDED escrows (task IN active states) → lockForDispute
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
-    // UPDATE tasks SET state = 'CANCELLED' for OPEN tasks
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
-
-    const result = await makeAdminCaller().setUserBan({
+    await expect(makeAdminCaller().setUserBan({
       userId: USER_UUID,
-      banned: true,
-    });
-
-    expect(result.is_banned).toBe(true);
-    expect(result.id).toBe(USER_UUID);
-    expect(issueDeactivationAppealRight).toHaveBeenCalledWith(expect.objectContaining({
-      workerId: USER_UUID, currentTier: 2, decisionSource: 'ADMIN',
-    }));
+      banned,
+      reason: 'Sanction requires a separately approved authority command.',
+    })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect(mockDb.transaction).not.toHaveBeenCalled();
+    expect(issueDeactivationAppealRight).not.toHaveBeenCalled();
+    expect(mockEscrowService.refund).not.toHaveBeenCalled();
+    expect(mockEscrowService.lockForDispute).not.toHaveBeenCalled();
   });
+});
 
-  it('returns updated row on success (ban=false)', async () => {
+describe('admin.setSuspension branches', () => {
+  beforeEach(resetRouterMocks);
+
+  it.each([true, false])('terminally holds suspended=%s before any standing write', async (suspended) => {
     prependAdminCheck();
-    // SELECT current status under lock
-    mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: USER_UUID, is_banned: true, trust_tier: 2, default_mode: 'worker' }], rowCount: 1,
-    } as any);
-    // UPDATE users SET is_banned
-    mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: USER_UUID, is_banned: false }],
-      rowCount: 1,
-    } as any);
-    // INSERT admin_actions audit log
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
-    // GG1 fix: SELECT firebase_uid for Redis revocation key
-    mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-test-uid' }], rowCount: 1 } as any);
-
-    const result = await makeAdminCaller().setUserBan({
+    await expect(makeAdminCaller().setSuspension({
       userId: USER_UUID,
-      banned: false,
-    });
-
-    expect(result.is_banned).toBe(false);
-  });
-
-  it('throws NOT_FOUND when user not found', async () => {
-    prependAdminCheck();
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
-
-    await expect(
-      makeAdminCaller().setUserBan({ userId: USER_UUID, banned: true }),
-    ).rejects.toThrow('User not found');
-  });
-
-  it('includes optional reason in call', async () => {
-    prependAdminCheck();
-    // SELECT current status under lock
-    mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: USER_UUID, is_banned: false, trust_tier: 2, default_mode: 'worker' }], rowCount: 1,
-    } as any);
-    // UPDATE users SET is_banned
-    mockDb.query.mockResolvedValueOnce({
-      rows: [{ id: USER_UUID, is_banned: true }],
-      rowCount: 1,
-    } as any);
-    // INSERT admin_actions
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
-    // GG1 fix: SELECT firebase_uid for Redis revocation key namespace
-    mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-test-uid' }], rowCount: 1 } as any);
-    // LL6 fix — Bucket A: SELECT idle FUNDED escrows (task NOT in active states) → refund
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
-    // LL6 fix — Bucket B: SELECT active FUNDED escrows (task IN active states) → lockForDispute
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
-    // UPDATE tasks SET state = 'CANCELLED' for OPEN tasks
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
-
-    // Should not throw — reason is optional
-    const result = await makeAdminCaller().setUserBan({
-      userId: USER_UUID,
-      banned: true,
-      reason: 'Violated terms of service',
-    });
-
-    expect(result).toBeDefined();
+      suspended,
+      reason: 'Standing changes require a separately approved authority command.',
+    })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect(mockDb.transaction).not.toHaveBeenCalled();
+    expect(mockDb.query).toHaveBeenCalledTimes(1);
+    expect(mockEscrowService.refund).not.toHaveBeenCalled();
+    expect(mockEscrowService.lockForDispute).not.toHaveBeenCalled();
   });
 });
 
@@ -202,7 +139,7 @@ describe('admin.setUserBan branches', () => {
 // ---------------------------------------------------------------------------
 
 describe('admin.revenueBreakdown branches', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(resetRouterMocks);
 
   it('returns correctly parsed integers for all aggregates', async () => {
     prependAdminCheck();
@@ -249,7 +186,7 @@ describe('admin.revenueBreakdown branches', () => {
 // ---------------------------------------------------------------------------
 
 describe('admin.aiCostSummary branches', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(resetRouterMocks);
 
   it('returns mapped model breakdown', async () => {
     prependAdminCheck();
@@ -331,120 +268,22 @@ describe('admin.aiCostSummary branches', () => {
 // ---------------------------------------------------------------------------
 
 describe('admin.escrowOverride branches', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(resetRouterMocks);
 
-  it('force_release returns updated escrow with RELEASED state', async () => {
-    prependAdminCheck();
-    // escrowOverride now delegates to EscrowService.release (v2.9.8)
-    mockEscrowService.release.mockResolvedValueOnce({
-      success: true,
-      data: { id: ESC_UUID, state: 'RELEASED', amount: 5000 },
-    } as any);
-    // admin_actions audit INSERT
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
-
-    const result = await makeAdminCaller().escrowOverride({
-      escrowId: ESC_UUID,
-      action: 'force_release',
-      reason: 'Admin override: work completed off-platform',
-    });
-
-    expect(result.state).toBe('RELEASED');
-    expect(mockEscrowService.release).toHaveBeenCalledWith({
-      escrowId: ESC_UUID,
-      adminOverride: true,
-      reason: 'Admin override: work completed off-platform',
-    });
-  });
-
-  it('force_refund returns updated escrow with REFUNDED state', async () => {
-    prependAdminCheck();
-    mockEscrowService.refund.mockResolvedValueOnce({
-      success: true,
-      data: { id: ESC_UUID, state: 'REFUNDED', amount: 5000 },
-    } as any);
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
-
-    const result = await makeAdminCaller().escrowOverride({
-      escrowId: ESC_UUID,
-      action: 'force_refund',
-      reason: 'Refund requested',
-    });
-
-    expect(result.state).toBe('REFUNDED');
-    // Admin force_refund passes adminOverride:true so LOCKED_DISPUTE escrows can be refunded
-    expect(mockEscrowService.refund).toHaveBeenCalledWith({
-      escrowId: ESC_UUID,
-      adminOverride: true,
-      reason: 'Refund requested',
-    });
-  });
-
-  it('force_refund on a LOCKED_DISPUTE escrow succeeds when adminOverride=true is passed', async () => {
-    prependAdminCheck();
-    // EscrowService.refund receives adminOverride=true and returns REFUNDED successfully
-    mockEscrowService.refund.mockResolvedValueOnce({
-      success: true,
-      data: { id: ESC_UUID, state: 'REFUNDED', amount: 7500 },
-    } as any);
-    // admin_actions audit INSERT
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
-
-    const result = await makeAdminCaller().escrowOverride({
-      escrowId: ESC_UUID,
-      action: 'force_refund',
-      reason: 'Admin override: dispute resolved in poster favour',
-    });
-
-    expect(result.state).toBe('REFUNDED');
-    expect(mockEscrowService.refund).toHaveBeenCalledWith({
-      escrowId: ESC_UUID,
-      adminOverride: true,
-      reason: 'Admin override: dispute resolved in poster favour',
-    });
-  });
-
-  it('throws NOT_FOUND when EscrowService returns NOT_FOUND failure', async () => {
-    // Bug 2 fix: error code is now mapped correctly — NOT_FOUND code → tRPC NOT_FOUND.
-    prependAdminCheck();
-    // The failure audit log INSERT also fires (fire-and-forget) — mock it so the
-    // db mock queue is not left in an unexpected state.
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
-    mockEscrowService.release.mockResolvedValueOnce({
-      success: false,
-      error: { code: 'NOT_FOUND', message: 'Escrow not found or not in overridable state' },
-    } as any);
-
-    await expect(
-      makeAdminCaller().escrowOverride({
+  it.each(['force_release', 'force_refund'] as const)(
+    'terminally holds %s before any escrow service or audit mutation',
+    async (action) => {
+      prependAdminCheck();
+      await expect(makeAdminCaller().escrowOverride({
         escrowId: ESC_UUID,
-        action: 'force_release',
-        reason: 'Trying to override released escrow',
-      }),
-    ).rejects.toThrow('Escrow not found or not in overridable state');
-  });
-
-  it('writes admin_actions audit log with admin user id and escrow id', async () => {
-    prependAdminCheck();
-    mockEscrowService.release.mockResolvedValueOnce({
-      success: true,
-      data: { id: ESC_UUID, state: 'RELEASED', amount: 1000 },
-    } as any);
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any); // close orphaned disputes
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
-
-    await makeAdminCaller().escrowOverride({
-      escrowId: ESC_UUID,
-      action: 'force_release',
-      reason: 'Test',
-    });
-
-    // Third db.query call is the admin_actions INSERT (first is isAdmin check, second is UPDATE disputes)
-    const [sql, params] = (mockDb.query as any).mock.calls[2];
-    expect(sql).toContain('admin_actions');
-    expect(params[0]).toBe(ADMIN_UUID); // admin_id
-    expect(params[2]).toBe(ESC_UUID);   // target_id
-  });
+        action,
+        reason: 'Escrow overrides require a separately approved authority command.',
+      })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+      expect(mockEscrowService.release).not.toHaveBeenCalled();
+      expect(mockEscrowService.refund).not.toHaveBeenCalled();
+      expect(mockDb.query).toHaveBeenCalledTimes(1);
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -452,7 +291,7 @@ describe('admin.escrowOverride branches', () => {
 // ---------------------------------------------------------------------------
 
 describe('admin.listUsers — isBanned filter branches', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(resetRouterMocks);
 
   it('adds is_banned condition when isBanned=false', async () => {
     prependAdminCheck();
@@ -496,32 +335,29 @@ describe('admin.listUsers — isBanned filter branches', () => {
 });
 
 describe('admin role hierarchy', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(resetRouterMocks);
 
-  it('rejects grant-based replacement of an existing founder role before any write', async () => {
+  it('holds role grants before hierarchy lookup or any role write', async () => {
     prependAdminCheck();
-    mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'founder' }], rowCount: 1 } as any);
-    mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'founder' }], rowCount: 1 } as any);
 
     await expect(makeAdminCaller().grantAdminRole({
       userId: USER_UUID,
       role: 'support',
-    })).rejects.toMatchObject({ code: 'CONFLICT' });
+    })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
 
-    expect(mockDb.query).toHaveBeenCalledTimes(3);
+    expect(mockDb.query).toHaveBeenCalledTimes(1);
     expect(mockDb.query.mock.calls.every(([sql]) => !String(sql).includes('INSERT INTO admin_roles'))).toBe(true);
   });
 
-  it('rejects peer administrator revocation before user or role writes', async () => {
+  it('holds role revocation before hierarchy lookup or any role write', async () => {
     prependAdminCheck();
-    mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
 
     await expect(makeAdminCaller().revokeAdminRole({
       userId: USER_UUID,
       role: 'admin',
-    })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
 
-    expect(mockDb.query).toHaveBeenCalledTimes(2);
+    expect(mockDb.query).toHaveBeenCalledTimes(1);
     expect(mockDb.query.mock.calls.every(([sql]) => !String(sql).includes('DELETE FROM admin_roles'))).toBe(true);
   });
 });

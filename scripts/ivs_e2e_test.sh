@@ -231,7 +231,7 @@ echo "╚═══════════════════════�
 
 if [ $FAILED -eq 0 ]; then
     echo ""
-    echo "🎉 All tests passed! IVS is ready for production."
+    echo "🎉 All tests passed! The bounded IVS E2E checks passed in this configured environment."
     exit 0
 else
     echo ""

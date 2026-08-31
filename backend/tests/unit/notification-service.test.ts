@@ -124,6 +124,40 @@ function makePreferences(overrides: Record<string, unknown> = {}) {
 // ---------------------------------------------------------------------------
 beforeEach(() => {
   vi.clearAllMocks();
+  mockDb.transaction.mockImplementation(async (callback) => {
+    let insertedNotification: ReturnType<typeof makeNotification> | undefined;
+    return callback((async (sql: string, params?: unknown[]) => {
+      if (/^(?:SAVEPOINT|ROLLBACK TO SAVEPOINT|RELEASE SAVEPOINT)\b/u.test(sql.trim())) {
+        return { rows: [], rowCount: null };
+      }
+      if (sql.includes('SELECT id FROM users') && sql.includes('FOR UPDATE')) {
+        return { rows: [{ id: USER_ID }], rowCount: 1 };
+      }
+      if (sql.includes('FROM notifications') && sql.includes('hourly_count')) {
+        return { rows: [{ hourly_count: '0', daily_count: '0' }], rowCount: 1 };
+      }
+      if (sql.includes('WHERE dedupe_key = $1')) {
+        return { rows: [], rowCount: 0 };
+      }
+      if (sql.includes('UPDATE notifications') && sql.includes('delivery_attempts = LEAST')) {
+        if (!insertedNotification) return { rows: [], rowCount: 0 };
+        return {
+          rows: [{
+            ...insertedNotification,
+            delivery_state: params?.[3],
+            sent_at: Number(params?.[1]) > 0 || params?.[2] === true ? new Date() : insertedNotification.sent_at,
+            delivered_at: params?.[2] === true ? new Date() : insertedNotification.delivered_at,
+          }],
+          rowCount: 1,
+        };
+      }
+      const result = await mockDb.query(sql, params);
+      if (sql.includes('INSERT INTO notifications') && result?.rows?.[0]) {
+        insertedNotification = result.rows[0] as ReturnType<typeof makeNotification>;
+      }
+      return result;
+    }) as never);
+  });
 });
 
 // ===========================================================================
@@ -391,6 +425,11 @@ describe('NotificationService', () => {
         success: true,
         data: { queued: false },
       });
+      const [eligibilitySql] = mockDb.query.mock.calls[0];
+      expect(eligibilitySql).toContain(
+        '(notification.expires_at IS NULL OR notification.expires_at > NOW())',
+      );
+      expect(mockDb.transaction).not.toHaveBeenCalled();
     });
   });
 
@@ -829,6 +868,34 @@ describe('NotificationService', () => {
       }
     });
 
+    it('serializes preference mutation on the same recipient lock as acceptance', async () => {
+      const existingPrefs = makePreferences();
+      const updatedPrefs = makePreferences({ email_enabled: true });
+      const txQuery = vi.fn(async (sql: string) => {
+        if (sql.includes('SELECT id FROM users') && sql.includes('FOR UPDATE')) {
+          return { rows: [{ id: USER_ID }], rowCount: 1 };
+        }
+        if (sql.includes('SELECT * FROM notification_preferences')) {
+          return { rows: [existingPrefs], rowCount: 1 };
+        }
+        if (sql.includes('UPDATE notification_preferences')) {
+          return { rows: [updatedPrefs], rowCount: 1 };
+        }
+        throw new Error(`unexpected preference transaction query: ${sql}`);
+      });
+      mockDb.transaction.mockImplementationOnce(async (callback) => callback(txQuery as never));
+
+      const result = await NotificationService.updatePreferences({
+        userId: USER_ID,
+        emailEnabled: true,
+      });
+
+      expect(result).toEqual({ success: true, data: updatedPrefs });
+      expect(String(txQuery.mock.calls[0]?.[0])).toContain('FOR UPDATE');
+      expect(String(txQuery.mock.calls[1]?.[0])).toContain('notification_preferences');
+      expect(String(txQuery.mock.calls[2]?.[0])).toContain('UPDATE notification_preferences');
+    });
+
     it('returns existing preferences unchanged when no update fields are provided', async () => {
       const existingPrefs = makePreferences();
 
@@ -960,13 +1027,19 @@ describe('NotificationService', () => {
       expect(count).toBe(0);
     });
 
-    it('returns 0 (fail open) when query throws an error', async () => {
+    it('fails closed when the authoritative query throws an error', async () => {
       mockDb.query.mockRejectedValueOnce(new Error('Network error'));
 
-      const count = await NotificationService.getRecentNotificationCount(USER_ID, 'task_accepted', 60);
+      await expect(NotificationService.getRecentNotificationCount(USER_ID, 'task_accepted', 60))
+        .rejects.toThrow('Network error');
+    });
 
-      // Fail open: return 0 to allow notification
-      expect(count).toBe(0);
+    it('rejects a nonpositive or nonintegral count window', async () => {
+      await expect(NotificationService.getRecentNotificationCount(USER_ID, 'task_accepted', 0))
+        .rejects.toThrow('NOTIFICATION_FREQUENCY_WINDOW_INVALID');
+      await expect(NotificationService.getRecentNotificationCount(USER_ID, 'task_accepted', 1.5))
+        .rejects.toThrow('NOTIFICATION_FREQUENCY_WINDOW_INVALID');
+      expect(mockDb.query).not.toHaveBeenCalled();
     });
 
     it('queries with the correct userId, category, and minute interval', async () => {
@@ -1077,7 +1150,9 @@ describe('NotificationService — HX/OS delivery contract', () => {
       'status', 'task', TASK_ID, `task:${TASK_ID}:completed:v7`, `${USER_ID}:task:${TASK_ID}`,
     ]));
     expect(mockDb.query.mock.calls.some(([sql]) => (
-      String(sql).includes("delivery_state = 'cancelled_superseded'")
+      String(sql).includes('preserved_delivery_state')
+      && String(sql).includes("delivery.state = 'provider_accepted'")
+      && String(sql).includes("delivery.state = 'delivered'")
     ))).toBe(true);
   });
 
@@ -1090,9 +1165,6 @@ describe('NotificationService — HX/OS delivery contract', () => {
       email_enabled: true,
     });
     const persisted = makeNotification({ category: 'weekly_recap', channels: ['email'] });
-    mockDb.transaction.mockImplementation((async (callback: (query: typeof mockDb.query) => unknown) => (
-      callback(mockDb.query)
-    )) as never);
     mockDb.query.mockImplementation((async (sql: string) => {
       if (sql.includes('notification_preferences')) return { rows: [prefs], rowCount: 1 };
       if (sql.includes('SELECT group_id')) return { rows: [], rowCount: 0 };
@@ -1240,6 +1312,20 @@ describe('NotificationService — HX/OS delivery contract', () => {
   });
 
   it('fails closed when a global dedupe key belongs to a different notification identity', async () => {
+    const transactionQueries: Array<[string, unknown[] | undefined]> = [];
+    mockDb.transaction.mockImplementationOnce(async (callback) => callback((async (
+      sql: string,
+      params?: unknown[],
+    ) => {
+      transactionQueries.push([sql, params]);
+      if (sql.includes('SELECT id FROM users') && sql.includes('FOR UPDATE')) {
+        return { rows: [{ id: USER_ID }], rowCount: 1 };
+      }
+      if (sql.includes('FROM notifications') && sql.includes('hourly_count')) {
+        return { rows: [{ hourly_count: '0', daily_count: '0' }], rowCount: 1 };
+      }
+      return mockDb.query(sql, params);
+    }) as never));
     mockDb.query.mockImplementation((async (sql: string) => {
       if (sql.includes('notification_preferences')) return { rows: [makePreferences()], rowCount: 1 };
       if (sql.includes('SELECT group_id')) return { rows: [], rowCount: 0 };
@@ -1262,7 +1348,20 @@ describe('NotificationService — HX/OS delivery contract', () => {
     const replayQueries = mockDb.query.mock.calls.filter(([sql]) => (
       String(sql).includes('WHERE dedupe_key = $1')
     ));
-    expect(replayQueries).toHaveLength(2);
-    expect(replayQueries.every(([sql]) => String(sql).includes('AND user_id = $2'))).toBe(true);
+    const transactionReplayQueries = transactionQueries.filter(([sql]) => (
+      String(sql).includes('WHERE dedupe_key = $1')
+    ));
+    // The explicit fast replay, the under-lock replay, and the post-conflict
+    // replay must all bind the complete event identity.
+    expect(replayQueries).toHaveLength(3);
+    expect(transactionReplayQueries).toHaveLength(2);
+    expect(replayQueries.every(([sql]) => (
+      String(sql).includes('direct_notification.user_id = $2')
+      && String(sql).includes('batched_notification.user_id = $2')
+    ))).toBe(true);
+    expect(transactionReplayQueries.every(([sql]) => (
+      String(sql).includes('direct_notification.user_id = $2')
+      && String(sql).includes('batched_notification.user_id = $2')
+    ))).toBe(true);
   });
 });

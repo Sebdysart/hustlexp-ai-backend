@@ -1,7 +1,7 @@
 /**
  * FlagsService Unit Tests
  *
- * Tests getUserFlags, getFlagForUser, setFlag, getAllFlags, and the
+ * Tests getUserFlags, getFlagForUser, getAllFlags, mutation containment, and the
  * evaluateFlag helper (blocklist, allowlist, rollout percentage, DJB2 determinism).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -247,59 +247,20 @@ describe('FlagsService.getFlagForUser', () => {
 });
 
 // ============================================================================
-// setFlag
+// Mutation authority
 // ============================================================================
 
-describe('FlagsService.setFlag', () => {
-  it('inserts or upserts a flag and returns the row', async () => {
-    const flag = makeFlag({ name: 'new_flag', enabled: true, rollout_percentage: 50 });
-    mockDbQuery.mockResolvedValueOnce({ rows: [flag], rowCount: 1 });
-
-    const result = await FlagsService.setFlag({
-      name: 'new_flag',
-      enabled: true,
-      rolloutPercentage: 50,
-    });
-
-    expect(result.name).toBe('new_flag');
-    expect(result.enabled).toBe(true);
-    expect(mockDbQuery).toHaveBeenCalledWith(
-      expect.stringContaining('INSERT INTO feature_flags'),
-      expect.arrayContaining(['new_flag', true, 50])
-    );
+describe('FlagsService mutation authority', () => {
+  it('exposes no direct feature-flag mutation method', () => {
+    expect((FlagsService as Record<string, unknown>).setFlag).toBeUndefined();
   });
 
-  it('uses defaults when optional params omitted', async () => {
-    const flag = makeFlag({ name: 'minimal' });
-    mockDbQuery.mockResolvedValueOnce({ rows: [flag], rowCount: 1 });
-
-    await FlagsService.setFlag({ name: 'minimal', enabled: true });
-
-    const [, params] = mockDbQuery.mock.calls[0] as [string, unknown[]];
-    expect(params[2]).toBe(0);         // rolloutPercentage default = 0
-    expect(params[3]).toEqual([]);     // userAllowlist default = []
-    expect(params[4]).toEqual([]);     // userBlocklist default = []
-  });
-
-  it('invalidates cache for flag name and all-flags key', async () => {
-    const flag = makeFlag({ name: 'cached_flag' });
-    mockDbQuery.mockResolvedValueOnce({ rows: [flag], rowCount: 1 });
-
-    await FlagsService.setFlag({ name: 'cached_flag', enabled: false });
-
-    expect(getRedis().del).toHaveBeenCalledWith('ff:cached_flag');
-    expect(getRedis().del).toHaveBeenCalledWith('ff:all');
-  });
-
-  it('does not throw when cache invalidation fails', async () => {
-    const flag = makeFlag();
-    mockDbQuery.mockResolvedValueOnce({ rows: [flag], rowCount: 1 });
-    getRedis().del.mockRejectedValue(new Error('Redis down'));
-
-    // Should NOT throw despite Redis failure
-    await expect(
-      FlagsService.setFlag({ name: 'feature_x', enabled: true })
-    ).resolves.toBeDefined();
+  it('performs no feature-flag writes through a read method', async () => {
+    mockDbQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    await FlagsService.getAllFlags();
+    expect(mockDbQuery.mock.calls.every(([sql]) =>
+      !/\b(?:INSERT|UPDATE|DELETE)\b/iu.test(String(sql)),
+    )).toBe(true);
   });
 });
 

@@ -36,6 +36,9 @@ interface ExportJobData {
   aggregate_type: string;
   aggregate_id: string;
   event_version: number;
+  outbox_idempotency_key: string;
+  outbox_dispatch_attempt_id: string;
+  outbox_bullmq_job_id: string;
   payload: {
     exportId: string;
     userId: string;
@@ -57,7 +60,45 @@ interface ExportJobData {
 export async function processExportJob(job: Job<ExportJobData>): Promise<void> {
   // Extract data from job payload (structured as outbox event)
   const { exportId, userId, format, gdprRequestId } = job.data.payload;
-  const idempotencyKey = job.id || `export:${exportId}`;
+  const idempotencyKey = job.data.outbox_idempotency_key;
+  const dispatchAuthority = {
+    dispatchAttemptId: job.data.outbox_dispatch_attempt_id,
+    bullmqJobId: job.data.outbox_bullmq_job_id,
+  };
+  if (
+    !idempotencyKey
+    || !dispatchAuthority.dispatchAttemptId
+    || !dispatchAuthority.bullmqJobId
+    || job.id !== dispatchAuthority.bullmqJobId
+  ) {
+    throw new Error('Export job lacks exact durable dispatch authority');
+  }
+  const canonical = await db.query<{
+    aggregate_id: string;
+    aggregate_type: string;
+    event_version: number;
+    payload: ExportJobData['payload'];
+  }>(
+    `SELECT aggregate_id,aggregate_type,event_version,payload
+     FROM outbox_events
+     WHERE idempotency_key=$1
+       AND dispatch_attempt_id=$2::UUID
+       AND bullmq_job_id=$3
+       AND event_type='export.requested'
+       AND aggregate_type='export'`,
+    [idempotencyKey, dispatchAuthority.dispatchAttemptId, dispatchAuthority.bullmqJobId],
+  );
+  const envelope = canonical.rows[0];
+  if (
+    !envelope
+    || envelope.aggregate_id !== exportId
+    || job.data.aggregate_id !== envelope.aggregate_id
+    || job.data.aggregate_type !== envelope.aggregate_type
+    || job.data.event_version !== envelope.event_version
+    || JSON.stringify(job.data.payload) !== JSON.stringify(envelope.payload)
+  ) {
+    throw new Error('Export job does not match canonical outbox authority');
+  }
   
   // Claim the export row atomically: SELECT FOR UPDATE + CAS UPDATE in one transaction.
   // The lock is held for the entire duration of both statements, closing the window
@@ -99,6 +140,9 @@ export async function processExportJob(job: Job<ExportJobData>): Promise<void> {
       }
 
       const row = lockResult.rows[0];
+      if (row.user_id !== userId || row.export_format !== format) {
+        throw new Error('Export row does not match canonical outbox authority');
+      }
 
       // Idempotency check: already ready — skip (no claim needed)
       if (row.status === 'ready') {
@@ -145,7 +189,7 @@ export async function processExportJob(job: Job<ExportJobData>): Promise<void> {
     if (claimed.skip === 'already_ready') {
       log.info({ exportId }, 'Export already processed (status: ready), skipping - idempotent replay');
       if (idempotencyKey) {
-        await markOutboxEventProcessed(idempotencyKey);
+        await markOutboxEventProcessed(idempotencyKey, dispatchAuthority);
       }
       return;
     }
@@ -353,7 +397,7 @@ export async function processExportJob(job: Job<ExportJobData>): Promise<void> {
     
     // Mark outbox event as processed (if processing from outbox)
     if (idempotencyKey) {
-      await markOutboxEventProcessed(idempotencyKey);
+      await markOutboxEventProcessed(idempotencyKey, dispatchAuthority);
     }
     
     // Job completed successfully
@@ -375,7 +419,7 @@ export async function processExportJob(job: Job<ExportJobData>): Promise<void> {
     
     // Mark outbox event as failed (if processing from outbox)
     if (idempotencyKey) {
-      await markOutboxEventFailed(idempotencyKey, errorMessage).catch(markError => {
+      await markOutboxEventFailed(idempotencyKey, errorMessage, dispatchAuthority).catch(markError => {
         log.error({ idempotencyKey, err: markError }, 'Failed to mark outbox event as failed');
       });
     }

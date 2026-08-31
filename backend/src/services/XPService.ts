@@ -14,25 +14,32 @@
  */
 
 import { db, isInvariantViolation, isUniqueViolation, getErrorMessage } from '../db.js';
+import type { QueryFn } from '../db.js';
 import { logger } from '../logger.js';
 import type { ServiceResult } from '../types.js';
 import { ErrorCodes } from '../types.js';
 import { AlphaInstrumentation } from './AlphaInstrumentation.js';
 import { updateStreakOnTaskCompletion } from './StreakService.js';
-import { Redis } from '@upstash/redis';
-import { config } from '../config.js';
 
 const log = logger.child({ service: 'XPService' });
 
-let xpRedis: Redis | null = null;
-function getXPRedis(): Redis | null {
-  if (!xpRedis && config.redis.restUrl && config.redis.restToken) {
-    xpRedis = new Redis({ url: config.redis.restUrl, token: config.redis.restToken });
-  }
-  return xpRedis;
-}
-
 const DAILY_XP_CAP = 10000;
+
+async function getDailyXPTotal(query: QueryFn, userId: string): Promise<number> {
+  const result = await query<{ total: string }>(
+    `SELECT COALESCE(SUM(effective_xp), 0)::TEXT as total
+     FROM xp_ledger
+     WHERE user_id = $1
+       AND awarded_at AT TIME ZONE 'UTC' >= DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC')
+       AND awarded_at AT TIME ZONE 'UTC' <  DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC') + INTERVAL '1 day'`,
+    [userId]
+  );
+  const total = Number(result.rows[0]?.total ?? '0');
+  if (!Number.isSafeInteger(total)) {
+    throw new Error('Invalid daily XP total returned by PostgreSQL');
+  }
+  return total;
+}
 
 function isValidAwardAmount(baseXP: number): boolean {
   return Number.isSafeInteger(baseXP) && baseXP > 0;
@@ -312,10 +319,8 @@ export const XPService = {
       log.warn({ userId, baseXP, recentEvents: velocityCheck.recentEvents }, 'XP velocity suspicious (below block threshold) - allowing but flagging');
     }
 
-    let effectiveXPAwarded = 0;
-
     try {
-      const result = await db.serializableTransaction(async (query) => {
+      const runAwardTransaction = () => db.serializableTransaction(async (query) => {
         // Get user's current state including trust tier
         const userResult = await query<{
           xp_total: number;
@@ -389,28 +394,24 @@ export const XPService = {
         // cannot be exceeded when streak/trust/live multipliers inflate the award.
         // FIX: was checking baseXP pre-multiplier — cap could be bypassed up to 5×.
         //
-        // H6 FIX: Use a read-only probe (xpAmount=0) here so that no Redis INCRBY
-        // fires inside the serializable transaction. On a serializable retry the INCRBY
-        // was firing again for the same logical award, double-counting the cap.
-        // The actual INCRBY is deferred to after db.serializableTransaction() returns
-        // successfully, ensuring at-most-once semantics even under retry.
-        const capProbe = await XPService.checkDailyXPCap(userId, 0);
-        const wouldExceedCap = capProbe.earned + effectiveXP > DAILY_XP_CAP;
+        // PostgreSQL is the cap authority. The user row lock above serializes
+        // every award for this recipient, so this ledger-backed probe observes
+        // the prior committed award before a concurrent request can continue.
+        // Redis may cache XP displays elsewhere, but it cannot authorize issuance.
+        const earnedToday = await getDailyXPTotal(query, userId);
+        const wouldExceedCap = earnedToday + effectiveXP > DAILY_XP_CAP;
         if (wouldExceedCap) {
           return {
             success: false as const,
             error: {
               code: 'XP_DAILY_CAP',
-              message: `Daily XP cap reached (${capProbe.cap} XP). Try again tomorrow.`,
+              message: `Daily XP cap reached (${DAILY_XP_CAP} XP). Try again tomorrow.`,
             },
           };
         }
 
         const newXPTotal = user.xp_total + effectiveXP;
         const newLevel = calculateLevel(newXPTotal);
-
-        // Store effectiveXP for instrumentation (outside transaction)
-        effectiveXPAwarded = effectiveXP;
 
         // Insert XP ledger entry
         // INV-1: Trigger will check escrow is RELEASED
@@ -451,41 +452,24 @@ export const XPService = {
 
         return { success: true as const, data: ledgerResult.rows[0] };
       });
-      
-      // H6 FIX: Commit the Redis daily-cap INCRBY AFTER the DB transaction has
-      // committed successfully. This prevents double-counting on serializable retries —
-      // the INCRBY now fires at most once per logical award event.
-      // Only runs when Redis is configured; DB-fallback path needs no action here
-      // because the xp_ledger INSERT (now committed) is already counted by the
-      // DB-fallback SUM query used in subsequent cap probes.
-      if (result.success && effectiveXPAwarded > 0) {
-        const redis = getXPRedis();
-        if (redis) {
-          try {
-            const capResult = await XPService.checkDailyXPCap(userId, effectiveXPAwarded);
-            if (!capResult.allowed) {
-              // Overage detected — checkDailyXPCap already rolled back Redis via DECRBY.
-              // Log a warning so we can detect race conditions that slipped past the
-              // in-transaction probe (e.g. two concurrent awards both committed before
-              // either post-commit INCRBY fired).
-              log.warn(
-                { userId, effectiveXPAwarded, earned: capResult.earned, cap: capResult.cap },
-                'XP cap overage detected post-commit — Redis corrected via DECRBY rollback'
-              );
-            }
-          } catch {
-            // Non-fatal: cap counter may be slightly off if Redis is flaky.
-            // The DB-fallback inside checkDailyXPCap will compensate on the
-            // next award attempt if Redis is unavailable at that point.
-            log.warn({ userId, effectiveXPAwarded }, 'Post-commit Redis cap INCRBY failed — cap may be under-counted');
-          }
+      type AwardTransactionResult = Awaited<ReturnType<typeof runAwardTransaction>>;
+      let result: AwardTransactionResult | undefined;
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        try {
+          result = await runAwardTransaction();
+          break;
+        } catch (error) {
+          const code = (error as { code?: string }).code;
+          if (code !== '40001' || attempt === 3) throw error;
+          log.warn({ userId, attempt }, 'Retrying XP award after PostgreSQL serialization conflict');
         }
       }
+      if (!result) throw new Error('XP award transaction exhausted without a result');
 
       // Alpha Instrumentation: Emit trust delta applied for XP
       // Note: This happens outside the transaction to avoid blocking XP award
       // The try-catch ensures silent failure
-      if (result.success && effectiveXPAwarded > 0) {
+      if (result.success && result.data.effective_xp > 0) {
         try {
           // Determine role from user's default_mode (worker = hustler, poster = poster)
           const userRoleResult = await db.query<{ default_mode: string }>(
@@ -498,7 +482,7 @@ export const XPService = {
             user_id: userId,
             role,
             delta_type: 'xp',
-            delta_amount: effectiveXPAwarded,
+            delta_amount: result.data.effective_xp,
             reason_code: 'task_completion',
             task_id: taskId,
             timestamp: new Date(),
@@ -512,8 +496,8 @@ export const XPService = {
         }
       }
 
-      // Note: daily XP tracking is now performed atomically inside checkDailyXPCap
-      // via Redis INCRBY. No separate trackDailyXP call is needed here.
+      // No post-commit cap mutation is needed: today's immutable PostgreSQL
+      // ledger rows are the cap record and the user lock serialized issuance.
 
       // Gamified streaks: update streak on task completion (after XP award)
       if (result.success) {
@@ -640,108 +624,36 @@ export const XPService = {
   /**
    * Check daily XP cap for anti-farming.
    *
-   * When Redis is available this performs an atomic INCRBY + cap check + DECRBY rollback
-   * to eliminate the TOCTOU race between concurrent awardXP calls for the same user.
-   * The pattern is:
-   *   1. INCRBY key awardAmount  (atomic — returns new total)
-   *   2. If new total > cap: DECRBY key awardAmount to roll back, return blocked
-   *   3. If new total <= cap: increment is committed, return allowed
-   *   4. EXPIRE key 86400 to auto-expire at end of day window
-   *
-   * This collapses checkDailyXPCap + trackDailyXP into a single atomic operation.
-   * When xpAmount is 0 (read-only probe), a GET is used instead to avoid spurious
-   * increments.
+   * PostgreSQL's immutable XP ledger is the sole authority. awardXP performs the
+   * same ledger query on its transaction connection after locking the recipient
+   * user row. This public helper is read-only and must not be treated as a
+   * reservation by other callers.
    */
   checkDailyXPCap: async (userId: string, xpAmount: number = 0): Promise<{ allowed: boolean; earned: number; cap: number; remaining: number }> => {
-    const redis = getXPRedis();
-    if (!redis) {
-      // Redis absent — fall back to DB query so cap is always enforced
-      try {
-        // MM7: Use explicit UTC date truncation so the DB day boundary matches the
-        // UTC-keyed Redis date string. CURRENT_DATE reflects the DB server's local
-        // timezone which may differ from UTC, causing split-brain between Redis and DB.
-        const result = await db.query<{ total: string }>(
-          `SELECT COALESCE(SUM(effective_xp), 0) as total
-           FROM xp_ledger
-           WHERE user_id = $1
-             AND awarded_at >= DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC')
-             AND awarded_at <  DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC') + INTERVAL '1 day'`,
-          [userId]
-        );
-        const totalToday = parseInt(result.rows[0]?.total ?? '0', 10);
-        return {
-          allowed: totalToday + xpAmount <= DAILY_XP_CAP,
-          earned: totalToday,
-          cap: DAILY_XP_CAP,
-          remaining: Math.max(0, DAILY_XP_CAP - totalToday),
-        };
-      } catch {
-        // DB fallback failed — block to be safe (fail closed)
-        return { allowed: false, earned: 0, cap: DAILY_XP_CAP, remaining: 0 };
-      }
-    }
-
-    const dateKey = new Date().toISOString().split('T')[0];
-    const key = `xp:daily:${userId}:${dateKey}`;
     try {
-      if (xpAmount === 0) {
-        // Read-only probe: just read current value without modifying it
-        const earned = Number(await redis.get(key) ?? 0);
-        return {
-          allowed: earned < DAILY_XP_CAP,
-          earned,
-          cap: DAILY_XP_CAP,
-          remaining: Math.max(0, DAILY_XP_CAP - earned),
-        };
-      }
-
-      // Atomic increment: INCRBY returns the new total after adding xpAmount.
-      // If the new total exceeds the cap we immediately roll it back with DECRBY.
-      // Because INCRBY is atomic, no other concurrent call can observe an intermediate
-      // state — this eliminates the TOCTOU gap between the old GET + later INCRBY pattern.
-      const newTotal = Number(await redis.incrby(key, xpAmount));
-      // MM7: Use EXPIREAT at next UTC midnight instead of EXPIRE 86400 so that the TTL
-      // always aligns with the calendar day boundary regardless of when the key was first
-      // written. A rolling 86400s window would let a key created at 23:59 survive until
-      // 23:59 the next day, accumulating two days worth of XP under one cap.
-      const nextMidnightUtc = Math.floor(new Date(new Date().toISOString().split('T')[0] + 'T24:00:00.000Z').getTime() / 1000);
-      await redis.expireat(key, nextMidnightUtc);
-
-      if (newTotal > DAILY_XP_CAP) {
-        // Roll back: this award would exceed the cap — undo the increment
-        await redis.decrby(key, xpAmount);
-        const earnedBeforeAward = newTotal - xpAmount;
-        return {
-          allowed: false,
-          earned: earnedBeforeAward,
-          cap: DAILY_XP_CAP,
-          remaining: Math.max(0, DAILY_XP_CAP - earnedBeforeAward),
-        };
-      }
-
-      // Increment committed — cap not exceeded
-      const earnedBeforeAward = newTotal - xpAmount;
+      // Explicit UTC boundaries avoid dependence on the database session timezone.
+      const earned = await getDailyXPTotal(db.query, userId);
       return {
-        allowed: true,
-        earned: earnedBeforeAward,
+        allowed: earned + xpAmount <= DAILY_XP_CAP,
+        earned,
         cap: DAILY_XP_CAP,
-        remaining: Math.max(0, DAILY_XP_CAP - newTotal),
+        remaining: Math.max(0, DAILY_XP_CAP - earned),
       };
     } catch {
-      // Fail CLOSED on Redis error — fail open allowed unlimited XP farming during outage.
+      // Fail closed if ledger authority cannot be read.
       return { allowed: false, earned: 0, cap: DAILY_XP_CAP, remaining: 0 };
     }
   },
 
   /**
-   * Track daily XP earned (no-op: tracking is now performed atomically inside
-   * checkDailyXPCap via INCRBY. This stub is preserved so any callers outside
+   * Track daily XP earned (no-op: tracking is derived from the immutable ledger.
+   * This stub is preserved so any callers outside
    * the normal awardXP flow (e.g. manual test tooling) continue to compile.
    *
-   * @deprecated Tracking is now atomic inside checkDailyXPCap. Do not call directly.
+   * @deprecated Accepted awards are tracked by their PostgreSQL ledger rows. Do not call directly.
    */
   trackDailyXP: async (_userId: string, _xpAmount: number): Promise<void> => {
-    // No-op: atomic INCRBY in checkDailyXPCap handles both check and tracking.
+    // No-op: accepted awards are already represented by immutable ledger rows.
   },
 
   /**

@@ -4,25 +4,35 @@
  * Replaces Supabase edge functions: action-link-public, action-link-admin
  *
  * Public  — /api/action-link?token=<token>  (GET resolve, POST act)
- * Admin   — tRPC procedures gated by OPS_ADMIN_KEY
+ * Admin reads require a named Firebase operator with can_manage_operations.
+ * Creation remains held; expiry uses the versioned two-person containment rail.
  */
 
 import { z } from 'zod';
-import { router, publicProcedure } from '../../trpc.js';
+import {
+  heldOperationsAdminProcedure,
+  operationsAdminProcedure,
+  operationsStepUpProcedure,
+  router,
+} from '../../trpc.js';
 import { db } from '../../db.js';
 import { logger } from '../../logger.js';
 import { TRPCError } from '@trpc/server';
 import crypto from 'crypto';
+import { OperatorAuthorityService } from '../../services/OperatorAuthorityService.js';
 
 const log = logger.child({ router: 'web.actionLinks' });
+const LEGACY_MUTATION_HELD_MESSAGE =
+  'Legacy action-link writes are held. Use a separately approved, versioned two-person command path.';
+const PAYMENT_CREATION_HELD_MESSAGE =
+  'Payment creation is frozen. This link cannot expose or execute a pay action.';
+
+function holdLegacyMutation(): never {
+  throw new TRPCError({ code: 'PRECONDITION_FAILED', message: LEGACY_MUTATION_HELD_MESSAGE });
+}
 
 function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
-}
-
-function generateToken(): { raw: string; hash: string } {
-  const raw = crypto.randomBytes(32).toString('hex');
-  return { raw, hash: hashToken(raw) };
 }
 
 function isExpired(expiresAt: Date): boolean {
@@ -41,6 +51,16 @@ interface ActionLinkRow {
   metadata: Record<string, unknown>;
 }
 
+function suppressPaymentSurfaces<T extends Pick<ActionLinkRow, 'allowed_actions' | 'metadata'>>(row: T): T {
+  const metadata = { ...row.metadata };
+  delete metadata.pay_url;
+  return {
+    ...row,
+    allowed_actions: row.allowed_actions.filter((action) => action !== 'pay'),
+    metadata,
+  };
+}
+
 function buildDisplay(link: ActionLinkRow): Record<string, unknown> {
   const m = link.metadata;
   if (link.role === 'hustler') {
@@ -56,17 +76,19 @@ function buildDisplay(link: ActionLinkRow): Record<string, unknown> {
       payment_status: m.payment_status,
       assignment_status: m.assignment_status,
       connect_status: m.connect_status,
-      trust_note: 'Do not start until payment is confirmed and HustleXP marks you assigned.',
+      trust_note: 'Interest is not assignment. Do not start until a separately approved work order exists.',
     };
   }
+  const nextStep = typeof m.next_step === 'string' && /pay|payment|checkout|charge/i.test(m.next_step)
+    ? 'Scope and estimate review only; payment creation is currently unavailable.'
+    : m.next_step;
   return {
     title: m.title,
     summary: m.summary,
     scope_checklist: m.scope_checklist,
-    payment_status_label: m.payment_status_label ?? 'Waiting for payment',
-    next_step: m.next_step,
+    payment_status_label: 'Payment creation unavailable',
+    next_step: nextStep,
     helper_readiness: m.helper_readiness,
-    pay_url: m.pay_url,
     trust: m.trust,
   };
 }
@@ -76,9 +98,8 @@ function buildDisplay(link: ActionLinkRow): Record<string, unknown> {
 export const webActionLinksRouter = router({
 
   // ── Admin: create action link ───────────────────────────────────────────────
-  create: publicProcedure
+  create: heldOperationsAdminProcedure
     .input(z.object({
-      adminKey: z.string(),
       link_type: z.enum(['hustler_activation', 'poster_scope']),
       lead_id: z.string().uuid().optional(),
       hustler_id: z.string().uuid().optional(),
@@ -101,66 +122,17 @@ export const webActionLinksRouter = router({
       payment_status_label: z.string().optional(),
       next_step: z.string().optional(),
       helper_readiness: z.string().optional(),
-      pay_url: z.string().optional(),
     }))
-    .mutation(async ({ input }) => {
-      if (input.adminKey !== process.env.OPS_ADMIN_KEY) {
-        throw new TRPCError({ code: 'FORBIDDEN', message: 'Invalid admin key' });
-      }
-
-      const role = input.link_type === 'hustler_activation' ? 'hustler' : 'poster';
-      const allowed = role === 'hustler'
-        ? ['available_yes', 'available_tomorrow', 'decline', 'start_payout_setup', 'need_helper', 'need_details']
-        : ['confirm_scope', 'accept_quote', 'pay', 'ask_question'];
-
-      const { raw, hash } = generateToken();
-      const expiresAt = new Date(Date.now() + input.ttl_hours * 3600 * 1000);
-
-      const metadata: Record<string, unknown> = {};
-      const metaFields = ['title','summary','area_label','eta_label','payout_label','payout_cents',
-        'requirements','payment_status','assignment_status','connect_status',
-        'scope_checklist','payment_status_label','next_step','helper_readiness','pay_url'] as const;
-      for (const f of metaFields) {
-        if (input[f] !== undefined) metadata[f] = input[f];
-      }
-
-      const result = await db.query<{ id: string }>(
-        `INSERT INTO action_links
-          (link_type, role, lead_id, hustler_id, task_id, quote_id,
-           token_hash, allowed_actions, expires_at, metadata, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::text[],$9,$10::jsonb,$11)
-         RETURNING id`,
-        [
-          input.link_type, role,
-          input.lead_id ?? null, input.hustler_id ?? null,
-          input.task_id ?? null, input.quote_id ?? null,
-          hash, allowed, expiresAt,
-          JSON.stringify(metadata),
-          input.created_by ?? null,
-        ]
-      );
-
-      const id = result.rows[0].id;
-      const siteUrl = process.env.SITE_URL ?? 'https://hustlexp.app';
-      const url = `${siteUrl}/go/${raw}`;
-
-      log.info({ linkId: id, linkType: input.link_type }, 'Action link created');
-      return { ok: true, id, token: raw, url };
-    }),
+    .mutation(holdLegacyMutation),
 
   // ── Admin: list links ───────────────────────────────────────────────────────
-  list: publicProcedure
+  list: operationsAdminProcedure
     .input(z.object({
-      adminKey: z.string(),
       status: z.string().optional(),
       hustler_id: z.string().uuid().optional(),
       limit: z.number().min(1).max(100).default(50),
     }))
     .query(async ({ input }) => {
-      if (input.adminKey !== process.env.OPS_ADMIN_KEY) {
-        throw new TRPCError({ code: 'FORBIDDEN', message: 'Invalid admin key' });
-      }
-
       const conditions: string[] = [];
       const params: unknown[] = [];
       if (input.status) conditions.push(`status = $${params.push(input.status)}`);
@@ -168,35 +140,35 @@ export const webActionLinksRouter = router({
       const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
       params.push(input.limit);
 
-      const result = await db.query(
+      const result = await db.query<ActionLinkRow & Record<string, unknown>>(
         `SELECT id, link_type, role, lead_id, hustler_id, task_id,
-                allowed_actions, expires_at, status, metadata, created_by,
-                created_at, last_opened_at, updated_at
+                array_remove(allowed_actions, 'pay') AS allowed_actions,
+                expires_at, status, metadata - 'pay_url' AS metadata, created_by,
+                created_at, last_opened_at, updated_at, version
          FROM action_links ${where}
          ORDER BY created_at DESC LIMIT $${params.length}`,
         params
       );
 
-      return { ok: true, links: result.rows };
+      return { ok: true, links: result.rows.map(suppressPaymentSurfaces) };
     }),
 
   // ── Admin: update status ────────────────────────────────────────────────────
-  updateStatus: publicProcedure
+  updateStatus: operationsStepUpProcedure
     .input(z.object({
-      adminKey: z.string(),
       id: z.string().uuid(),
-      status: z.enum(['link_created', 'link_sent', 'link_opened', 'action_taken', 'expired']),
+      status: z.literal('expired'),
+      expectedVersion: z.number().int().positive(),
+      idempotencyKey: z.string().uuid(),
+      reason: z.string().trim().min(10).max(500),
     }))
-    .mutation(async ({ input }) => {
-      if (input.adminKey !== process.env.OPS_ADMIN_KEY) {
-        throw new TRPCError({ code: 'FORBIDDEN', message: 'Invalid admin key' });
-      }
-      await db.query(
-        `UPDATE action_links SET status = $1, updated_at = now() WHERE id = $2`,
-        [input.status, input.id]
-      );
-      return { ok: true };
-    }),
+    .mutation(({ ctx, input }) => OperatorAuthorityService.request(ctx, {
+      operationType: 'EXPIRE_ACTION_LINK',
+      targetId: input.id,
+      targetExpectedVersion: input.expectedVersion,
+      reason: input.reason,
+      idempotencyKey: input.idempotencyKey,
+    })),
 });
 
 // ── Public Hono handler (called from server.ts) ───────────────────────────────
@@ -209,13 +181,15 @@ export async function handleActionLinkGet(token: string): Promise<{
 
   const hash = hashToken(token);
   const result = await db.query<ActionLinkRow>(
-    `SELECT id, link_type, role, status, expires_at, allowed_actions, metadata
+    `SELECT id, link_type, role, status, expires_at,
+            array_remove(allowed_actions, 'pay') AS allowed_actions,
+            metadata - 'pay_url' AS metadata
      FROM action_links WHERE token_hash = $1`,
     [hash]
   );
 
   if (result.rows.length === 0) return { ok: false, code: 'not_found' };
-  const link = result.rows[0];
+  const link = suppressPaymentSurfaces(result.rows[0]);
 
   if (isExpired(link.expires_at)) {
     await db.query(
@@ -247,7 +221,7 @@ export async function handleActionLinkGet(token: string): Promise<{
   };
 }
 
-export async function handleActionLinkPost(token: string, action: string): Promise<{
+export async function handleActionLinkPost(token: string, action: string, note?: string): Promise<{
   ok: boolean; status?: string; code?: string;
 }> {
   if (!token || !action) return { ok: false, code: 'missing_params' };
@@ -261,15 +235,31 @@ export async function handleActionLinkPost(token: string, action: string): Promi
 
   if (result.rows.length === 0) return { ok: false, code: 'not_found' };
   const link = result.rows[0];
+  const normalizedAction = action.trim().toLowerCase();
 
   if (isExpired(link.expires_at)) return { ok: false, code: 'expired' };
-  if (!link.allowed_actions.includes(action)) return { ok: false, code: 'action_not_allowed' };
+  if (normalizedAction === 'pay') {
+    log.warn({ linkId: link.id }, PAYMENT_CREATION_HELD_MESSAGE);
+    return { ok: false, code: 'payment_creation_frozen' };
+  }
+  if (!link.allowed_actions.includes(normalizedAction)) return { ok: false, code: 'action_not_allowed' };
+
+  const normalizedNote = typeof note === 'string' ? note.trim() : '';
+  if (normalizedNote && normalizedAction !== 'ask_question') {
+    return { ok: false, code: 'note_not_allowed' };
+  }
+  if (normalizedAction === 'ask_question' && (normalizedNote.length < 1 || normalizedNote.length > 2000)) {
+    return { ok: false, code: 'invalid_note' };
+  }
+  const eventPayload = normalizedNote
+    ? { action: normalizedAction, note: normalizedNote }
+    : { action: normalizedAction };
 
   // Record event
   await db.query(
     `INSERT INTO action_link_events (action_link_id, event_type, payload)
      VALUES ($1, $2, $3::jsonb)`,
-    [link.id, action, JSON.stringify({ action })]
+    [link.id, normalizedAction, JSON.stringify(eventPayload)]
   );
 
   await db.query(
@@ -277,6 +267,6 @@ export async function handleActionLinkPost(token: string, action: string): Promi
     [link.id]
   );
 
-  log.info({ linkId: link.id, action }, 'Action link action taken');
+  log.info({ linkId: link.id, action: normalizedAction }, 'Action link action taken');
   return { ok: true, status: 'action_taken' };
 }

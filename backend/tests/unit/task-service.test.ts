@@ -871,9 +871,7 @@ describe('TaskService.create — idempotency and location privacy', () => {
       request_hash: requestHash,
     });
 
-    mockQuery
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // advisory lock
-      .mockResolvedValueOnce({ rows: [original], rowCount: 1 } as never); // replay lookup
+    mockQuery.mockResolvedValueOnce({ rows: [original], rowCount: 1 } as never); // read-only replay preflight
 
     const result = await TaskService.create(baseParams);
 
@@ -890,9 +888,7 @@ describe('TaskService.create — idempotency and location privacy', () => {
       client_request_hash: 'different-request-hash',
     });
 
-    mockQuery
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // advisory lock
-      .mockResolvedValueOnce({ rows: [original], rowCount: 1 } as never); // conflict lookup
+    mockQuery.mockResolvedValueOnce({ rows: [original], rowCount: 1 } as never); // read-only conflict preflight
 
     const result = await TaskService.create(baseParams);
 
@@ -912,8 +908,9 @@ describe('TaskService.create — idempotency and location privacy', () => {
     });
 
     mockQuery
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // read-only idempotency preflight
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // advisory lock
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // existing idempotency lookup
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // locked idempotency recheck
       .mockResolvedValueOnce({ rows: [created], rowCount: 1 } as never) // task INSERT
       .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never) // location vault INSERT
       .mockResolvedValueOnce({ rows: [{ id: 'esc-private' }], rowCount: 1 } as never); // escrow INSERT

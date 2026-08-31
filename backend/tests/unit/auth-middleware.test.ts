@@ -161,6 +161,50 @@ describe('A53-1: DB ban-check fail-closed on DB error', () => {
     expect(user?.uid).toBe('firebase-uid-001');
   });
 
+  it('re-verifies with Firebase when the session-cache GET rejects', async () => {
+    mockRedisGet.mockRejectedValueOnce(new Error('redis GET rejected'));
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [{ is_banned: false, account_status: 'ACTIVE' }],
+    });
+
+    const user = await authenticateRequest(makeContext('session-get-rejected-token'));
+
+    expect(mockRedisGet).toHaveBeenCalledWith(
+      'session:session-get-rejected-token',
+      'authority',
+    );
+    expect(mockVerifyIdToken).toHaveBeenCalledWith('session-get-rejected-token', true);
+    expect(user?.uid).toBe(DECODED_TOKEN.uid);
+  });
+
+  it('rejects a cached identity and re-verifies when the revocation GET rejects', async () => {
+    const cachedUser = {
+      uid: DECODED_TOKEN.uid,
+      email: DECODED_TOKEN.email,
+      emailVerified: true,
+      is_banned: false,
+      account_status: 'ACTIVE',
+    };
+    mockRedisGet
+      .mockResolvedValueOnce('encrypted-cached-session')
+      .mockRejectedValueOnce(new Error('revocation GET rejected'));
+    mockDecryptSession.mockReturnValueOnce(cachedUser);
+    mockDbQuery.mockResolvedValueOnce({
+      rows: [{ is_banned: false, account_status: 'ACTIVE' }],
+    });
+
+    const user = await authenticateRequest(makeContext('revocation-get-rejected-token'));
+
+    expect(mockRedisGet).toHaveBeenNthCalledWith(
+      2,
+      `auth:revoked:${DECODED_TOKEN.uid}`,
+      'authority',
+    );
+    expect(mockVerifyIdToken).toHaveBeenCalledWith('revocation-get-rejected-token', true);
+    expect(user).not.toBe(cachedUser);
+    expect(user?.uid).toBe(DECODED_TOKEN.uid);
+  });
+
   it('should return null when DB confirms user is banned', async () => {
     mockDbQuery.mockResolvedValueOnce({
       rows: [{ is_banned: true, account_status: 'ACTIVE' }],

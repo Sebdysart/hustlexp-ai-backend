@@ -22,6 +22,7 @@ import { aiLogger } from '../logger.js';
 import { scrubPII } from '../lib/pii-scrubber.js';
 import { z } from 'zod';
 import { AIClient } from './AIClient.js';
+import { aiOperationId } from '../ai/AIOperationIdentity.js';
 import { aiObservation } from './AIObservabilityPolicy.js';
 import { PromptInjectionGuard } from '../ai/PromptInjectionGuard.js';
 
@@ -145,6 +146,7 @@ User response: "${safePrompt}"
 Respond with JSON only: {"worker": 0.0-1.0, "poster": 0.0-1.0, "certainty": "STRONG"|"MODERATE"|"WEAK"}`;
 
             const aiResult = await AIClient.callJSON({
+              operationId: aiOperationId('onboarding-role-inference', userId, safePrompt),
               observability: aiObservation('AI-ONBOARDING-ROLE-INFERENCE', {
                 actorUserId: userId,
                 affectedObjectType: 'USER_ONBOARDING',

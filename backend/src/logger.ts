@@ -20,6 +20,16 @@ import { config } from './config.js';
 
 const isDev = config.app.isDevelopment;
 
+export function prettyLoggingEnabled(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+  isDevelopment = isDev,
+): boolean {
+  const explicitMode = env.LOG_PRETTY?.trim().toLowerCase();
+  return isDevelopment && !['0', 'false', 'no', 'off'].includes(explicitMode ?? '');
+}
+
+const usePrettyLogging = prettyLoggingEnabled();
+
 export const logger = pino({
   level: process.env.LOG_LEVEL || (isDev ? 'debug' : 'info'),
 
@@ -48,7 +58,7 @@ export const logger = pino({
   timestamp: pino.stdTimeFunctions.isoTime,
 
   // Pretty print in development
-  transport: isDev
+  transport: usePrettyLogging
     ? {
         target: 'pino-pretty',
         options: {

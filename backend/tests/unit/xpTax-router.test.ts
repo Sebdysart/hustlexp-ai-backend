@@ -8,7 +8,8 @@
  * - payTax (protected, mutation)
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -127,7 +128,30 @@ describe('xpTax.getTaxHistory', () => {
 });
 
 describe('xpTax.createPaymentIntent', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.resetAllMocks();
+    enableControlledStripePaymentTestCohortV7();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('fails frozen authority before tax-state, provider, or synthetic-success work', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('ENGINE_API_MODE', 'production');
+    vi.stubEnv('STRIPE_MODE', 'live');
+    vi.stubEnv('STRIPE_SECRET_KEY', 'sk_live_forbidden');
+    vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'enabled');
+    mockStripeService.isConfigured.mockReturnValueOnce(false);
+    await expect(makeCaller().createPaymentIntent()).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      cause: { applicationCode: 'PAYMENT_CREATION_FROZEN' },
+    });
+    expect(mockTaxService.checkTaxStatus).not.toHaveBeenCalled();
+    expect(mockStripeService.isConfigured).not.toHaveBeenCalled();
+    expect(mockStripeService.createTaxPaymentIntent).not.toHaveBeenCalled();
+  });
 
   it('creates payment intent when tax balance exists', async () => {
     mockStripeService.isConfigured.mockReturnValueOnce(true);
@@ -147,17 +171,14 @@ describe('xpTax.createPaymentIntent', () => {
     expect(result.amountCents).toBe(500);
   });
 
-  it('returns mock intent when Stripe not configured (dev/test)', async () => {
+  it('fails closed rather than inventing an intent when Stripe is not configured', async () => {
     mockStripeService.isConfigured.mockReturnValueOnce(false);
     mockTaxService.checkTaxStatus.mockResolvedValueOnce({
       success: true,
       data: { unpaid_tax_cents: 300 },
     } as any);
 
-    const result = await makeCaller().createPaymentIntent();
-
-    expect(result.clientSecret).toContain('pi_tax_');
-    expect(result.amountCents).toBe(300);
+    await expect(makeCaller().createPaymentIntent()).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
     expect(mockStripeService.createTaxPaymentIntent).not.toHaveBeenCalled();
   });
 

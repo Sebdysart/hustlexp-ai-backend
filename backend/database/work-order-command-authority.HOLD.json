@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "status": "EXTERNAL_DECISION_REQUIRED",
+  "productionEffects": "NONE",
+  "productionMoney": "FROZEN",
+  "commandFunction": "public.materialize_universal_v1_fake_work_order_v1(text,text,uuid,uuid,uuid)",
+  "roleNames": {
+    "migration": null,
+    "runtime": null,
+    "commandOwner": null
+  },
+  "requiredRoleShape": {
+    "pairwiseDistinct": true,
+    "commandOwnerNoLogin": true,
+    "commandOwnerElevatedAttributes": false,
+    "runtimeElevatedAttributes": false,
+    "runtimeDirectWrite": false,
+    "runtimeExecuteOnly": true
+  },
+  "protectedWriteRelations": [
+    "public.task_work_order_command_requests",
+    "public.task_provider_eligibility_decisions",
+    "public.task_work_orders"
+  ],
+  "functionRequirements": {
+    "securityDefiner": true,
+    "volatility": "VOLATILE",
+    "searchPath": "pg_catalog, public",
+    "publicExecute": false,
+    "migrationExecute": false,
+    "authenticatedActorBinding": null
+  },
+  "currentContradiction": "The accepted local and Railway contracts bind migration, API, and worker to one PostgreSQL login role. backend/src/trpc-context.ts verifies Firebase or bounded synthetic bearer identity, but backend/src/services/UniversalV1WorkOrderPostgresRepository.ts receives only ctx.user.id and sets a caller-writable custom PostgreSQL setting. No independently verifiable database actor assertion reaches PostgreSQL and no actor-binding protocol is approved.",
+  "requiredActorBindingDecision": {
+    "status": "MISSING",
+    "mustBind": "the exact verified request identity to the actor UUID inside the SECURITY DEFINER command",
+    "mustBeVerifiableBy": "PostgreSQL without trusting a custom setting writable by the runtime login",
+    "currentRequestIdentitySource": "backend/src/trpc-context.ts",
+    "currentDatabaseCallSite": "backend/src/services/UniversalV1WorkOrderPostgresRepository.ts",
+    "customSessionSettingAloneAccepted": false
+  },
+  "nonAuthorizing": true
+}

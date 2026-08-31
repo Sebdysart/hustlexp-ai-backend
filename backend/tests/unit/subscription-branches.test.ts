@@ -10,7 +10,8 @@
  * - plan || 'free' fallback
  * - RECURRING_TASK_LIMITS[plan] ?? 0 for unknown plan
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 vi.mock('../../src/db', () => ({
   db: { query: vi.fn() },
@@ -56,7 +57,14 @@ function makeCaller(userId = 'test-uid') {
   });
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  enableControlledStripePaymentTestCohortV7();
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('subscription.getMySubscription branches', () => {
   it('returns pro plan with 999999 limit', async () => {

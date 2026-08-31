@@ -4,7 +4,7 @@ Status: `CURRENT_TEAM_TARGET / NOT_PRODUCTION_AUTHORITY`
 
 Publication resolution: `EXACT_COMMIT_AND_INDEPENDENT_ACCEPTANCE_REQUIRED`
 
-Last evidence refresh: `2026-08-25 America/Los_Angeles`
+Last evidence refresh: `2026-08-27 America/Los_Angeles`
 
 Decision: `RESHAPE`
 
@@ -26,8 +26,9 @@ qualified demand
 → processor eligibility and HustleXP task eligibility
 → expiring Conditional Provider Hold
 → approved Financial Security Event
-→ Canonical Work Order and hard assignment
-→ controlled private-detail release
+→ immutable Canonical Work Order materialization
+→ separately authorized hard assignment
+→ separately authorized controlled private-detail release
 → verified fulfillment
 → capture
 → processor settlement
@@ -65,7 +66,7 @@ Resolve conflicts inside a plane using the freshest exact primary source and ret
 
 Target-plane sources for this mission are:
 
-- `HustleXP Payment Infrastructure Pre-Integration Underwriting Package v3.1`, [Google Doc](https://docs.google.com/document/d/1PYpWdbnlhRBoovc6GfTyxMuu1IzMIdDQpV6hHHraXaQ/edit?tab=t.0), tab `t.0`, revision `AIroW37g_sqKNU_dvvRNUndw-qUeooFwAYIHqN60aHvPSR178sKjMMu5rMzGTzODqgDKERue3ZbAT8UesInsUZvT6p1Z0bUvPByrgwaPDA`, modified `2026-08-19T01:35:10.015Z`;
+- the subordinate `HustleXP Payment Infrastructure Pre-Integration Underwriting Package v3.3`, the latest primary underwriting source actually read in this workspace. The one-tab Google Doc was read at exact provider revision `AIroW37_64ZTORJE2_jnezyXuxDCYyPrZP0UJPXgvzxloOXEM47evoZQhE4swHX1QJFEacb8Xm8-FBDMcVLrX1frAMEmDeu7Lmkao57ZJw`, provider-modified `2026-08-27T04:51:56.612Z`; its confidential contents are not mirrored here. It is a request for written external decisions, not evidence that any decision was approved: every processor selection, capability, commercial, onboarding, certification, pilot, and production decision remains unresolved. It grants no payment, business, release, deployment, or processor authority; production effects remain `NONE` and production money remains `FROZEN`. Its maintained non-authorizing lifecycle constraints are: a Task Opportunity permits `EXPRESS_INTEREST` only; interest creates no reservation, assignment, earnings, private-data, eligibility, or money authority; Provider Account approval remains separate from HustleXP task eligibility; merchant context and a successful Financial Security Event must precede a Work Order; authorization, capture, settlement, funding, payout, and reconciliation remain distinct; a provider command record precedes any provider effect; authenticated webhooks enter an idempotent append-only inbox; reconciliation compares canonical ledger facts to provider observations; and Marketplace, Provider OS, and Bring Your Own Provider share one lifecycle. Its engineering-current-state statements are source-dated applicant assertions, not repository readback. Earlier local notes referred to a restricted v3.4 source, but its exact primary bytes and revision have not been supplied or read; any supersession claim remains `READBACK_REQUIRED`. The machine-bound v7 rejection and v3.1 source artifacts remain immutable historical evidence and are not rewritten by this reference;
 - the byte-preserved [Backend PR Audit, Architecture Convergence, and Processor-Readiness Mission](source-contracts/HUSTLEXP_BACKEND_PR_AUDIT_AND_CONVERGENCE_MISSION.md), SHA-256 `437df53578b045f0b6ee55f99d1a302c2aee68fb288ad10c1083e0e411e25469`;
 - the byte-preserved [`/OPS` Internal Operations Control Plane Specification](source-contracts/HUSTLEXP_OPS_CONTROL_PLANE_SPEC.md), SHA-256 `65aa1868547e73dae157393572e4fbf68113990b4b71d241c6a7512a9d47af96`;
 - this stable contract and the source-dated [Payment and `/OPS` Convergence Record](architecture/HUSTLEXP_PAYMENT_OPS_CONVERGENCE_RECORD.md).
@@ -258,10 +259,12 @@ Task Draft
 → expiring conditional provider hold
 → durable fake CREATE_FSE operation
 → reconciled fake Financial Security Event
-→ atomic Canonical Work Order + hard assignment
+→ immutable Canonical Work Order materialization
+→ separately held hard-assignment decision
+→ separately held exact-address release
 ```
 
-Failure after fake FSE must void or open reconciliation without creating a Work Order or releasing an address. The Gate 2 execution envelope authorizes production effects `NONE`.
+Failure after fake FSE must void or open reconciliation without creating a Work Order. Work Order materialization never itself assigns a provider or releases an address; those remain distinct, separately authorized gates. The Gate 2 execution envelope authorizes production effects `NONE`.
 
 Exit: fresh, upgrade, replay, race, timeout, failure, and recovery PostgreSQL tests pass against the exact selected migration lineage.
 

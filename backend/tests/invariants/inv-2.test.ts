@@ -43,7 +43,13 @@ beforeEach(async () => {
 // Helper: Attempt to release escrow
 async function attemptReleaseEscrow(escrowId: string): Promise<void> {
   await pool.query(
-    `UPDATE escrows SET state = 'RELEASED', released_at = NOW() WHERE id = $1`,
+    `UPDATE escrows
+        SET state = 'RELEASED', released_at = NOW(),
+            payout_provider = 'MANUAL_RECONCILIATION',
+            provider_transfer_id = 'manual_inv2_' || replace(id::text, '-', ''),
+            provider_transfer_status = 'manual_reconciliation',
+            provider_transfer_paid_at = NULL
+      WHERE id = $1`,
     [escrowId]
   );
 }

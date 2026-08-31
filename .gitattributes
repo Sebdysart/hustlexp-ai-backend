@@ -1,0 +1,3 @@
+# Migration 139 is digest-frozen; preserve its exact bytes while ignoring its
+# historical blank-at-EOF warning during Git whitespace checks.
+backend/database/migrations/20261005_universal_v1_occurrence_access_audit_v1.sql whitespace=-blank-at-eof

@@ -9,27 +9,23 @@
  */
 
 import { logger } from '../logger.js';
+import { getRedisCommandClient, type RedisCommandPort } from '../redis/RedisCommandPort.js';
 
 const log = logger.child({ module: 'ai-guard' });
 
 // Lazy singleton Redis client for AI budget tracking.
 // Avoids creating a new client on every checkAIBudget() call.
-let _redisClient: import('@upstash/redis').Redis | null = null;
+let _redisClient: RedisCommandPort | null = null;
 let _redisInitAttempted = false;
 
-async function getRedisClient(): Promise<import('@upstash/redis').Redis | null> {
+async function getRedisClient(): Promise<RedisCommandPort | null> {
   if (_redisClient) return _redisClient;
   if (_redisInitAttempted) return null; // already tried and failed / no creds
   _redisInitAttempted = true;
 
   try {
-    const { Redis } = await import('@upstash/redis');
-    const redisUrl = process.env.UPSTASH_REDIS_REST_URL ?? '';
-    const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN ?? '';
-    if (redisUrl && redisToken) {
-      _redisClient = new Redis({ url: redisUrl, token: redisToken });
-      return _redisClient;
-    }
+    _redisClient = getRedisCommandClient();
+    return _redisClient;
   } catch {
     log.warn('Failed to initialize Redis client for AI budget tracking');
   }

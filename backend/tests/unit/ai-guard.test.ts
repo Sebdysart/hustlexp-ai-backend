@@ -11,12 +11,39 @@
  * AUTHORITY: PRODUCT_SPEC.md §7.3
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+const { budgetRedis, resetBudgetRedis } = vi.hoisted(() => {
+  let dailyCost = 0;
+  return {
+    budgetRedis: {
+      incrbyfloat: vi.fn(async (_key: string, delta: number) => {
+        dailyCost += Number(delta);
+        return dailyCost;
+      }),
+      ttl: vi.fn(async () => 90_000),
+      expire: vi.fn(async () => 1),
+    },
+    resetBudgetRedis: () => {
+      dailyCost = 0;
+    },
+  };
+});
+
+vi.mock('../../src/redis/RedisCommandPort', () => ({
+  getRedisCommandClient: () => budgetRedis,
+}));
+
 import {
   validateAIOutput,
   estimateAICost,
   checkAIBudget,
 } from '../../src/middleware/ai-guard';
+
+beforeEach(() => {
+  resetBudgetRedis();
+  vi.clearAllMocks();
+});
 
 // ============================================================================
 // VALIDATION TESTS

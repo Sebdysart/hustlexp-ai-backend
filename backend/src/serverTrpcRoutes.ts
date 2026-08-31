@@ -6,6 +6,11 @@ import type { HustleApp } from './serverTypes.js';
 import { createContext } from './trpc.js';
 
 const TRPC_MAX_BATCH_SIZE = 10;
+const PRIVATE_NO_STORE_PROCEDURES = new Set([
+  'universalOccurrence.customer',
+  'universalOccurrence.provider',
+  'universalOccurrence.operations',
+]);
 
 function trustedClientIp(context: Context): string {
   const cloudflare = context.req.header('cf-connecting-ip');
@@ -34,10 +39,28 @@ async function consumeBatchTokens(context: Context, operationCount: number) {
   return null;
 }
 
+function applyPrivateNoStoreHeaders(context: Context): void {
+  context.header('Cache-Control', 'private, no-store, max-age=0');
+  context.header('Pragma', 'no-cache');
+  const vary = (context.res.headers.get('Vary') ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (!vary.some((value) => value.toLowerCase() === 'authorization')) {
+    vary.push('Authorization');
+  }
+  context.header('Vary', vary.join(', '));
+}
+
 export function registerTrpcRoutes(app: HustleApp): void {
   app.use('/trpc/*', async (context, next) => {
     const trpcPath = context.req.path.replace(/^\/trpc\//, '');
-    const operationCount = trpcPath.split(',').length;
+    const procedures = trpcPath.split(',');
+    const operationCount = procedures.length;
+    const privateNoStore = procedures.some(
+      (procedure) => PRIVATE_NO_STORE_PROCEDURES.has(procedure),
+    );
+    if (privateNoStore) applyPrivateNoStoreHeaders(context);
     if (operationCount > TRPC_MAX_BATCH_SIZE) {
       return context.json({
         error: 'Batch Too Large',
@@ -50,6 +73,9 @@ export function registerTrpcRoutes(app: HustleApp): void {
       if (rejection) return rejection;
     }
     await next();
+    // The tRPC fetch adapter replaces the downstream Response, so reapply the
+    // private cache policy and merge its own Vary token after it returns.
+    if (privateNoStore) applyPrivateNoStoreHeaders(context);
   });
   app.use('/trpc/*', trpcServer({ router: appRouter, createContext }));
 }

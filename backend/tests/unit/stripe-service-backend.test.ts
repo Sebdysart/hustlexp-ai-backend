@@ -12,7 +12,8 @@
  * - processWebhookEvent: already processed, new event + handler success, handler throws
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
 // ============================================================================
 // ALL MOCKS — hoisted above imports
@@ -103,6 +104,11 @@ const mockDb = vi.mocked(db);
 beforeEach(() => {
   vi.clearAllMocks();
   delete process.env.HX_STRIPE_STUB;
+  enableControlledStripePaymentTestCohortV7();
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 // ---------------------------------------------------------------------------

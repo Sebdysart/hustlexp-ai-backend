@@ -29,6 +29,7 @@ import {
   cleanupTestData, 
   createTestUser,
   hasDb,
+  promoteTestUserTrustSequentially,
 } from '../setup';
 
 let pool: pg.Pool;
@@ -57,10 +58,7 @@ describe.skipIf(!hasDb)('E2E-N2.4-1: Submit → Pending → Approve → Recomput
     const userId = await createTestUser(pool, `test-user-${Date.now()}@hustlexp.test`);
     
     // Set user trust tier
-    await pool.query(
-      `UPDATE users SET trust_tier = 4 WHERE id = $1`,
-      [userId]
-    );
+    await promoteTestUserTrustSequentially(pool, userId, 4);
     
     // Step 1: Submit license verification (creates PENDING record)
     const submitResult = await pool.query(
@@ -122,10 +120,7 @@ describe.skipIf(!hasDb)('E2E-N2.4-2: Submit → Pending → Reject → Recompute
   it('MUST PASS: Rejected verification does not grant capability', async () => {
     const userId = await createTestUser(pool, `test-user-${Date.now()}@hustlexp.test`);
     
-    await pool.query(
-      `UPDATE users SET trust_tier = 4 WHERE id = $1`,
-      [userId]
-    );
+    await promoteTestUserTrustSequentially(pool, userId, 4);
     
     // Step 1: Submit license verification
     const submitResult = await pool.query(
@@ -172,10 +167,7 @@ describe.skipIf(!hasDb)('E2E-N2.4-3: Approve → Expire → Recompute → Capabi
   it('MUST PASS: Expired verification revokes capability', async () => {
     const userId = await createTestUser(pool, `test-user-${Date.now()}@hustlexp.test`);
     
-    await pool.query(
-      `UPDATE users SET trust_tier = 4 WHERE id = $1`,
-      [userId]
-    );
+    await promoteTestUserTrustSequentially(pool, userId, 4);
     
     // Step 1: Create approved license with future expiration
     const futureDate = new Date();

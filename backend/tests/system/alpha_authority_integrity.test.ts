@@ -13,12 +13,79 @@
  *   - surge / matching / promotion to desynchronize
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
-import { testDb, closeTestPool, hasLocalDb } from './test-db';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import type { QueryFn } from '../../src/db';
+import { testDb, closeTestPool, getTestPool, hasLocalDb } from './test-db';
 import { TrustTierService, TrustTier } from '../../src/services/TrustTierService';
 import { TaskRiskClassifier, TaskRisk } from '../../src/services/TaskRiskClassifier';
 import { EligibilityGuard, EligibilityErrorCode } from '../../src/services/EligibilityGuard';
 import { TaskService } from '../../src/services/TaskService';
+import { ControlledTestDurationEvidenceService } from '../../src/services/ControlledTestDurationEvidenceService';
+import { ControlledTestLiquidityService } from '../../src/services/ControlledTestLiquidityService';
+import { ControlledTestOfferReviewService } from '../../src/services/ControlledTestOfferReviewService';
+import { ControlledTestProviderCapabilityService } from '../../src/services/ControlledTestProviderCapabilityService';
+import { HustlerIdentityLinkService } from '../../src/services/HustlerIdentityLinkService';
+import { LocalCertificationIdentityProvider } from '../../src/services/LocalCertificationIdentityProvider';
+import { LocalCertificationPayoutProvider } from '../../src/services/LocalCertificationPayoutProvider';
+import { LocalCertificationScreeningProvider } from '../../src/services/LocalCertificationScreeningProvider';
+import { grantScreeningConsent } from '../../src/services/WorkerScreeningRightsService';
+import {
+  LOCAL_CERTIFICATION_SCREENING_DISCLOSURE_HASH,
+  LOCAL_CERTIFICATION_SCREENING_DISCLOSURE_VERSION,
+  LOCAL_CERTIFICATION_SCREENING_PROVIDER,
+  LOCAL_CERTIFICATION_SCREENING_PURPOSE,
+} from '../../src/services/WorkerScreeningRightsPolicy';
+import type { ServiceResult } from '../../src/types';
+
+const transactionContext = new AsyncLocalStorage<QueryFn>();
+const rawTestQuery = testDb.query.bind(testDb);
+
+async function runTestTransaction<T>(
+  fn: (query: QueryFn) => Promise<T>,
+  isolation: 'READ COMMITTED' | 'SERIALIZABLE',
+): Promise<T> {
+  const activeQuery = transactionContext.getStore();
+  if (activeQuery) return fn(activeQuery);
+
+  const client = await getTestPool().connect();
+  const query: QueryFn = async <R = Record<string, unknown>>(
+    sql: string,
+    params?: unknown[],
+  ) => {
+    const result = await client.query(sql, params);
+    return { rows: result.rows as R[], rowCount: result.rowCount ?? 0 };
+  };
+
+  return transactionContext.run(query, async () => {
+    try {
+      await client.query(`BEGIN ISOLATION LEVEL ${isolation}`);
+      const result = await fn(query);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  });
+}
+
+const contextualQuery: QueryFn = (sql, params) => {
+  const activeQuery = transactionContext.getStore();
+  return activeQuery ? activeQuery(sql, params) : rawTestQuery(sql, params);
+};
+
+// The production database module exposes transaction-aware query methods. Keep
+// the local PostgreSQL override faithful to that contract, including nested
+// service calls that must remain on the caller's transaction connection.
+const db = Object.assign(testDb, {
+  query: contextualQuery,
+  readQuery: contextualQuery,
+  transaction: <T>(fn: (query: QueryFn) => Promise<T>) => runTestTransaction(fn, 'READ COMMITTED'),
+  serializableTransaction: <T>(fn: (query: QueryFn) => Promise<T>) => runTestTransaction(fn, 'SERIALIZABLE'),
+});
 
 // CRITICAL: Override db import for services to use local Postgres (not Neon serverless)
 // This avoids driver-level query plan caching that interferes with schema-mutation tests
@@ -28,10 +95,57 @@ vi.mock('../../src/db', () => ({
   default: testDb,
 }));
 
-// Use local Postgres for integrity tests
-const db = testDb;
+// This cohort proves the Alpha EligibilityGuard remains the final risk/tier
+// authority. Newer discovery prerequisites are exercised by their dedicated
+// invariant cohorts; allowing them to pre-empt this call would make it
+// impossible to prove that TaskService still invokes the Alpha guard itself.
+vi.mock('../../src/services/TaskEligibilityPolicy', async () => {
+  const actual = await vi.importActual<typeof import('../../src/services/TaskEligibilityPolicy')>(
+    '../../src/services/TaskEligibilityPolicy',
+  );
+  return { ...actual, assertTaskMutationEligibility: vi.fn(async () => undefined) };
+});
 
 // Test helpers
+async function recordProductionIdentityFixture(userId: string): Promise<void> {
+  const provider = 'production-alpha-authority-fixture';
+  const policyVersion = 'hx-private-identity-production-alpha-authority-v1';
+  await db.transaction(async (query) => {
+    const consent = await query<{ id: string }>(
+      `INSERT INTO identity_verification_consents (
+         user_id, provider, provider_environment, is_test, policy_version,
+         disclosure_hash, purpose, idempotency_key
+       ) VALUES (
+         $1::uuid, $2, 'PRODUCTION', FALSE, $3, repeat('d', 64),
+         'Provider-attested production identity evidence for the isolated Alpha authority test.',
+         'alpha-authority-production-consent-' || $1::uuid::text
+       )
+       RETURNING id`,
+      [userId, provider, policyVersion],
+    );
+    const identityCase = await query<{ case_id: string }>(
+      `SELECT case_id
+       FROM begin_identity_verification_case_v1(
+         $1::uuid, $2::uuid, $3,
+         'idv_alpha_authority_' || replace($1::uuid::text, '-', ''),
+         'PRODUCTION', FALSE, $4, repeat('e', 64),
+         NOW() + INTERVAL '90 days'
+       )`,
+      [userId, consent.rows[0].id, provider, policyVersion],
+    );
+    await query(
+      `SELECT case_status
+       FROM record_identity_verification_event_v1(
+         $1::uuid, $2::uuid,
+         'identity-verified-' || $1::uuid::text,
+         'VERIFIED', repeat('f', 64), repeat('a', 64),
+         NOW(), NOW() + INTERVAL '90 days', $1::uuid
+       )`,
+      [userId, identityCase.rows[0].case_id],
+    );
+  });
+}
+
 async function createTestUser(overrides: Partial<{
   trust_tier: number;
   is_verified: boolean;
@@ -42,23 +156,23 @@ async function createTestUser(overrides: Partial<{
   created_at: Date;
 }> = {}): Promise<string> {
   const userId = crypto.randomUUID();
-  const uniquePhone = overrides.phone || `+1${Math.floor(Math.random() * 10000000000)}`;
+  const uniquePhone = overrides.phone
+    || `+1${Math.floor(Math.random() * 10000000000).toString().padStart(10, '0')}`;
   const createdAt = overrides.created_at || new Date();
   
   // Set plan to pro (lowercase) for high-risk task acceptance (if trust_tier >= 3)
   const plan = (overrides.trust_tier ?? TrustTier.EXPLORER) >= TrustTier.PRO ? 'pro' : 'free';
   await db.query(
     `INSERT INTO users (
-       id,email,full_name,default_mode,trust_tier,is_verified,verified_at,phone,
+       id,email,full_name,default_mode,date_of_birth,is_minor,trust_tier,phone,
        stripe_customer_id,stripe_connect_id,payouts_enabled,plan,created_at
-     ) VALUES ($1,$2,$3,$4,$5,$6,CASE WHEN $6 THEN NOW() ELSE NULL END,$7,$8,$9,$10,$11,$12)`,
+     ) VALUES ($1,$2,$3,$4,'1990-01-01',FALSE,$5,$6,$7,$8,$9,$10,$11)`,
     [
       userId,
       `test-${userId}@example.com`,
       'Test User',
       'worker',
       overrides.trust_tier ?? TrustTier.EXPLORER,
-      overrides.is_verified ?? false,
       uniquePhone,
       overrides.stripe_customer_id ?? null,
       overrides.stripe_connect_id ?? null,
@@ -67,6 +181,7 @@ async function createTestUser(overrides: Partial<{
       createdAt,
     ]
   );
+  if (overrides.is_verified) await recordProductionIdentityFixture(userId);
   return userId;
 }
 
@@ -77,53 +192,279 @@ async function createTestTask(overrides: Partial<{
   state: string;
   worker_id: string | null;
 }> = {}): Promise<string> {
-  const taskId = crypto.randomUUID();
-  const posterId = crypto.randomUUID();
-  
+  if (overrides.worker_id != null) {
+    throw new Error('Alpha authority tasks must begin without a hard assignment');
+  }
+  const posterId = await createTestUser({ trust_tier: TrustTier.VERIFIED });
   await db.query(
-    `INSERT INTO users (id, email, full_name, default_mode, trust_tier, created_at)
-     VALUES ($1, $2, $3, $4, $5, NOW())
-     ON CONFLICT DO NOTHING`,
-    [posterId, `poster-${posterId}@example.com`, 'Test Poster', 'poster', TrustTier.VERIFIED]
+    `UPDATE users SET default_mode = 'poster', plan = 'premium' WHERE id = $1`,
+    [posterId],
   );
-  
+  const created = await TaskService.create({
+    posterId,
+    title: 'Alpha authority task',
+    description: 'Controlled invariant fixture for the Alpha authority cohort.',
+    price: 5000,
+    hustlerPayoutCents: 4000,
+    platformMarginCents: 1000,
+    roughArea: 'Alpha Testville, ZZ',
+    regionCode: 'US-ZZ',
+    category: 'alpha',
+    riskLevel: overrides.risk_level as 'LOW' | 'MEDIUM' | 'HIGH' | 'IN_HOME' | undefined,
+    requiresProof: true,
+    instantMode: false,
+    sensitive: overrides.sensitive ?? false,
+    automationClassification: 'CONTROLLED_TEST',
+    estimatedDurationMinutes: 60,
+    requiredTools: ['basic-tools'],
+  });
+  if (!created.success) {
+    throw new Error(`${created.error.code}: ${created.error.message}`);
+  }
+  const state = overrides.state ?? 'OPEN';
   await db.query(
-    `INSERT INTO tasks (id, poster_id, title, description, price, state, risk_level, instant_mode, sensitive, worker_id, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())`,
-    [
-      taskId,
-      posterId,
-      'Test Task',
-      'Test Description',
-      1000,
-      overrides.state ?? 'OPEN',
-      overrides.risk_level ?? 'LOW',
-      overrides.instant_mode ?? false,
-      overrides.sensitive ?? false,
-      overrides.worker_id ?? null,
-    ]
+    `UPDATE tasks SET state = $2, instant_mode = $3 WHERE id = $1`,
+    [created.data.id, state, overrides.instant_mode ?? false],
   );
-  return taskId;
+  if (state === 'MATCHING') {
+    await db.query(`UPDATE escrows SET state = 'FUNDED' WHERE task_id = $1`, [created.data.id]);
+  }
+  return created.data.id;
 }
 
-async function cleanupTestData(userIds: string[], taskIds: string[]): Promise<void> {
-  if (taskIds.length > 0) {
-    await db.query(`DELETE FROM tasks WHERE id = ANY($1)`, [taskIds]);
+function serviceData<T>(result: ServiceResult<T>, label: string): T {
+  if (!result.success) throw new Error(`${label}: ${result.error.code} ${result.error.message}`);
+  return result.data;
+}
+
+async function seedControlledAlphaPolicy(): Promise<void> {
+  const document = {
+    schemaVersion: 'hxos-region-policy-v1',
+    categories: {
+      alpha: {
+        allowedRiskLevels: ['LOW', 'MEDIUM', 'HIGH', 'IN_HOME'],
+        credentials: {
+          licenseRequired: false,
+          insuranceRequired: false,
+          backgroundCheckRequired: false,
+        },
+        evidence: { proofRequired: true, minPhotos: 1, maxPhotos: 5, gpsRequired: false },
+      },
+    },
+    recording: { allowed: false, standaloneConsentRequired: true },
+    workerRights: {
+      standaloneScreeningConsentRequired: true,
+      reportAccessRequired: true,
+      disputeAndAppealRequired: true,
+      adverseActionNoticeRequired: true,
+    },
+    financial: {
+      currency: 'usd',
+      minimumCustomerCents: 5000,
+      minimumPayoutCents: 4000,
+      minimumMarginCents: 500,
+    },
+    safety: {
+      incidentIntakeRequired: true,
+      timedCheckinRiskLevels: ['MEDIUM', 'HIGH', 'IN_HOME'],
+      checkinIntervalsMinutes: [15, 30, 60],
+      locationRetentionDays: 30,
+      alternateEmergencyActionRequired: true,
+    },
+  };
+  await db.query(
+    `WITH policy AS (SELECT $1::jsonb AS document)
+     INSERT INTO region_policies (
+       region_code, version, policy_state, production_enabled, approval_state,
+       effective_from, policy_document, policy_hash
+     )
+     SELECT 'US-ZZ', 'hx-alpha-authority-controlled-v1', 'ACTIVE', FALSE,
+            'COUNSEL_APPROVAL_REQUIRED', NOW() - INTERVAL '1 day', document,
+            encode(digest(document::text, 'sha256'), 'hex')
+     FROM policy
+     WHERE NOT EXISTS (
+       SELECT 1
+       FROM region_policies
+       WHERE region_code = 'US-ZZ'
+         AND policy_state = 'ACTIVE'
+     )
+     ON CONFLICT (region_code, version) DO NOTHING`,
+    [JSON.stringify(document)],
+  );
+}
+
+async function prepareControlledTestWorker(workerId: string, key: string): Promise<void> {
+  const identity = serviceData(
+    await LocalCertificationIdentityProvider.prepare({
+      userId: workerId,
+      idempotencyKey: `${key}-identity`,
+    }),
+    'controlled identity prepare',
+  );
+  serviceData(
+    await LocalCertificationIdentityProvider.completeVerified({
+      userId: workerId,
+      caseId: identity.caseId,
+      actorId: workerId,
+      idempotencyKey: `${key}-identity-verified`,
+    }),
+    'controlled identity complete',
+  );
+
+  const user = await db.query<{ phone: string; trust_tier: number }>(
+    `SELECT phone, trust_tier FROM users WHERE id = $1`,
+    [workerId],
+  );
+  const phone = user.rows[0].phone;
+  await db.query(
+    `INSERT INTO capability_profiles (
+       user_id, trust_tier, risk_clearance, location_state, location_city, updated_at
+     ) VALUES ($1, $2, ARRAY['low','medium','high']::text[], 'ZZ', 'Alpha Testville', NOW())
+     ON CONFLICT (user_id) DO UPDATE SET
+       trust_tier = EXCLUDED.trust_tier,
+       risk_clearance = EXCLUDED.risk_clearance,
+       location_state = EXCLUDED.location_state,
+       location_city = EXCLUDED.location_city,
+       updated_at = NOW()`,
+    [workerId, user.rows[0].trust_tier],
+  );
+  serviceData(await HustlerIdentityLinkService.link({
+    engineHustlerRef: workerId,
+    phoneE164: phone,
+    providerClaimId: crypto.randomUUID(),
+  }), 'controlled identity link');
+
+  const consent = await grantScreeningConsent({
+    workerId,
+    provider: LOCAL_CERTIFICATION_SCREENING_PROVIDER,
+    purpose: LOCAL_CERTIFICATION_SCREENING_PURPOSE,
+    disclosureVersion: LOCAL_CERTIFICATION_SCREENING_DISCLOSURE_VERSION,
+    disclosureHash: LOCAL_CERTIFICATION_SCREENING_DISCLOSURE_HASH,
+    disclosurePresentedStandalone: true,
+    consentGranted: true,
+    purposeAcknowledged: true,
+    rightsSummaryAcknowledged: true,
+    providerNamed: true,
+    idempotencyKey: `${key}-screening-consent`,
+  });
+  const screening = serviceData(await LocalCertificationScreeningProvider.initiate({
+    workerId,
+    consentId: consent.consentId,
+    idempotencyKey: `${key}-screening-start`,
+  }), 'controlled screening initiate');
+  serviceData(await LocalCertificationScreeningProvider.completeClear({
+    backgroundCheckId: screening.backgroundCheckId,
+    workerId,
+    actorId: workerId,
+    idempotencyKey: `${key}-screening-clear`,
+  }), 'controlled screening complete');
+  // Screening recomputes the capability profile from provider evidence. Restore
+  // only the controlled fixture's coarse service area after that recomputation.
+  await db.query(
+    `UPDATE capability_profiles
+        SET location_state = 'ZZ', location_city = 'Alpha Testville', updated_at = NOW()
+      WHERE user_id = $1`,
+    [workerId],
+  );
+  serviceData(
+    await LocalCertificationPayoutProvider.activateDestination(workerId, workerId),
+    'controlled payout destination',
+  );
+}
+
+async function prepareControlledTestOffer(
+  taskId: string,
+  workerId: string,
+  key: string,
+  establishDuration: boolean,
+): Promise<void> {
+  if (establishDuration) {
+    serviceData(await ControlledTestDurationEvidenceService.apply({
+      taskId,
+      actorId: workerId,
+      sourceQuoteVersionId: crypto.randomUUID(),
+      minimumMinutes: 45,
+      expectedMinutes: 60,
+      maximumMinutes: 90,
+      policyVersion: 'price-book-duration-v1',
+      sourceEvidenceHash: 'b'.repeat(64),
+      sourceEnvironment: 'TEST',
+      idempotencyKey: `${key}-duration`,
+    }), 'controlled duration evidence');
   }
-  // Clean up trust_ledger entries first (foreign key constraint)
-  if (userIds.length > 0) {
-    await db.query(`DELETE FROM trust_ledger WHERE user_id = ANY($1)`, [userIds]);
-    await db.query(`DELETE FROM users WHERE id = ANY($1)`, [userIds]);
-  }
+  serviceData(await ControlledTestProviderCapabilityService.record({
+    taskId,
+    workerId,
+    actorId: workerId,
+    sourceHustlerId: workerId,
+    category: 'alpha',
+    tools: ['basic-tools'],
+    serviceCity: 'Alpha Testville',
+    serviceState: 'ZZ',
+    serviceRadiusMiles: 10,
+    sourcePolicyVersion: 'hx-alpha-authority-capability-v1',
+    sourceEvidenceHash: 'c'.repeat(64),
+    sourceExpiresAt: new Date(Date.now() + 2 * 60 * 60_000).toISOString(),
+    idempotencyKey: `${key}-capability`,
+  }), 'controlled provider capability');
+  serviceData(await ControlledTestLiquidityService.prepareAndBind({
+    taskId,
+    workerId,
+    actorId: workerId,
+    idempotencyKey: `${key}-liquidity`,
+  }), 'controlled liquidity');
+  const reviewed = serviceData(await ControlledTestOfferReviewService.review({
+    taskId,
+    workerId,
+    idempotencyKey: `${key}-offer-viewed`,
+  }), 'controlled offer review');
+  serviceData(await ControlledTestOfferReviewService.accept({
+    taskId,
+    workerId,
+    offerDecisionId: reviewed.offerDecisionId,
+    idempotencyKey: `${key}-offer-accepted`,
+  }), 'controlled offer acceptance');
 }
 
 describe.skipIf(!hasLocalDb)('Alpha Authority Integrity Test', () => {
   const testUserIds: string[] = [];
   const testTaskIds: string[] = [];
 
+  beforeAll(async () => {
+    const isolatedTestEnvironment = {
+      NODE_ENV: 'test',
+      ENGINE_API_MODE: 'test',
+      STRIPE_MODE: 'test',
+      HX_HARD_ASSIGNMENT_MODE: 'enabled',
+      HXOS_ALLOW_LOCAL_TEST_IDENTITY: 'true',
+      HXOS_LOCAL_TEST_IDENTITY_SECRET: 'hx-alpha-authority-identity-only-000001',
+      HXOS_ALLOW_LOCAL_TEST_SCREENING: 'true',
+      HXOS_LOCAL_TEST_SCREENING_SECRET: 'hx-alpha-authority-screening-only-00001',
+      HXOS_ALLOW_LOCAL_TEST_PAYOUT: 'true',
+      HXOS_LOCAL_TEST_PAYOUT_SECRET: 'hx-alpha-authority-payout-only-0000001',
+      HXOS_ALLOW_LOCAL_TEST_DURATION_EVIDENCE: 'true',
+      HXOS_LOCAL_TEST_DURATION_EVIDENCE_SECRET: 'hx-alpha-authority-duration-only-000001',
+      HXOS_ALLOW_LOCAL_TEST_PROVIDER_CAPABILITY: 'true',
+      HXOS_LOCAL_TEST_PROVIDER_CAPABILITY_SECRET: 'hx-alpha-authority-capability-only-0001',
+      HXOS_ALLOW_LOCAL_TEST_LIQUIDITY: 'true',
+      HXOS_LOCAL_TEST_LIQUIDITY_SECRET: 'hx-alpha-authority-liquidity-only-00001',
+      HXOS_ALLOW_LOCAL_TEST_OFFER_REVIEW: 'true',
+      HXOS_LOCAL_TEST_OFFER_REVIEW_SECRET: 'hx-alpha-authority-offer-only-0000001',
+    } as const;
+    for (const [name, value] of Object.entries(isolatedTestEnvironment)) {
+      vi.stubEnv(name, value);
+    }
+    await seedControlledAlphaPolicy();
+  });
+
   afterAll(async () => {
-    await cleanupTestData(testUserIds, testTaskIds);
+    // This database is disposable and recreated by the required-suite runner.
+    // Preserve append-only identity, screening, trust, and offer evidence rather
+    // than manufacturing cleanup mutations that the schema correctly rejects.
+    void testUserIds;
+    void testTaskIds;
     await closeTestPool();
+    vi.unstubAllEnvs();
   });
 
   // ============================================================================
@@ -204,44 +545,6 @@ describe.skipIf(!hasLocalDb)('Alpha Authority Integrity Test', () => {
     });
 
     it('1.2 — Promotion job is idempotent', async () => {
-      // DIAGNOSTIC: Check database context
-      const dbContext = await db.query<{
-        current_database: string;
-        current_schema: string;
-        current_schemas: string;
-      }>(
-        `SELECT 
-          current_database(),
-          current_schema(),
-          array_to_string(current_schemas(true), ', ') as current_schemas`
-      );
-      console.log('Database context:', dbContext.rows[0]);
-
-      // DIAGNOSTIC: Check tasks relation type
-      const tasksRelation = await db.query<{
-        table_schema: string;
-        table_name: string;
-        table_type: string;
-      }>(
-        `SELECT table_schema, table_name, table_type
-         FROM information_schema.tables
-         WHERE table_name = 'tasks'`
-      );
-      console.log('Tasks relations:', tasksRelation.rows);
-
-      // DIAGNOSTIC: Check if worker_id column exists
-      const workerIdColumn = await db.query<{
-        column_name: string;
-        table_schema: string;
-        table_name: string;
-      }>(
-        `SELECT column_name, table_schema, table_name
-         FROM information_schema.columns
-         WHERE table_name = 'tasks'
-           AND column_name = 'worker_id'`
-      );
-      console.log('worker_id column check:', workerIdColumn.rows);
-
       const userId = await createTestUser({
         trust_tier: TrustTier.EXPLORER,
         is_verified: true,
@@ -253,24 +556,6 @@ describe.skipIf(!hasLocalDb)('Alpha Authority Integrity Test', () => {
       });
       testUserIds.push(userId);
 
-      // Create 10 completed tasks
-      for (let i = 0; i < 10; i++) {
-        const taskId = crypto.randomUUID();
-        const posterId = crypto.randomUUID();
-        await db.query(
-          `INSERT INTO users (id, email, full_name, default_mode, trust_tier, created_at)
-           VALUES ($1, $2, $3, $4, $5, NOW())
-           ON CONFLICT DO NOTHING`,
-          [posterId, `poster-${posterId}@example.com`, 'Test Poster', 'poster', TrustTier.VERIFIED]
-        );
-        await db.query(
-          `INSERT INTO tasks (id, poster_id, title, description, price, state, risk_level, worker_id, completed_at, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())`,
-          [taskId, posterId, 'Test Task', 'Test', 1000, 'COMPLETED', 'LOW', userId]
-        );
-        testTaskIds.push(taskId);
-      }
-
       // First promotion
       const eligibility1 = await TrustTierService.evaluatePromotion(userId);
       if (eligibility1.eligible && eligibility1.targetTier) {
@@ -281,20 +566,12 @@ describe.skipIf(!hasLocalDb)('Alpha Authority Integrity Test', () => {
       expect(tierAfterFirst).toBe(TrustTier.VERIFIED);
 
       // Second promotion attempt (should be idempotent)
-      console.log('About to call evaluatePromotion a second time...');
-      try {
-        const eligibility2 = await TrustTierService.evaluatePromotion(userId);
-        expect(eligibility2.eligible).toBe(false);
-        
-        // Verify tier didn't change
-        const tierAfterSecond = await TrustTierService.getTrustTier(userId);
-        expect(tierAfterSecond).toBe(TrustTier.VERIFIED);
-      } catch (error: any) {
-        console.error('Error in second evaluatePromotion:', error.message);
-        console.error('Error code:', error.code);
-        console.error('Error position:', error.position);
-        throw error;
-      }
+      const eligibility2 = await TrustTierService.evaluatePromotion(userId);
+      expect(eligibility2.eligible).toBe(false);
+
+      // Verify tier didn't change
+      const tierAfterSecond = await TrustTierService.getTrustTier(userId);
+      expect(tierAfterSecond).toBe(TrustTier.VERIFIED);
     });
 
     it('1.3 — Ban is terminal', async () => {
@@ -398,7 +675,7 @@ describe.skipIf(!hasLocalDb)('Alpha Authority Integrity Test', () => {
       const userId = await createTestUser({ trust_tier: TrustTier.VERIFIED }); // Tier 1
       testUserIds.push(userId);
 
-      const taskId = await createTestTask({ risk_level: 'HIGH' }); // Requires Tier 3
+      const taskId = await createTestTask({ risk_level: 'HIGH', state: 'MATCHING' }); // Requires Tier 3
       testTaskIds.push(taskId);
 
       // Test via EligibilityGuard directly
@@ -432,6 +709,7 @@ describe.skipIf(!hasLocalDb)('Alpha Authority Integrity Test', () => {
       const taskId = await createTestTask({ 
         risk_level: 'HIGH', // Requires Tier 3
         instant_mode: true,
+        state: 'MATCHING',
       });
       testTaskIds.push(taskId);
 
@@ -528,9 +806,15 @@ describe.skipIf(!hasLocalDb)('Alpha Authority Integrity Test', () => {
 
       const taskId = await createTestTask({ 
         risk_level: 'HIGH',
-        state: 'OPEN',
+        state: 'MATCHING',
       });
       testTaskIds.push(taskId);
+
+      const raceKey = `alpha-race-${taskId}`;
+      await prepareControlledTestWorker(user1, `${raceKey}-worker-one`);
+      await prepareControlledTestWorker(user2, `${raceKey}-worker-two`);
+      await prepareControlledTestOffer(taskId, user1, `${raceKey}-worker-one`, true);
+      await prepareControlledTestOffer(taskId, user2, `${raceKey}-worker-two`, false);
 
       // Simulate concurrent accepts
       const [result1, result2] = await Promise.all([
@@ -571,6 +855,7 @@ describe.skipIf(!hasLocalDb)('Alpha Authority Integrity Test', () => {
       const taskId = await createTestTask({ 
         risk_level: 'HIGH',
         instant_mode: true,
+        state: 'MATCHING',
       });
       testTaskIds.push(taskId);
 

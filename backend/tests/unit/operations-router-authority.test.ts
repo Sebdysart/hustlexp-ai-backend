@@ -1,23 +1,62 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const operations = vi.hoisted(() => ({
-  list: vi.fn(), getDetail: vi.fn(), getModelHealth: vi.fn(), claim: vi.fn(),
-  release: vi.fn(), scheduleNotificationRecovery: vi.fn(), cancelNotificationRecovery: vi.fn(),
+  list: vi.fn(),
+  getDetail: vi.fn(),
+  getModelHealth: vi.fn(),
+  claim: vi.fn(),
+  release: vi.fn(),
+  scheduleNotificationRecovery: vi.fn(),
+  cancelNotificationRecovery: vi.fn(),
 }));
 const aiObservability = vi.hoisted(() => ({
-  list: vi.fn(), getDetail: vi.fn(),
+  list: vi.fn(),
+  getDetail: vi.fn(),
+}));
+const universalV1OpsCases = vi.hoisted(() => ({
+  list: vi.fn(),
+  get: vi.fn(),
+  open: vi.fn(),
+  acknowledge: vi.fn(),
+  requestTransition: vi.fn(),
+  decideTransition: vi.fn(),
 }));
 
 vi.mock('../../src/services/OperationsExceptionService', () => ({
   OperationsExceptionService: operations,
-  operationsPriorityClasses: ['SAFETY', 'MONEY', 'ACTIVE_TASK', 'SLA', 'TRUST', 'COMMUNICATION', 'DATA'],
+  operationsPriorityClasses: [
+    'SAFETY',
+    'MONEY',
+    'ACTIVE_TASK',
+    'SLA',
+    'TRUST',
+    'COMMUNICATION',
+    'DATA',
+  ],
 }));
 vi.mock('../../src/services/AIObservabilityService', () => ({
   AIObservabilityService: aiObservability,
 }));
+vi.mock('../../src/services/UniversalV1OpsCaseService', () => ({
+  UniversalV1OpsCaseService: universalV1OpsCases,
+  universalV1OpsCaseCategories: [
+    'SAFETY',
+    'MONEY',
+    'FULFILLMENT',
+    'CREDENTIAL',
+    'COMMUNICATION',
+    'DATA_INTEGRITY',
+    'POLICY',
+  ],
+  universalV1OpsCaseSeverities: ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'],
+  universalV1OpsCaseStatuses: ['OPEN', 'ACKNOWLEDGED', 'CONTAINED', 'RESOLVED'],
+  universalV1OpsCaseTransitionKinds: ['CONTAIN', 'RESOLVE'],
+}));
 vi.mock('../../src/db', () => ({ db: { query: vi.fn(), transaction: vi.fn() } }));
 vi.mock('../../src/auth/firebase', () => ({ firebaseAuth: { verifyIdToken: vi.fn() } }));
-vi.mock('../../src/cache/redis', () => ({ checkRateLimit: vi.fn().mockResolvedValue({ allowed: true }) }));
+vi.mock('../../src/cache/redis', () => ({
+  checkRateLimit: vi.fn().mockResolvedValue({ allowed: true }),
+}));
 vi.mock('../../src/logger', () => ({
   logger: { child: () => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() }) },
   authLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
@@ -32,10 +71,20 @@ const mockDb = vi.mocked(db);
 function caller(isAdmin: boolean) {
   return operationsRouter.createCaller({
     user: {
-      id: USER_ID, is_admin: isAdmin, is_banned: false,
-      account_status: 'ACTIVE', default_mode: 'poster',
+      id: USER_ID,
+      is_admin: isAdmin,
+      is_banned: false,
+      account_status: 'ACTIVE',
+      default_mode: 'poster',
     },
     firebaseUid: 'firebase-operations',
+    identityAssurance: {
+      authenticatedAtSeconds: Math.floor(Date.now() / 1000),
+      tokenExpiresAtSeconds: Math.floor(Date.now() / 1000) + 3_600,
+      signInProvider: 'password',
+      secondFactor: 'phone',
+      mfaVerified: true,
+    },
   } as any);
 }
 
@@ -46,6 +95,8 @@ describe('Operations router least privilege', () => {
     operations.list.mockResolvedValue([]);
     aiObservability.list.mockResolvedValue([]);
     aiObservability.getDetail.mockResolvedValue({ observationId: 'observation-1' });
+    universalV1OpsCases.list.mockResolvedValue({ cases: [] });
+    universalV1OpsCases.open.mockResolvedValue({ caseId: 'case-1' });
   });
 
   it('rejects an ordinary authenticated user before capability lookup', async () => {
@@ -56,26 +107,59 @@ describe('Operations router least privilege', () => {
 
   it('rejects staff without can_manage_operations', async () => {
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ role: 'support', capability_granted: false }], rowCount: 1,
+      rows: [{ role: 'support', capability_granted: false }],
+      rowCount: 1,
     } as any);
-    await expect(caller(true).listExceptions({})).rejects.toThrow('Required administrator capability missing');
+    await expect(caller(true).listExceptions({})).rejects.toThrow(
+      'Required administrator capability missing'
+    );
     expect(String(mockDb.query.mock.calls[0]![0])).toContain('can_manage_operations');
+    expect(operations.list).not.toHaveBeenCalled();
+  });
+
+  it('rejects a capable named operator whose verified token has no fresh MFA step-up', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ role: 'support', capability_granted: true }],
+      rowCount: 1,
+    } as any);
+    const noStepUp = operationsRouter.createCaller({
+      user: {
+        id: USER_ID,
+        is_admin: true,
+        is_banned: false,
+        account_status: 'ACTIVE',
+        default_mode: 'poster',
+      },
+      firebaseUid: 'firebase-operations',
+    } as any);
+    await expect(noStepUp.listExceptions({})).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+    });
     expect(operations.list).not.toHaveBeenCalled();
   });
 
   it('allows explicitly capable staff and forwards only normalized input', async () => {
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ role: 'support', capability_granted: true }], rowCount: 1,
+      rows: [{ role: 'support', capability_granted: true }],
+      rowCount: 1,
     } as any);
     await expect(caller(true).listExceptions({ priorityClass: 'SAFETY' })).resolves.toEqual([]);
-    expect(operations.list).toHaveBeenCalledWith({
-      priorityClass: 'SAFETY', ownership: 'ALL', sort: 'PRIORITY', limit: 50, offset: 0,
-    }, USER_ID);
+    expect(operations.list).toHaveBeenCalledWith(
+      {
+        priorityClass: 'SAFETY',
+        ownership: 'ALL',
+        sort: 'PRIORITY',
+        limit: 50,
+        offset: 0,
+      },
+      USER_ID
+    );
   });
 
   it('retains explicit admin/founder break-glass authority', async () => {
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ role: 'admin', capability_granted: false }], rowCount: 1,
+      rows: [{ role: 'admin', capability_granted: false }],
+      rowCount: 1,
     } as any);
     await expect(caller(true).listExceptions({})).resolves.toEqual([]);
     expect(operations.list).toHaveBeenCalledTimes(1);
@@ -86,24 +170,99 @@ describe('Operations router least privilege', () => {
     expect(aiObservability.list).not.toHaveBeenCalled();
 
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ role: 'support', capability_granted: true }], rowCount: 1,
+      rows: [{ role: 'support', capability_granted: true }],
+      rowCount: 1,
     } as any);
     await expect(caller(true).listAIActivity({ executionResult: 'FAILED' })).resolves.toEqual([]);
     expect(aiObservability.list).toHaveBeenCalledWith({
-      executionResult: 'FAILED', limit: 50, offset: 0,
+      executionResult: 'FAILED',
+      limit: 50,
+      offset: 0,
     });
   });
 
   it('passes authenticated operator identity and explicit purpose into detail access logging', async () => {
     mockDb.query.mockResolvedValueOnce({
-      rows: [{ role: 'support', capability_granted: true }], rowCount: 1,
+      rows: [{ role: 'support', capability_granted: true }],
+      rowCount: 1,
     } as any);
     const purpose = 'Investigate model evidence and realized outcome attribution.';
     await caller(true).getAIObservationDetail({
-      observationId: '22222222-2222-4222-8222-222222222222', purpose,
+      observationId: '22222222-2222-4222-8222-222222222222',
+      purpose,
     });
     expect(aiObservability.getDetail).toHaveBeenCalledWith(
-      '22222222-2222-4222-8222-222222222222', purpose, USER_ID,
+      '22222222-2222-4222-8222-222222222222',
+      purpose,
+      USER_ID
+    );
+  });
+
+  it('requires fresh MFA for Universal V1 case access before service delegation', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ role: 'support', capability_granted: true }],
+      rowCount: 1,
+    } as any);
+    const noStepUp = operationsRouter.createCaller({
+      user: {
+        id: USER_ID,
+        is_admin: true,
+        is_banned: false,
+        account_status: 'ACTIVE',
+        default_mode: 'poster',
+      },
+      firebaseUid: 'firebase-operations',
+    } as any);
+
+    await expect(noStepUp.listUniversalV1Cases({})).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+    });
+    expect(universalV1OpsCases.list).not.toHaveBeenCalled();
+  });
+
+  it('strictly validates Universal V1 case commands before delegation', async () => {
+    const invalid = {
+      occurrenceId: '22222222-2222-4222-8222-222222222222',
+      occurrenceEventName: 'task.route.failed',
+      occurrenceVersion: 1,
+      aggregateKind: 'task',
+      aggregateId: 'task:22222222-2222-4222-8222-222222222222',
+      aggregateVersion: 3,
+      category: 'FULFILLMENT' as const,
+      severity: 'HIGH' as const,
+      reason: 'A bounded operational occurrence requires investigation.',
+      evidenceDigest: 'a'.repeat(64),
+      idempotencyKey: '33333333-3333-4333-8333-333333333333',
+      arbitraryLifecycleMutation: true,
+    };
+
+    await expect(caller(true).openUniversalV1Case(invalid)).rejects.toThrow();
+    expect(universalV1OpsCases.open).not.toHaveBeenCalled();
+  });
+
+  it('delegates a normalized Universal V1 case command with the named operator context', async () => {
+    mockDb.query.mockResolvedValueOnce({
+      rows: [{ role: 'support', capability_granted: true }],
+      rowCount: 1,
+    } as any);
+    const input = {
+      occurrenceId: '22222222-2222-4222-8222-222222222222',
+      occurrenceEventName: 'task.route.failed',
+      occurrenceVersion: 1,
+      aggregateKind: 'task',
+      aggregateId: 'task:22222222-2222-4222-8222-222222222222',
+      aggregateVersion: 3,
+      category: 'FULFILLMENT' as const,
+      severity: 'HIGH' as const,
+      reason: 'A bounded operational occurrence requires investigation.',
+      evidenceDigest: 'a'.repeat(64),
+      idempotencyKey: '33333333-3333-4333-8333-333333333333',
+    };
+
+    await expect(caller(true).openUniversalV1Case(input)).resolves.toEqual({ caseId: 'case-1' });
+    expect(universalV1OpsCases.open).toHaveBeenCalledWith(
+      expect.objectContaining({ user: expect.objectContaining({ id: USER_ID }) }),
+      input
     );
   });
 });
