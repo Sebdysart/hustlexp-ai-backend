@@ -1,12 +1,15 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { protectedProcedure, router } from '../trpc.js';
+import { protectedProcedure, publicProcedure, router } from '../trpc.js';
 import type { ServiceResult } from '../types.js';
 import {
+  acceptProviderOsInvite,
+  createProviderOsInvite,
   getProviderOsDraft,
   listProviderOsClients,
   listProviderOsDrafts,
   onboardProviderOsClient,
+  previewProviderOsInvite,
 } from '../services/ProviderOsService.js';
 
 function unwrap<T>(result: ServiceResult<T>): T {
@@ -25,6 +28,7 @@ function unwrap<T>(result: ServiceResult<T>): T {
 }
 
 export const providerOsRouter = router({
+  /** Prefer createInvite for new customers. Kept for existing-account email link. */
   onboardClient: protectedProcedure
     .input(z.object({
       posterEmail: z.string().trim().email().max(255),
@@ -33,6 +37,37 @@ export const providerOsRouter = router({
       await onboardProviderOsClient({
         actorId: ctx.user.id,
         posterEmail: input.posterEmail,
+      }),
+    )),
+
+  createInvite: protectedProcedure
+    .input(z.object({
+      intendedEmail: z.string().trim().email().max(255).optional(),
+    }).strict().optional())
+    .mutation(async ({ ctx, input }) => unwrap(
+      await createProviderOsInvite({
+        actorId: ctx.user.id,
+        intendedEmail: input?.intendedEmail ?? null,
+      }),
+    )),
+
+  previewInvite: publicProcedure
+    .input(z.object({
+      token: z.string().trim().min(16).max(128),
+    }).strict())
+    .query(async ({ input }) => unwrap(
+      await previewProviderOsInvite(input.token),
+    )),
+
+  acceptInvite: protectedProcedure
+    .input(z.object({
+      token: z.string().trim().min(16).max(128),
+    }).strict())
+    .mutation(async ({ ctx, input }) => unwrap(
+      await acceptProviderOsInvite({
+        actorId: ctx.user.id,
+        actorEmail: ctx.user.email,
+        token: input.token,
       }),
     )),
 

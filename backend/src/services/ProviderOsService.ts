@@ -1,6 +1,13 @@
+import { createHash, randomBytes } from 'node:crypto';
 import { db } from '../db.js';
 import type { ServiceResult } from '../types.js';
-import { isProviderOsEligibleDraft, normalizePosterEmail, PROVIDER_OS_ELIGIBLE_DRAFT_STATUSES } from './ProviderOsPolicy.js';
+import {
+  isProviderOsEligibleDraft,
+  isProviderOsInviteToken,
+  normalizePosterEmail,
+  PROVIDER_OS_ELIGIBLE_DRAFT_STATUSES,
+  PROVIDER_OS_INVITE_TTL_DAYS,
+} from './ProviderOsPolicy.js';
 
 export interface ProviderOsClient {
   relationshipId: string;
@@ -35,8 +42,31 @@ export interface ProviderOsDraftDetail extends ProviderOsDraftSummary {
   };
 }
 
+export interface ProviderOsInviteCreated {
+  inviteId: string;
+  token: string;
+  invitePath: string;
+  intendedEmail: string | null;
+  expiresAt: string;
+}
+
+export interface ProviderOsInvitePreview {
+  inviteId: string;
+  providerName: string;
+  intendedEmail: string | null;
+  expiresAt: string;
+}
+
 function failure(code: string, message: string): ServiceResult<never> {
   return { success: false, error: { code, message } };
+}
+
+function hashInviteToken(token: string): string {
+  return createHash('sha256').update(token.trim()).digest('hex');
+}
+
+function newInviteToken(): string {
+  return randomBytes(32).toString('hex');
 }
 
 async function assertProviderOsAccess(actorId: string): Promise<ServiceResult<true>> {
@@ -61,27 +91,26 @@ async function assertProviderOsAccess(actorId: string): Promise<ServiceResult<tr
   return failure('FORBIDDEN', 'Provider OS is available to hustlers and provider-enabled businesses.');
 }
 
-export async function onboardProviderOsClient(input: {
-  actorId: string;
-  posterEmail: string;
-}): Promise<ServiceResult<ProviderOsClient>> {
-  const access = await assertProviderOsAccess(input.actorId);
-  if (!access.success) return access;
-
-  const email = normalizePosterEmail(input.posterEmail);
-  if (!email || !email.includes('@')) {
-    return failure('INVALID_INPUT', 'Enter a valid client email.');
+async function upsertProviderOsRelationship(input: {
+  providerUserId: string;
+  posterUserId: string;
+}): Promise<ServiceResult<{
+  relationshipId: string;
+  posterUserId: string;
+  fullName: string;
+  email: string;
+  onboardedAt: string;
+}>> {
+  if (input.providerUserId === input.posterUserId) {
+    return failure('INVALID_INPUT', 'A provider cannot onboard themselves as a Provider OS client.');
   }
 
   const poster = await db.query<{ id: string; full_name: string; email: string }>(
-    `SELECT id, full_name, email FROM users WHERE lower(email) = $1`,
-    [email],
+    `SELECT id, full_name, email FROM users WHERE id = $1`,
+    [input.posterUserId],
   );
   const row = poster.rows[0];
-  if (!row) return failure('NOT_FOUND', 'No HustleXP account matched that email.');
-  if (row.id === input.actorId) {
-    return failure('INVALID_INPUT', 'A provider cannot onboard themselves as a Provider OS client.');
-  }
+  if (!row) return failure('NOT_FOUND', 'Client account not found.');
 
   const upsert = await db.query<{
     id: string;
@@ -93,7 +122,7 @@ export async function onboardProviderOsClient(input: {
      ON CONFLICT (provider_user_id, poster_user_id)
      DO UPDATE SET status = 'active', updated_at = now()
      RETURNING id, poster_user_id, onboarded_at`,
-    [input.actorId, row.id],
+    [input.providerUserId, row.id],
   );
   const rel = upsert.rows[0];
   if (!rel) return failure('SERVER_ERROR', 'Could not save the Provider OS relationship.');
@@ -106,6 +135,215 @@ export async function onboardProviderOsClient(input: {
       fullName: row.full_name,
       email: row.email,
       onboardedAt: rel.onboarded_at.toISOString(),
+    },
+  };
+}
+
+/** @deprecated Prefer createProviderOsInvite + acceptProviderOsInvite for new/existing customers. */
+export async function onboardProviderOsClient(input: {
+  actorId: string;
+  posterEmail: string;
+}): Promise<ServiceResult<ProviderOsClient>> {
+  const access = await assertProviderOsAccess(input.actorId);
+  if (!access.success) return access;
+
+  const email = normalizePosterEmail(input.posterEmail);
+  if (!email || !email.includes('@')) {
+    return failure('INVALID_INPUT', 'Enter a valid client email.');
+  }
+
+  const poster = await db.query<{ id: string }>(
+    `SELECT id FROM users WHERE lower(email) = $1`,
+    [email],
+  );
+  const row = poster.rows[0];
+  if (!row) {
+    return failure(
+      'NOT_FOUND',
+      'No HustleXP account matched that email. Create an invite link instead so new customers can join.',
+    );
+  }
+
+  const linked = await upsertProviderOsRelationship({
+    providerUserId: input.actorId,
+    posterUserId: row.id,
+  });
+  if (!linked.success) return linked;
+
+  return {
+    success: true,
+    data: {
+      ...linked.data,
+      openDraftCount: 0,
+    },
+  };
+}
+
+export async function createProviderOsInvite(input: {
+  actorId: string;
+  intendedEmail?: string | null;
+}): Promise<ServiceResult<ProviderOsInviteCreated>> {
+  const access = await assertProviderOsAccess(input.actorId);
+  if (!access.success) return access;
+
+  let intendedEmail: string | null = null;
+  if (input.intendedEmail && input.intendedEmail.trim()) {
+    intendedEmail = normalizePosterEmail(input.intendedEmail);
+    if (!intendedEmail.includes('@')) {
+      return failure('INVALID_INPUT', 'Enter a valid client email, or leave it blank.');
+    }
+  }
+
+  const token = newInviteToken();
+  const tokenHash = hashInviteToken(token);
+  const expiresAt = new Date(
+    Date.now() + PROVIDER_OS_INVITE_TTL_DAYS * 24 * 60 * 60 * 1000,
+  );
+
+  const inserted = await db.query<{ id: string; expires_at: Date }>(
+    `INSERT INTO provider_os_invites (
+       provider_user_id, token_hash, intended_email, status, expires_at
+     ) VALUES ($1, $2, $3, 'open', $4)
+     RETURNING id, expires_at`,
+    [input.actorId, tokenHash, intendedEmail, expiresAt.toISOString()],
+  );
+  const row = inserted.rows[0];
+  if (!row) return failure('SERVER_ERROR', 'Could not create the invite link.');
+
+  return {
+    success: true,
+    data: {
+      inviteId: row.id,
+      token,
+      invitePath: `/provider-os/invite/${token}`,
+      intendedEmail,
+      expiresAt: row.expires_at.toISOString(),
+    },
+  };
+}
+
+export async function previewProviderOsInvite(
+  rawToken: string,
+): Promise<ServiceResult<ProviderOsInvitePreview>> {
+  const token = rawToken.trim();
+  if (!isProviderOsInviteToken(token)) {
+    return failure('NOT_FOUND', 'This invite link is invalid or no longer available.');
+  }
+
+  const tokenHash = hashInviteToken(token);
+  const result = await db.query<{
+    id: string;
+    status: string;
+    expires_at: Date;
+    intended_email: string | null;
+    provider_name: string;
+  }>(
+    `SELECT i.id,
+            i.status,
+            i.expires_at,
+            i.intended_email,
+            u.full_name AS provider_name
+       FROM provider_os_invites i
+       JOIN users u ON u.id = i.provider_user_id
+      WHERE i.token_hash = $1
+      LIMIT 1`,
+    [tokenHash],
+  );
+
+  const row = result.rows[0];
+  if (!row || row.status !== 'open') {
+    return failure('NOT_FOUND', 'This invite link is invalid or no longer available.');
+  }
+
+  if (row.expires_at.getTime() <= Date.now()) {
+    await db.query(
+      `UPDATE provider_os_invites
+          SET status = 'expired', updated_at = now()
+        WHERE id = $1 AND status = 'open'`,
+      [row.id],
+    );
+    return failure('NOT_FOUND', 'This invite link is invalid or no longer available.');
+  }
+
+  return {
+    success: true,
+    data: {
+      inviteId: row.id,
+      providerName: row.provider_name,
+      intendedEmail: row.intended_email,
+      expiresAt: row.expires_at.toISOString(),
+    },
+  };
+}
+
+export async function acceptProviderOsInvite(input: {
+  actorId: string;
+  actorEmail: string | null | undefined;
+  token: string;
+}): Promise<ServiceResult<ProviderOsClient>> {
+  const token = input.token.trim();
+  if (!isProviderOsInviteToken(token)) {
+    return failure('NOT_FOUND', 'This invite link is invalid or no longer available.');
+  }
+
+  const tokenHash = hashInviteToken(token);
+  const result = await db.query<{
+    id: string;
+    provider_user_id: string;
+    status: string;
+    expires_at: Date;
+    intended_email: string | null;
+  }>(
+    `SELECT id, provider_user_id, status, expires_at, intended_email
+       FROM provider_os_invites
+      WHERE token_hash = $1
+      LIMIT 1`,
+    [tokenHash],
+  );
+
+  const invite = result.rows[0];
+  if (!invite || invite.status !== 'open') {
+    return failure('NOT_FOUND', 'This invite link is invalid or no longer available.');
+  }
+
+  if (invite.expires_at.getTime() <= Date.now()) {
+    await db.query(
+      `UPDATE provider_os_invites
+          SET status = 'expired', updated_at = now()
+        WHERE id = $1 AND status = 'open'`,
+      [invite.id],
+    );
+    return failure('NOT_FOUND', 'This invite link is invalid or no longer available.');
+  }
+
+  if (invite.intended_email) {
+    const actorEmail = normalizePosterEmail(input.actorEmail ?? '');
+    if (!actorEmail || actorEmail !== invite.intended_email) {
+      return failure(
+        'FORBIDDEN',
+        'Sign in with the email this invite was created for.',
+      );
+    }
+  }
+
+  const linked = await upsertProviderOsRelationship({
+    providerUserId: invite.provider_user_id,
+    posterUserId: input.actorId,
+  });
+  if (!linked.success) return linked;
+
+  await db.query(
+    `UPDATE provider_os_invites
+        SET accepted_count = accepted_count + 1,
+            updated_at = now()
+      WHERE id = $1`,
+    [invite.id],
+  );
+
+  return {
+    success: true,
+    data: {
+      ...linked.data,
       openDraftCount: 0,
     },
   };

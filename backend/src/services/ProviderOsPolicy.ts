@@ -26,3 +26,12 @@ export function isProviderOsEligibleDraft(input: {
 export function normalizePosterEmail(email: string): string {
   return email.trim().toLowerCase();
 }
+
+/** Opaque invite token: 64 hex chars. Only the SHA-256 hash is stored. */
+export const PROVIDER_OS_INVITE_TOKEN_RE = /^[0-9a-f]{64}$/i;
+
+export const PROVIDER_OS_INVITE_TTL_DAYS = 30;
+
+export function isProviderOsInviteToken(token: string): boolean {
+  return PROVIDER_OS_INVITE_TOKEN_RE.test(token.trim());
+}

@@ -112,4 +112,5 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260824_business_controlled_test_acceptance', fileName: '20260824_business_controlled_test_acceptance.sql' },
   { name: '20260824_orchestration_mode', fileName: '20260824_orchestration_mode.sql' },
   { name: '20260901_provider_os_relationships', fileName: '20260901_provider_os_relationships.sql' },
+  { name: '20260901_provider_os_invites', fileName: '20260901_provider_os_invites.sql' },
 ] as const;

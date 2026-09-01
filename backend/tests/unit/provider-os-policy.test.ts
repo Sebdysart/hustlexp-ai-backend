@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { isProviderOsEligibleDraft, normalizePosterEmail } from '../../src/services/ProviderOsPolicy.js';
+import {
+  isProviderOsEligibleDraft,
+  isProviderOsInviteToken,
+  normalizePosterEmail,
+} from '../../src/services/ProviderOsPolicy.js';
 
 describe('ProviderOsPolicy', () => {
   it('requires a poster identity and an unclaimed, unconverted draft', () => {
@@ -22,5 +26,10 @@ describe('ProviderOsPolicy', () => {
 
   it('normalizes client email for relationship lookup', () => {
     expect(normalizePosterEmail('  Poster@HustleXP.app ')).toBe('poster@hustlexp.app');
+  });
+
+  it('validates opaque invite tokens', () => {
+    expect(isProviderOsInviteToken('a'.repeat(64))).toBe(true);
+    expect(isProviderOsInviteToken('short')).toBe(false);
   });
 });
