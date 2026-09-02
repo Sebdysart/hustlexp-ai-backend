@@ -477,6 +477,32 @@ export async function finalizePaidQuote(
           input.paymentIntentId,
         ],
       );
+      const draftUpdate = await query<{
+        task_id: string;
+      }>(
+        `
+        UPDATE task_drafts
+        SET
+          task_id = $2,
+          updated_at = NOW()
+        WHERE id = $1
+          AND (
+            task_id IS NULL
+            OR task_id = $2
+          )
+        RETURNING task_id
+        `,
+        [
+          draft.id,
+          taskId,
+        ],
+      );
+
+      if (!draftUpdate.rows[0]) {
+        throw new Error(
+          'Task draft is already linked to a different canonical task.',
+        );
+      }
 
       return {
         taskId,
