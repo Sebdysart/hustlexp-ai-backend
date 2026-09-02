@@ -8,6 +8,7 @@ import { processExpertiseRecalcJob } from './expertise-recalc-worker.js';
 import { processExportJob } from './export-worker.js';
 import { createWorker } from './queues.js';
 import { processXPTaxReminderJob } from './xp-tax-reminder-worker.js';
+import { markOutboxEventProcessed } from './outbox-worker.js';
 
 type JobHandler = (job: Job) => Promise<void>;
 
@@ -132,12 +133,29 @@ async function processPaymentQueueJob(job: Job): Promise<void> {
   const handler = job.name.startsWith('payment.')
     ? async (target: Job) => (await import('./payment-worker.js')).processPaymentJob(target)
     : paymentHandlers[job.name];
+
   if (handler) {
     await handler(job);
+
+    const outboxIdempotencyKey = job.data?.outbox_idempotency_key;
+
+    if (
+      typeof outboxIdempotencyKey === 'string'
+      && outboxIdempotencyKey.length > 0
+    ) {
+      await markOutboxEventProcessed(outboxIdempotencyKey);
+    }
+
     return;
   }
-  const error = new Error(`Unknown event type in critical_payments queue: ${job.name}`);
-  log.error({ eventType: job.name, err: error.message }, 'Unknown payment event type');
+
+  const error = new Error(
+    `Unknown event type in critical_payments queue: ${job.name}`,
+  );
+  log.error(
+    { eventType: job.name, err: error.message },
+    'Unknown payment event type',
+  );
   throw error;
 }
 
@@ -192,3 +210,4 @@ export function registerWorkers(active: Worker[]): void {
   }));
   log.info('All BullMQ workers registered');
 }
+

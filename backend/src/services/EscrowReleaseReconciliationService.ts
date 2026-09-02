@@ -28,7 +28,8 @@ interface ReconcileReleaseParams {
 interface ReconciledRelease {
   escrowId: string;
   taskId: string;
-  workerId: string;
+  workerId: string | null;
+  businessFulfillerOrganizationId: string | null;
   grossAmountCents: number;
   platformFeeCents: number;
   insuranceContributionCents: number;
@@ -43,6 +44,8 @@ type ReleasedEscrowRow = {
   platform_fee_cents: number | null;
   stripe_transfer_id: string | null;
   worker_id: string | null;
+  business_fulfiller_organization_id: string | null;
+  orchestration_mode: string | null;
   payment_method: string | null;
 };
 
@@ -55,14 +58,23 @@ export const EscrowReleaseReconciliationService = {
     const { escrowId, expectedStripeTransferId, fromState = 'RELEASE_RECONCILIATION' } = params;
 
     try {
-      const rowResult = await db.query<ReleasedEscrowRow>(
-        `SELECT e.id, e.task_id, e.state, e.amount, e.platform_fee_cents,
-                e.stripe_transfer_id, t.worker_id, t.payment_method
-         FROM escrows e
-         JOIN tasks t ON t.id = e.task_id
-         WHERE e.id = $1`,
-        [escrowId],
-      );
+    const rowResult = await db.query<ReleasedEscrowRow>(
+      `SELECT
+          e.id,
+          e.task_id,
+          e.state,
+          e.amount,
+          e.platform_fee_cents,
+          e.stripe_transfer_id,
+          t.worker_id,
+          t.business_fulfiller_organization_id,
+          t.orchestration_mode,
+          t.payment_method
+      FROM escrows e
+      JOIN tasks t ON t.id = e.task_id
+      WHERE e.id = $1`,
+      [escrowId],
+    );
       const escrow = rowResult.rows[0];
       if (!escrow) {
         return failure(ErrorCodes.NOT_FOUND, `Escrow ${escrowId} not found`);
@@ -73,8 +85,16 @@ export const EscrowReleaseReconciliationService = {
           `Escrow ${escrowId} is ${escrow.state}; release reconciliation requires RELEASED`,
         );
       }
-      if (!escrow.worker_id) {
-        return failure(ErrorCodes.INVALID_STATE, `Task ${escrow.task_id} has no assigned worker`);
+      const isManualBusiness =
+        escrow.orchestration_mode === 'OPS_MANUAL'
+        && Boolean(escrow.business_fulfiller_organization_id)
+        && !escrow.worker_id;
+
+      if (!escrow.worker_id && !isManualBusiness) {
+        return failure(
+          ErrorCodes.INVALID_STATE,
+          `Task ${escrow.task_id} has no recognized fulfiller`,
+        );
       }
       if (
         expectedStripeTransferId !== undefined
@@ -106,49 +126,70 @@ export const EscrowReleaseReconciliationService = {
         ],
       );
 
-      const insurance = await SelfInsurancePoolService.recordContribution(
-        escrow.task_id,
-        escrow.worker_id,
-        breakdown.insuranceContributionCents,
-      );
-      if (!insurance.success) {
-        return failure(insurance.error.code, `Insurance reconciliation failed: ${insurance.error.message}`);
-      }
+      if (escrow.worker_id) {
+        const insurance = await SelfInsurancePoolService.recordContribution(
+          escrow.task_id,
+          escrow.worker_id,
+          breakdown.insuranceContributionCents,
+        );
 
-      const earnings = await EarnedVerificationUnlockService.recordEarnings(
-        escrow.worker_id,
-        escrow.task_id,
-        escrowId,
-        breakdown.netPayoutCents,
-      );
-      if (!earnings.success) {
-        return failure(earnings.error.code, `Earnings reconciliation failed: ${earnings.error.message}`);
-      }
+        if (!insurance.success) {
+          return failure(
+            insurance.error.code,
+            `Insurance reconciliation failed: ${insurance.error.message}`,
+          );
+        }
 
-      if (
-        escrow.payment_method === 'offline_cash'
-        || escrow.payment_method === 'offline_venmo'
-        || escrow.payment_method === 'offline_cashapp'
-      ) {
-        const tax = await XPTaxService.recordOfflinePayment(
+        const earnings = await EarnedVerificationUnlockService.recordEarnings(
           escrow.worker_id,
           escrow.task_id,
-          escrow.payment_method,
-          escrow.amount,
+          escrowId,
+          breakdown.netPayoutCents,
         );
-        if (!tax.success) {
-          return failure(tax.error.code, `Offline-tax reconciliation failed: ${tax.error.message}`);
-        }
-      }
 
-      const xp = await XPService.awardXP({
-        userId: escrow.worker_id,
-        taskId: escrow.task_id,
-        escrowId,
-        baseXP: Math.round(escrow.amount / 10),
-      });
-      if (!xp.success && xp.error.code !== ErrorCodes.INV_5_VIOLATION) {
-        return failure(xp.error.code, `XP reconciliation failed: ${xp.error.message}`);
+        if (!earnings.success) {
+          return failure(
+            earnings.error.code,
+            `Earnings reconciliation failed: ${earnings.error.message}`,
+          );
+        }
+
+        if (
+          escrow.payment_method === 'offline_cash'
+          || escrow.payment_method === 'offline_venmo'
+          || escrow.payment_method === 'offline_cashapp'
+        ) {
+          const tax = await XPTaxService.recordOfflinePayment(
+            escrow.worker_id,
+            escrow.task_id,
+            escrow.payment_method,
+            escrow.amount,
+          );
+
+          if (!tax.success) {
+            return failure(
+              tax.error.code,
+              `Offline-tax reconciliation failed: ${tax.error.message}`,
+            );
+          }
+        }
+
+        const xp = await XPService.awardXP({
+          userId: escrow.worker_id,
+          taskId: escrow.task_id,
+          escrowId,
+          baseXP: Math.round(escrow.amount / 10),
+        });
+
+        if (
+          !xp.success
+          && xp.error.code !== ErrorCodes.INV_5_VIOLATION
+        ) {
+          return failure(
+            xp.error.code,
+            `XP reconciliation failed: ${xp.error.message}`,
+          );
+        }
       }
 
       const progress = await TaskProgressService.advanceProgress({
@@ -164,9 +205,14 @@ export const EscrowReleaseReconciliationService = {
         escrowId,
         taskId: escrow.task_id,
         workerId: escrow.worker_id,
+        businessFulfillerOrganizationId:
+          escrow.business_fulfiller_organization_id,
         grossAmountCents: escrow.amount,
         platformFeeCents: breakdown.platformFeeCents,
-        insuranceContributionCents: breakdown.insuranceContributionCents,
+        insuranceContributionCents:
+          escrow.worker_id
+            ? breakdown.insuranceContributionCents
+            : 0,
         netPayoutCents: breakdown.netPayoutCents,
       };
       log.info(data, 'Escrow release witnesses reconciled');
@@ -178,3 +224,4 @@ export const EscrowReleaseReconciliationService = {
     }
   },
 };
+

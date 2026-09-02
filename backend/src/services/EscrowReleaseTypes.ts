@@ -51,3 +51,4 @@ export interface ReleasePost {
 export type ReleaseTransactionResult =
   | Extract<ServiceResult<Escrow>, { success: false }>
   | { success: true; data: Escrow; post: ReleasePost };
+

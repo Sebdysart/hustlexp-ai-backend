@@ -417,21 +417,84 @@ export const userRouter = router({
           // Lazy Firebase provisioning deliberately marks age as unverified/minor.
           // Once the same token-owned Firebase identity supplies an adult DOB,
           // replace that fail-closed state before returning the account.
-          if (existingUser.is_minor === true && existingUser.firebase_uid === input.firebaseUid) {
+          if (
+            existingUser.is_minor === true &&
+            existingUser.firebase_uid === input.firebaseUid
+          ) {
             const verified = await db.query<User>(
               `UPDATE users
-                  SET date_of_birth = $2, is_minor = false, updated_at = NOW()
-                WHERE id = $1 AND firebase_uid = $3
+                  SET date_of_birth = $2,
+                      is_minor = false,
+                      updated_at = NOW()
+                WHERE id = $1
+                  AND firebase_uid = $3
                 RETURNING *`,
-              [existingUser.id, input.dateOfBirth, input.firebaseUid],
+              [
+                existingUser.id,
+                input.dateOfBirth,
+                input.firebaseUid,
+              ],
             );
-            existingUser = verified.rows[0] ?? existingUser;
+
+            existingUser =
+              verified.rows[0] ?? existingUser;
           }
-          // Return existing user instead of error (handles re-registration from social auth)
+          if (
+            !existingUser.firebase_uid &&
+            decodedToken.email
+          ) {
+            const linked = await db.query<User>(
+              `UPDATE users
+                  SET firebase_uid = $2,
+                      updated_at = NOW()
+                WHERE id = $1
+                  AND firebase_uid IS NULL
+                RETURNING *`,
+              [
+                existingUser.id,
+                input.firebaseUid,
+              ],
+            );
+
+            existingUser =
+              linked.rows[0] ?? existingUser;
+          }
+          if (
+            existingUser.firebase_uid &&
+            existingUser.firebase_uid !== input.firebaseUid
+          ) {
+            throw new TRPCError({
+              code: 'FORBIDDEN',
+              message:
+                'This email is already associated with another Firebase identity.',
+            });
+          }
+          // Keep the user's requested/default mode in sync.
+          if (
+            existingUser.default_mode !== dbMode &&
+            existingUser.firebase_uid === input.firebaseUid
+          ) {
+            const updated = await db.query<User>(
+              `UPDATE users
+                  SET default_mode = $2,
+                      updated_at = NOW()
+                WHERE id = $1
+                  AND firebase_uid = $3
+                RETURNING *`,
+              [
+                existingUser.id,
+                dbMode,
+                input.firebaseUid,
+              ],
+            );
+
+            existingUser =
+              updated.rows[0] ?? existingUser;
+          }
+
           return await toMobileUser(existingUser);
         }
-      }
-
+      }  
       // Phone-less registrations start at trust_tier=0 (UNVERIFIED) to restrict
       // account capabilities until phone verification is completed. This limits
       // the usefulness of burner-email ban evasion without a phone number.
