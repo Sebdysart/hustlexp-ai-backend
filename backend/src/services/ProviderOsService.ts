@@ -2,6 +2,11 @@ import { createHash, randomBytes } from 'node:crypto';
 import { db } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import {
+  assertBusinessCanQuoteDraft,
+  createBusinessDraftQuote,
+  validateBusinessQuotePricing,
+} from './BusinessClaimService.js';
+import {
   isProviderOsEligibleDraft,
   isProviderOsInviteToken,
   normalizePosterEmail,
@@ -369,6 +374,7 @@ export async function listProviderOsClients(actorId: string): Promise<ServiceRes
             COUNT(d.id) FILTER (
               WHERE d.claimed_at IS NULL
                 AND d.task_id IS NULL
+                AND d.quote_id IS NULL
                 AND d.status = ANY($2::text[])
             )::text AS open_draft_count
        FROM provider_os_relationships r
@@ -416,6 +422,7 @@ export async function listProviderOsDrafts(input: {
     created_at: Date;
     claimed_at: Date | null;
     task_id: string | null;
+    quote_id: string | null;
   }>(
     `SELECT d.id,
             d.poster_user_id,
@@ -430,7 +437,8 @@ export async function listProviderOsDrafts(input: {
             d.est_price_max_cents,
             d.created_at,
             d.claimed_at,
-            d.task_id
+            d.task_id,
+            d.quote_id
        FROM task_drafts d
        JOIN provider_os_relationships r
          ON r.poster_user_id = d.poster_user_id
@@ -452,6 +460,7 @@ export async function listProviderOsDrafts(input: {
         claimedAt: row.claimed_at,
         taskId: row.task_id,
         posterUserId: row.poster_user_id,
+        quoteId: row.quote_id,
       }))
       .map((row) => ({
         id: row.id,
@@ -528,6 +537,7 @@ export async function getProviderOsDraft(input: {
     claimedAt: row.claimed_at,
     taskId: row.task_id,
     posterUserId: row.poster_user_id,
+    quoteId: row.quote_id,
   })) {
     return failure('INVALID_STATE', 'This request is no longer an unclaimed Provider OS draft.');
   }
@@ -555,4 +565,168 @@ export async function getProviderOsDraft(input: {
       },
     },
   };
+}
+
+export interface ProviderOsSetQuoteResult {
+  taskDraftId: string;
+  quoteId: string;
+  quoteVersionId: string;
+  customerTotalCents: number;
+  payoutCents: number;
+  platformMarginCents: number;
+  expiresAt: string;
+}
+
+/**
+ * Provider OS entry into the shared business quote path.
+ * Auth = active onboarded-client relationship (not an Ops claim link).
+ */
+export async function setProviderOsDraftQuote(input: {
+  actorId: string;
+  draftId: string;
+  organizationId: string;
+  serviceProfileId: string;
+  businessLocationId: string;
+  proposedCustomerTotalCents: number;
+  proposedPayoutCents: number;
+}): Promise<ServiceResult<ProviderOsSetQuoteResult>> {
+  const access = await assertProviderOsAccess(input.actorId);
+  if (!access.success) return access;
+
+  const pricing = validateBusinessQuotePricing({
+    proposedCustomerTotalCents: input.proposedCustomerTotalCents,
+    proposedPayoutCents: input.proposedPayoutCents,
+  });
+  if (!pricing.success) return pricing;
+
+  try {
+    return await db.transaction(async (query) => {
+      const draftResult = await query<{
+        id: string;
+        poster_user_id: string | null;
+        category: string;
+        title: string | null;
+        scope_summary: string | null;
+        status: string;
+        quote_id: string | null;
+        claimed_at: Date | null;
+        task_id: string | null;
+      }>(
+        `
+        SELECT id, poster_user_id, category, title, scope_summary,
+               status, quote_id, claimed_at, task_id
+        FROM task_drafts
+        WHERE id = $1
+        FOR UPDATE
+        `,
+        [input.draftId],
+      );
+
+      const draft = draftResult.rows[0];
+      if (!draft) {
+        return failure('NOT_FOUND', 'That request is not visible in Provider OS.');
+      }
+
+      if (!isProviderOsEligibleDraft({
+        status: draft.status,
+        claimedAt: draft.claimed_at,
+        taskId: draft.task_id,
+        posterUserId: draft.poster_user_id,
+        quoteId: draft.quote_id,
+      })) {
+        return failure(
+          'INVALID_STATE',
+          'This request is no longer eligible to quote through Provider OS.',
+        );
+      }
+
+      const relationship = await query<{ id: string }>(
+        `
+        SELECT id
+          FROM provider_os_relationships
+         WHERE provider_user_id = $1
+           AND poster_user_id = $2
+           AND status = 'active'
+         FOR SHARE
+        `,
+        [input.actorId, draft.poster_user_id],
+      );
+
+      if (!relationship.rows[0]) {
+        return failure(
+          'FORBIDDEN',
+          'You can only quote tasks from clients you have onboarded in Provider OS.',
+        );
+      }
+
+      const businessReady = await assertBusinessCanQuoteDraft(query, {
+        organizationId: input.organizationId,
+        serviceProfileId: input.serviceProfileId,
+        businessLocationId: input.businessLocationId,
+        actorId: input.actorId,
+        draftCategory: draft.category,
+      });
+      if (!businessReady.success) return businessReady;
+
+      const quoteExpiresAt = new Date(
+        Date.now() + PROVIDER_OS_INVITE_TTL_DAYS * 24 * 60 * 60 * 1000,
+      );
+
+      const quoted = await createBusinessDraftQuote(query, {
+        draftId: draft.id,
+        draftTitle: draft.title,
+        draftScopeSummary: draft.scope_summary,
+        organizationId: input.organizationId,
+        serviceProfileId: input.serviceProfileId,
+        businessLocationId: input.businessLocationId,
+        actorId: input.actorId,
+        proposedCustomerTotalCents: input.proposedCustomerTotalCents,
+        proposedPayoutCents: input.proposedPayoutCents,
+        quoteExpiresAt,
+        scopeExtras: { claim_entry: 'provider_os', provider_os: true },
+      });
+      if (!quoted.success) return quoted;
+
+      await query(
+        `
+        INSERT INTO business_audit_events (
+          organization_id,
+          actor_id,
+          action,
+          object_type,
+          object_id,
+          after_state
+        )
+        VALUES ($1, $2, 'TASK_CLAIMED', 'TASK_DRAFT', $3, $4::jsonb)
+        `,
+        [
+          input.organizationId,
+          input.actorId,
+          draft.id,
+          JSON.stringify({
+            quoteId: quoted.data.quoteId,
+            quoteVersionId: quoted.data.quoteVersionId,
+            customerTotalCents: input.proposedCustomerTotalCents,
+            payoutCents: input.proposedPayoutCents,
+            entry: 'provider_os',
+          }),
+        ],
+      );
+
+      return {
+        success: true,
+        data: {
+          taskDraftId: draft.id,
+          quoteId: quoted.data.quoteId,
+          quoteVersionId: quoted.data.quoteVersionId,
+          customerTotalCents: quoted.data.customerTotalCents,
+          payoutCents: quoted.data.payoutCents,
+          platformMarginCents: quoted.data.platformMarginCents,
+          expiresAt: quoted.data.expiresAt,
+        },
+      };
+    });
+  } catch {
+    return failure('PROVIDER_OS_QUOTE_FAILED', 'Unable to set a quote for this Provider OS task.');
+  }
 }

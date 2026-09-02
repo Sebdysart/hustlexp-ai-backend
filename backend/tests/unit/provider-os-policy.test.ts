@@ -22,6 +22,9 @@ describe('ProviderOsPolicy', () => {
     expect(isProviderOsEligibleDraft({
       status: 'abandoned', claimedAt: null, taskId: null, posterUserId: 'p1',
     })).toBe(false);
+    expect(isProviderOsEligibleDraft({
+      status: 'contact_captured', claimedAt: null, taskId: null, posterUserId: 'p1', quoteId: 'q1',
+    })).toBe(false);
   });
 
   it('normalizes client email for relationship lookup', () => {

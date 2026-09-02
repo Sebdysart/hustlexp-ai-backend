@@ -15,10 +15,12 @@ export function isProviderOsEligibleDraft(input: {
   claimedAt: string | Date | null | undefined;
   taskId: string | null | undefined;
   posterUserId: string | null | undefined;
+  quoteId?: string | null | undefined;
 }): boolean {
   if (!input.posterUserId) return false;
   if (input.taskId) return false;
   if (input.claimedAt) return false;
+  if (input.quoteId) return false;
   if (!input.status || input.status === 'abandoned') return false;
   return (PROVIDER_OS_ELIGIBLE_DRAFT_STATUSES as readonly string[]).includes(input.status);
 }

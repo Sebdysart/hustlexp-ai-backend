@@ -10,6 +10,7 @@ import {
   listProviderOsDrafts,
   onboardProviderOsClient,
   previewProviderOsInvite,
+  setProviderOsDraftQuote,
 } from '../services/ProviderOsService.js';
 
 function unwrap<T>(result: ServiceResult<T>): T {
@@ -68,6 +69,27 @@ export const providerOsRouter = router({
         actorId: ctx.user.id,
         actorEmail: ctx.user.email,
         token: input.token,
+      }),
+    )),
+
+  setQuote: protectedProcedure
+    .input(z.object({
+      draftId: z.string().uuid(),
+      organizationId: z.string().uuid(),
+      serviceProfileId: z.string().uuid(),
+      businessLocationId: z.string().uuid(),
+      proposedCustomerTotalCents: z.number().int().positive(),
+      proposedPayoutCents: z.number().int().positive(),
+    }).strict())
+    .mutation(async ({ ctx, input }) => unwrap(
+      await setProviderOsDraftQuote({
+        actorId: ctx.user.id,
+        draftId: input.draftId,
+        organizationId: input.organizationId,
+        serviceProfileId: input.serviceProfileId,
+        businessLocationId: input.businessLocationId,
+        proposedCustomerTotalCents: input.proposedCustomerTotalCents,
+        proposedPayoutCents: input.proposedPayoutCents,
       }),
     )),
 

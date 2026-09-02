@@ -5,6 +5,7 @@ const service = vi.hoisted(() => ({
   createProviderOsInvite: vi.fn(),
   previewProviderOsInvite: vi.fn(),
   acceptProviderOsInvite: vi.fn(),
+  setProviderOsDraftQuote: vi.fn(),
   listProviderOsClients: vi.fn(),
   listProviderOsDrafts: vi.fn(),
   getProviderOsDraft: vi.fn(),
@@ -89,6 +90,38 @@ describe('providerOs router', () => {
       actorId: ACTOR,
       actorEmail: 'hustler@example.com',
       token: TOKEN,
+    });
+  });
+
+  it('binds Provider OS setQuote to the authenticated provider and draft relationship path', async () => {
+    service.setProviderOsDraftQuote.mockResolvedValue({
+      success: true,
+      data: {
+        taskDraftId: DRAFT,
+        quoteId: '50000000-0000-4000-8000-000000000001',
+        quoteVersionId: '60000000-0000-4000-8000-000000000001',
+        customerTotalCents: 12000,
+        payoutCents: 10000,
+        platformMarginCents: 2000,
+        expiresAt: '2026-10-01T00:00:00.000Z',
+      },
+    });
+    await caller.setQuote({
+      draftId: DRAFT,
+      organizationId: '70000000-0000-4000-8000-000000000001',
+      serviceProfileId: '80000000-0000-4000-8000-000000000001',
+      businessLocationId: '90000000-0000-4000-8000-000000000001',
+      proposedCustomerTotalCents: 12000,
+      proposedPayoutCents: 10000,
+    });
+    expect(service.setProviderOsDraftQuote).toHaveBeenCalledWith({
+      actorId: ACTOR,
+      draftId: DRAFT,
+      organizationId: '70000000-0000-4000-8000-000000000001',
+      serviceProfileId: '80000000-0000-4000-8000-000000000001',
+      businessLocationId: '90000000-0000-4000-8000-000000000001',
+      proposedCustomerTotalCents: 12000,
+      proposedPayoutCents: 10000,
     });
   });
 
