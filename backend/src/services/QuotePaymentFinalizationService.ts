@@ -730,7 +730,25 @@ export async function finalizePaidQuote(
         rest.join(':') || 'Task creation failed.',
       );
     }
+    const message1 =
+        err instanceof Error
+          ? err.message
+          : String(err);
 
+      console.error(
+        'QUOTE FINALIZATION FAILED:',
+        {
+          quoteId: input.quoteId,
+          quoteVersionId: input.quoteVersionId,
+          paymentIntentId: input.paymentIntentId,
+          posterId: input.posterId,
+          error: message1,
+          stack:
+            err instanceof Error
+              ? err.stack
+              : undefined,
+        },
+      );
     return fail(
       'QUOTE_FINALIZATION_FAILED',
       'Unable to finalize the paid quote.',
