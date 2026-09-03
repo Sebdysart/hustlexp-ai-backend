@@ -5,6 +5,12 @@ import { db } from '../db.js';
 import { TaskService } from '../services/TaskService.js';
 import { hustlerProcedure, posterProcedure, protectedProcedure, Schemas } from '../trpc.js';
 
+type TaskViewerRole =
+  | 'poster'
+  | 'hustler'
+  | 'business'
+  | null;
+
 export const TaskReadProcedures = {
 getById: protectedProcedure
     .input(z.object({ taskId: Schemas.uuid }))
@@ -20,12 +26,34 @@ getById: protectedProcedure
         },
         { tags: [CACHE_TAGS.TASK(input.taskId)], ttl: CACHE_TTL.taskDetails }
       );
+      const businessMembership =
+        task.business_fulfiller_organization_id
+          ? await db.query<{ id: string }>(
+              `
+              SELECT id
+              FROM business_memberships
+              WHERE organization_id = $1
+                AND user_id = $2
+                AND status = 'ACTIVE'
+                AND role = 'OWNER'
+              LIMIT 1
+              `,
+              [
+                task.business_fulfiller_organization_id,
+                ctx.user.id,
+              ],
+            )
+          : { rows: [] as Array<{ id: string }> };
 
-      const viewerRole = task.poster_id === ctx.user.id
-        ? 'poster'
-        : task.worker_id === ctx.user.id
-          ? 'hustler'
-          : null;
+      const isBusinessFulfiller = Boolean(businessMembership.rows[0]);
+      const viewerRole: TaskViewerRole =
+        task.poster_id === ctx.user.id
+          ? 'poster'
+          : task.worker_id === ctx.user.id
+            ? 'hustler'
+            : isBusinessFulfiller
+              ? 'business'
+              : null;
       const isParticipant = viewerRole !== null;
       // Tasks in OPEN/MATCHING state are discoverable (hustler feed)
       const isDiscoverable = ['OPEN', 'MATCHING'].includes(task.state);

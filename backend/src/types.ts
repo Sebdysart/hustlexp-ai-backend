@@ -146,6 +146,11 @@ export interface Task {
   proof_instructions?: string;
   created_at: Date;
   updated_at: Date;
+  business_organization_id?: string | null;
+  business_location_id?: string | null;
+  provider_organization_id?: string | null;
+  provider_service_profile_id?: string | null;
+  business_fulfiller_organization_id?: string | null;
 }
 
 export interface Escrow {
