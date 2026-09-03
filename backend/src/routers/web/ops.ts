@@ -750,7 +750,7 @@ export const webOpsRouter = router({
           (
             SELECT COUNT(*)
             FROM tasks t
-            WHERE t.poster_user_id = u.id
+            WHERE t.poster_id = u.id
           )::text AS task_count
 
         FROM users u
@@ -763,7 +763,7 @@ export const webOpsRouter = router({
         OR EXISTS (
           SELECT 1
           FROM tasks t
-          WHERE t.poster_user_id = u.id
+          WHERE t.poster_id = u.id
         )
 
         ORDER BY u.created_at DESC
@@ -832,7 +832,7 @@ export const webOpsRouter = router({
             task_id,
             created_at
           FROM task_drafts
-          WHERE poster_user_id = $1
+          WHERE poster_id = $1
           ORDER BY created_at DESC
           LIMIT 100
           `,
@@ -854,7 +854,7 @@ export const webOpsRouter = router({
             completed_at,
             created_at
           FROM tasks
-          WHERE poster_user_id = $1
+          WHERE poster_id = $1
           ORDER BY created_at DESC
           LIMIT 100
           `,
