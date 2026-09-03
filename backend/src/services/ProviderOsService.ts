@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { db } from '../db.js';
 import type { ServiceResult } from '../types.js';
+import { notifyProviderOsClientOnboarded } from '../lib/provider-os-notifications.js';
 import {
   assertBusinessCanQuoteDraft,
   createBusinessDraftQuote,
@@ -344,6 +345,13 @@ export async function acceptProviderOsInvite(input: {
       WHERE id = $1`,
     [invite.id],
   );
+
+  // Side effect only — never fail onboarding if SMS enqueue fails.
+  void notifyProviderOsClientOnboarded({
+    providerUserId: invite.provider_user_id,
+    posterUserId: input.actorId,
+    relationshipId: linked.data.relationshipId,
+  });
 
   return {
     success: true,

@@ -6,6 +6,10 @@ import { paymentCreationErrorCause } from '../services/NewPaymentCreationGuard.j
 import { StripeQuotePaymentProvider } from '../services/payment/StripeQuotePaymentProvider.js';
 import { finalizePaidQuote } from '../services/QuotePaymentFinalizationService.js';
 import { StripeService } from "../services/StripeService.js"
+import {
+  notifyProviderOsPaymentConfirmed,
+  notifyProviderOsQuoteApproved,
+} from '../lib/provider-os-notifications.js';
 
 export const quotePaymentRouter = router({
   createPaymentIntent: posterProcedure
@@ -176,6 +180,12 @@ export const quotePaymentRouter = router({
         ],
       );
 
+      // Poster committed to this quote by starting payment — separate from payment confirmation.
+      void notifyProviderOsQuoteApproved({
+        quoteId: input.quoteId,
+        posterUserId: ctx.user.id,
+      });
+
       return {
         quoteId: input.quoteId,
         quoteVersionId: input.quoteVersionId,
@@ -213,6 +223,13 @@ export const quotePaymentRouter = router({
           message: result.error.message,
         });
       }
+
+      void notifyProviderOsPaymentConfirmed({
+        quoteId: input.quoteId,
+        taskId: result.data.taskId,
+        posterUserId: ctx.user.id,
+        replayed: result.data.replayed,
+      });
 
       return result.data;
     }),

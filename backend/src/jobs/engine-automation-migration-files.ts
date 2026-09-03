@@ -116,4 +116,5 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260826_business_local_test_payout_evidence', fileName: '20260826_business_local_test_payout_evidence.sql' },
   { name: '20260901_provider_os_relationships', fileName: '20260901_provider_os_relationships.sql' },
   { name: '20260901_provider_os_invites', fileName: '20260901_provider_os_invites.sql' },
+  { name: '20260903_provider_os_notification_events', fileName: '20260903_provider_os_notification_events.sql' },
 ] as const;

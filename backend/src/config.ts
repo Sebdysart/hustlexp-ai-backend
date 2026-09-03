@@ -139,11 +139,13 @@ export const config = {
 
   // Identity Verification
   identity: {
-    twilio: {
-      accountSid: process.env.TWILIO_ACCOUNT_SID || '',
-      authToken: process.env.TWILIO_AUTH_TOKEN || '',
-      verifyServiceSid: process.env.TWILIO_VERIFY_SERVICE_SID || '',
-    },
+      twilio: {
+        accountSid: process.env.TWILIO_ACCOUNT_SID || '',
+        authToken: process.env.TWILIO_AUTH_TOKEN || '',
+        verifyServiceSid: process.env.TWILIO_VERIFY_SERVICE_SID || '',
+        /** From-number for Provider OS / transactional SMS (also read by TwilioSMSService). */
+        fromPhone: process.env.TWILIO_FROM_PHONE || '',
+      },
     sendgrid: {
       apiKey: process.env.SENDGRID_API_KEY || '',
       fromEmail: process.env.SENDGRID_FROM_EMAIL || 'verify@hustlexp.app',

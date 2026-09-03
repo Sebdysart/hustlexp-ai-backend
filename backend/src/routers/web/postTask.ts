@@ -3,6 +3,7 @@ import { z } from 'zod';
 import crypto from 'node:crypto';
 import { router, posterProcedure } from '../../trpc.js';
 import { db } from '../../db.js';
+import { notifyProviderOsProvidersOfNewDraft } from '../../lib/provider-os-notifications.js';
 
 const PostTaskSchema = z.object({
   lead: z.object({
@@ -209,6 +210,14 @@ async function handlePostTask({
             record: true,
         },
         ); */
+
+        if (!result.replayed) {
+          void notifyProviderOsProvidersOfNewDraft({
+            posterUserId,
+            draftId: result.taskDraftId,
+          });
+        }
+
         return {
             ok: true,
             ...result,
