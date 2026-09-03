@@ -832,7 +832,7 @@ export const webOpsRouter = router({
             task_id,
             created_at
           FROM task_drafts
-          WHERE poster_id = $1
+          WHERE poster_user_id = $1
           ORDER BY created_at DESC
           LIMIT 100
           `,
