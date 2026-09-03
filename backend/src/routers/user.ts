@@ -423,15 +423,23 @@ export const userRouter = router({
           ) {
             const verified = await db.query<User>(
               `UPDATE users
-                  SET date_of_birth = $2,
-                      is_minor = false,
+                  SET full_name = $2,
+                      phone = $3,
+                      date_of_birth = $4,
+                      is_minor = $5,
+                      default_mode = $6,
+                      onboarding_completed_at = NOW(),
                       updated_at = NOW()
                 WHERE id = $1
-                  AND firebase_uid = $3
+                  AND firebase_uid = $7
                 RETURNING *`,
               [
                 existingUser.id,
+                input.fullName,
+                input.phone || null,
                 input.dateOfBirth,
+                age < 18,
+                dbMode,
                 input.firebaseUid,
               ],
             );
@@ -501,8 +509,26 @@ export const userRouter = router({
       const initialTrustTier = input.phone ? 1 : 0;
 
       const result = await db.query<User>(
-        `INSERT INTO users (firebase_uid, email, full_name, default_mode, date_of_birth, is_minor, trust_tier)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `INSERT INTO users (
+            firebase_uid,
+            email,
+            full_name,
+            default_mode,
+            date_of_birth,
+            is_minor,
+            trust_tier,
+            onboarding_completed_at
+          )
+          VALUES (
+            $1,
+            $2,
+            $3,
+            $4,
+            $5,
+            $6,
+            $7,
+            NOW()
+          )
          ON CONFLICT (firebase_uid) DO NOTHING
          RETURNING *`,
         [input.firebaseUid, input.email, input.fullName, dbMode, input.dateOfBirth, age < 18, initialTrustTier]
