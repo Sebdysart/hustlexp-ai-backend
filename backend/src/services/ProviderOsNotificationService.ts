@@ -147,7 +147,8 @@ export async function emitProviderOsNotification(
           payload: {
             smsId,
             userId: input.providerUserId,
-            to: phone,
+            toPhone: phone,
+            body,
             source: 'provider_os',
             eventType: input.eventType,
             eventId,
