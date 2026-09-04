@@ -1,5 +1,7 @@
 {
-  "authority_set": "Charter v1.3.0 / Underwriting v3.4 / Learning Rail v1.0 / Frontend+WorkLink v1.1 / Activation+Copy v2.0 / Context v1.3.0 / OPS v1.1",
+  "authority_set": "Charter v1.3.0 / Underwriting v3.4 / Learning Rail v1.0 / Frontend+WorkLink v1.1 / Activation+Copy v2.0 / Context v1.3.0 / OPS v1.1 / Index v1.0",
+  "canonical_index_id": "1QTrT40LK5zo-DN6ER7naM3p43WlyxkBxKsjL23p20mY",
+  "current_underwriting_id": "1lbxM2D4vPX3NfzEPa6JvnvdS3EWzfL48aNY8piTBrYg",
   "production_effect": "NONE",
   "violations": [],
   "result": "PASS"

@@ -1,7 +1,10 @@
+> **Canonical authority pointer:** `docs/canonical/HUSTLEXP_CANONICAL_AUTHORITY.md` and [HustleXP Canonical Document Index v1.0](https://docs.google.com/document/d/1QTrT40LK5zo-DN6ER7naM3p43WlyxkBxKsjL23p20mY/edit).
+> **Production effect:** NONE. Current implementation, deployment, payment, provider, and outcome claims require source-dated exact evidence.
+
 # HustleXP `/OPS` — Internal Operations Control Plane Specification
 
 **Version:** 1.1
-**Status:** PROPOSED TARGET STATE — NOT REPRESENTED AS BUILT
+**Status:** CURRENT_TEAM_TARGET / PROPOSED_NOT_BUILT / NOT_PRODUCTION_AUTHORITY
 **Primary audience:** Product, operations, engineering, risk, finance, support, independent reviewers, processor solutions architecture
 **Product surface:** Internal HustleXP operator application at `/ops`
 **Controlling business model:** Managed local-work transaction network with MARKETPLACE, PROVIDER_OS, and BRING_YOUR_OWN_PROVIDER origins; WorkLinks, Task Opportunities, recurring occurrences, general services, and regulated trades share one lifecycle
