@@ -117,12 +117,6 @@ export async function claimBusinessTask(
         return failure('TASK_DRAFT_NOT_FOUND', 'Task draft no longer exists.');
       }
 
-      if (draft.quote_id) {
-        return failure(
-          'TASK_ALREADY_QUOTED',
-          'This task already has a quote.',
-        );
-      }
 
       if (draft.status === 'abandoned') {
         return failure(
@@ -230,7 +224,24 @@ export async function claimBusinessTask(
           'The selected business location is not active.',
         );
       }
+      const existingBusinessQuote = await query<{ id: string }>(
+        `
+        SELECT id
+        FROM quotes
+        WHERE task_draft_id = $1
+          AND business_organization_id = $2
+          AND status NOT IN ('rejected', 'withdrawn', 'expired', 'superseded')
+        LIMIT 1
+        `,
+        [draft.id, input.organizationId],
+      );
 
+      if (existingBusinessQuote.rows[0]) {
+        return failure(
+          'BUSINESS_ALREADY_QUOTED',
+          'This business already has an active quote for this task.',
+        );
+      }
       const platformMarginCents =
         input.proposedCustomerTotalCents - input.proposedPayoutCents;
 
@@ -251,7 +262,7 @@ export async function claimBusinessTask(
 	    provider_service_profile_id,
 	    claimed_by_user_id
 	  )
-	  VALUES ($1, $2, 'quote_send_ready', 'TEST', TRUE, $3, $4, $5, $6)
+	  VALUES ($1, $2, 'submitted', 'TEST', TRUE, $3, $4, $5, $6)
 	  RETURNING id
 	  `,
         [
@@ -354,16 +365,7 @@ export async function claimBusinessTask(
         [quoteVersionId, quoteId],
       );
 
-      await query(
-        `
-        UPDATE task_drafts
-        SET quote_id = $1,
-            quote_send_ready_at = NOW(),
-            updated_at = NOW()
-        WHERE id = $2
-        `,
-        [quoteId, draft.id],
-      );
+      
 
       const claimed = await query<{ id: string }>(
         `

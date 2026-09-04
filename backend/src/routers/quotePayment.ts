@@ -23,10 +23,9 @@ export const quotePaymentRouter = router({
         quote_status: string;
         quote_environment: string | null;
         quote_is_test: boolean;
+        selected_quote_id: string | null;
         total_cents: number;
         expires_at: Date;
-        poster_email: string;
-        lead_email: string;
       }>(
         `
         SELECT
@@ -36,22 +35,18 @@ export const quotePaymentRouter = router({
           q.status AS quote_status,
           q.environment AS quote_environment,
           q.is_test AS quote_is_test,
+          d.quote_id AS selected_quote_id,
           qv.total_cents,
-          qv.expires_at,
-          u.email AS poster_email,
-          l.email AS lead_email
+          qv.expires_at
         FROM quotes q
         JOIN quote_versions qv
           ON qv.id = q.active_version_id
-         AND qv.quote_id = q.id
+        AND qv.quote_id = q.id
         JOIN task_drafts d
           ON d.id = q.task_draft_id
-        JOIN leads l
-          ON l.id = d.lead_id
-        JOIN users u
-          ON u.id = $3
         WHERE q.id = $1
           AND q.active_version_id = $2
+          AND d.poster_user_id = $3
         LIMIT 1
         `,
         [input.quoteId, input.quoteVersionId, ctx.user.id],
@@ -65,16 +60,13 @@ export const quotePaymentRouter = router({
           message: 'Quote not found.',
         });
       }
-
-      if (
-        quote.poster_email.trim().toLowerCase()
-        !== quote.lead_email.trim().toLowerCase()
-      ) {
+      
+      if (quote.selected_quote_id !== input.quoteId) {
         throw new TRPCError({
-          code: 'FORBIDDEN',
-          message: 'This quote does not belong to the authenticated poster.',
+          code: 'PRECONDITION_FAILED',
+          message: 'This quote has not been accepted by the poster.',
         });
-      }
+      } 
 
       if (quote.expires_at <= new Date()) {
         throw new TRPCError({
