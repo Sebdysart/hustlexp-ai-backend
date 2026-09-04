@@ -1,3 +1,6 @@
+> **Canonical authority pointer:** `docs/canonical/HUSTLEXP_CANONICAL_AUTHORITY.md` and [HustleXP Canonical Document Index v1.0](https://docs.google.com/document/d/1QTrT40LK5zo-DN6ER7naM3p43WlyxkBxKsjL23p20mY/edit).
+> **Production effect:** NONE. Current implementation, deployment, payment, provider, and outcome claims require source-dated exact evidence.
+
 # HustleXP AI Backend — Claude Code Instructions
 
 For Cursor/IDE instructions, see [AGENTS.md](AGENTS.md).
