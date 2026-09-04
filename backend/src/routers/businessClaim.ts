@@ -115,6 +115,7 @@ listClaimedDrafts: protectedProcedure
 
       quote_id: string | null;
       quote_version_id: string | null;
+      quote_status: string | null;
 
       customer_total_cents: number | null;
       payout_cents: number | null;
@@ -136,8 +137,9 @@ listClaimedDrafts: protectedProcedure
         draft.zip,
         draft.region,
 
-        draft.quote_id,
+        link.quote_id,
         quote.active_version_id AS quote_version_id,
+        quote.status AS quote_status,
 
         link.proposed_customer_total_cents AS customer_total_cents,
         link.proposed_payout_cents AS payout_cents,
@@ -156,7 +158,7 @@ listClaimedDrafts: protectedProcedure
         ON draft.id = link.task_draft_id
 
       LEFT JOIN quotes quote
-        ON quote.id = draft.quote_id
+        ON quote.id = link.quote_id
 
       WHERE link.claimed_by_organization_id = $1
         AND link.status = 'CLAIMED'
@@ -179,8 +181,8 @@ listClaimedDrafts: protectedProcedure
       region: row.region,
 
       quoteId: row.quote_id,
-      quoteVersionId:
-        row.quote_version_id,
+      quoteVersionId: row.quote_version_id,
+      quoteStatus: row.quote_status,
 
       customerTotalCents:
         row.customer_total_cents,

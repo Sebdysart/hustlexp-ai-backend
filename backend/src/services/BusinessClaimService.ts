@@ -250,101 +250,101 @@ export async function claimBusinessTask(
        * how to turn into a canonical task.
        */
       const quoteResult = await query<{ id: string }>(
-	  `
-	  INSERT INTO quotes (
-	    task_draft_id,
-	    title,
-	    status,
-	    environment,
-	    is_test,
-	    business_organization_id,
-	    business_location_id,
-	    provider_service_profile_id,
-	    claimed_by_user_id
-	  )
-	  VALUES ($1, $2, 'submitted', 'TEST', TRUE, $3, $4, $5, $6)
-	  RETURNING id
-	  `,
-        [
-          draft.id,
-          draft.title ?? 'Business Quote',
-          input.organizationId,
-          input.businessLocationId,
-          input.serviceProfileId,
-          input.actorId,
-        ],
-      );
-	const now = new Date();
-
-	const arrivalWindowStart = new Date(
-	  now.getTime() + 48 * 60 * 60 * 1000,
-	);
-
-	const arrivalWindowEnd = new Date(
-	  now.getTime() + 120 * 60 * 60 * 1000,
-	);
-
-	const dispatchExpiresAt = new Date(
-	  arrivalWindowStart.getTime() - 2 * 60 * 60 * 1000,
-	);
-      const quoteId = quoteResult.rows[0]?.id;
-
-      if (!quoteId) {
-        return failure(
-          'QUOTE_CREATE_FAILED',
-          'Unable to create the business quote.',
+      `
+      INSERT INTO quotes (
+        task_draft_id,
+        title,
+        status,
+        environment,
+        is_test,
+        business_organization_id,
+        business_location_id,
+        provider_service_profile_id,
+        claimed_by_user_id
+      )
+      VALUES ($1, $2, 'submitted', 'TEST', TRUE, $3, $4, $5, $6)
+      RETURNING id
+      `,
+          [
+            draft.id,
+            draft.title ?? 'Business Quote',
+            input.organizationId,
+            input.businessLocationId,
+            input.serviceProfileId,
+            input.actorId,
+          ],
         );
-      }
+    const now = new Date();
 
-      const payToken = crypto.randomBytes(16).toString('hex');
-      const quoteExpiresAt = link.expires_at;
-      const versionResult = await query<{ id: string }>(
-	  `
-	  INSERT INTO quote_versions (
-	    quote_id,
-	    version_number,
-	    status,
-	    customer_description,
-	    subtotal_cents,
-	    service_fee_cents,
-	    materials_cents,
-	    discount_cents,
-	    total_cents,
-	    hustler_payout_cents,
-	    scope_json,
-	    pay_token,
-	    arrival_window_start,
-	    arrival_window_end,
-	    expires_at,
-	    dispatch_expires_at
-	  )
-	  VALUES (
-	    $1, 1, 'draft', $2,
-	    $3, 0, 0, 0,
-	    $3, $4, $5::jsonb, $6,
-	    $7, $8, $9, $10
-	  )
-	  RETURNING id
-	  `,
-	  [
-	    quoteId,
-	    draft.scope_summary ?? draft.title ?? 'Task',
-	    input.proposedCustomerTotalCents,
-	    input.proposedPayoutCents,
-	    JSON.stringify({
-	      business_claim: true,
-	      business_organization_id: input.organizationId,
-	      business_service_profile_id: input.serviceProfileId,
-	      business_location_id: input.businessLocationId,
-	      platform_margin_cents: platformMarginCents,
-	    }),
-	    payToken,
-	    arrivalWindowStart,
-	    arrivalWindowEnd,
-	    quoteExpiresAt,
-	    dispatchExpiresAt,
-	  ],
-	);
+    const arrivalWindowStart = new Date(
+      now.getTime() + 48 * 60 * 60 * 1000,
+    );
+
+    const arrivalWindowEnd = new Date(
+      now.getTime() + 120 * 60 * 60 * 1000,
+    );
+
+    const dispatchExpiresAt = new Date(
+      arrivalWindowStart.getTime() - 2 * 60 * 60 * 1000,
+    );
+        const quoteId = quoteResult.rows[0]?.id;
+
+        if (!quoteId) {
+          return failure(
+            'QUOTE_CREATE_FAILED',
+            'Unable to create the business quote.',
+          );
+        }
+
+        const payToken = crypto.randomBytes(16).toString('hex');
+        const quoteExpiresAt = link.expires_at;
+        const versionResult = await query<{ id: string }>(
+      `
+      INSERT INTO quote_versions (
+        quote_id,
+        version_number,
+        status,
+        customer_description,
+        subtotal_cents,
+        service_fee_cents,
+        materials_cents,
+        discount_cents,
+        total_cents,
+        hustler_payout_cents,
+        scope_json,
+        pay_token,
+        arrival_window_start,
+        arrival_window_end,
+        expires_at,
+        dispatch_expires_at
+      )
+      VALUES (
+        $1, 1, 'draft', $2,
+        $3, 0, 0, 0,
+        $3, $4, $5::jsonb, $6,
+        $7, $8, $9, $10
+      )
+      RETURNING id
+      `,
+      [
+        quoteId,
+        draft.scope_summary ?? draft.title ?? 'Task',
+        input.proposedCustomerTotalCents,
+        input.proposedPayoutCents,
+        JSON.stringify({
+          business_claim: true,
+          business_organization_id: input.organizationId,
+          business_service_profile_id: input.serviceProfileId,
+          business_location_id: input.businessLocationId,
+          platform_margin_cents: platformMarginCents,
+        }),
+        payToken,
+        arrivalWindowStart,
+        arrivalWindowEnd,
+        quoteExpiresAt,
+        dispatchExpiresAt,
+      ],
+    );
 
       const quoteVersionId = versionResult.rows[0]?.id;
 
@@ -378,6 +378,7 @@ export async function claimBusinessTask(
           claimed_by_business_location_id = $5,
           proposed_customer_total_cents = $6,
           proposed_payout_cents = $7,
+          quote_id = $8,
           claimed_at = NOW(),
           updated_at = NOW()
         WHERE id = $1
@@ -393,6 +394,7 @@ export async function claimBusinessTask(
           input.businessLocationId,
           input.proposedCustomerTotalCents,
           input.proposedPayoutCents,
+          quoteId,
         ],
       );
 
