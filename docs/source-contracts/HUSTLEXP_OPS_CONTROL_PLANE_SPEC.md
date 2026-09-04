@@ -1,11 +1,11 @@
 # HustleXP `/OPS` — Internal Operations Control Plane Specification
 
-**Version:** 1.0
+**Version:** 1.1
 **Status:** PROPOSED TARGET STATE — NOT REPRESENTED AS BUILT
 **Primary audience:** Product, operations, engineering, risk, finance, support, independent reviewers, processor solutions architecture
 **Product surface:** Internal HustleXP operator application at `/ops`
-**Controlling business model:** Local-services marketplace + Provider OS + task-opportunity acquisition + recurring work
-**Controlling payment design:** Processor-neutral architecture defined in the HustleXP Payment Infrastructure Pre-Integration Underwriting Package v3.1
+**Controlling business model:** Managed local-work transaction network with MARKETPLACE, PROVIDER_OS, and BRING_YOUR_OWN_PROVIDER origins; WorkLinks, Task Opportunities, recurring occurrences, general services, and regulated trades share one lifecycle
+**Controlling payment design:** Processor-neutral architecture defined in the HustleXP Payment Infrastructure Pre-Integration Underwriting Package v3.4
 **Production boundary:** Processor-specific mechanics remain disabled until written underwriting approval, commercial terms, configuration, sandbox certification, and independent release approval exist.
 
 ---

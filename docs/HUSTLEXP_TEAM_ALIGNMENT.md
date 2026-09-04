@@ -65,7 +65,7 @@ Resolve conflicts inside a plane using the freshest exact primary source and ret
 
 Target-plane sources for this mission are:
 
-- `HustleXP Payment Infrastructure Pre-Integration Underwriting Package v3.1`, [Google Doc](https://docs.google.com/document/d/1PYpWdbnlhRBoovc6GfTyxMuu1IzMIdDQpV6hHHraXaQ/edit?tab=t.0), tab `t.0`, revision `AIroW37g_sqKNU_dvvRNUndw-qUeooFwAYIHqN60aHvPSR178sKjMMu5rMzGTzODqgDKERue3ZbAT8UesInsUZvT6p1Z0bUvPByrgwaPDA`, modified `2026-08-19T01:35:10.015Z`;
+- `HustleXP Payment Infrastructure Pre-Integration Underwriting Package v3.4`, [Google Doc](https://docs.google.com/document/d/1PYpWdbnlhRBoovc6GfTyxMuu1IzMIdDQpV6hHHraXaQ/edit?tab=t.0), tab `t.0`, revision `AIroW37g_sqKNU_dvvRNUndw-qUeooFwAYIHqN60aHvPSR178sKjMMu5rMzGTzODqgDKERue3ZbAT8UesInsUZvT6p1Z0bUvPByrgwaPDA`, modified `2026-08-19T01:35:10.015Z`;
 - the byte-preserved [Backend PR Audit, Architecture Convergence, and Processor-Readiness Mission](source-contracts/HUSTLEXP_BACKEND_PR_AUDIT_AND_CONVERGENCE_MISSION.md), SHA-256 `437df53578b045f0b6ee55f99d1a302c2aee68fb288ad10c1083e0e411e25469`;
 - the byte-preserved [`/OPS` Internal Operations Control Plane Specification](source-contracts/HUSTLEXP_OPS_CONTROL_PLANE_SPEC.md), SHA-256 `65aa1868547e73dae157393572e4fbf68113990b4b71d241c6a7512a9d47af96`;
 - this stable contract and the source-dated [Payment and `/OPS` Convergence Record](architecture/HUSTLEXP_PAYMENT_OPS_CONVERGENCE_RECORD.md).
