@@ -9,7 +9,7 @@ import {
   LocalCertificationPaymentProvider,
 } from '../services/LocalCertificationPaymentProvider.js';
 import { paymentCreationErrorCause } from '../services/NewPaymentCreationGuard.js';
-import { resolvePaymentProvider } from '../services/payment/PaymentProviderResolver.js';
+import { resolvePaymentProvider, type PaymentProviderName } from '../services/payment/PaymentProviderResolver.js';
 import { posterProcedure, Schemas } from '../trpc.js';
 
 function canonicalPrice(raw: number | string | null): number | null {
@@ -99,12 +99,8 @@ export const escrowPaymentProcedures = {
         escrowRow.rows[0].platform_fee_cents,
       );
 
-      const useLocalCertificationProvider =
-        taskRow.rows[0].automation_classification === 'CONTROLLED_TEST'
-        && localCertificationPaymentEnabled();
-
       const provider = resolvePaymentProvider(
-        useLocalCertificationProvider ? 'local_test' : 'stripe',
+        process.env.PAYMENT_PROVIDER as PaymentProviderName,
       );
 
       const result = await provider.createPaymentIntent({
@@ -183,45 +179,23 @@ export const escrowPaymentProcedures = {
         task_id: string;
       };
 
-      if (isLocalCertificationPaymentIntentId(input.stripePaymentIntentId)) {
-        const verified =
-          await LocalCertificationPaymentProvider.verifySucceededIntent({
-            paymentIntentId: input.stripePaymentIntentId,
-            escrowId: input.escrowId,
-            taskId: escrow.task_id,
-            posterId: ctx.user.id,
-            amountCents: escrow.amount,
-          });
+      const provider = resolvePaymentProvider(
+        process.env.PAYMENT_PROVIDER as PaymentProviderName,
+      );
 
-        if (!verified.success) {
-          throw new TRPCError({
-            code: 'PRECONDITION_FAILED',
-            message: verified.error.message,
-          });
-        }
-      } else {
-        const providerName = isLocalCertificationPaymentIntentId(
-          input.stripePaymentIntentId,
-        )
-          ? 'local_test'
-          : 'stripe';
+      const verified = await provider.verifySucceededPayment({
+        paymentIntentId: input.stripePaymentIntentId,
+        escrowId: input.escrowId,
+        taskId: escrow.task_id,
+        posterId: ctx.user.id,
+        amountCents: escrow.amount,
+      });
 
-        const provider = resolvePaymentProvider(providerName);
-
-        const verified = await provider.verifySucceededPayment({
-          paymentIntentId: input.stripePaymentIntentId,
-          escrowId: input.escrowId,
-          taskId: escrow.task_id,
-          posterId: ctx.user.id,
-          amountCents: escrow.amount,
+      if (!verified.success) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: verified.error.message,
         });
-
-        if (!verified.success) {
-          throw new TRPCError({
-            code: 'PRECONDITION_FAILED',
-            message: verified.error.message,
-          });
-        }
       }
 
       const duplicate = await db.query<{ id: string }>(

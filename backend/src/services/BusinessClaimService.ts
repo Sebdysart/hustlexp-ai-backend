@@ -7,8 +7,13 @@ interface ClaimInput {
   organizationId: string;
   serviceProfileId: string;
   businessLocationId: string;
+
   proposedCustomerTotalCents: number;
   proposedPayoutCents: number;
+
+  arrivalWindowStart: string;
+  arrivalWindowEnd: string;
+
   actorId: string;
 }
 
@@ -117,12 +122,6 @@ export async function claimBusinessTask(
         return failure('TASK_DRAFT_NOT_FOUND', 'Task draft no longer exists.');
       }
 
-      if (draft.quote_id) {
-        return failure(
-          'TASK_ALREADY_QUOTED',
-          'This task already has a quote.',
-        );
-      }
 
       if (draft.status === 'abandoned') {
         return failure(
@@ -194,13 +193,12 @@ export async function claimBusinessTask(
       const profile = profileResult.rows[0];
 
       if (
-	  !profile ||
-	  !['DRAFT', 'ACTIVE'].includes(profile.status) ||
-	  profile.service_code.trim().toLowerCase() !== draft.category.trim().toLowerCase()
+        !profile ||
+        !['DRAFT', 'ACTIVE'].includes(profile.status)
       ) {
         return failure(
-          'SERVICE_PROFILE_MISMATCH',
-          'The selected service profile cannot perform this task category.',
+          'SERVICE_PROFILE_UNAVAILABLE',
+          'The selected service profile is not available.',
         );
       }
 
@@ -230,7 +228,24 @@ export async function claimBusinessTask(
           'The selected business location is not active.',
         );
       }
+      const existingBusinessQuote = await query<{ id: string }>(
+        `
+        SELECT id
+        FROM quotes
+        WHERE task_draft_id = $1
+          AND business_organization_id = $2
+          AND status NOT IN ('rejected', 'withdrawn', 'expired', 'superseded')
+        LIMIT 1
+        `,
+        [draft.id, input.organizationId],
+      );
 
+      if (existingBusinessQuote.rows[0]) {
+        return failure(
+          'BUSINESS_ALREADY_QUOTED',
+          'This business already has an active quote for this task.',
+        );
+      }
       const platformMarginCents =
         input.proposedCustomerTotalCents - input.proposedPayoutCents;
 
@@ -239,101 +254,109 @@ export async function claimBusinessTask(
        * how to turn into a canonical task.
        */
       const quoteResult = await query<{ id: string }>(
-	  `
-	  INSERT INTO quotes (
-	    task_draft_id,
-	    title,
-	    status,
-	    environment,
-	    is_test,
-	    business_organization_id,
-	    business_location_id,
-	    provider_service_profile_id,
-	    claimed_by_user_id
-	  )
-	  VALUES ($1, $2, 'quote_send_ready', 'TEST', TRUE, $3, $4, $5, $6)
-	  RETURNING id
-	  `,
-        [
-          draft.id,
-          draft.title ?? 'Business Quote',
-          input.organizationId,
-          input.businessLocationId,
-          input.serviceProfileId,
-          input.actorId,
-        ],
-      );
-	const now = new Date();
-
-	const arrivalWindowStart = new Date(
-	  now.getTime() + 48 * 60 * 60 * 1000,
-	);
-
-	const arrivalWindowEnd = new Date(
-	  now.getTime() + 120 * 60 * 60 * 1000,
-	);
-
-	const dispatchExpiresAt = new Date(
-	  arrivalWindowStart.getTime() - 2 * 60 * 60 * 1000,
-	);
-      const quoteId = quoteResult.rows[0]?.id;
-
-      if (!quoteId) {
-        return failure(
-          'QUOTE_CREATE_FAILED',
-          'Unable to create the business quote.',
+      `
+      INSERT INTO quotes (
+        task_draft_id,
+        title,
+        status,
+        environment,
+        is_test,
+        business_organization_id,
+        business_location_id,
+        provider_service_profile_id,
+        claimed_by_user_id
+      )
+      VALUES ($1, $2, 'submitted', 'TEST', TRUE, $3, $4, $5, $6)
+      RETURNING id
+      `,
+          [
+            draft.id,
+            draft.title ?? 'Business Quote',
+            input.organizationId,
+            input.businessLocationId,
+            input.serviceProfileId,
+            input.actorId,
+          ],
         );
-      }
+        
+        const arrivalWindowStart =
+          new Date(input.arrivalWindowStart);
 
-      const payToken = crypto.randomBytes(16).toString('hex');
-      const quoteExpiresAt = link.expires_at;
-      const versionResult = await query<{ id: string }>(
-	  `
-	  INSERT INTO quote_versions (
-	    quote_id,
-	    version_number,
-	    status,
-	    customer_description,
-	    subtotal_cents,
-	    service_fee_cents,
-	    materials_cents,
-	    discount_cents,
-	    total_cents,
-	    hustler_payout_cents,
-	    scope_json,
-	    pay_token,
-	    arrival_window_start,
-	    arrival_window_end,
-	    expires_at,
-	    dispatch_expires_at
-	  )
-	  VALUES (
-	    $1, 1, 'draft', $2,
-	    $3, 0, 0, 0,
-	    $3, $4, $5::jsonb, $6,
-	    $7, $8, $9, $10
-	  )
-	  RETURNING id
-	  `,
-	  [
-	    quoteId,
-	    draft.scope_summary ?? draft.title ?? 'Task',
-	    input.proposedCustomerTotalCents,
-	    input.proposedPayoutCents,
-	    JSON.stringify({
-	      business_claim: true,
-	      business_organization_id: input.organizationId,
-	      business_service_profile_id: input.serviceProfileId,
-	      business_location_id: input.businessLocationId,
-	      platform_margin_cents: platformMarginCents,
-	    }),
-	    payToken,
-	    arrivalWindowStart,
-	    arrivalWindowEnd,
-	    quoteExpiresAt,
-	    dispatchExpiresAt,
-	  ],
-	);
+        const arrivalWindowEnd =
+          new Date(input.arrivalWindowEnd);
+
+        if (
+          !Number.isFinite(arrivalWindowStart.getTime()) ||
+          !Number.isFinite(arrivalWindowEnd.getTime()) ||
+          arrivalWindowEnd <= arrivalWindowStart
+        ) {
+          return failure(
+            'INVALID_ARRIVAL_WINDOW',
+            'The proposed arrival window is invalid.',
+          );
+        }
+
+    const dispatchExpiresAt = new Date(
+      arrivalWindowStart.getTime() - 2 * 60 * 60 * 1000,
+    );
+        const quoteId = quoteResult.rows[0]?.id;
+
+        if (!quoteId) {
+          return failure(
+            'QUOTE_CREATE_FAILED',
+            'Unable to create the business quote.',
+          );
+        }
+
+        const payToken = crypto.randomBytes(16).toString('hex');
+        const quoteExpiresAt = link.expires_at;
+        const versionResult = await query<{ id: string }>(
+      `
+      INSERT INTO quote_versions (
+        quote_id,
+        version_number,
+        status,
+        customer_description,
+        subtotal_cents,
+        service_fee_cents,
+        materials_cents,
+        discount_cents,
+        total_cents,
+        hustler_payout_cents,
+        scope_json,
+        pay_token,
+        arrival_window_start,
+        arrival_window_end,
+        expires_at,
+        dispatch_expires_at
+      )
+      VALUES (
+        $1, 1, 'draft', $2,
+        $3, 0, 0, 0,
+        $3, $4, $5::jsonb, $6,
+        $7, $8, $9, $10
+      )
+      RETURNING id
+      `,
+      [
+        quoteId,
+        draft.scope_summary ?? draft.title ?? 'Task',
+        input.proposedCustomerTotalCents,
+        input.proposedPayoutCents,
+        JSON.stringify({
+          business_claim: true,
+          business_organization_id: input.organizationId,
+          business_service_profile_id: input.serviceProfileId,
+          business_location_id: input.businessLocationId,
+          platform_margin_cents: platformMarginCents,
+        }),
+        payToken,
+        arrivalWindowStart,
+        arrivalWindowEnd,
+        quoteExpiresAt,
+        dispatchExpiresAt,
+      ],
+    );
 
       const quoteVersionId = versionResult.rows[0]?.id;
 
@@ -354,16 +377,7 @@ export async function claimBusinessTask(
         [quoteVersionId, quoteId],
       );
 
-      await query(
-        `
-        UPDATE task_drafts
-        SET quote_id = $1,
-            quote_send_ready_at = NOW(),
-            updated_at = NOW()
-        WHERE id = $2
-        `,
-        [quoteId, draft.id],
-      );
+      
 
       const claimed = await query<{ id: string }>(
         `
@@ -376,6 +390,7 @@ export async function claimBusinessTask(
           claimed_by_business_location_id = $5,
           proposed_customer_total_cents = $6,
           proposed_payout_cents = $7,
+          quote_id = $8,
           claimed_at = NOW(),
           updated_at = NOW()
         WHERE id = $1
@@ -391,6 +406,7 @@ export async function claimBusinessTask(
           input.businessLocationId,
           input.proposedCustomerTotalCents,
           input.proposedPayoutCents,
+          quoteId,
         ],
       );
 

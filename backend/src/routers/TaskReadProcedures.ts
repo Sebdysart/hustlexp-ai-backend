@@ -5,6 +5,12 @@ import { db } from '../db.js';
 import { TaskService } from '../services/TaskService.js';
 import { hustlerProcedure, posterProcedure, protectedProcedure, Schemas } from '../trpc.js';
 
+type TaskViewerRole =
+  | 'poster'
+  | 'hustler'
+  | 'business'
+  | null;
+
 export const TaskReadProcedures = {
 getById: protectedProcedure
     .input(z.object({ taskId: Schemas.uuid }))
@@ -20,12 +26,34 @@ getById: protectedProcedure
         },
         { tags: [CACHE_TAGS.TASK(input.taskId)], ttl: CACHE_TTL.taskDetails }
       );
+      const businessMembership =
+        task.business_fulfiller_organization_id
+          ? await db.query<{ id: string }>(
+              `
+              SELECT id
+              FROM business_memberships
+              WHERE organization_id = $1
+                AND user_id = $2
+                AND status = 'ACTIVE'
+                AND role = 'OWNER'
+              LIMIT 1
+              `,
+              [
+                task.business_fulfiller_organization_id,
+                ctx.user.id,
+              ],
+            )
+          : { rows: [] as Array<{ id: string }> };
 
-      const viewerRole = task.poster_id === ctx.user.id
-        ? 'poster'
-        : task.worker_id === ctx.user.id
-          ? 'hustler'
-          : null;
+      const isBusinessFulfiller = Boolean(businessMembership.rows[0]);
+      const viewerRole: TaskViewerRole =
+        task.poster_id === ctx.user.id
+          ? 'poster'
+          : task.worker_id === ctx.user.id
+            ? 'hustler'
+            : isBusinessFulfiller
+              ? 'business'
+              : null;
       const isParticipant = viewerRole !== null;
       // Tasks in OPEN/MATCHING state are discoverable (hustler feed)
       const isDiscoverable = ['OPEN', 'MATCHING'].includes(task.state);
@@ -87,6 +115,65 @@ getById: protectedProcedure
         quote_shortlisted_worker_id: quoteChatRole ? quoteWorkerId : null,
       };
     }),
+getDraftById: posterProcedure
+  .input(
+    z.object({
+      draftId: Schemas.uuid,
+    }),
+  )
+  .query(async ({ ctx, input }) => {
+    const result = await db.query(
+      `SELECT *
+         FROM task_drafts
+        WHERE id = $1
+          AND poster_user_id = $2
+        LIMIT 1`,
+      [input.draftId, ctx.user.id],
+    );
+
+    if (result.rows.length === 0) {
+      throw new TRPCError({
+        code: 'NOT_FOUND',
+        message: 'Task request not found',
+      });
+    }
+
+    return result.rows[0];
+  }),
+getQuoteVersionByQuoteId: posterProcedure
+  .input(
+    z.object({
+      quoteId: Schemas.uuid,
+    }),
+  )
+  .query(async ({ ctx, input }) => {
+    const result = await db.query(
+      `SELECT
+         qv.total_cents,
+         qv.id,
+         qv.quote_id,
+         qv.status
+       FROM quote_versions qv
+       JOIN task_drafts td
+         ON td.quote_id = qv.quote_id
+       WHERE qv.quote_id = $1
+         AND td.poster_user_id = $2
+       ORDER BY
+         qv.expires_at DESC NULLS LAST,
+         qv.updated_at DESC
+       LIMIT 1`,
+      [input.quoteId, ctx.user.id],
+    );
+
+    if (result.rows.length === 0) {
+      throw new TRPCError({
+        code: 'NOT_FOUND',
+        message: 'Quote version not found',
+      });
+    }
+
+    return result.rows[0];
+  }),
 getState: protectedProcedure
     .input(z.object({ taskId: Schemas.uuid }))
     .query(async ({ input, ctx }) => {
@@ -157,6 +244,34 @@ listByPoster: posterProcedure
 
       return result.data; // { tasks, nextCursor }
     }),
+listDraftsByPoster: posterProcedure
+  .input(
+    Schemas.cursorPagination.optional()
+  )
+  .query(async ({ ctx, input }) => {
+    const result = await db.query(
+      `SELECT
+         id,
+         title,
+         category,
+         created_at,
+         updated_at,
+         quote_id
+       FROM task_drafts
+       WHERE poster_user_id = $1
+       ORDER BY created_at DESC
+       LIMIT $2`,
+      [
+        ctx.user.id,
+        input?.limit ?? 20,
+      ],
+    );
+
+    return {
+      drafts: result.rows,
+      nextCursor: null,
+    };
+  }),    
 listByWorker: hustlerProcedure
     .input(
       Schemas.cursorPagination.extend({

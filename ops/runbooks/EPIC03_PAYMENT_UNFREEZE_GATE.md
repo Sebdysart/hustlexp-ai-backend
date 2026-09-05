@@ -1,20 +1,23 @@
-# EPIC-03 — Payment unfreeze gate
+# Superseded EPIC-03 payment-unfreeze gate
 
-**Current production:** `paymentCreation.mode=frozen` (session `/health` 2026-07-27)
+Status: `LEGACY_NON_EXECUTABLE / SUPERSEDED`
 
-## In-repo controls
+Production launch: `NO-GO`
 
-- `backend/src/services/NewPaymentCreationGuard.ts`
-- `ops/runbooks/PAYMENT_CERTIFICATION_CHECKLIST.md`
+There is no authorized payment-unfreeze procedure in this file. The prior design treated legacy Stripe test receipts and a bounded environment change as sufficient. That is rejected.
 
-## Unfreeze rule (non-negotiable)
+Current blockers include:
 
-1. Complete every receipt row in the certification checklist (test, then bounded live fixture).
-2. Prove kill switch returns to frozen without rewriting unrelated config.
-3. Enable only for an approved cell/fixture — never global enablement as first step.
-4. Site bridge must continue to refuse `PAYMENT_INTENT_READY` while frozen (reconcile suite).
-5. Refresh site current-state artifact after any mode change.
+- 20 unresolved written processor decisions;
+- no approved live processor adapter;
+- incomplete task-first fake-FSE lifecycle and persistent migration lineage;
+- incomplete Operations named-session/RBAC/MFA/dual-control boundary;
+- absent exact-candidate sandbox, reconciliation, bank-arrival, incident, and independent release evidence.
 
-## Explicit hold
+`HX_PAYMENT_CREATION_MODE=enabled` is not an allowed recovery or test step. Positive production customer-money creation must remain structurally impossible for every production-like configuration while refund, void, recovery, webhook, and reconciliation lanes remain available.
 
-Do not set production payment creation to enabled from this engineering session without completed checklist receipts attached.
+The only current path is the sequence in [the Team Goal and Execution Contract](../../docs/HUSTLEXP_TEAM_ALIGNMENT.md) and [the production release gate](production-launch-checklist.md). Historical EPIC-03 observations remain preserved in `EPIC03_KILL_SWITCH_EVIDENCE.md` and source-dated receipt artifacts; they do not authorize a processor or enablement.
+
+**Done Criteria:** No code, configuration, runbook, UI, provider action, or approval path can enable positive production money until the full external release gate is independently accepted.
+
+**Test Plan:** Set every production-like environment combination, including an attempted enabled mode, and call every creation entrypoint. Assert zero processor calls and zero task/payment/FSE/Work Order/escrow writes.

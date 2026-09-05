@@ -1,5 +1,11 @@
 # Railway Postgres PITR enablement (EPIC-02)
 
+Status: `CURRENT_RUNBOOK / PROD_GATED_EXTERNAL_EFFECTS`
+
+Production effects authorized by this document: `NONE`
+
+Do not perform any step below until a fresh execution session has exact root-specific authority for the named Railway project, environment, service, provider actions, expected redeploy, evidence capture, and cleanup. Re-read current provider documentation and state before execution; the 2026-07-27 observations below are historical. See [the Team Goal and Execution Contract](../../docs/HUSTLEXP_TEAM_ALIGNMENT.md).
+
 **Canonical datastore:** Railway PostgreSQL (not Neon).  
 **Docs:** https://docs.railway.com/volumes/point-in-time-recovery  
 
@@ -17,7 +23,7 @@ Native PITR is **skipped until Pro is purchased**. Do not claim EPIC-02 backup a
 - Account plan that supports backups/PITR (typically Pro).
 - If **Enable PITR** is missing: turn on the PITR feature flag at https://railway.com/account/feature-flags
 
-## Enable (operator click — required once)
+## Enable (operator click — requires fresh authority)
 
 1. Open Railway → project **HustleXP** / production environment.
 2. Click the **Postgres** database service (not `hustlexp-ai-backend`, not Redis).
@@ -41,7 +47,7 @@ Native PITR is **skipped until Pro is purchased**. Do not claim EPIC-02 backup a
    - restored service healthy at (UTC) → **RTO**
    - that prod kept serving → note “source untouched”
 5. Spot-check the fork (row counts / `\dt`) without pointing production `DATABASE_URL` at it.
-6. Delete the restored fork when evidence is captured (or keep briefly for audit).
+6. Preserve the evidence, then request or use separate explicit cleanup authority before deleting the restored fork.
 
 ## Evidence to paste back (no secrets)
 

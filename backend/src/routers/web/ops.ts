@@ -168,28 +168,710 @@ export const webOpsRouter = router({
     }),
 
   getTaskDraft: operationsAdminProcedure
-    .input(z.object({ id: z.string().uuid() }))
+    .input(
+      z.object({
+        id: z.string().uuid(),
+      }),
+    )
     .query(async ({ input }) => {
       const result = await db.query(
-        `SELECT ${TASK_DRAFT_SAFE_COLS.split(',').map((c) => `d.${c.trim()}`).join(', ')},
-                q.id as quote_id_linked,
-                qv.status as quote_status, qv.total_cents,
-                qv.subtotal_cents, qv.service_fee_cents, qv.materials_cents,
-                qv.discount_cents, qv.customer_description, qv.version_number as quote_version
-         FROM task_drafts d
-         LEFT JOIN quotes q ON q.task_draft_id = d.id
-         LEFT JOIN quote_versions qv ON qv.id = q.active_version_id
-         WHERE d.id = $1`,
+        `
+        SELECT
+          ${TASK_DRAFT_SAFE_COLS
+            .split(',')
+            .map(
+              (c) =>
+                `d.${c.trim()}`,
+            )
+            .join(', ')},
+
+          q.id AS quote_id_linked,
+
+          qv.status AS quote_status,
+          qv.total_cents,
+          qv.subtotal_cents,
+          qv.service_fee_cents,
+          qv.materials_cents,
+          qv.discount_cents,
+          qv.customer_description,
+          qv.version_number AS quote_version,
+
+          claim.id AS claim_link_id,
+          claim.status AS claim_status,
+          claim.expires_at AS claim_expires_at,
+          claim.claimed_at,
+          claim.claimed_by_organization_id
+
+        FROM task_drafts d
+
+        LEFT JOIN quotes q
+          ON q.task_draft_id = d.id
+
+        LEFT JOIN quote_versions qv
+          ON qv.id = q.active_version_id
+
+        LEFT JOIN LATERAL (
+          SELECT
+            link.id,
+            link.status,
+            link.expires_at,
+            link.claimed_at,
+            link.claimed_by_organization_id
+          FROM ops_business_claim_links link
+          WHERE link.task_draft_id = d.id
+          ORDER BY link.created_at DESC
+          LIMIT 1
+        ) claim ON TRUE
+
+        WHERE d.id = $1
+        `,
         [input.id],
       );
-      if (result.rows.length === 0) throw new TRPCError({ code: 'NOT_FOUND' });
-      const draft = result.rows[0] as Record<string, unknown>;
-      for (const forbidden of ['card_token_hash', 'ip_hash', 'pay_token']) {
-        if (forbidden in draft) delete draft[forbidden];
+
+      if (result.rows.length === 0) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+        });
       }
-      return { ok: true, draft };
+
+      const draft =
+        result.rows[0] as Record<
+          string,
+          unknown
+        >;
+
+      for (const forbidden of [
+        'card_token_hash',
+        'ip_hash',
+        'pay_token',
+      ]) {
+        if (forbidden in draft) {
+          delete draft[forbidden];
+        }
+      }
+
+      return {
+        ok: true,
+        draft,
+      };
     }),
 
+  listTasks: operationsAdminProcedure
+    .input(
+      z.object({
+        state: z.string().optional(),
+        limit: z.number().min(1).max(100).default(50),
+      }),
+    )
+    .query(async ({ input }) => {
+      const params: unknown[] = [];
+      const conditions: string[] = [];
+
+      if (input.state) {
+        conditions.push(
+          `t.state = $${params.push(input.state)}`,
+        );
+      }
+
+      const where =
+        conditions.length > 0
+          ? `WHERE ${conditions.join(' AND ')}`
+          : '';
+
+      params.push(input.limit);
+
+      const result = await db.query<{
+        id: string;
+        title: string | null;
+        category: string | null;
+        state: string;
+        progress_state: string | null;
+        poster_id: string | null;
+        worker_id: string | null;
+        business_fulfiller_organization_id:
+          | string
+          | null;
+        started_at: Date | null;
+        proof_submitted_at: Date | null;
+        completed_at: Date | null;
+        created_at: Date;
+      }>(
+        `
+        SELECT
+          t.id,
+          t.title,
+          t.category,
+          t.state,
+          t.progress_state,
+          t.poster_id,
+          t.worker_id,
+          t.business_fulfiller_organization_id,
+          t.started_at,
+          t.proof_submitted_at,
+          t.completed_at,
+          t.created_at
+
+        FROM tasks t
+
+        ${where}
+
+        ORDER BY t.created_at DESC
+        LIMIT $${params.length}
+        `,
+        params,
+      );
+
+      return {
+        ok: true,
+        tasks: result.rows.map((task) => ({
+          id: task.id,
+          title: task.title,
+          category: task.category,
+          state: task.state,
+          progressState:
+            task.progress_state,
+          posterId:
+            task.poster_id,
+          workerId:
+            task.worker_id,
+          businessOrganizationId:
+            task.business_fulfiller_organization_id,
+          startedAt:
+            task.started_at?.toISOString() ??
+            null,
+          proofSubmittedAt:
+            task.proof_submitted_at?.toISOString() ??
+            null,
+          completedAt:
+            task.completed_at?.toISOString() ??
+            null,
+          createdAt:
+            task.created_at.toISOString(),
+        })),
+      };
+    }),
+
+  getTask: operationsAdminProcedure
+    .input(
+      z.object({
+        id: z.string().uuid(),
+      }),
+    )
+    .query(async ({ input }) => {
+    const result = await db.query(
+      `
+      SELECT
+        t.*,
+
+        e.state AS escrow_state,
+        e.amount AS escrow_amount_cents,
+        e.platform_fee_cents,
+        e.release_amount AS release_amount_cents,
+        e.refund_amount AS refund_amount_cents,
+        e.funded_at,
+        e.released_at,
+        e.refunded_at,
+        e.provider_transfer_status,
+        e.provider_transfer_paid_at,
+        e.payout_provider,
+        e.provider_transfer_id,
+        e.stripe_payment_intent_id,
+        e.stripe_transfer_id,
+        e.stripe_refund_id,
+
+        u.email AS poster_email
+
+      FROM tasks t
+
+      LEFT JOIN escrows e
+        ON e.task_id = t.id
+
+      LEFT JOIN users u
+        ON u.id = t.poster_id
+
+      WHERE t.id = $1
+      LIMIT 1
+      `,
+      [input.id],
+    );
+
+      if (result.rows.length === 0) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'Task not found',
+        });
+      }
+
+      return {
+        ok: true,
+        task: result.rows[0],
+      };
+    }),
+
+  listBusinesses: operationsAdminProcedure
+    .input(
+      z.object({
+        status: z.string().optional(),
+        verification_status: z.string().optional(),
+        provider_enabled: z.boolean().optional(),
+        limit: z.number().min(1).max(100).default(50),
+      }).strict(),
+    )
+    .query(async ({ input }) => {
+      const conditions: string[] = [];
+      const params: unknown[] = [];
+
+      if (input.status) {
+        conditions.push(
+          `bo.status = $${params.push(input.status)}`,
+        );
+      }
+
+      if (input.verification_status) {
+        conditions.push(
+          `bo.verification_status = $${params.push(
+            input.verification_status,
+          )}`,
+        );
+      }
+
+      if (typeof input.provider_enabled === 'boolean') {
+        conditions.push(
+          `bo.provider_enabled = $${params.push(
+            input.provider_enabled,
+          )}`,
+        );
+      }
+
+      const where =
+        conditions.length > 0
+          ? `WHERE ${conditions.join(' AND ')}`
+          : '';
+
+      params.push(input.limit);
+
+      const result = await db.query<{
+        id: string;
+        legal_name: string;
+        display_name: string;
+        provider_enabled: boolean;
+        client_enabled: boolean;
+        verification_status: string;
+        payout_status: string;
+        status: string;
+        created_at: Date;
+        updated_at: Date;
+        owner_count: string;
+        service_count: string;
+        location_count: string;
+      }>(
+        `
+        SELECT
+          bo.id,
+          bo.legal_name,
+          bo.display_name,
+          bo.provider_enabled,
+          bo.client_enabled,
+          bo.verification_status,
+          bo.payout_status,
+          bo.status,
+          bo.created_at,
+          bo.updated_at,
+
+          (
+            SELECT COUNT(*)
+            FROM business_memberships bm
+            WHERE bm.organization_id = bo.id
+              AND bm.role = 'OWNER'
+              AND bm.status = 'ACTIVE'
+          )::text AS owner_count,
+
+          (
+            SELECT COUNT(*)
+            FROM business_service_profiles bsp
+            WHERE bsp.organization_id = bo.id
+          )::text AS service_count,
+
+          (
+            SELECT COUNT(*)
+            FROM business_locations bl
+            WHERE bl.organization_id = bo.id
+          )::text AS location_count
+
+        FROM business_organizations bo
+
+        ${where}
+
+        ORDER BY bo.created_at DESC
+        LIMIT $${params.length}
+        `,
+        params,
+      );
+
+      return {
+        ok: true,
+
+        businesses: result.rows.map((row) => ({
+          id: row.id,
+          legalName: row.legal_name,
+          displayName: row.display_name,
+          providerEnabled: row.provider_enabled,
+          clientEnabled: row.client_enabled,
+          verificationStatus:
+            row.verification_status,
+          payoutStatus:
+            row.payout_status,
+          status: row.status,
+          createdAt:
+            row.created_at.toISOString(),
+          updatedAt:
+            row.updated_at.toISOString(),
+          ownerCount:
+            Number(row.owner_count),
+          serviceCount:
+            Number(row.service_count),
+          locationCount:
+            Number(row.location_count),
+        })),
+      };
+    }),
+
+  getBusiness: operationsAdminProcedure
+    .input(
+      z.object({
+        id: z.string().uuid(),
+      }).strict(),
+    )
+    .query(async ({ input }) => {
+      const organizationResult =
+        await db.query(
+          `
+          SELECT
+            id,
+            legal_name,
+            display_name,
+            provider_enabled,
+            client_enabled,
+            verification_status,
+            payout_status,
+            status,
+            created_by,
+            created_at,
+            updated_at
+          FROM business_organizations
+          WHERE id = $1
+          `,
+          [input.id],
+        );
+
+      const organization =
+        organizationResult.rows[0];
+
+      if (!organization) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'Business not found',
+        });
+      }
+
+      const [
+        membershipsResult,
+        servicesResult,
+        locationsResult,
+      ] = await Promise.all([
+        db.query(
+          `
+          SELECT
+            id,
+            user_id,
+            role,
+            status,
+            invited_by,
+            accepted_at,
+            created_at
+          FROM business_memberships
+          WHERE organization_id = $1
+          ORDER BY created_at ASC
+          `,
+          [input.id],
+        ),
+
+        db.query(
+          `
+          SELECT
+            id,
+            service_code,
+            service_name,
+            service_description,
+            pricing_mode,
+            corridor_minimum_cents,
+            corridor_maximum_cents,
+            response_mode,
+            status,
+            created_at
+          FROM business_service_profiles
+          WHERE organization_id = $1
+          ORDER BY created_at ASC
+          `,
+          [input.id],
+        ),
+
+        db.query(
+          `
+          SELECT
+            id,
+            name,
+            rough_location,
+            postal_code,
+            region_code,
+            timezone,
+            status,
+            created_at
+          FROM business_locations
+          WHERE organization_id = $1
+          ORDER BY created_at ASC
+          `,
+          [input.id],
+        ),
+      ]);
+
+      return {
+        ok: true,
+
+        business: {
+          ...organization,
+
+          memberships:
+            membershipsResult.rows,
+
+          services:
+            servicesResult.rows,
+
+          locations:
+            locationsResult.rows,
+        },
+      };
+    }),
+
+  setBusinessVerificationStatus:
+    operationsAdminProcedure
+      .input(
+        z.object({
+          organization_id:
+            z.string().uuid(),
+
+          verification_status:
+            z.enum([
+              'UNVERIFIED',
+              'VERIFIED',
+            ]),
+        }).strict(),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const result = await db.query<{
+          id: string;
+          verification_status: string;
+        }>(
+          `
+          UPDATE business_organizations
+          SET
+            verification_status = $2,
+            updated_at = NOW()
+          WHERE id = $1
+          RETURNING
+            id,
+            verification_status
+          `,
+          [
+            input.organization_id,
+            input.verification_status,
+          ],
+        );
+
+        const business =
+          result.rows[0];
+
+        if (!business) {
+          throw new TRPCError({
+            code: 'NOT_FOUND',
+            message: 'Business not found',
+          });
+        }
+
+        await recordOpsAudit({
+          actorUserId: ctx.user.id,
+          action:
+            'business_verification_status_changed',
+          targetType:
+            'business_organization',
+          targetId:
+            input.organization_id,
+          meta: {
+            verification_status:
+              input.verification_status,
+          },
+        });
+
+        return {
+          ok: true,
+          organization_id:
+            business.id,
+          verification_status:
+            business.verification_status,
+        };
+      }),
+
+  listPosters: operationsAdminProcedure
+    .input(
+      z.object({
+        limit: z.number().min(1).max(100).default(50),
+      }).strict(),
+    )
+    .query(async ({ input }) => {
+      const result = await db.query<{
+        id: string;
+        email: string | null;
+        created_at: Date;
+        draft_count: string;
+        task_count: string;
+      }>(
+        `
+        SELECT
+          u.id,
+          u.email,
+          u.created_at,
+
+          (
+            SELECT COUNT(*)
+            FROM task_drafts d
+            WHERE d.poster_user_id = u.id
+          )::text AS draft_count,
+
+          (
+            SELECT COUNT(*)
+            FROM tasks t
+            WHERE t.poster_id = u.id
+          )::text AS task_count
+
+        FROM users u
+
+        WHERE EXISTS (
+          SELECT 1
+          FROM task_drafts d
+          WHERE d.poster_user_id = u.id
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM tasks t
+          WHERE t.poster_id = u.id
+        )
+
+        ORDER BY u.created_at DESC
+        LIMIT $1
+        `,
+        [input.limit],
+      );
+
+      return {
+        ok: true,
+        posters: result.rows.map((row) => ({
+          id: row.id,
+          email: row.email,
+          createdAt:
+            row.created_at.toISOString(),
+          draftCount:
+            Number(row.draft_count),
+          taskCount:
+            Number(row.task_count),
+        })),
+      };
+    }),
+
+  getPoster: operationsAdminProcedure
+    .input(
+      z.object({
+        id: z.string().uuid(),
+      }).strict(),
+    )
+    .query(async ({ input }) => {
+      const posterResult =
+        await db.query(
+          `
+          SELECT
+            id,
+            email,
+            created_at
+          FROM users
+          WHERE id = $1
+          `,
+          [input.id],
+        );
+
+      const poster =
+        posterResult.rows[0];
+
+      if (!poster) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'Poster not found',
+        });
+      }
+
+      const [
+        draftsResult,
+        tasksResult,
+      ] = await Promise.all([
+        db.query(
+          `
+          SELECT
+            id,
+            title,
+            category,
+            status,
+            quote_id,
+            task_id,
+            created_at
+          FROM task_drafts
+          WHERE poster_user_id = $1
+          ORDER BY created_at DESC
+          LIMIT 100
+          `,
+          [input.id],
+        ),
+
+        db.query(
+          `
+          SELECT
+            id,
+            title,
+            category,
+            state,
+            progress_state,
+            business_fulfiller_organization_id,
+            worker_id,
+            started_at,
+            proof_submitted_at,
+            completed_at,
+            created_at
+          FROM tasks
+          WHERE poster_id = $1
+          ORDER BY created_at DESC
+          LIMIT 100
+          `,
+          [input.id],
+        ),
+      ]);
+
+      return {
+        ok: true,
+
+        poster: {
+          ...poster,
+          drafts: draftsResult.rows,
+          tasks: tasksResult.rows,
+        },
+      };
+    }),
   // ── Quotes ──────────────────────────────────────────────────────────────────
 
   createQuote: operationsAdminProcedure

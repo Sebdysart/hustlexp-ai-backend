@@ -1,31 +1,31 @@
-# Production Role Fixture Packaging (EPIC-04)
+# Legacy production-role fixture package
 
-Create least-privilege, expiring fixtures. Never count fixtures as business outcomes.
+Status: `LEGACY_NON_EXECUTABLE / EXPIRED_TEMPLATE`
 
-Audit script (read-only): `scripts/verify-production-role-readiness.mjs`
+The prior August 2026 fixture window expired. This file no longer contains account-creation, database-grant, identity, payout, provider, or browser-execution instructions.
 
-## Fixture matrix
+A future controlled fixture package requires fresh production authority and must record:
 
-| Role | Identity provider | Account ID (redacted) | Expires (UTC) | Intended entry | Intended destination | Recovery | Payout destination controlled | Test-exclusion tagged | Journey evidence | Status |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Poster | Firebase | `poster+epic04@…` | 2026-08-14 | `/get-help` | `/task-preview` | `/get-help` | n/a | yes | | REQUESTED |
-| Hustler | Firebase | `hustler+epic04@…` | 2026-08-14 | `/earn` | `/earn/setup` | `/earn` | test Connect only | yes | | REQUESTED |
-| Business Client | Firebase | `bizclient+epic04@…` | 2026-08-14 | `/business` | `/business/workspace` | `/business` | n/a | yes | | REQUESTED |
-| Service Business | Firebase | `svcbusiness+epic04@…` | 2026-08-14 | `/business/provide` | `/business/workspace?mode=provider` | `/business/provide` | test Connect only | yes | | REQUESTED |
-| Operations | Firebase + admin_roles | `ops+epic04@…` | 2026-08-14 | `/ops` | `/ops` | `/` | n/a | yes | | REQUESTED |
+| Field | Required evidence |
+|---|---|
+| Fixture purpose and lane | Exact bounded scenario; never a business outcome |
+| Identity | Redacted provider ID, issuer, assurance level, and server-derived roles |
+| Scope | Tenant, resources, capabilities, category, geography, amount, and allowed effects |
+| Exclusions | Analytics, GMV, liquidity, customer/provider metrics, communications, and payouts |
+| Time | Issued/expiry/revoked timestamps; shortest practical duration |
+| Data | Synthetic values, retention/deletion plan, privacy owner |
+| Financial boundary | Fake adapter or separately authorized sandbox; never a personal bank |
+| Candidate | Exact site/backend/worker/schema/build identities |
+| Approval | Distinct requester, approver, executor, reviewer; step-up/dual control where required |
+| Evidence | Login, authorization, journey, denial, audit, revocation, and cleanup receipts |
 
-Live request pack: `ops/runbooks/EPIC04_FIXTURE_REQUEST.json` · Execution: `ops/runbooks/EPIC04_ROLE_FIXTURE_EXECUTION.md`
+Required rules:
 
-## Packaging rules
+1. No raw secret, password, token, identity document, bank detail, or exact address enters Git or chat.
+2. The fixture cannot share a reusable human credential.
+3. Production money creation remains frozen unless separately authorized by the full release gate.
+4. Operations roles use named sessions and server-derived authority.
+5. Revocation/cleanup is a separate explicit effect and must preserve audit evidence.
+6. A ready fixture proves only its exact controlled lane, never product readiness.
 
-1. Fixture emails/phones use a dedicated controlled domain or alias set.
-2. Every fixture has an expiry ≤ 14 days unless re-authorized.
-3. Payout destinations are test/sandbox or explicitly controlled corporate accounts — never personal production banks without dual control.
-4. Journeys attach: browser revision (`/version.json`), engine revision (`/health.build.revision`), canonical IDs, and `/ops` visibility.
-5. Revoke immediately after evidence capture or on expiry.
-
-## Acceptance
-
-- `verify-production-role-readiness` reports ready_accounts ≥ 1 for each of 5 roles
-- Each lane reaches destination/recovery without inventing GMV
-- Exact audit trail stored under `docs/production-role-readiness-evidence-*.md`
+See [the Team Goal and Execution Contract](../HUSTLEXP_TEAM_ALIGNMENT.md).

@@ -96,36 +96,31 @@ export async function finalizePaidQuote(
      *
      * We do not want an external Stripe call while holding DB locks.
      */
-    const quoteContext = await db.query<{
-      quote_id: string;
-      quote_version_id: string;
-      poster_email: string;
-      lead_email: string;
-      total_cents: number;
-    }>(
-      `
-      SELECT
-        q.id AS quote_id,
-        qv.id AS quote_version_id,
-        u.email AS poster_email,
-        l.email AS lead_email,
-        qv.total_cents
-      FROM quotes q
-      JOIN quote_versions qv
-        ON qv.id = q.active_version_id
-       AND qv.quote_id = q.id
-      JOIN task_drafts d
-        ON d.id = q.task_draft_id
-      JOIN leads l
-        ON l.id = d.lead_id
-      JOIN users u
-        ON u.id = $3
-      WHERE q.id = $1
-        AND qv.id = $2
-      LIMIT 1
-      `,
-      [input.quoteId, input.quoteVersionId, input.posterId],
-    );
+      const quoteContext = await db.query<{
+        quote_id: string;
+        quote_version_id: string;
+        selected_quote_id: string | null;
+        total_cents: number;
+      }>(
+        `
+        SELECT
+          q.id AS quote_id,
+          qv.id AS quote_version_id,
+          d.quote_id AS selected_quote_id,
+          qv.total_cents
+        FROM quotes q
+        JOIN quote_versions qv
+          ON qv.id = q.active_version_id
+        AND qv.quote_id = q.id
+        JOIN task_drafts d
+          ON d.id = q.task_draft_id
+        WHERE q.id = $1
+          AND qv.id = $2
+          AND d.poster_user_id = $3
+        LIMIT 1
+        `,
+        [input.quoteId, input.quoteVersionId, input.posterId],
+      );
 
     const context = quoteContext.rows[0];
 
@@ -136,13 +131,10 @@ export async function finalizePaidQuote(
       );
     }
 
-    if (
-      context.poster_email.trim().toLowerCase()
-      !== context.lead_email.trim().toLowerCase()
-    ) {
+    if (context.selected_quote_id !== input.quoteId) {
       return fail(
-        'QUOTE_POSTER_MISMATCH',
-        'This quote does not belong to the authenticated poster.',
+        'QUOTE_NOT_ACCEPTED',
+        'This quote has not been accepted by the poster.',
       );
     }
 
@@ -170,25 +162,30 @@ export async function finalizePaidQuote(
      * Lock the quote and create/materialize the canonical task.
      */
     const materialized = await db.transaction(async (query) => {
-      const quoteResult = await query<QuoteRow>(
-        `
-        SELECT
-  	id,
-  	task_draft_id,
-  	active_version_id,
-  	status,
-  	environment,
-  	is_test,
-  	business_organization_id,
-  	business_location_id,
-  	provider_service_profile_id,
-  	claimed_by_user_id
-	FROM quotes
-	WHERE id = $1
-	FOR UPDATE
-        `,
-        [input.quoteId],
-      );
+    const quoteResult = await query<
+      QuoteRow & { selected_quote_id: string | null }
+    >(
+      `
+      SELECT
+        q.id,
+        q.task_draft_id,
+        q.active_version_id,
+        q.status,
+        q.environment,
+        q.is_test,
+        q.business_organization_id,
+        q.business_location_id,
+        q.provider_service_profile_id,
+        q.claimed_by_user_id,
+        d.quote_id AS selected_quote_id
+      FROM quotes q
+      JOIN task_drafts d
+        ON d.id = q.task_draft_id
+      WHERE q.id = $1
+      FOR UPDATE OF q, d
+      `,
+      [input.quoteId],
+    );
 
 	const quote = quoteResult.rows[0];
 
@@ -196,6 +193,17 @@ export async function finalizePaidQuote(
 	  throw new Error('QUOTE_NOT_FOUND');
 	}
 
+  if (quote.selected_quote_id !== input.quoteId) {
+    throw new Error('QUOTE_NOT_ACCEPTED');
+  }
+
+  if (
+    quote.status !== 'quote_send_ready' &&
+    quote.status !== 'quote_ready'
+  ) {
+    throw new Error('QUOTE_NOT_PAYABLE');
+  }
+  
 	const hasBusinessClaim = Boolean(quote.business_organization_id);
 
 	if (hasBusinessClaim) {
@@ -477,6 +485,32 @@ export async function finalizePaidQuote(
           input.paymentIntentId,
         ],
       );
+      const draftUpdate = await query<{
+        task_id: string;
+      }>(
+        `
+        UPDATE task_drafts
+        SET
+          task_id = $2,
+          updated_at = NOW()
+        WHERE id = $1
+          AND (
+            task_id IS NULL
+            OR task_id = $2
+          )
+        RETURNING task_id
+        `,
+        [
+          draft.id,
+          taskId,
+        ],
+      );
+
+      if (!draftUpdate.rows[0]) {
+        throw new Error(
+          'Task draft is already linked to a different canonical task.',
+        );
+      }
 
       return {
         taskId,
@@ -704,7 +738,25 @@ export async function finalizePaidQuote(
         rest.join(':') || 'Task creation failed.',
       );
     }
+    const message1 =
+        err instanceof Error
+          ? err.message
+          : String(err);
 
+      console.error(
+        'QUOTE FINALIZATION FAILED:',
+        {
+          quoteId: input.quoteId,
+          quoteVersionId: input.quoteVersionId,
+          paymentIntentId: input.paymentIntentId,
+          posterId: input.posterId,
+          error: message1,
+          stack:
+            err instanceof Error
+              ? err.stack
+              : undefined,
+        },
+      );
     return fail(
       'QUOTE_FINALIZATION_FAILED',
       'Unable to finalize the paid quote.',

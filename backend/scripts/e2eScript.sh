@@ -52,6 +52,7 @@ POST_TASK_RESPONSE="$(
   curl -sS -X POST \
     "$BASE_URL/trpc/webPostTask.start" \
     -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $MY_AUTH_TOKEN" \
     --data-raw "{
       \"lead\": {
         \"submission_id\": \"$(uuidgen)\",

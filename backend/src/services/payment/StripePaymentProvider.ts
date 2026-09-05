@@ -41,6 +41,16 @@ export const StripePaymentProvider: PaymentProvider = {
         ),
       );
 
+      if (paymentIntent.livemode) {
+        return {
+          success: false,
+          error: {
+            code: 'PAYMENT_MODE_MISMATCH',
+            message: 'Live Stripe payments are not allowed in this environment',
+          },
+        };
+      }
+
       if (paymentIntent.status !== 'succeeded') {
         return {
           success: false,
@@ -61,6 +71,16 @@ export const StripePaymentProvider: PaymentProvider = {
         };
       }
 
+      if (paymentIntent.currency !== 'usd') {
+        return {
+          success: false,
+          error: {
+            code: 'PAYMENT_CURRENCY_MISMATCH',
+            message: 'Payment intent currency does not match escrow currency',
+          },
+        };
+      }
+
       if (paymentIntent.metadata?.task_id !== input.taskId) {
         return {
           success: false,
@@ -71,13 +91,33 @@ export const StripePaymentProvider: PaymentProvider = {
         };
       }
 
+      if (paymentIntent.metadata?.escrow_id !== input.escrowId) {
+        return {
+          success: false,
+          error: {
+            code: 'PAYMENT_ESCROW_MISMATCH',
+            message: 'Payment intent was not created for this escrow',
+          },
+        };
+      }
+
+      if (paymentIntent.metadata?.poster_id !== input.posterId) {
+        return {
+          success: false,
+          error: {
+            code: 'PAYMENT_POSTER_MISMATCH',
+            message: 'Payment intent was not created for this poster',
+          },
+        };
+      }
+
       const charge = paymentIntent.latest_charge;
 
       if (
-        typeof charge === 'object' &&
-        charge !== null &&
-        'refunded' in charge &&
-        charge.refunded === true
+        typeof charge === 'object'
+        && charge !== null
+        && 'refunded' in charge
+        && charge.refunded === true
       ) {
         return {
           success: false,
@@ -101,5 +141,5 @@ export const StripePaymentProvider: PaymentProvider = {
         },
       };
     }
-  },
+  }
 };
