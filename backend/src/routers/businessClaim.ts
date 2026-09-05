@@ -5,6 +5,9 @@ import { protectedProcedure, router, publicProcedure } from '../trpc.js';
 import { claimBusinessTask } from '../services/BusinessClaimService.js';
 import { createHash } from 'node:crypto';
 import { db } from '../db.js';
+import {
+  computePreferredArrivalWindow,
+} from '../services/QuoteTiming.js';
 
 export const businessClaimRouter = router({
   preview: publicProcedure
@@ -33,6 +36,7 @@ export const businessClaimRouter = router({
         est_price_max_cents: number | null;
 
         quote_id: string | null;
+        structured: unknown;
       }>(
         `
         SELECT
@@ -45,6 +49,8 @@ export const businessClaimRouter = router({
           draft.scope_summary,
           draft.zip,
           draft.region,
+          draft.structured,
+
 
           draft.est_price_min_cents,
           draft.est_price_max_cents,
@@ -76,6 +82,29 @@ export const businessClaimRouter = router({
           message: 'This claim link is no longer available.',
         });
       }
+      const structured =
+        row.structured;
+
+      const answers =
+        structured &&
+        typeof structured === 'object' &&
+        !Array.isArray(structured) &&
+        'answers' in structured &&
+        structured.answers &&
+        typeof structured.answers === 'object' &&
+        !Array.isArray(structured.answers)
+          ? structured.answers as Record<string, unknown>
+          : {};
+
+      const preferredWindow =
+        String(
+          answers.preferred_window ??
+            'flexible',
+        );
+      const customerWindow =
+        computePreferredArrivalWindow(
+          preferredWindow,
+        );
 
       return {
         taskDraftId: row.task_draft_id,
@@ -95,6 +124,13 @@ export const businessClaimRouter = router({
 
         expiresAt:
           row.expires_at.toISOString(),
+        preferredWindow,
+
+        preferredArrivalWindowStart:
+          customerWindow.arrivalStart.toISOString(),
+
+        preferredArrivalWindowEnd:
+          customerWindow.arrivalEnd.toISOString(),
       };
     }),
 
@@ -217,6 +253,9 @@ listClaimedDrafts: protectedProcedure
         businessLocationId: z.string().uuid(),
         proposedCustomerTotalCents: z.number().int().positive(),
         proposedPayoutCents: z.number().int().positive(),
+
+        arrivalWindowStart: z.string().datetime(),
+        arrivalWindowEnd: z.string().datetime(),
       }).strict(),
     )
     .mutation(async ({ ctx, input }) => {

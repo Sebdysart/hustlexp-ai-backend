@@ -7,8 +7,13 @@ interface ClaimInput {
   organizationId: string;
   serviceProfileId: string;
   businessLocationId: string;
+
   proposedCustomerTotalCents: number;
   proposedPayoutCents: number;
+
+  arrivalWindowStart: string;
+  arrivalWindowEnd: string;
+
   actorId: string;
 }
 
@@ -188,13 +193,12 @@ export async function claimBusinessTask(
       const profile = profileResult.rows[0];
 
       if (
-	  !profile ||
-	  !['DRAFT', 'ACTIVE'].includes(profile.status) ||
-	  profile.service_code.trim().toLowerCase() !== draft.category.trim().toLowerCase()
+        !profile ||
+        !['DRAFT', 'ACTIVE'].includes(profile.status)
       ) {
         return failure(
-          'SERVICE_PROFILE_MISMATCH',
-          'The selected service profile cannot perform this task category.',
+          'SERVICE_PROFILE_UNAVAILABLE',
+          'The selected service profile is not available.',
         );
       }
 
@@ -274,15 +278,23 @@ export async function claimBusinessTask(
             input.actorId,
           ],
         );
-    const now = new Date();
+        
+        const arrivalWindowStart =
+          new Date(input.arrivalWindowStart);
 
-    const arrivalWindowStart = new Date(
-      now.getTime() + 48 * 60 * 60 * 1000,
-    );
+        const arrivalWindowEnd =
+          new Date(input.arrivalWindowEnd);
 
-    const arrivalWindowEnd = new Date(
-      now.getTime() + 120 * 60 * 60 * 1000,
-    );
+        if (
+          !Number.isFinite(arrivalWindowStart.getTime()) ||
+          !Number.isFinite(arrivalWindowEnd.getTime()) ||
+          arrivalWindowEnd <= arrivalWindowStart
+        ) {
+          return failure(
+            'INVALID_ARRIVAL_WINDOW',
+            'The proposed arrival window is invalid.',
+          );
+        }
 
     const dispatchExpiresAt = new Date(
       arrivalWindowStart.getTime() - 2 * 60 * 60 * 1000,
