@@ -24,7 +24,19 @@ export const quotePaymentRouter = router({
         quote_environment: string | null;
         quote_is_test: boolean;
         selected_quote_id: string | null;
+        business_organization_id: string | null;
+        business_location_id: string | null;
+        provider_service_profile_id: string | null;
         total_cents: number;
+        hustler_payout_cents: number;
+        arrival_window_start: Date | null;
+        arrival_window_end: Date | null;
+        dispatch_expires_at: Date | null;
+        scheduled_service_date: string | null;
+        arrival_start_date: string | null;
+        arrival_end_date: string | null;
+        category: string;
+        region: string | null;
         expires_at: Date;
       }>(
         `
@@ -36,7 +48,21 @@ export const quotePaymentRouter = router({
           q.environment AS quote_environment,
           q.is_test AS quote_is_test,
           d.quote_id AS selected_quote_id,
+          q.business_organization_id,
+          q.business_location_id,
+          q.provider_service_profile_id,
+          d.scheduled_service_date::text AS scheduled_service_date,
+          d.category,
+          d.region,
           qv.total_cents,
+          qv.hustler_payout_cents,
+          qv.arrival_window_start,
+          qv.arrival_window_end,
+          qv.dispatch_expires_at,
+          (qv.arrival_window_start AT TIME ZONE 'America/Los_Angeles')::date::text
+            AS arrival_start_date,
+          (qv.arrival_window_end AT TIME ZONE 'America/Los_Angeles')::date::text
+            AS arrival_end_date,
           qv.expires_at
         FROM quotes q
         JOIN quote_versions qv
@@ -85,6 +111,60 @@ export const quotePaymentRouter = router({
         });
       }
 
+      // Validate before creating OR returning an existing intent. Finalization
+      // retains its consistency checks because quote state can change afterward.
+      if (quote.business_organization_id && (
+        !quote.business_location_id || !quote.provider_service_profile_id
+      )) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Business quote is missing its organization, location, or service profile binding.',
+        });
+      }
+
+      const totalCents = Number(quote.total_cents);
+      const payoutCents = Number(quote.hustler_payout_cents);
+      const marginCents = totalCents - payoutCents;
+      if (!Number.isSafeInteger(totalCents) || totalCents <= 0) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This quote has an invalid total.' });
+      }
+      if (!Number.isSafeInteger(payoutCents) || payoutCents <= 0) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This quote has an invalid provider payout.' });
+      }
+      if (!Number.isSafeInteger(marginCents) || marginCents < 0) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This quote has invalid payment economics.' });
+      }
+
+      if (!quote.scheduled_service_date) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Choose a service date before paying for this quote.',
+        });
+      }
+      const arrivalStart = quote.arrival_window_start?.getTime();
+      const arrivalEnd = quote.arrival_window_end?.getTime();
+      if (
+        arrivalStart === undefined || arrivalEnd === undefined ||
+        !Number.isFinite(arrivalStart) || !Number.isFinite(arrivalEnd) ||
+        arrivalEnd <= arrivalStart || !quote.arrival_start_date || !quote.arrival_end_date
+      ) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This quote has an invalid arrival window.' });
+      }
+      if (
+        quote.scheduled_service_date < quote.arrival_start_date ||
+        quote.scheduled_service_date > quote.arrival_end_date
+      ) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'The selected service date is outside the provider availability window.',
+        });
+      }
+      const dispatchExpiry = quote.dispatch_expires_at?.getTime();
+      // Past dispatch expiry is not a payment policy for manually assigned work.
+      if (dispatchExpiry === undefined || !Number.isFinite(dispatchExpiry) || dispatchExpiry > arrivalStart) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This quote has an invalid dispatch window.' });
+      }
+
       const existingPayment = await db.query<{
         provider_payment_id: string;
         amount_cents: number;
@@ -129,7 +209,7 @@ export const quotePaymentRouter = router({
         quoteId: input.quoteId,
         quoteVersionId: input.quoteVersionId,
         posterId: ctx.user.id,
-        amountCents: Number(quote.total_cents),
+        amountCents: totalCents,
       });
 
       if (!payment.success) {
