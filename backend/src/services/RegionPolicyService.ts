@@ -168,7 +168,6 @@ function taskPolicyReasons(
   if (task.regionCode !== row.region_code) reasons.push('region_policy_mismatch');
   if (!state) reasons.push('region_policy_invalid');
   const category = document.categories[task.category];
-  if (!category) reasons.push('category_not_allowed');
   if (category && !category.allowedRiskLevels.includes(task.riskLevel)) reasons.push('risk_level_not_allowed');
   if (category?.evidence.proofRequired && !task.requiresProof) reasons.push('proof_required');
   return [...reasons, ...financialPolicyReasons(document.financial, task)];
@@ -181,34 +180,106 @@ function taskPolicySnapshot(
   state: string,
 ): RegionPolicyTaskSnapshot {
   const category = document.categories[task.category];
-  if (!category) throw new TypeError('Validated region category is unexpectedly absent.');
   const rights = document.workerRights;
   const safety = document.safety;
   return {
     policyId: row.id,
-    policyVersion: row.version,
-    policyHash: row.policy_hash,
-    regionCode: row.region_code,
-    locationState: state,
-    licenseRequired: category.credentials.licenseRequired,
-    insuranceRequired: category.credentials.insuranceRequired,
-    backgroundCheckRequired: category.credentials.backgroundCheckRequired,
-    proofRequired: category.evidence.proofRequired,
-    proofMinPhotos: category.evidence.minPhotos,
-    proofMaxPhotos: category.evidence.maxPhotos,
-    proofGpsRequired: category.evidence.gpsRequired,
-    recordingAllowed: document.recording.allowed,
-    recordingStandaloneConsentRequired: document.recording.standaloneConsentRequired,
-    screeningStandaloneConsentRequired: rights.standaloneScreeningConsentRequired,
-    screeningReportAccessRequired: rights.reportAccessRequired,
-    screeningDisputeAndAppealRequired: rights.disputeAndAppealRequired,
-    screeningAdverseActionNoticeRequired: rights.adverseActionNoticeRequired,
-    safetyIncidentIntakeRequired: safety.incidentIntakeRequired,
-    safetyTimedCheckinRequired: safety.timedCheckinRiskLevels.includes(task.riskLevel),
-    safetyCheckinIntervalsMinutes: [...safety.checkinIntervalsMinutes],
-    safetyLocationRetentionDays: safety.locationRetentionDays,
-    safetyAlternateEmergencyActionRequired: safety.alternateEmergencyActionRequired,
-    currency: document.financial.currency,
+    policyVersion:
+      row.version,
+    policyHash:
+      row.policy_hash,
+    regionCode:
+      row.region_code,
+    locationState:
+      state,
+
+    licenseRequired:
+      category?.credentials
+        .licenseRequired ??
+      false,
+
+    insuranceRequired:
+      category?.credentials
+        .insuranceRequired ??
+      false,
+
+    backgroundCheckRequired:
+      category?.credentials
+        .backgroundCheckRequired ??
+      false,
+
+    proofRequired:
+      category?.evidence
+        .proofRequired ??
+      task.requiresProof,
+
+    proofMinPhotos:
+      category?.evidence
+        .minPhotos ??
+      1,
+
+    proofMaxPhotos:
+      category?.evidence
+        .maxPhotos ??
+      5,
+
+    proofGpsRequired:
+      category?.evidence
+        .gpsRequired ??
+      false,
+
+    recordingAllowed:
+      document.recording
+        .allowed,
+
+    recordingStandaloneConsentRequired:
+      document.recording
+        .standaloneConsentRequired,
+
+    screeningStandaloneConsentRequired:
+      rights
+        .standaloneScreeningConsentRequired,
+
+    screeningReportAccessRequired:
+      rights
+        .reportAccessRequired,
+
+    screeningDisputeAndAppealRequired:
+      rights
+        .disputeAndAppealRequired,
+
+    screeningAdverseActionNoticeRequired:
+      rights
+        .adverseActionNoticeRequired,
+
+    safetyIncidentIntakeRequired:
+      safety
+        .incidentIntakeRequired,
+
+    safetyTimedCheckinRequired:
+      safety
+        .timedCheckinRiskLevels
+        .includes(
+          task.riskLevel,
+        ),
+
+    safetyCheckinIntervalsMinutes:
+      [
+        ...safety
+          .checkinIntervalsMinutes,
+      ],
+
+    safetyLocationRetentionDays:
+      safety
+        .locationRetentionDays,
+
+    safetyAlternateEmergencyActionRequired:
+      safety
+        .alternateEmergencyActionRequired,
+
+    currency:
+      document.financial
+        .currency,
   };
 }
 
