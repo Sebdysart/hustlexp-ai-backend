@@ -21,7 +21,6 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260718_zone_category_liquidity_cells', fileName: '20260718_zone_category_liquidity_cells.sql' },
   { name: '20260718_worker_offer_decision_contract', fileName: '20260718_worker_offer_decision_contract.sql' },
   { name: '20260718_worker_screening_rights_contract', fileName: '20260718_worker_screening_rights_contract.sql' },
-  { name: '20260718_region_policy_contract', fileName: '20260718_region_policy_contract.sql' },
   { name: '20260718_completion_retention_contract', fileName: '20260718_completion_retention_contract.sql' },
   { name: '20260718_task_public_clarifications', fileName: '20260718_task_public_clarifications.sql' },
   { name: '20260718_marketplace_reputation_contract', fileName: '20260718_marketplace_reputation_contract.sql' },
@@ -117,4 +116,5 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260904_allow_multiple_claim', fileName: '20260904_allow_multiple_claim.sql' },
   { name: '20260904_add_claim_links_quote_id', fileName: '20260904_add_claim_links_quote_id.sql' },
   { name: '20260905_scheduled_service_date', fileName: '20260905_scheduled_service_date.sql' },
+  { name: '20260906_region_policy_contract', fileName: '20260906_region_policy_contract.sql' },
 ] as const;

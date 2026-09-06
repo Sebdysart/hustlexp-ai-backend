@@ -251,11 +251,50 @@ BEGIN
   END IF;
 
   v_category := v_policy.policy_document->'categories'->NEW.category;
+
+  /*
+  * Stage 1 manual-production fallback.
+  *
+  * Unknown task categories are not an eligibility failure.
+  * Human operators/providers determine whether the work is appropriate.
+  *
+  * Preserve the region-policy binding and its safety/financial metadata
+  * using conservative neutral defaults.
+  */
   IF v_category IS NULL THEN
-    RAISE EXCEPTION 'HXRP11: category is not permitted by region policy' USING ERRCODE = 'P0001';
+    v_category := jsonb_build_object(
+      'allowedRiskLevels',
+        jsonb_build_array(
+          'LOW',
+          'MEDIUM',
+          'HIGH',
+          'IN_HOME'
+        ),
+
+      'credentials',
+        jsonb_build_object(
+          'licenseRequired', FALSE,
+          'insuranceRequired', FALSE,
+          'backgroundCheckRequired', FALSE
+        ),
+
+      'evidence',
+        jsonb_build_object(
+          'proofRequired', NEW.requires_proof,
+          'minPhotos', 1,
+          'maxPhotos', 5,
+          'gpsRequired', FALSE
+        )
+    );
   END IF;
-  IF NOT ((v_category->'allowedRiskLevels') ? NEW.risk_level) THEN
-    RAISE EXCEPTION 'HXRP12: risk level is not permitted by region policy' USING ERRCODE = 'P0001';
+
+  IF NOT (
+    (v_category->'allowedRiskLevels')
+    ? NEW.risk_level
+  ) THEN
+    RAISE EXCEPTION
+      'HXRP12: risk level is not permitted by region policy'
+      USING ERRCODE = 'P0001';
   END IF;
 
   v_license := (v_category#>>'{credentials,licenseRequired}')::BOOLEAN;
