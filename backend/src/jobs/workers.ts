@@ -56,11 +56,6 @@ import {
   UniversalV1ChangeOrderRecoveryWorker,
   type UniversalV1ChangeOrderRecoveryPollerHandle,
 } from './universal-v1-change-order-recovery-worker.js';
-import {
-  PostgresUniversalV1ChangeOrderRecoveryRepository,
-  UniversalV1ChangeOrderRecoveryService,
-} from '../services/UniversalV1ChangeOrderRecovery.js';
-import { PostgresUniversalV1ChangeOrderRepository } from '../services/UniversalV1ChangeOrderPostgresRepository.js';
 import { assertNonproductionFakeFinanceAuthorized } from '../services/payment/NonproductionFinancialAuthorization.js';
 import { readNonproductionFinancialBootstrapReadiness } from '../services/payment/NonproductionFinancialBootstrapReadiness.js';
 import { createUniversalV1FakeFinancialApplicationService } from '../services/payment/UniversalV1FinancialApplicationService.js';
@@ -199,19 +194,11 @@ async function startChangeOrderRecoveryRuntime(): Promise<UniversalV1ChangeOrder
   const assertAuthorized = () => {
     assertNonproductionFakeFinanceAuthorized({ component: 'worker' });
   };
-  const recoveryRepository = new PostgresUniversalV1ChangeOrderRecoveryRepository(db);
   const configuredInterval = Number(
     process.env.HX_UNIVERSAL_V1_CHANGE_ORDER_RECOVERY_INTERVAL_MS ?? 5_000
   );
   return startUniversalV1ChangeOrderRecoveryPoller(configuredInterval, {
-    worker: new UniversalV1ChangeOrderRecoveryWorker(
-      recoveryRepository,
-      new UniversalV1ChangeOrderRecoveryService(
-        recoveryRepository,
-        new PostgresUniversalV1ChangeOrderRepository(db)
-      ),
-      () => createUniversalV1FakeFinancialApplicationService()
-    ),
+    worker: new UniversalV1ChangeOrderRecoveryWorker(),
     assertAuthorized,
   });
 }

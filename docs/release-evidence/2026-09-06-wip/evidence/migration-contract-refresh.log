@@ -1,0 +1,28 @@
+
+ RUN  v4.1.10 C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip
+
+ ✓ backend/tests/unit/nonproduction-runtime-insert-authority-migration.test.ts > nonproduction runtime insert authority migration > is supplemental and leaves the exact ordinal-146 engine tail unchanged 5ms
+ ✓ backend/tests/unit/nonproduction-runtime-insert-authority-migration.test.ts > nonproduction runtime insert authority migration > creates exactly ten typed, sealed, PUBLIC-revoked definer ports 13ms
+ ✓ backend/tests/unit/nonproduction-runtime-insert-authority-migration.test.ts > nonproduction runtime insert authority migration > requires caller-owned UUID identities and contains no grant or migration-time effect 4ms
+ ✓ backend/tests/unit/nonproduction-runtime-insert-authority-migration.test.ts > nonproduction runtime insert authority migration > routes every production writer through its exact port with no direct target INSERT 4ms
+ ✓ backend/tests/unit/nonproduction-runtime-insert-authority-migration.test.ts > nonproduction runtime insert authority migration > consumes actor authority before the preparation wrapper delegates to the frozen insert port 4ms
+ ✓ backend/tests/unit/nonproduction-runtime-insert-authority-migration.test.ts > nonproduction runtime insert authority migration > makes canonical fake lifecycle and reconciliation writes atomic with their bridge 2ms
+ ✓ backend/tests/unit/nonproduction-runtime-insert-authority-migration.test.ts > nonproduction runtime insert authority migration > seals deferred canonical-fact guards without granting runtime execution 2ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > pins runtime authority to the exact packaged v13 SQL bytes 5ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > is an append-only successor foundation with hostile-search-path and predecessor holds 14ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > captures one exact PREPARED plus REQUESTED fake command in the journal transaction 5ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > derives a PII-free deterministic BullMQ identity from immutable command and target authority 1ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > uses append-only publisher leases and outcomes for retry and queue-add acknowledgement recovery 1ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > retires stale target requests append-only and only claims the exact locked current tip 1ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > rejects forged Redis identity before recording fake-only dispatch crash-boundary evidence 2ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > forward-replaces the legacy NULL-outcome redispatch hole with a null-safe zero-write denial 1ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > keeps authenticated fake webhooks on a distinct append-only inert evidence rail 1ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > preserves digest-only unauthenticated fake webhook rejection evidence with zero authority 1ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > keeps transport ports invoker-only, seals the worker admission port, and closes new authority objects 4ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > confines canonical event insertion to the sealed fake materializer and excludes live effects 38ms
+
+ Test Files  2 passed (2)
+      Tests  19 passed (19)
+   Start at  01:16:10
+   Duration  1.33s (transform 289ms, setup 113ms, import 513ms, tests 115ms, environment 0ms)
+

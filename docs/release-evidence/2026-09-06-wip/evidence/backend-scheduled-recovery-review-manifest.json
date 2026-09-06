@@ -1,0 +1,421 @@
+{
+  "recordedAt": "2026-09-06T08:08:24.997Z",
+  "status": "LOCAL_SCHEDULED_RECOVERY_INTEGRATED_FULL_GATE_FAIL",
+  "repository": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip",
+  "head": "36255e604e718320ccae7d4e3ac269ad09678205",
+  "publicParent": "5a252f8b7e2c0d9252a65dacabe8d5fd1174ec3b",
+  "sourceBaseline": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/required-after-scheduled-recovery-baseline.json",
+  "sourceBaselineSha256": "5bb77cf219af816f9f0813516efc3dfaa61cd7145b2ac3f2a3fe8ea50836f602",
+  "files": [
+    {
+      "path": "backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql",
+      "beforeSha256": "275f00b59916f26627ca401512828c76195f2cc3ad45489aaadc3d40d3cafd68",
+      "afterSha256": "71d8ce41ec1437725559b687505d77e624817f532648b12a87567dfd6f205d27"
+    },
+    {
+      "path": "backend/src/jobs/change-order-adjustment-role-plans.ts",
+      "beforeSha256": null,
+      "afterSha256": "898d5ee3e75eb0b6f187673b80a7d033a48154f0f0ad12d990fbbc1bbaaf6f72"
+    },
+    {
+      "path": "backend/src/jobs/change-order-materialization-role-plans.ts",
+      "beforeSha256": "5132fd813a7377f41a14169bedc6611823acd0b0d2c0b094e53d9e577c0371ce",
+      "afterSha256": "e204f1b4041b4aa6df7d77a5f67edbf3fef96c9749631643928d867ef61d825a"
+    },
+    {
+      "path": "backend/src/jobs/fake-financial-outbox-role-plans.ts",
+      "beforeSha256": "eb3a65c6f25c372ed619efd017cd8d2430d0829a85baa1a72305041324c934bc",
+      "afterSha256": "f23de61a4224af1c707f79e8b4eeb0d1df505ba1f38b9cbc9fea40b5d5ddcdf1"
+    },
+    {
+      "path": "backend/src/jobs/fake-financial-preparation-role-plans.ts",
+      "beforeSha256": "d36bf88862e501e1f74eb56434fd550ee998813b9c1f269b878ee37923c8325d",
+      "afterSha256": "4df6a442477fb86025e6afa967f579b6efa39436c2cf2bf6baccfd15159655bd"
+    },
+    {
+      "path": "backend/src/jobs/universal-v1-change-order-recovery-worker.ts",
+      "beforeSha256": "1f804368590f1b5210adbf2a55499759c1ba0e99b59df2b991d8019227da461f",
+      "afterSha256": "9378bc8c3f3662a750e71cf0512d9792e7258dada819dfccff4c256fde81e702"
+    },
+    {
+      "path": "backend/src/jobs/work-order-command-role-authority.ts",
+      "beforeSha256": "c42a94ce914a5bfa23480564667266067e9baab38dbb29c0726346dc6cf2726c",
+      "afterSha256": "6ac1ffb1d0c98d04d1fe9bac121e7e3b60eb46560d58d1f3308933425804f09b"
+    },
+    {
+      "path": "backend/src/jobs/workers.ts",
+      "beforeSha256": "c97509737aa4d6d8fd059cc905d484c075a8ff2e7b11711e610ffaf8151871f1",
+      "afterSha256": "2c56439aba97443ac026b549f4d16a69f4f96c7c70f54b262a045422c4428307"
+    },
+    {
+      "path": "backend/src/services/UniversalV1ChangeOrderRecoveryObservation.ts",
+      "beforeSha256": "953760736223b1b3389b9034e6c4fe976ff46b912e3f4aeef54e4cc87d35712f",
+      "afterSha256": "0a310f5f5489c53795e2a99abdd134893439edd19028e3b3feaf5b3828ebb127"
+    },
+    {
+      "path": "backend/src/services/UniversalV1WorkerChangeOrderMaterialization.ts",
+      "beforeSha256": null,
+      "afterSha256": "94fcea81b78e6703f47d618afc988aae3ddabc6ecf8fa56b371ffac9b43b68c7"
+    },
+    {
+      "path": "backend/src/services/payment/NonproductionFinancialBootstrapReadiness.ts",
+      "beforeSha256": "e3102d711f168019128a7993a01435767b699c62be04850e40a6882482548b1e",
+      "afterSha256": "820f8ea7d0eb793ddd91b36cdf018e40b62ae878c43214c9dc0531a47e4f4d4f"
+    },
+    {
+      "path": "backend/src/services/payment/UniversalV1WorkerChangeOrderAdjustment.ts",
+      "beforeSha256": null,
+      "afterSha256": "c15ea292b4b998afa09182ad1e082349eac401b554f29c969bd8e7f32fdf927a"
+    },
+    {
+      "path": "backend/tests/helpers/universal-v1-synthetic-role-provisioning.ts",
+      "beforeSha256": "b7951f3c329b00fd29e5e7190640ee2fb4c208483ed183bbf29c66b6e12a03d6",
+      "afterSha256": "a61d57ce4f923796ce6addba1bb0dbefae17415d535203c10b1d1a64b6797648"
+    },
+    {
+      "path": "backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts",
+      "beforeSha256": "2a31df10705cea592f7f4bec9fc34d46303c71eab6b43cfd983a60a618c92279",
+      "afterSha256": "02afe43442c877df08c48771007b998d6063277892b10afe6d98d060b84da9ad"
+    },
+    {
+      "path": "backend/tests/unit/change-order-recovery-observation.test.ts",
+      "beforeSha256": "be40f2836911cca123cc7df2d3da49c7d3aaff0a2c99523178c348500a88ad02",
+      "afterSha256": "b905f4c66c89ee6c59bb828b907b343eaf7dc64feec4b2611512da555836158b"
+    },
+    {
+      "path": "backend/tests/unit/sealed-change-order-recovery-worker.test.ts",
+      "beforeSha256": null,
+      "afterSha256": "d7a5a3bb79d1d5743bcca1bf5b5c542a241c2cfa7722f24b0f7265a20da67515"
+    },
+    {
+      "path": "backend/tests/unit/universal-v1-change-order-recovery.test.ts",
+      "beforeSha256": "6e6bd23da7ee90bf5bfdbffdd572ac8a3f78d86fc8c08311091cb1ea83678eb8",
+      "afterSha256": "e34cd229c950ca6e36aa550fe9717cd8215239dbfec5088eb26e8732be206471"
+    },
+    {
+      "path": "backend/tests/unit/work-order-command-role-authority.test.ts",
+      "beforeSha256": "a393fd7a23bbed386d65c590bc2716f869bc4536572032749c7f9b05f2d27e64",
+      "afterSha256": "082f7ccca3da0c9a4cab5c10398ad618e414d27e3f78480aeabd9439cfc4bc84"
+    },
+    {
+      "path": "backend/tests/unit/worker-change-order-adjustment.test.ts",
+      "beforeSha256": null,
+      "afterSha256": "f53354270077971983fb1bdaeeb0596442b0c71d408a46ec81eb2729ac4a7004"
+    },
+    {
+      "path": "backend/tests/unit/worker-change-order-materialization.test.ts",
+      "beforeSha256": null,
+      "afterSha256": "788d7efc7c12bdcab3c129d8d434705d1511f3eea76234ea62c39f8c7e7d82cd"
+    }
+  ],
+  "docs": {
+    "checkedAtUtc": "2026-09-06 07:21:42 UTC",
+    "documents": [
+      {
+        "status": "fulfilled",
+        "value": {
+          "id": "1QTrT40LK5zo-DN6ER7naM3p43WlyxkBxKsjL23p20mY",
+          "title": "HustleXP Canonical Document Index — v1.2",
+          "mime_type": "application/vnd.google-apps.document",
+          "size": null,
+          "url": "https://docs.google.com/document/d/1QTrT40LK5zo-DN6ER7naM3p43WlyxkBxKsjL23p20mY/edit?usp=drivesdk",
+          "file_or_folder": "file",
+          "created_time": null,
+          "modified_time": "2026-09-05T01:13:12.640Z",
+          "parent_ids": null,
+          "drive_id": null,
+          "current_user_can_share": null,
+          "has_augmented_permissions": null,
+          "shared": null,
+          "permissions": null,
+          "source_visibility_status": "access_not_verified",
+          "key": "index",
+          "unchanged": true
+        }
+      },
+      {
+        "status": "fulfilled",
+        "value": {
+          "id": "1-SIB7kDkaeuMMAFCoK6sGPVTtxpDfOXCLLCgCGyP-v8",
+          "title": "HustleXP Business and Universal V1 Charter — v1.5.0",
+          "mime_type": "application/vnd.google-apps.document",
+          "size": null,
+          "url": "https://docs.google.com/document/d/1-SIB7kDkaeuMMAFCoK6sGPVTtxpDfOXCLLCgCGyP-v8/edit?usp=drivesdk",
+          "file_or_folder": "file",
+          "created_time": null,
+          "modified_time": "2026-09-05T01:11:41.082Z",
+          "parent_ids": null,
+          "drive_id": null,
+          "current_user_can_share": null,
+          "has_augmented_permissions": null,
+          "shared": null,
+          "permissions": null,
+          "source_visibility_status": "access_not_verified",
+          "key": "charter",
+          "unchanged": true
+        }
+      },
+      {
+        "status": "fulfilled",
+        "value": {
+          "id": "1lbxM2D4vPX3NfzEPa6JvnvdS3EWzfL48aNY8piTBrYg",
+          "title": "[SUBORDINATE — PAYMENT UNDERWRITING] HustleXP Payment Infrastructure Pre-Integration Underwriting Package v3.6",
+          "mime_type": "application/vnd.google-apps.document",
+          "size": null,
+          "url": "https://docs.google.com/document/d/1lbxM2D4vPX3NfzEPa6JvnvdS3EWzfL48aNY8piTBrYg/edit?usp=drivesdk",
+          "file_or_folder": "file",
+          "created_time": null,
+          "modified_time": "2026-09-05T01:11:58.899Z",
+          "parent_ids": null,
+          "drive_id": null,
+          "current_user_can_share": null,
+          "has_augmented_permissions": null,
+          "shared": null,
+          "permissions": null,
+          "source_visibility_status": "access_not_verified",
+          "key": "underwriting",
+          "unchanged": true
+        }
+      },
+      {
+        "status": "fulfilled",
+        "value": {
+          "id": "1c-2nUsUT3tx3e7RIR0X7OvIXeZjSJtYdQXNRhHqQ8ec",
+          "title": "HustleXP Universal V1 Frontend and WorkLink Specification — v1.3",
+          "mime_type": "application/vnd.google-apps.document",
+          "size": null,
+          "url": "https://docs.google.com/document/d/1c-2nUsUT3tx3e7RIR0X7OvIXeZjSJtYdQXNRhHqQ8ec/edit?usp=drivesdk",
+          "file_or_folder": "file",
+          "created_time": null,
+          "modified_time": "2026-09-05T01:06:12.843Z",
+          "parent_ids": null,
+          "drive_id": null,
+          "current_user_can_share": null,
+          "has_augmented_permissions": null,
+          "shared": null,
+          "permissions": null,
+          "source_visibility_status": "access_not_verified",
+          "key": "frontend",
+          "unchanged": true
+        }
+      },
+      {
+        "status": "fulfilled",
+        "value": {
+          "id": "1ATlIq6nuIG8sb1hl7B9O1wIz5_uGJ45Vl-5GjgbDwik",
+          "title": "HustleXP Canonical Project Context — v1.5.0",
+          "mime_type": "application/vnd.google-apps.document",
+          "size": null,
+          "url": "https://docs.google.com/document/d/1ATlIq6nuIG8sb1hl7B9O1wIz5_uGJ45Vl-5GjgbDwik/edit?usp=drivesdk",
+          "file_or_folder": "file",
+          "created_time": null,
+          "modified_time": "2026-09-05T01:09:11.992Z",
+          "parent_ids": null,
+          "drive_id": null,
+          "current_user_can_share": null,
+          "has_augmented_permissions": null,
+          "shared": null,
+          "permissions": null,
+          "source_visibility_status": "access_not_verified",
+          "key": "context",
+          "unchanged": true
+        }
+      },
+      {
+        "status": "fulfilled",
+        "value": {
+          "id": "1JWbveF0AK69fw4xlnGb53yCSD9DpkyfklYGrWPoopuY",
+          "title": "HustleXP Universal Intake, WorkLinks, and Learning Rail — v1.2",
+          "mime_type": "application/vnd.google-apps.document",
+          "size": null,
+          "url": "https://docs.google.com/document/d/1JWbveF0AK69fw4xlnGb53yCSD9DpkyfklYGrWPoopuY/edit?usp=drivesdk",
+          "file_or_folder": "file",
+          "created_time": null,
+          "modified_time": "2026-09-05T01:06:56.942Z",
+          "parent_ids": null,
+          "drive_id": null,
+          "current_user_can_share": null,
+          "has_augmented_permissions": null,
+          "shared": null,
+          "permissions": null,
+          "source_visibility_status": "access_not_verified",
+          "key": "intake",
+          "unchanged": true
+        }
+      },
+      {
+        "status": "fulfilled",
+        "value": {
+          "id": "1j_iCMvN3MHxVGyDhiqj4wtL_p-o7AyNIGHPe-P_YXiE",
+          "title": "HustleXP Activation, Notification, and Lifecycle Copy Specification — v2.2",
+          "mime_type": "application/vnd.google-apps.document",
+          "size": null,
+          "url": "https://docs.google.com/document/d/1j_iCMvN3MHxVGyDhiqj4wtL_p-o7AyNIGHPe-P_YXiE/edit?usp=drivesdk",
+          "file_or_folder": "file",
+          "created_time": null,
+          "modified_time": "2026-09-05T01:08:10.516Z",
+          "parent_ids": null,
+          "drive_id": null,
+          "current_user_can_share": null,
+          "has_augmented_permissions": null,
+          "shared": null,
+          "permissions": null,
+          "source_visibility_status": "access_not_verified",
+          "key": "copy",
+          "unchanged": true
+        }
+      },
+      {
+        "status": "fulfilled",
+        "value": {
+          "id": "1_tTJOze6KKqzK6WEuH-z5HeRcx7Lc3M__0TNYi476-U",
+          "title": "HustleXP /OPS Internal Operations Control Plane Specification — v1.3",
+          "mime_type": "application/vnd.google-apps.document",
+          "size": null,
+          "url": "https://docs.google.com/document/d/1_tTJOze6KKqzK6WEuH-z5HeRcx7Lc3M__0TNYi476-U/edit?usp=drivesdk",
+          "file_or_folder": "file",
+          "created_time": null,
+          "modified_time": "2026-09-05T01:12:09.912Z",
+          "parent_ids": null,
+          "drive_id": null,
+          "current_user_can_share": null,
+          "has_augmented_permissions": null,
+          "shared": null,
+          "permissions": null,
+          "source_visibility_status": "access_not_verified",
+          "key": "ops",
+          "unchanged": true
+        }
+      }
+    ]
+  },
+  "validation": {
+    "currentInventoryEntries": 1806,
+    "unitContracts": {
+      "passed": 155,
+      "completeFiles": 8,
+      "explanation": "121 tests in seven complete worker/boot/adapter/role files, plus 34 observation tests; the repeated 21 scheduler tests are counted once."
+    },
+    "selectedPostgresRedis": {
+      "uniquePassed": 47,
+      "explanation": "44 selected adjustment/catalog/readiness/rollover cases plus three real scheduled Redis journeys. The expanded rollover rerun replaces its earlier result; it is not added twice. Other cases were deliberately unselected."
+    },
+    "expandedTypes": "PASS",
+    "zeroWarningSourceLint": "PASS",
+    "buildSecurityContracts": {
+      "passed": 23,
+      "failed": 0,
+      "skipped": 0
+    },
+    "fullRequired": {
+      "processReceipt": {
+        "endedAt": "2026-09-06T08:05:09.816Z",
+        "pid": 86656,
+        "status": "TERMINAL",
+        "code": 1,
+        "signal": null
+      },
+      "summary": {
+        "numTotalTestSuites": 3284,
+        "numPassedTestSuites": 3260,
+        "numFailedTestSuites": 24,
+        "numPendingTestSuites": 0,
+        "numTotalTests": 11067,
+        "numPassedTests": 11005,
+        "numFailedTests": 29,
+        "numPendingTests": 33,
+        "numTodoTests": 0,
+        "startTime": 1788680197138,
+        "success": false
+      },
+      "files": {
+        "total": 696,
+        "failed": 12
+      },
+      "worktreePreserved": true
+    },
+    "roleCatalogFull": {
+      "passed": 174,
+      "failed": 0,
+      "skipped": 0,
+      "source": "backend-required-after-scheduled-recovery-vitest.json"
+    },
+    "migrationBuildValidation": {
+      "status": "FAIL",
+      "processReceipt": {
+        "endedAt": "2026-09-06T07:55:34.584Z",
+        "pid": 106552,
+        "status": "TERMINAL",
+        "code": 1,
+        "signal": null
+      },
+      "error": "QUOTE_PAYMENT_RECOVERY_FAILED",
+      "logSha256": "fe0d3ca852c01ac7f3b65d0b9012ff258a5b71c7b35b028bfafd0abe0b498824"
+    }
+  },
+  "catalog": {
+    "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/outputs/backend-worker-adjustment-catalog-capture.json",
+    "sha256": "b1a41aec9636e6250e05e110bd8db9367478f663a7b567989520391982e154ea",
+    "migrationSha256": "71d8ce41ec1437725559b687505d77e624817f532648b12a87567dfd6f205d27",
+    "functions": [
+      {
+        "function_count": 166,
+        "function_catalog_sha256": "1b825258212eb7990e772067f77d215a19417fbe92a865b351f3483911b8b176"
+      }
+    ],
+    "triggers": [
+      {
+        "trigger_count": 353,
+        "trigger_catalog_sha256": "69efb5c77cedcb50aebd8e0f9f212bfcc9306bba08723a1ad64d3fc9c71c04f0"
+      }
+    ],
+    "reproducibleFreshDatabases": 2
+  },
+  "logs": [
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/scheduled-recovery-units-final.log",
+      "sha256": "3a492abd59735bd9801a319fd18fe0b8461642850ab179f7dc67a7d0dc8bfea7"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/scheduled-recovery-observation-units.log",
+      "sha256": "1353176662ddeb2c69074ba11b82d60c715e0260e278c14141faaa3b1b159ebe"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/scheduled-recovery-pg.log",
+      "sha256": "4cbff2c0ea21c3a54578b4faf566f0d797f80206d8522a7aef91a6bd497e188c"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/scheduled-recovery-journeys-3.log",
+      "sha256": "17bdc7134121c723cdb411e88d551ca1da98b2af5854fe14c2e876fe3dad666b"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/scheduled-recovery-rollover.log",
+      "sha256": "017434b2ef4afeb8c1236584e5174de011f27a3109113c6187c12a1b46211dad"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/scheduled-recovery-types-final.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/scheduled-recovery-lint-final.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/scheduled-recovery-build-security-contracts.log",
+      "sha256": "8a18d91022e63d4fee4ad96066ae5c3e62a9f2d52b7e513a5cc9f6f823347bce"
+    }
+  ],
+  "limitations": [
+    "Synthetic release/signing and initial predecessor setup in integration; no ordinary signed process boot or OS restart certification.",
+    "Backend/API/worker/web current-Docs product scope and all thirteen complete journeys remain unfinished.",
+    "Legacy compensation winners without worker origin remain explicitly unresolved; reversal does not restore prior secured state.",
+    "Production effects NONE; customer money and hard assignment FROZEN."
+  ],
+  "releaseEligible": false,
+  "goalComplete": false,
+  "published": false,
+  "bottlenecks": {
+    "path": "backend-bottlenecks-current.md",
+    "sha256": "8c7afd5fa7b1ea5213a63df86ee3298a2d81f9192307a7b35275ec40a53d15dd"
+  }
+}

@@ -24,6 +24,7 @@ export const FAKE_FINANCIAL_PREPARATION_PROVENANCE =
 export const FAKE_FINANCIAL_PREPARATION_PROVENANCE_READ_COLUMNS = [
   'prepared_command_id',
   'actor_user_id',
+  'command_payload',
   'target_authority_id',
   'release_manifest_sha256',
 ] as const;

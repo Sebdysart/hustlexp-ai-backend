@@ -313,14 +313,27 @@ describe('universalFinanceRouter', () => {
     expect(mocks.executeEvent).not.toHaveBeenCalled();
   });
 
-  it('forces the authenticated actor into a participant-authorized event command', async () => {
-    await caller().executeEvent(event);
-    expect(mocks.assertTask).toHaveBeenCalledWith(ids.actor, ids.draft, ids.task);
-    expect(mocks.executeEvent).toHaveBeenCalledWith(
-      { ...event, recordedBy: ids.actor },
-      actorAttestation
-    );
-  });
+  it.each(['executeEvent', 'enqueueEvent'] as const)(
+    '%s commits a request with server-owned actor authority without synchronous execution',
+    async (route) => {
+      const result = await caller()[route](event);
+      expect(result).toEqual({
+        commandId: ids.operation,
+        preparedCommandId: ids.related,
+        operationId: ids.operation,
+        requestState: 'REQUESTED',
+        requestedAt: '2026-09-05T00:00:00.000Z',
+        idempotencyReplayed: false,
+      });
+      expect(mocks.enqueueEvent).toHaveBeenCalledExactlyOnceWith(
+        { ...event, recordedBy: ids.actor },
+        actorAttestation
+      );
+      expect(mocks.createService).not.toHaveBeenCalled();
+      expect(mocks.executeEvent).not.toHaveBeenCalled();
+      expect(mocks.assertTask).not.toHaveBeenCalled();
+    }
+  );
 
   it.each(['AUTHORIZE', 'SECURE'] as const)(
     'keeps the pre-WorkOrder %s lane participant-bound',
@@ -345,14 +358,27 @@ describe('universalFinanceRouter', () => {
 
       await caller().executeEvent(command);
 
-      expect(mocks.assertTask).toHaveBeenCalledWith(ids.actor, ids.draft, ids.task);
-      expect(mocks.executeEvent).toHaveBeenCalledWith(
+      expect(mocks.enqueueEvent).toHaveBeenCalledWith(
         {
           ...command,
           recordedBy: ids.actor,
         },
         actorAttestation
       );
+      expect(mocks.createService).not.toHaveBeenCalled();
+      expect(mocks.executeEvent).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(['executeEvent', 'enqueueEvent'] as const)(
+    '%s rejects a caller-supplied financial actor before service access',
+    async (route) => {
+      await expect(
+        caller()[route]({ ...event, recordedBy: ids.related } as never)
+      ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+      expect(mocks.enqueueEvent).not.toHaveBeenCalled();
+      expect(mocks.createService).not.toHaveBeenCalled();
+      expect(mocks.executeEvent).not.toHaveBeenCalled();
     }
   );
 

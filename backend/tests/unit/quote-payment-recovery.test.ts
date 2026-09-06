@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { QueryFn } from '../../src/db.js';
 import type { QuotePaymentProvider } from '../../src/services/payment/QuotePaymentProvider.js';
 
 vi.mock('../../src/db.js', () => ({
@@ -71,7 +72,7 @@ function provider() {
 
 function transactionSequences(
   ...transactions: Array<Array<Record<string, unknown>>>
-): Array<ReturnType<typeof vi.fn>> {
+) {
   const queries = transactions.map((results) => {
     const query = vi.fn();
     for (const result of results) query.mockResolvedValueOnce(result);
@@ -114,6 +115,68 @@ afterEach(() => {
 });
 
 describe('quote payment orphan recovery', () => {
+  it.each(['success', 'provider failure'] as const)(
+    'uses only the supplied database for claim and %s persistence',
+    async (outcome) => {
+      const quoteProvider = provider();
+      const recovered =
+        outcome === 'success'
+          ? {
+              success: true as const,
+              data: {
+                disposition: 'VOIDED' as const,
+                providerStatus: 'canceled',
+                providerOperationId: input.paymentIntentId,
+              },
+            }
+          : {
+              success: false as const,
+              error: {
+                code: 'RECOVERY_TEMPORARILY_UNAVAILABLE',
+                message: 'Retry recovery.',
+              },
+            };
+      quoteProvider.recoverOrphanPayment.mockResolvedValueOnce(recovered);
+      const queries = transactionSequences(successfulClaim(), successfulFinalize());
+      const transactionCalls = vi.fn();
+      let index = 0;
+      const scopedDatabase = {
+        async transaction<T>(work: (query: QueryFn) => Promise<T>): Promise<T> {
+          transactionCalls();
+          const query = queries[index++];
+          if (!query) throw new Error('UNEXPECTED_TRANSACTION');
+          return work(query);
+        },
+        query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }),
+      };
+      const unavailable = () => {
+        throw new Error('DATABASE_RUNTIME_AUTHORITY_NOT_INSTALLED');
+      };
+      vi.mocked(db.transaction).mockImplementation(unavailable);
+      vi.mocked(db.query).mockImplementation(unavailable);
+      try {
+        const result = await recoverOrphanQuotePayment(input, quoteProvider, scopedDatabase);
+        if (outcome === 'success') {
+          expect(result).toMatchObject({ success: true, data: { recoveryAction: 'VOIDED' } });
+          expect(transactionCalls).toHaveBeenCalledTimes(2);
+          expect(scopedDatabase.query).not.toHaveBeenCalled();
+        } else {
+          expect(result).toEqual(recovered);
+          expect(transactionCalls).toHaveBeenCalledTimes(1);
+          expect(scopedDatabase.query).toHaveBeenCalledWith(
+            expect.stringContaining('SET last_error_code = $3'),
+            [ids.operation, expect.any(String), 'RECOVERY_TEMPORARILY_UNAVAILABLE']
+          );
+        }
+        expect(db.transaction).not.toHaveBeenCalled();
+        expect(db.query).not.toHaveBeenCalled();
+      } finally {
+        vi.mocked(db.transaction).mockReset();
+        vi.mocked(db.query).mockReset();
+      }
+    }
+  );
+
   it('commits a durable claim before processor work and then records terminal void evidence', async () => {
     const quoteProvider = provider();
     quoteProvider.recoverOrphanPayment.mockResolvedValueOnce({

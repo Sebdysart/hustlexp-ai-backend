@@ -105,6 +105,17 @@ function fixture() {
 }
 
 describe('restricted worker recovery observation', () => {
+  it('retains advisory revocation after a confirmed adjustment for the sealed compensation command', async () => {
+    const f = fixture();
+    f.observation.recovery_state = 'ADJUSTMENT_SUCCEEDED';
+    f.observation.adjustment_event_id = randomUUID();
+    expect(await f.reader.observe(f.lease)).toMatchObject({
+      observation: 'ADJUSTMENT_SUCCEEDED',
+      adjustmentEventId: f.observation.adjustment_event_id,
+      authorityRevocationReason: 'CUSTOMER_ACTOR_AUTHORITY_REVOKED',
+      adjustmentOutcomeFactId: null,
+    });
+  });
   it('binds the exact lease and drops unrelated revocation evidence when an admitted effect is unresolved', async () => {
     const f = fixture(),
       result = await f.reader.observe(f.lease);

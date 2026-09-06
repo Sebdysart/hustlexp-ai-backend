@@ -1,0 +1,507 @@
+{
+  "recordedAt": "2026-09-06T08:31:45.912Z",
+  "status": "LOCAL_VALIDATION_AND_PUBLIC_ROUTE_INTEGRATED_FULL_GATE_FAIL",
+  "repository": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip",
+  "head": "36255e604e718320ccae7d4e3ac269ad09678205",
+  "publicParent": "5a252f8b7e2c0d9252a65dacabe8d5fd1174ec3b",
+  "sourceBaseline": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/required-after-validation-integration-baseline.json",
+  "sourceBaselineSha256": "feba5b7e6a251e814ef3e383e695e4268d24d5cd6e17815be4b299b03fadb6f8",
+  "files": [
+    {
+      "path": "backend/database/engine-migration-artifact.sha256",
+      "beforeSha256": "e2f74bc9114d5e3a2866aa689dc140f85e97ad1fc3a40b15bfd5cbaeb4f0c4d9",
+      "afterSha256": "8ddc9893a69351ca61814567267c004c5bd976723d7f1f9a4a27d9c557d0c6ea"
+    },
+    {
+      "path": "backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql",
+      "beforeSha256": "275f00b59916f26627ca401512828c76195f2cc3ad45489aaadc3d40d3cafd68",
+      "afterSha256": "71d8ce41ec1437725559b687505d77e624817f532648b12a87567dfd6f205d27"
+    },
+    {
+      "path": "backend/src/jobs/change-order-adjustment-role-plans.ts",
+      "beforeSha256": null,
+      "afterSha256": "898d5ee3e75eb0b6f187673b80a7d033a48154f0f0ad12d990fbbc1bbaaf6f72"
+    },
+    {
+      "path": "backend/src/jobs/change-order-materialization-role-plans.ts",
+      "beforeSha256": "5132fd813a7377f41a14169bedc6611823acd0b0d2c0b094e53d9e577c0371ce",
+      "afterSha256": "e204f1b4041b4aa6df7d77a5f67edbf3fef96c9749631643928d867ef61d825a"
+    },
+    {
+      "path": "backend/src/jobs/fake-financial-outbox-role-plans.ts",
+      "beforeSha256": "eb3a65c6f25c372ed619efd017cd8d2430d0829a85baa1a72305041324c934bc",
+      "afterSha256": "f23de61a4224af1c707f79e8b4eeb0d1df505ba1f38b9cbc9fea40b5d5ddcdf1"
+    },
+    {
+      "path": "backend/src/jobs/fake-financial-preparation-role-plans.ts",
+      "beforeSha256": "d36bf88862e501e1f74eb56434fd550ee998813b9c1f269b878ee37923c8325d",
+      "afterSha256": "4df6a442477fb86025e6afa967f579b6efa39436c2cf2bf6baccfd15159655bd"
+    },
+    {
+      "path": "backend/src/jobs/universal-v1-change-order-recovery-worker.ts",
+      "beforeSha256": "1f804368590f1b5210adbf2a55499759c1ba0e99b59df2b991d8019227da461f",
+      "afterSha256": "9378bc8c3f3662a750e71cf0512d9792e7258dada819dfccff4c256fde81e702"
+    },
+    {
+      "path": "backend/src/jobs/work-order-command-role-authority.ts",
+      "beforeSha256": "c42a94ce914a5bfa23480564667266067e9baab38dbb29c0726346dc6cf2726c",
+      "afterSha256": "6ac1ffb1d0c98d04d1fe9bac121e7e3b60eb46560d58d1f3308933425804f09b"
+    },
+    {
+      "path": "backend/src/jobs/workers.ts",
+      "beforeSha256": "c97509737aa4d6d8fd059cc905d484c075a8ff2e7b11711e610ffaf8151871f1",
+      "afterSha256": "2c56439aba97443ac026b549f4d16a69f4f96c7c70f54b262a045422c4428307"
+    },
+    {
+      "path": "backend/src/routers/syntheticFinance.ts",
+      "beforeSha256": "d09d1a21224260243e41a3ccdaea21e1b01b57640edbcef06e28f944c1147b35",
+      "afterSha256": "46eeacd967539638c713db901bd88bab57e338a9f196b1410ff528228ae78236"
+    },
+    {
+      "path": "backend/src/services/QuotePaymentRecoveryService.ts",
+      "beforeSha256": "08622e391a10fbf18076c27623ac00cc3bf939c2889b717066ad84bcab9996cd",
+      "afterSha256": "34fce3d8efd97f51f1c61288c542601d147b59f5e398df8a764e1f6b65eb0b6d"
+    },
+    {
+      "path": "backend/src/services/UniversalV1ChangeOrderRecoveryObservation.ts",
+      "beforeSha256": "953760736223b1b3389b9034e6c4fe976ff46b912e3f4aeef54e4cc87d35712f",
+      "afterSha256": "0a310f5f5489c53795e2a99abdd134893439edd19028e3b3feaf5b3828ebb127"
+    },
+    {
+      "path": "backend/src/services/UniversalV1WorkerChangeOrderMaterialization.ts",
+      "beforeSha256": null,
+      "afterSha256": "94fcea81b78e6703f47d618afc988aae3ddabc6ecf8fa56b371ffac9b43b68c7"
+    },
+    {
+      "path": "backend/src/services/payment/NonproductionFinancialBootstrapReadiness.ts",
+      "beforeSha256": "e3102d711f168019128a7993a01435767b699c62be04850e40a6882482548b1e",
+      "afterSha256": "820f8ea7d0eb793ddd91b36cdf018e40b62ae878c43214c9dc0531a47e4f4d4f"
+    },
+    {
+      "path": "backend/src/services/payment/UniversalV1WorkerChangeOrderAdjustment.ts",
+      "beforeSha256": null,
+      "afterSha256": "c15ea292b4b998afa09182ad1e082349eac401b554f29c969bd8e7f32fdf927a"
+    },
+    {
+      "path": "backend/tests/helpers/universal-v1-synthetic-role-provisioning.ts",
+      "beforeSha256": "b7951f3c329b00fd29e5e7190640ee2fb4c208483ed183bbf29c66b6e12a03d6",
+      "afterSha256": "a61d57ce4f923796ce6addba1bb0dbefae17415d535203c10b1d1a64b6797648"
+    },
+    {
+      "path": "backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts",
+      "beforeSha256": "2a31df10705cea592f7f4bec9fc34d46303c71eab6b43cfd983a60a618c92279",
+      "afterSha256": "a3ae0ba29f1eab1045f630e9a1daaeee201015b7864f5b0b4c5e195884185922"
+    },
+    {
+      "path": "backend/tests/unit/change-order-recovery-observation.test.ts",
+      "beforeSha256": "be40f2836911cca123cc7df2d3da49c7d3aaff0a2c99523178c348500a88ad02",
+      "afterSha256": "b905f4c66c89ee6c59bb828b907b343eaf7dc64feec4b2611512da555836158b"
+    },
+    {
+      "path": "backend/tests/unit/nonproduction-runtime-insert-authority-migration.test.ts",
+      "beforeSha256": "464249b9c3e7f6e97741774bf32a47934cbdd7d6aceabb84f88fb9da2658da68",
+      "afterSha256": "e3b6c481ccfdf3e87961a93727bb07460aa1f8e8d2b397c595a66e37656e2c6f"
+    },
+    {
+      "path": "backend/tests/unit/quote-payment-recovery.test.ts",
+      "beforeSha256": "e11e1ef9aaf18aadddb9979b883c109863082697d1181131fb70435cfdac8d83",
+      "afterSha256": "6cc3ee6a9fe63a57bcf2f32d1fc2c05f404458bf2dcfe8f6a75335444b70e51f"
+    },
+    {
+      "path": "backend/tests/unit/sealed-change-order-recovery-worker.test.ts",
+      "beforeSha256": null,
+      "afterSha256": "d7a5a3bb79d1d5743bcca1bf5b5c542a241c2cfa7722f24b0f7265a20da67515"
+    },
+    {
+      "path": "backend/tests/unit/synthetic-finance-router.test.ts",
+      "beforeSha256": "b76ce4135ac33cdbf74c4d2327ef6cc51034076966af5dceb51165336bed2561",
+      "afterSha256": "2c5b94831114983344f80e035f2a08c958934fd19cf5a82dcaf5290c88e53a11"
+    },
+    {
+      "path": "backend/tests/unit/universal-v1-change-order-recovery.test.ts",
+      "beforeSha256": "6e6bd23da7ee90bf5bfdbffdd572ac8a3f78d86fc8c08311091cb1ea83678eb8",
+      "afterSha256": "e34cd229c950ca6e36aa550fe9717cd8215239dbfec5088eb26e8732be206471"
+    },
+    {
+      "path": "backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts",
+      "beforeSha256": "cca8fab94b8b1c7126451f9646362ff97e8ed9b7bd94775a3c88272afec34503",
+      "afterSha256": "159c5b5fdc4959aead4d21e303bab552ad841068e832ac4a0a9aac58728287e5"
+    },
+    {
+      "path": "backend/tests/unit/work-order-command-role-authority.test.ts",
+      "beforeSha256": "a393fd7a23bbed386d65c590bc2716f869bc4536572032749c7f9b05f2d27e64",
+      "afterSha256": "082f7ccca3da0c9a4cab5c10398ad618e414d27e3f78480aeabd9439cfc4bc84"
+    },
+    {
+      "path": "backend/tests/unit/worker-change-order-adjustment.test.ts",
+      "beforeSha256": null,
+      "afterSha256": "f53354270077971983fb1bdaeeb0596442b0c71d408a46ec81eb2729ac4a7004"
+    },
+    {
+      "path": "backend/tests/unit/worker-change-order-materialization.test.ts",
+      "beforeSha256": null,
+      "afterSha256": "788d7efc7c12bdcab3c129d8d434705d1511f3eea76234ea62c39f8c7e7d82cd"
+    },
+    {
+      "path": "scripts/verify-engine-migrations-postgres.mjs",
+      "beforeSha256": "207d5b4ca74fecacedfc080e625f22cc694270faf3cd62c2adcd1b51d33136ae",
+      "afterSha256": "77ee4358042ad794f07e9f01e474dac67874cd72494b44d0b712993348577165"
+    }
+  ],
+  "integrationDelta": [
+    {
+      "path": "backend/src/services/QuotePaymentRecoveryService.ts",
+      "beforeSha256": "08622e391a10fbf18076c27623ac00cc3bf939c2889b717066ad84bcab9996cd",
+      "afterSha256": "34fce3d8efd97f51f1c61288c542601d147b59f5e398df8a764e1f6b65eb0b6d"
+    },
+    {
+      "path": "backend/tests/unit/quote-payment-recovery.test.ts",
+      "beforeSha256": "e11e1ef9aaf18aadddb9979b883c109863082697d1181131fb70435cfdac8d83",
+      "afterSha256": "6cc3ee6a9fe63a57bcf2f32d1fc2c05f404458bf2dcfe8f6a75335444b70e51f"
+    },
+    {
+      "path": "scripts/verify-engine-migrations-postgres.mjs",
+      "beforeSha256": "207d5b4ca74fecacedfc080e625f22cc694270faf3cd62c2adcd1b51d33136ae",
+      "afterSha256": "77ee4358042ad794f07e9f01e474dac67874cd72494b44d0b712993348577165"
+    },
+    {
+      "path": "backend/database/engine-migration-artifact.sha256",
+      "beforeSha256": "e2f74bc9114d5e3a2866aa689dc140f85e97ad1fc3a40b15bfd5cbaeb4f0c4d9",
+      "afterSha256": "8ddc9893a69351ca61814567267c004c5bd976723d7f1f9a4a27d9c557d0c6ea"
+    },
+    {
+      "path": "backend/tests/unit/nonproduction-runtime-insert-authority-migration.test.ts",
+      "beforeSha256": "464249b9c3e7f6e97741774bf32a47934cbdd7d6aceabb84f88fb9da2658da68",
+      "afterSha256": "e3b6c481ccfdf3e87961a93727bb07460aa1f8e8d2b397c595a66e37656e2c6f"
+    },
+    {
+      "path": "backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts",
+      "beforeSha256": "cca8fab94b8b1c7126451f9646362ff97e8ed9b7bd94775a3c88272afec34503",
+      "afterSha256": "159c5b5fdc4959aead4d21e303bab552ad841068e832ac4a0a9aac58728287e5"
+    },
+    {
+      "path": "backend/src/routers/syntheticFinance.ts",
+      "beforeSha256": "d09d1a21224260243e41a3ccdaea21e1b01b57640edbcef06e28f944c1147b35",
+      "afterSha256": "46eeacd967539638c713db901bd88bab57e338a9f196b1410ff528228ae78236"
+    },
+    {
+      "path": "backend/tests/unit/synthetic-finance-router.test.ts",
+      "beforeSha256": "b76ce4135ac33cdbf74c4d2327ef6cc51034076966af5dceb51165336bed2561",
+      "afterSha256": "2c5b94831114983344f80e035f2a08c958934fd19cf5a82dcaf5290c88e53a11"
+    },
+    {
+      "path": "backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts",
+      "beforeSha256": "02afe43442c877df08c48771007b998d6063277892b10afe6d98d060b84da9ad",
+      "afterSha256": "a3ae0ba29f1eab1045f630e9a1daaeee201015b7864f5b0b4c5e195884185922"
+    }
+  ],
+  "docs": {
+    "checkedAtUtc": "2026-09-06 08:27:28 UTC",
+    "documents": [
+      {
+        "status": "fulfilled",
+        "value": {
+          "id": "1QTrT40LK5zo-DN6ER7naM3p43WlyxkBxKsjL23p20mY",
+          "title": "HustleXP Canonical Document Index — v1.2",
+          "mime_type": "application/vnd.google-apps.document",
+          "size": null,
+          "url": "https://docs.google.com/document/d/1QTrT40LK5zo-DN6ER7naM3p43WlyxkBxKsjL23p20mY/edit?usp=drivesdk",
+          "file_or_folder": "file",
+          "created_time": null,
+          "modified_time": "2026-09-05T01:13:12.640Z",
+          "parent_ids": null,
+          "drive_id": null,
+          "current_user_can_share": null,
+          "has_augmented_permissions": null,
+          "shared": null,
+          "permissions": null,
+          "source_visibility_status": "access_not_verified",
+          "key": "index",
+          "unchanged": true
+        }
+      },
+      {
+        "status": "fulfilled",
+        "value": {
+          "id": "1-SIB7kDkaeuMMAFCoK6sGPVTtxpDfOXCLLCgCGyP-v8",
+          "title": "HustleXP Business and Universal V1 Charter — v1.5.0",
+          "mime_type": "application/vnd.google-apps.document",
+          "size": null,
+          "url": "https://docs.google.com/document/d/1-SIB7kDkaeuMMAFCoK6sGPVTtxpDfOXCLLCgCGyP-v8/edit?usp=drivesdk",
+          "file_or_folder": "file",
+          "created_time": null,
+          "modified_time": "2026-09-05T01:11:41.082Z",
+          "parent_ids": null,
+          "drive_id": null,
+          "current_user_can_share": null,
+          "has_augmented_permissions": null,
+          "shared": null,
+          "permissions": null,
+          "source_visibility_status": "access_not_verified",
+          "key": "charter",
+          "unchanged": true
+        }
+      },
+      {
+        "status": "fulfilled",
+        "value": {
+          "id": "1lbxM2D4vPX3NfzEPa6JvnvdS3EWzfL48aNY8piTBrYg",
+          "title": "[SUBORDINATE — PAYMENT UNDERWRITING] HustleXP Payment Infrastructure Pre-Integration Underwriting Package v3.6",
+          "mime_type": "application/vnd.google-apps.document",
+          "size": null,
+          "url": "https://docs.google.com/document/d/1lbxM2D4vPX3NfzEPa6JvnvdS3EWzfL48aNY8piTBrYg/edit?usp=drivesdk",
+          "file_or_folder": "file",
+          "created_time": null,
+          "modified_time": "2026-09-05T01:11:58.899Z",
+          "parent_ids": null,
+          "drive_id": null,
+          "current_user_can_share": null,
+          "has_augmented_permissions": null,
+          "shared": null,
+          "permissions": null,
+          "source_visibility_status": "access_not_verified",
+          "key": "underwriting",
+          "unchanged": true
+        }
+      },
+      {
+        "status": "fulfilled",
+        "value": {
+          "id": "1c-2nUsUT3tx3e7RIR0X7OvIXeZjSJtYdQXNRhHqQ8ec",
+          "title": "HustleXP Universal V1 Frontend and WorkLink Specification — v1.3",
+          "mime_type": "application/vnd.google-apps.document",
+          "size": null,
+          "url": "https://docs.google.com/document/d/1c-2nUsUT3tx3e7RIR0X7OvIXeZjSJtYdQXNRhHqQ8ec/edit?usp=drivesdk",
+          "file_or_folder": "file",
+          "created_time": null,
+          "modified_time": "2026-09-05T01:06:12.843Z",
+          "parent_ids": null,
+          "drive_id": null,
+          "current_user_can_share": null,
+          "has_augmented_permissions": null,
+          "shared": null,
+          "permissions": null,
+          "source_visibility_status": "access_not_verified",
+          "key": "frontend",
+          "unchanged": true
+        }
+      },
+      {
+        "status": "fulfilled",
+        "value": {
+          "id": "1ATlIq6nuIG8sb1hl7B9O1wIz5_uGJ45Vl-5GjgbDwik",
+          "title": "HustleXP Canonical Project Context — v1.5.0",
+          "mime_type": "application/vnd.google-apps.document",
+          "size": null,
+          "url": "https://docs.google.com/document/d/1ATlIq6nuIG8sb1hl7B9O1wIz5_uGJ45Vl-5GjgbDwik/edit?usp=drivesdk",
+          "file_or_folder": "file",
+          "created_time": null,
+          "modified_time": "2026-09-05T01:09:11.992Z",
+          "parent_ids": null,
+          "drive_id": null,
+          "current_user_can_share": null,
+          "has_augmented_permissions": null,
+          "shared": null,
+          "permissions": null,
+          "source_visibility_status": "access_not_verified",
+          "key": "context",
+          "unchanged": true
+        }
+      },
+      {
+        "status": "fulfilled",
+        "value": {
+          "id": "1JWbveF0AK69fw4xlnGb53yCSD9DpkyfklYGrWPoopuY",
+          "title": "HustleXP Universal Intake, WorkLinks, and Learning Rail — v1.2",
+          "mime_type": "application/vnd.google-apps.document",
+          "size": null,
+          "url": "https://docs.google.com/document/d/1JWbveF0AK69fw4xlnGb53yCSD9DpkyfklYGrWPoopuY/edit?usp=drivesdk",
+          "file_or_folder": "file",
+          "created_time": null,
+          "modified_time": "2026-09-05T01:06:56.942Z",
+          "parent_ids": null,
+          "drive_id": null,
+          "current_user_can_share": null,
+          "has_augmented_permissions": null,
+          "shared": null,
+          "permissions": null,
+          "source_visibility_status": "access_not_verified",
+          "key": "intake",
+          "unchanged": true
+        }
+      },
+      {
+        "status": "fulfilled",
+        "value": {
+          "id": "1j_iCMvN3MHxVGyDhiqj4wtL_p-o7AyNIGHPe-P_YXiE",
+          "title": "HustleXP Activation, Notification, and Lifecycle Copy Specification — v2.2",
+          "mime_type": "application/vnd.google-apps.document",
+          "size": null,
+          "url": "https://docs.google.com/document/d/1j_iCMvN3MHxVGyDhiqj4wtL_p-o7AyNIGHPe-P_YXiE/edit?usp=drivesdk",
+          "file_or_folder": "file",
+          "created_time": null,
+          "modified_time": "2026-09-05T01:08:10.516Z",
+          "parent_ids": null,
+          "drive_id": null,
+          "current_user_can_share": null,
+          "has_augmented_permissions": null,
+          "shared": null,
+          "permissions": null,
+          "source_visibility_status": "access_not_verified",
+          "key": "copy",
+          "unchanged": true
+        }
+      },
+      {
+        "status": "fulfilled",
+        "value": {
+          "id": "1_tTJOze6KKqzK6WEuH-z5HeRcx7Lc3M__0TNYi476-U",
+          "title": "HustleXP /OPS Internal Operations Control Plane Specification — v1.3",
+          "mime_type": "application/vnd.google-apps.document",
+          "size": null,
+          "url": "https://docs.google.com/document/d/1_tTJOze6KKqzK6WEuH-z5HeRcx7Lc3M__0TNYi476-U/edit?usp=drivesdk",
+          "file_or_folder": "file",
+          "created_time": null,
+          "modified_time": "2026-09-05T01:12:09.912Z",
+          "parent_ids": null,
+          "drive_id": null,
+          "current_user_can_share": null,
+          "has_augmented_permissions": null,
+          "shared": null,
+          "permissions": null,
+          "source_visibility_status": "access_not_verified",
+          "key": "ops",
+          "unchanged": true
+        }
+      }
+    ]
+  },
+  "validation": {
+    "sourceEntries": 1806,
+    "unitContracts": {
+      "uniquePassed": 86,
+      "completeFiles": 7,
+      "explanation": "18 quote-recovery + 12 quote-router/migration + 24 migration contracts + 32 financial-router cases; repeated executions counted once."
+    },
+    "focusedPostgresRedis": {
+      "passed": 1,
+      "unselected": 173,
+      "description": "Restricted public executeEvent PREPARE/AUTHORIZE/SECURE requests, worker execution and crash/replay; existing full journey assertions retained."
+    },
+    "migrationBuildValidation": {
+      "status": "PASS",
+      "registeredMigrations": 146,
+      "receipt": {
+        "endedAt": "2026-09-06T08:15:06.426Z",
+        "pid": 109352,
+        "status": "TERMINAL",
+        "code": 0,
+        "signal": null
+      }
+    },
+    "expandedTypes": "PASS",
+    "sourceLint": "PASS_ZERO_WARNINGS",
+    "compile": "PASS",
+    "buildCiSecurityContracts": {
+      "passed": 41,
+      "failed": 0,
+      "skipped": 0
+    },
+    "fullRequired": {
+      "endedAt": "2026-09-06T08:55:49.969Z",
+      "pid": 111060,
+      "status": "TERMINAL",
+      "code": 1,
+      "signal": null,
+      "summary": {
+        "numTotalTestSuites": 3284,
+        "numPassedTestSuites": 3264,
+        "numFailedTestSuites": 20,
+        "numPendingTestSuites": 0,
+        "numTotalTests": 11072,
+        "numPassedTests": 11012,
+        "numFailedTests": 27,
+        "numPendingTests": 33,
+        "numTodoTests": 0,
+        "startTime": 1788683252714,
+        "success": false
+      },
+      "files": {
+        "total": 696,
+        "failed": 10
+      },
+      "worktreePreserved": true,
+      "reportSha256": "c6f978d9cf7e5287fe6695dfbdb1c04d05b69cd845b3c6f95cd29b283b3fecc0",
+      "sourceBaselineSha256": "feba5b7e6a251e814ef3e383e695e4268d24d5cd6e17815be4b299b03fadb6f8"
+    },
+    "roleCatalogFull": {
+      "passed": 174,
+      "failed": 0,
+      "skipped": 0,
+      "status": "passed"
+    }
+  },
+  "sourceScan": {
+    "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/publication-validation-integration-source-scan.json",
+    "sha256": "29c49f511ada2aa6e3828e88da51a2b2471e0b764505e97961b8c310600dc29f",
+    "findings": 25,
+    "unreviewed": 0
+  },
+  "logs": [
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/quote-recovery-scoped-db-red.log",
+      "sha256": "9bd0e8de4c884bd61a840707fc9717f9b9e3863532277bb2adbcb497698db275"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/quote-recovery-scoped-db-green.log",
+      "sha256": "44d89f0b706697185c80f5b7abbd5061344343f3c818d94deb5d989146689ecc"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/quote-recovery-fixed-build-validation.log",
+      "sha256": "a67429cdb397e2f0163bb9cc3655f0e0c0b0b1c202a411ccbcec783842a361b4"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/migration-contract-refresh.log",
+      "sha256": "699d12dd4ccb1ac4c2d14743c57dec1918384b07d9e02a12ca69dedc3458b14c"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/validation-integration-units-final.log",
+      "sha256": "b52e22d94ec0a893f3ad648b199200c2463595f3305970e57f5d7e70ad275795"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/financial-route-durable-red.log",
+      "sha256": "ad9e7873706659b36037cd77bbeb1d2f1adf6d5f79fb3027ff125d7c3a41bbd8"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/financial-route-and-quote-units-final.log",
+      "sha256": "543de4c8d694db1099f4f2e0e005fb06afd4a03985709a2e77d939b7a483e6f8"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/financial-route-durable-pg.log",
+      "sha256": "a4283097305652a6d94918e67c716e45222e2bdbb2e2de0021ac609d3cc1b192"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/validation-integration-types-checked.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/validation-integration-lint.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/validation-integration-compile.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/validation-integration-build-contracts.log",
+      "sha256": "b78e97ee94b0c0231d54621649e4281a371e4e386dadff8103d12ffc11feb083"
+    }
+  ],
+  "releaseEligible": false,
+  "goalComplete": false,
+  "published": false,
+  "fullRequiredEvidence": {
+    "path": "backend-required-after-validation-integration-failures.json",
+    "sha256": "1fe7c59dfa14339bb8966e724aaf519eed56713bf0798b9b746acf186e99e9b0"
+  }
+}

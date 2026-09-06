@@ -1,0 +1,84 @@
+
+ RUN  v4.1.10 C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip
+
+ × backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > uses only the supplied database for claim and success persistence 19ms
+   → expected { success: false, error: { …(2) } } to match object { success: true, data: { …(1) } }
+(3 matching properties omitted from actual)
+ × backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > uses only the supplied database for claim and provider failure persistence 3ms
+   → expected { success: false, error: { …(2) } } to deeply equal { success: false, error: { …(2) } }
+ ↓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > commits a durable claim before processor work and then records terminal void evidence
+ ↓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > refunds a succeeded orphan through the same claim/finalize operation
+ ↓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > permits zero-effect terminal FAILED replay only with a matching completed operation and event
+ ↓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > permits zero-effect terminal REFUNDED replay only with a matching completed operation and event
+ ↓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > fails closed when terminal local state lacks immutable recovery evidence
+ ↓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > reconciles a legacy terminal row without an operation instead of trusting local status
+ ↓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > blocks concurrent processor work while a durable lease is active
+ ↓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > renews an expired claim and reuses the deterministic provider recovery key
+ ↓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > records reconciliation-required evidence if materialization wins after the claim
+ ↓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > uses the database-native payment witness and reconciles any version drift
+ ↓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > persists provider failure on the durable claim without canonical money mutation
+ ↓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > rejects an ineligible obligation before claiming or provider work
+ ↓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > rejects an ineligible obligation before claiming or provider work
+ ↓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > rejects an ineligible obligation before claiming or provider work
+ ↓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > surfaces a durable recovery/materialization collision as reconciliation required
+ ↓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > is unavailable when the isolated payment-creation cohort is enabled
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > uses only the supplied database for claim and success persistence
+AssertionError: expected { success: false, error: { …(2) } } to match object { success: true, data: { …(1) } }
+(3 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+-   "data": {
+-     "recoveryAction": "VOIDED",
+-   },
+-   "success": true,
++   "success": false,
+  }
+
+ ❯ backend/tests/unit/quote-payment-recovery.test.ts:142:26
+    140|         const result = await recoverOrphanQuotePayment(input, quotePro…
+    141|         if (outcome === 'success') {
+    142|           expect(result).toMatchObject({ success: true, data: { recove…
+       |                          ^
+    143|           expect(scopedDatabase.transaction).toHaveBeenCalledTimes(2);
+    144|           expect(scopedDatabase.query).not.toHaveBeenCalled();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > uses only the supplied database for claim and provider failure persistence
+AssertionError: expected { success: false, error: { …(2) } } to deeply equal { success: false, error: { …(2) } }
+
+- Expected
++ Received
+
+  {
+    "error": {
+-     "code": "RECOVERY_TEMPORARILY_UNAVAILABLE",
+-     "message": "Retry recovery.",
++     "code": "QUOTE_PAYMENT_RECOVERY_FAILED",
++     "message": "Quote payment recovery could not be completed.",
+    },
+    "success": false,
+  }
+
+ ❯ backend/tests/unit/quote-payment-recovery.test.ts:146:26
+    144|           expect(scopedDatabase.query).not.toHaveBeenCalled();
+    145|         } else {
+    146|           expect(result).toEqual(recovered);
+       |                          ^
+    147|           expect(scopedDatabase.transaction).toHaveBeenCalledTimes(1);
+    148|           expect(scopedDatabase.query).toHaveBeenCalledWith(
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 16 skipped (18)
+   Start at  01:11:15
+   Duration  1.37s (transform 334ms, setup 76ms, import 985ms, tests 25ms, environment 0ms)
+

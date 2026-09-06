@@ -214,7 +214,18 @@ export class PostgresUniversalV1ChangeOrderRecoveryObservation {
           (row.recovery_state === 'ADJUSTMENT_SUCCEEDED' && row.adjustment_event_id === null)
         )
           return refuse('STATE_EVIDENCE_INCOMPLETE');
-        claim = mapChangeOrderRecoveryObservation(row);
+        const mapped = mapChangeOrderRecoveryObservation(row);
+        // The legacy projection carried a revocation reason only as NO_EFFECT
+        // terminal evidence. After a confirmed adjustment the scheduled worker
+        // also needs the advisory reason to ask the sealed compensation command
+        // for a winner. That command rechecks permanent revocation under locks.
+        claim = {
+          ...mapped,
+          authorityRevocationReason:
+            row.recovery_state === 'ADJUSTMENT_SUCCEEDED'
+              ? row.authority_revocation_reason
+              : mapped.authorityRevocationReason,
+        };
         if (claim.compensationCommand) Object.freeze(claim.compensationCommand);
         Object.freeze(claim);
       }

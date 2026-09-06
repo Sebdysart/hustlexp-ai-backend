@@ -1,3 +1,4 @@
+import { WORKER_CHANGE_ORDER_ADJUSTMENT_DEPENDENCIES, WORKER_CHANGE_ORDER_ADJUSTMENT_READ_COLUMNS, WORKER_CHANGE_ORDER_ADJUSTMENT_LOCK_COLUMNS } from './change-order-adjustment-role-plans.js';
 import { CHANGE_ORDER_REVERSAL_EXECUTION_FUNCTION } from './change-order-reversal-role-plans.js';
 import {
   CHANGE_ORDER_TERMINAL_INSERT_COLUMNS,
@@ -19,6 +20,9 @@ import {
 } from './change-order-recovery-role-plans.js';
 import {
   CHANGE_ORDER_MATERIALIZATION_ADDITIONAL_RELATIONS,
+  WORKER_CHANGE_ORDER_FINALIZE_COMMAND,
+  WORKER_CHANGE_ORDER_MATERIALIZATION_ORIGINS,
+  WORKER_CHANGE_ORDER_TARGET_DEPENDENCY,
   CHANGE_ORDER_MATERIALIZATION_FUNCTIONS,
   CHANGE_ORDER_MATERIALIZATION_PUBLIC_FUNCTIONS,
   CHANGE_ORDER_MATERIALIZATION_HASH_FUNCTIONS,
@@ -348,6 +352,7 @@ export const WORK_ORDER_COMMAND_AUTHORITY_WRITE_RELATIONS = [
   'hx_authority.universal_v1_work_order_command_execution_facts',
 ] as const;
 export const WORK_ORDER_COMMAND_WRITE_RELATIONS = [
+  WORKER_CHANGE_ORDER_MATERIALIZATION_ORIGINS,
   ...CHANGE_ORDER_MATERIALIZATION_ADDITIONAL_RELATIONS,
   ...FAKE_FINANCIAL_WEBHOOK_RELATIONS,
   FAKE_FINANCIAL_PREPARATION_PROVENANCE,
@@ -374,20 +379,20 @@ export const WORK_ORDER_COMMAND_WRITE_RELATIONS = [
 // a sealed command. Relations without triggers contribute no catalog rows.
 export const WORK_ORDER_TRIGGER_RELATIONS = WORK_ORDER_COMMAND_WRITE_RELATIONS;
 
-export const WORK_ORDER_TRIGGER_CATALOG_COUNT = 348;
+export const WORK_ORDER_TRIGGER_CATALOG_COUNT = 353;
 
 // Re-captured from a clean PG16 ordinal-146 + sealed v13 catalog after every trigger edge,
 // owner class, SECURITY mode, and fixed path is canonicalized by the readback
 // query below.  A migration changing even one edge must deliberately recapture
 // this value and its focused PostgreSQL proof.
 export const WORK_ORDER_TRIGGER_CATALOG_SHA256 =
-  'b69acb532dc9cf68d76972f8324e7f1da2e2fad2027cd0a383c139ac4ade899f';
+  '69efb5c77cedcb50aebd8e0f9f212bfcc9306bba08723a1ad64d3fc9c71c04f0';
 
 // Re-captured from the exact PG16 ordinal-146 + v13 function family. Flags, owners,
 // paths, and ACLs are checked independently; this digest closes source-body
 // drift that could otherwise preserve superficial protocol fragments.
 export const WORK_ORDER_AUTHORITY_FUNCTION_CATALOG_SHA256 =
-  'b4030432b893610fddbedbc78a200f28ae0c081df05846bd65e22d362459ef6e';
+  '1b825258212eb7990e772067f77d215a19417fbe92a865b351f3483911b8b176';
 
 export const WORK_ORDER_ORDINAL146_SQL_SHA256 =
   '3920ac8d3208b9f573dc331cab60c373d0349611700c6e14a6e4c1dd8c53aac4';
@@ -396,7 +401,7 @@ export const WORK_ORDER_FAKE_FINANCIAL_V12_SQL_SHA256 =
 export const WORK_ORDER_BOOTSTRAP_SEAL_SQL_SHA256 =
   'c69825589193885d0f6a3b93930880998e95e1c5cd44bb9b5999cb457192b2bd';
 export const FAKE_FINANCIAL_OUTBOX_V13_SQL_SHA256 =
-  '275f00b59916f26627ca401512828c76195f2cc3ad45489aaadc3d40d3cafd68';
+  '71d8ce41ec1437725559b687505d77e624817f532648b12a87567dfd6f205d27';
 
 export interface WorkOrderCommandRoleNames {
   migrationRole: string;
@@ -627,20 +632,24 @@ const FUNCTION_PLANS: readonly FunctionPlan[] = [
       identity,
       owner: shared ? 'migrationRole' : 'commandOwnerRole',
       permittedExecute: new Set<RoleKey>(
-        shared
-          ? ['migrationRole', 'commandOwnerRole', 'financeOwnerRole']
-          : CHANGE_ORDER_MATERIALIZATION_PUBLIC_FUNCTIONS.some((value) => value === identity)
-            ? ['commandOwnerRole', 'apiRole']
-            : CHANGE_ORDER_TERMINAL_DEPENDENCIES.some((value) => value === identity)
-              ? ['commandOwnerRole', 'financeOwnerRole']
-              : ['commandOwnerRole']
+        identity === WORKER_CHANGE_ORDER_FINALIZE_COMMAND
+          ? ['commandOwnerRole', 'workerRole']
+          : shared
+            ? ['migrationRole', 'commandOwnerRole', 'financeOwnerRole']
+            : CHANGE_ORDER_MATERIALIZATION_PUBLIC_FUNCTIONS.some((value) => value === identity)
+              ? ['commandOwnerRole', 'apiRole']
+              : CHANGE_ORDER_TERMINAL_DEPENDENCIES.some((value) => value === identity)
+                ? ['commandOwnerRole', 'financeOwnerRole']
+                : ['commandOwnerRole']
       ),
       sourceKind:
-        hash || deferred
-          ? 'dependency'
-          : identity === CHANGE_ORDER_MATERIALIZATION_PUBLIC_FUNCTIONS[0]
-            ? 'internal'
-            : 'human',
+        identity === WORKER_CHANGE_ORDER_FINALIZE_COMMAND
+          ? 'worker'
+          : hash || deferred
+            ? 'dependency'
+            : identity === CHANGE_ORDER_MATERIALIZATION_PUBLIC_FUNCTIONS[0]
+              ? 'internal'
+              : 'human',
       securityDefiner: !hash,
       volatility: hash ? 'i' : 'v',
       parallelSafety: hash ? 's' : 'u',
@@ -655,7 +664,7 @@ const FUNCTION_PLANS: readonly FunctionPlan[] = [
       permittedExecute: new Set<RoleKey>(
         CHANGE_ORDER_PUBLIC_COMMAND_FUNCTIONS.some((value) => value === identity)
           ? ['commandOwnerRole', 'apiRole']
-          : ['commandOwnerRole']
+          : WORKER_CHANGE_ORDER_ADJUSTMENT_DEPENDENCIES.some(value => value === identity) ? ['commandOwnerRole','financeOwnerRole'] : ['commandOwnerRole']
       ),
       sourceKind:
         identity === CHANGE_ORDER_PROPOSE_COMMAND || identity === CHANGE_ORDER_DECIDE_COMMAND
@@ -889,7 +898,8 @@ const FUNCTION_PLANS: readonly FunctionPlan[] = [
       identity,
       owner: 'financeOwnerRole',
       permittedExecute: new Set<RoleKey>(
-        identity === CHANGE_ORDER_REVERSAL_EXECUTION_FUNCTION
+        identity === CHANGE_ORDER_REVERSAL_EXECUTION_FUNCTION ||
+          identity === WORKER_CHANGE_ORDER_TARGET_DEPENDENCY
           ? ['financeOwnerRole', 'commandOwnerRole']
           : ['financeOwnerRole']
       ),
@@ -1001,7 +1011,7 @@ const FUNCTION_PLANS: readonly FunctionPlan[] = [
           ? ['migrationRole', 'commandOwnerRole', 'financeOwnerRole', 'telemetryOwnerRole']
           : isLock || isSealedTriggerDependency
             ? ['commandOwnerRole']
-            : isEffectiveExpiry || isFinancialCurrent || isCurrentAuthority || isExecutionDigest
+            : isEffectiveExpiry || isFinancialCurrent || isCurrentAuthority || isExecutionDigest || isOperationId
               ? ['migrationRole', 'commandOwnerRole', 'financeOwnerRole']
               : ['migrationRole', 'commandOwnerRole']
       ),
@@ -1300,6 +1310,14 @@ const COMMAND_OWNER_FINANCIAL_LOCK_UPDATE_COLUMNS: Readonly<
   'public.universal_v1_fake_financial_lifecycle_bridges': ['bridge_id'],
 };
 const BASE_RELATION_PLANS: readonly RelationPlan[] = [
+  {
+    relation: WORKER_CHANGE_ORDER_MATERIALIZATION_ORIGINS,
+    owner: 'commandOwnerRole',
+    permittedWrites: { commandOwnerRole: ALL_WRITES },
+    commandOwnerSelect: false,
+    permittedCommandOwnerUpdateColumns: [],
+    permittedColumnSelects: [],
+  },
   ...FAKE_FINANCIAL_WEBHOOK_RELATIONS.map(
     (relation): RelationPlan => ({
       relation,
@@ -1609,6 +1627,7 @@ const RELATION_PLANS: readonly RelationPlan[] = BASE_RELATION_PLANS.map((plan) =
     ...plan,
     permittedColumnUpdates: [
       ...(plan.permittedColumnUpdates ?? []),
+      ...(WORKER_CHANGE_ORDER_ADJUSTMENT_LOCK_COLUMNS[plan.relation] ? [{role:'financeOwnerRole' as const,columns:WORKER_CHANGE_ORDER_ADJUSTMENT_LOCK_COLUMNS[plan.relation]!}] : []),
       ...(CHANGE_ORDER_TERMINAL_LOCK_COLUMNS[plan.relation]
         ? [
             {
@@ -1649,6 +1668,7 @@ const RELATION_PLANS: readonly RelationPlan[] = BASE_RELATION_PLANS.map((plan) =
     ],
     permittedColumnSelects: [
       ...plan.permittedColumnSelects,
+      ...(WORKER_CHANGE_ORDER_ADJUSTMENT_READ_COLUMNS[plan.relation] ? [{role:'financeOwnerRole' as const,columns:WORKER_CHANGE_ORDER_ADJUSTMENT_READ_COLUMNS[plan.relation]!}] : []),
       ...(CHANGE_ORDER_TERMINAL_READ_COLUMNS[plan.relation]
         ? [
             {

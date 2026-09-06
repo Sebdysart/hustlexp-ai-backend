@@ -247,7 +247,24 @@ describe('nonproduction runtime insert authority migration', () => {
     expect(consume).toBeGreaterThanOrEqual(0);
     expect(insert).toBeGreaterThan(consume);
     expect(wrapper.slice(insert)).toContain('actor.resolved_user_id');
-    expect(wrapper).toContain('draft.poster_user_id IS DISTINCT FROM actor.resolved_user_id');
+    const customerCheck = wrapper.indexOf('customer_authorized:=draft.poster_user_id=actor.resolved_user_id');
+    const delegation = wrapper.indexOf("IF payload->>'operationKind'='ADJUST' THEN");
+    const deny = wrapper.indexOf('customer_authorized IS NOT TRUE');
+    expect(customerCheck).toBeGreaterThan(consume);
+    expect(delegation).toBeGreaterThan(customerCheck);
+    expect(deny).toBeGreaterThan(delegation);
+    expect(insert).toBeGreaterThan(deny);
+    for (const condition of [
+      'witness.actor_user_id=actor.resolved_user_id',
+      'witness.task_draft_id=draft.id AND witness.task_id=bound_task.id',
+      'witness.work_order_id=bound_task.work_order_id',
+      "witness.adjustment_operation_id=(payload->>'operationId')::UUID",
+      "witness.idempotency_key||':adjust'=payload->>'idempotencyKey'",
+      "organization.status='ACTIVE'",
+      'organization.client_enabled IS TRUE',
+      "public.business_membership_has_action(bound_task.business_organization_id,actor.resolved_user_id,'APPROVE_SPEND')",
+      'current_actor.firebase_uid=actor.verified_subject',
+    ]) expect(wrapper.slice(delegation, insert)).toContain(condition);
   });
 
   it('makes canonical fake lifecycle and reconciliation writes atomic with their bridge', () => {

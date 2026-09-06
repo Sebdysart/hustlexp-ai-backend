@@ -1,0 +1,2940 @@
+diff --git a/backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql b/backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql
+index c0c9011..c3c9eea 100644
+--- a/backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql
++++ b/backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql
+@@ -8143,7 +8143,7 @@ BEGIN
+     'MATERIALIZE_FAKE_WORK_ORDER',
+     'REQUEST_FAKE_WORK_ORDER_RECOVERY',
+     'CLAIM_WORK_ORDER_COMPENSATION',
+-    'PREPARE_FAKE_FINANCIAL_COMMAND','READ_FAKE_FINANCIAL_REQUEST_PROGRESS','READ_FAKE_FINANCIAL_PREDECESSOR'
++    'PREPARE_FAKE_FINANCIAL_COMMAND','READ_FAKE_FINANCIAL_REQUEST_PROGRESS','READ_FAKE_FINANCIAL_PREDECESSOR','READ_FAKE_WORK_ORDER_HISTORY'
+   ) THEN
+     RAISE EXCEPTION 'HXUV1-ACTOR-4: assertion command kind is outside the closed V1A set'
+       USING ERRCODE = 'P0001';
+@@ -8370,7 +8370,7 @@ ALTER TABLE hx_authority.universal_v1_actor_assertion_issuance_facts
+   ADD CONSTRAINT universal_v1_actor_assertion_issuance_facts_command_kind_check CHECK(command_kind IN (
+     'EXPRESS_POST_ESTIMATE_INTEREST','PLACE_CONDITIONAL_HOLD','PREPARE_FAKE_WORK_ORDER',
+     'MATERIALIZE_FAKE_WORK_ORDER','REQUEST_FAKE_WORK_ORDER_RECOVERY','CLAIM_WORK_ORDER_COMPENSATION',
+-    'PREPARE_FAKE_FINANCIAL_COMMAND','READ_FAKE_FINANCIAL_REQUEST_PROGRESS','READ_FAKE_FINANCIAL_PREDECESSOR'));
++    'PREPARE_FAKE_FINANCIAL_COMMAND','READ_FAKE_FINANCIAL_REQUEST_PROGRESS','READ_FAKE_FINANCIAL_PREDECESSOR','READ_FAKE_WORK_ORDER_HISTORY'));
+ 
+ CREATE OR REPLACE FUNCTION hx_authority.validate_fake_financial_preparation_payload_v13(payload JSONB)
+ RETURNS JSONB LANGUAGE plpgsql SECURITY DEFINER VOLATILE PARALLEL UNSAFE
+@@ -8860,6 +8860,232 @@ REVOKE ALL ON FUNCTION public.hxos_build_fake_financial_predecessor_actor_reques
+ REVOKE ALL ON FUNCTION hx_authority.read_fake_financial_predecessor_v13(JSONB) FROM PUBLIC;
+ REVOKE ALL ON FUNCTION public.hxos_read_authenticated_fake_financial_predecessor_v13(TEXT,JSONB) FROM PUBLIC;
+ 
++-- Fresh customer reads recover the original Work Order command without
++-- changing its timestamp-bound canonical identity or renewing any authority.
++CREATE OR REPLACE FUNCTION public.hxos_build_work_order_history_actor_request_v13(
++  expected_command_kind TEXT, command_payload JSONB
++)
++RETURNS TABLE(target_authority_id UUID,environment TEXT,release_manifest_sha256 TEXT,
++  canonical_request JSONB,actor_request_sha256 TEXT)
++LANGUAGE plpgsql SECURITY DEFINER VOLATILE PARALLEL UNSAFE SET search_path=pg_catalog AS $$
++DECLARE target RECORD;
++BEGIN
++  PERFORM hx_authority.assert_universal_v1_work_order_bootstrap_seal_v1();
++  IF expected_command_kind IS DISTINCT FROM 'READ_FAKE_WORK_ORDER_HISTORY'
++     OR pg_catalog.jsonb_typeof(command_payload) IS DISTINCT FROM 'object'
++     OR command_payload - ARRAY['conditional_hold_id','expected_eligibility_version','idempotency_key']::TEXT[] <> '{}'::JSONB
++     OR pg_catalog.jsonb_typeof(command_payload->'conditional_hold_id') IS DISTINCT FROM 'string'
++     OR command_payload->>'conditional_hold_id' !~ '^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$'
++     OR pg_catalog.jsonb_typeof(command_payload->'expected_eligibility_version') IS DISTINCT FROM 'number'
++     OR command_payload->>'expected_eligibility_version' !~ '^[1-9][0-9]{0,9}$'
++     OR (command_payload->>'expected_eligibility_version')::BIGINT > 2147483647
++     OR pg_catalog.jsonb_typeof(command_payload->'idempotency_key') IS DISTINCT FROM 'string'
++     OR command_payload->>'idempotency_key' !~ '^[A-Za-z0-9:_-]{16,96}$' THEN
++    RAISE EXCEPTION 'HXUV1-WOHISTORY-13-PAYLOAD_INVALID'; END IF;
++  PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('hxuv1-work-order-target-authority-v1',0));
++  SELECT * INTO STRICT target FROM hx_authority.read_universal_v1_work_order_target_authority_v1();
++  canonical_request:=pg_catalog.jsonb_build_object('schema_version',1,'command_kind',expected_command_kind,
++    'release_manifest_sha256',target.release_manifest_sha256,
++    'target_authority',pg_catalog.jsonb_build_object('id',target.target_authority_id,'version',target.authority_version,
++      'database',target.target_database_name,'environment',target.environment,'release',target.release_manifest_sha256),
++    'authentication_requirements',pg_catalog.jsonb_build_object('mfa_required',FALSE,'step_up_required',FALSE,
++      'max_auth_age_seconds',300,'max_step_up_age_seconds',NULL),'command_payload',command_payload);
++  target_authority_id:=target.target_authority_id; environment:=target.environment;
++  release_manifest_sha256:=target.release_manifest_sha256;
++  actor_request_sha256:=pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(canonical_request::TEXT,'UTF8')),'hex');
++  RETURN NEXT;
++END;
++$$;
++
++CREATE OR REPLACE FUNCTION public.hxos_read_authenticated_work_order_history_v13(
++  actor_assertion_token TEXT, command_payload JSONB
++)
++RETURNS TABLE(history JSONB,actor_user_id UUID,actor_assertion_id UUID,actor_request_sha256 TEXT,
++  target_authority_id UUID,reader_release_sha256 TEXT)
++LANGUAGE plpgsql SECURITY DEFINER VOLATILE PARALLEL UNSAFE SET search_path=pg_catalog AS $$
++DECLARE
++  request RECORD; actor RECORD; preparation RECORD; saved_context RECORD;
++  witness public.task_work_order_command_requests%ROWTYPE;
++  work_order public.task_work_orders%ROWTYPE;
++  claim public.universal_v1_work_order_compensation_commands%ROWTYPE;
++  journal public.financial_provider_command_journal%ROWTYPE;
++  prepared public.universal_v1_prepared_financial_commands%ROWTYPE;
++  linked_work_order_id UUID; witness_sha TEXT; phase JSONB; provenance JSONB; public_progress JSONB;
++BEGIN
++  IF pg_catalog.current_setting('transaction_isolation')<>'read committed' THEN
++    RAISE EXCEPTION 'HXUV1-WOHISTORY-13-READ_COMMITTED_REQUIRED'; END IF;
++  SELECT * INTO STRICT request FROM public.hxos_build_work_order_history_actor_request_v13(
++    'READ_FAKE_WORK_ORDER_HISTORY',command_payload);
++  SELECT * INTO STRICT actor FROM hx_authority.consume_universal_v1_actor_assertion_v1(
++    actor_assertion_token,'READ_FAKE_WORK_ORDER_HISTORY',request.canonical_request,request.environment);
++  actor_user_id:=actor.resolved_user_id; actor_assertion_id:=actor.assertion_id;
++  actor_request_sha256:=request.actor_request_sha256; target_authority_id:=request.target_authority_id;
++  reader_release_sha256:=request.release_manifest_sha256;
++
++  -- No financial lookup or another customer's row lock before ownership.
++  SELECT original.* INTO witness FROM public.task_work_order_command_requests original
++    JOIN public.tasks task ON task.id=original.task_id
++    JOIN public.task_drafts draft ON draft.id=original.task_draft_id AND draft.task_id=task.id
++    WHERE original.idempotency_key=command_payload->>'idempotency_key'
++      AND original.actor_user_id=actor.resolved_user_id AND task.poster_id=actor.resolved_user_id
++      AND draft.poster_user_id=actor.resolved_user_id AND draft.claimed_at IS NOT NULL
++      AND draft.ingress_origin='BACKEND_POSTGRESQL' AND draft.universal_contract_version=1
++      AND task.universal_contract_version=1 AND task.automation_classification='CONTROLLED_TEST'
++      AND task.universal_payment_posture='PAYMENT_CREATION_FROZEN' AND task.worker_id IS NULL
++    FOR SHARE OF original,task,draft NOWAIT;
++  IF witness.idempotency_key IS NULL THEN history:=NULL; RETURN NEXT; RETURN; END IF;
++  IF witness.conditional_hold_id IS DISTINCT FROM (command_payload->>'conditional_hold_id')::UUID
++     OR witness.eligibility_version IS DISTINCT FROM (command_payload->>'expected_eligibility_version')::INTEGER THEN
++    RAISE EXCEPTION 'HXUV1-WOHISTORY-13-IDENTITY_CONFLICT'; END IF;
++  IF witness.canonical_command_request_sha256 IS NULL
++     OR pg_catalog.btrim(witness.canonical_command_request_sha256)!~'^[a-f0-9]{64}$'
++     OR pg_catalog.btrim(witness.canonical_command_request_sha256)=pg_catalog.repeat('0',64) THEN
++    RAISE EXCEPTION 'HXUV1-WOHISTORY-13-PROVENANCE_UNAVAILABLE'; END IF;
++  witness_sha:=pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(pg_catalog.jsonb_build_object(
++    'actor',witness.actor_user_id,'hold',witness.conditional_hold_id,'task',witness.task_id,
++    'draft',witness.task_draft_id,'estimate',witness.provider_estimate_submission_id,
++    'route',witness.routing_decision_id,'scope',witness.scope_version_id,'provider',witness.provider_user_id,
++    'organization',witness.provider_organization_id,'eligibility',witness.eligibility_decision_id,
++    'eligibility_version',witness.eligibility_version,'amount',witness.amount_cents,'currency',witness.currency
++  )::TEXT,'UTF8')),'hex');
++  IF witness_sha IS DISTINCT FROM pg_catalog.btrim(witness.request_sha256) THEN
++    RAISE EXCEPTION 'HXUV1-WOHISTORY-13-WITNESS_INVALID'; END IF;
++
++  -- The original RECORDED execution is the immutable creation proof. Later
++  -- PREPARE replays may use a completed-result shape and are not its replacement.
++  SELECT execution.*,source.release_manifest_sha256 AS source_release INTO STRICT preparation
++    FROM hx_authority.universal_v1_work_order_command_execution_facts execution
++    JOIN hx_authority.universal_v1_work_order_target_authority_facts source
++      ON source.target_authority_id=execution.target_authority_id
++    WHERE execution.command_kind='PREPARE_FAKE_WORK_ORDER' AND execution.result_kind='RECORDED'
++      AND execution.idempotency_key=witness.idempotency_key AND execution.domain_object_id=witness.conditional_hold_id
++      AND execution.expected_version=witness.eligibility_version AND execution.actor_user_id=witness.actor_user_id
++      AND execution.canonical_request_sha256=witness.canonical_command_request_sha256
++      AND execution.actor_assertion_id IS NOT NULL AND execution.service_identity IS NULL
++      AND execution.hard_assignment_created IS FALSE AND execution.payment_creation_performed IS FALSE
++      AND execution.result_identifiers=pg_catalog.jsonb_build_object('task_id',witness.task_id,
++        'request_sha256',witness_sha,'witness_preexisted',FALSE)
++      AND source.target_database_name=pg_catalog.current_database() AND source.environment=request.environment;
++
++  SELECT witness.task_id AS task_id,witness.task_draft_id AS task_draft_id,witness.scope_version_id AS scope_version_id,
++      scope.version AS scope_version,witness.routing_decision_id AS routing_decision_id,
++      witness.provider_user_id AS provider_user_id,witness.provider_organization_id AS provider_organization_id,
++      eligibility.provider_class,eligibility.trade_credential_id,eligibility.id AS predecessor_eligibility_id,
++      eligibility.decision_version AS predecessor_eligibility_version,eligibility.valid_until AS predecessor_valid_until,
++      witness.actor_user_id AS poster_user_id,eligibility.interest_application_id,
++      witness.eligibility_decision_id AS eligibility_decision_id,witness.eligibility_version AS eligibility_version,
++      eligibility.valid_until AS eligibility_valid_until,witness.conditional_hold_id AS conditional_hold_id,
++      reservation.reserved_at AS hold_reserved_at,reservation.expires_at AS hold_expires_at,
++      witness.provider_estimate_submission_id AS provider_estimate_submission_id,
++      witness.amount_cents AS customer_total_cents,witness.currency::TEXT AS currency
++    INTO STRICT saved_context FROM public.task_scope_versions scope
++    JOIN public.task_provider_eligibility_decisions eligibility ON eligibility.id=witness.eligibility_decision_id
++    JOIN public.task_reservations reservation ON reservation.id=witness.conditional_hold_id
++    WHERE scope.id=witness.scope_version_id AND scope.customer_total_cents=witness.amount_cents AND scope.currency=witness.currency
++      AND eligibility.task_id=witness.task_id AND eligibility.task_draft_id=witness.task_draft_id
++      AND eligibility.scope_version_id=witness.scope_version_id AND eligibility.routing_decision_id=witness.routing_decision_id
++      AND eligibility.decision_version=witness.eligibility_version AND eligibility.provider_user_id=witness.provider_user_id
++      AND eligibility.provider_organization_id IS NOT DISTINCT FROM witness.provider_organization_id
++      AND reservation.task_id=witness.task_id AND reservation.reserved_by=witness.actor_user_id
++      AND reservation.eligibility_decision_id=witness.eligibility_decision_id
++      AND reservation.interest_application_id=eligibility.interest_application_id
++      AND reservation.universal_contract_version=1 AND reservation.hold_kind='CONDITIONAL_HOLD';
++  phase:=pg_catalog.jsonb_build_object('completed',FALSE,'context',pg_catalog.to_jsonb(saved_context),
++    'idempotencyKey',witness.idempotency_key,'requestSha256',witness_sha,'occurredAt',saved_context.hold_reserved_at);
++  provenance:=pg_catalog.jsonb_build_object('targetAuthorityId',preparation.target_authority_id,
++    'releaseSha256',preparation.source_release,'canonicalRequestSha256',pg_catalog.btrim(preparation.canonical_request_sha256),
++    'preparationExecutionId',preparation.command_execution_fact_id);
++
++  SELECT * INTO work_order FROM public.task_work_orders WHERE task_id=witness.task_id;
++  SELECT * INTO claim FROM public.universal_v1_work_order_compensation_commands WHERE task_id=witness.task_id;
++  SELECT task.work_order_id INTO linked_work_order_id FROM public.tasks task WHERE task.id=witness.task_id;
++  IF work_order.id IS NOT NULL AND claim.compensation_command_id IS NOT NULL THEN
++    RAISE EXCEPTION 'HXUV1-WOHISTORY-13-CONFLICTING_TERMINAL_HISTORY'; END IF;
++
++  IF work_order.id IS NOT NULL THEN
++    IF work_order.id IS DISTINCT FROM linked_work_order_id
++       OR work_order.idempotency_key IS DISTINCT FROM witness.idempotency_key
++       OR work_order.task_draft_id IS DISTINCT FROM witness.task_draft_id
++       OR work_order.scope_version_id IS DISTINCT FROM witness.scope_version_id
++       OR work_order.routing_decision_id IS DISTINCT FROM witness.routing_decision_id
++       OR work_order.provider_estimate_submission_id IS DISTINCT FROM witness.provider_estimate_submission_id
++       OR work_order.interest_application_id IS DISTINCT FROM saved_context.interest_application_id
++       OR work_order.eligibility_decision_id IS DISTINCT FROM witness.eligibility_decision_id
++       OR work_order.conditional_hold_id IS DISTINCT FROM witness.conditional_hold_id
++       OR work_order.provider_user_id IS DISTINCT FROM witness.provider_user_id
++       OR work_order.provider_organization_id IS DISTINCT FROM witness.provider_organization_id
++       OR work_order.materialized_by IS DISTINCT FROM witness.actor_user_id THEN
++      RAISE EXCEPTION 'HXUV1-WOHISTORY-13-WORK_ORDER_IDENTITY_INVALID'; END IF;
++    PERFORM 1 FROM hx_authority.universal_v1_work_order_command_execution_facts execution
++      WHERE execution.command_kind='MATERIALIZE_FAKE_WORK_ORDER' AND execution.result_kind='COMPLETED'
++        AND execution.idempotency_key=witness.idempotency_key AND execution.domain_object_id=witness.task_id
++        AND execution.expected_version=witness.eligibility_version AND execution.actor_user_id=witness.actor_user_id
++        AND execution.actor_assertion_id IS NOT NULL AND execution.service_identity IS NULL
++        AND execution.hard_assignment_created IS FALSE AND execution.payment_creation_performed IS FALSE
++        AND execution.result_identifiers=pg_catalog.jsonb_build_object('work_order_id',work_order.id,
++          'financial_security_event_id',work_order.financial_security_event_id);
++    IF NOT FOUND THEN RAISE EXCEPTION 'HXUV1-WOHISTORY-13-COMPLETION_PROVENANCE_UNAVAILABLE'; END IF;
++    history:=pg_catalog.jsonb_build_object('state','COMPLETED','observedAt',pg_catalog.clock_timestamp(),'phase',phase,'source',provenance,
++      'result',pg_catalog.jsonb_build_object('work_order_id',work_order.id,
++        'financial_security_event_id',work_order.financial_security_event_id,'replayed',TRUE,
++        'hard_assignment_created',FALSE,'payment_creation_performed',FALSE));
++    RETURN NEXT; RETURN;
++  END IF;
++  IF linked_work_order_id IS NOT NULL THEN RAISE EXCEPTION 'HXUV1-WOHISTORY-13-WORK_ORDER_IDENTITY_INVALID'; END IF;
++
++  IF claim.compensation_command_id IS NOT NULL THEN
++    IF claim.work_order_idempotency_key IS DISTINCT FROM witness.idempotency_key
++       OR claim.task_draft_id IS DISTINCT FROM witness.task_draft_id OR claim.scope_version_id IS DISTINCT FROM witness.scope_version_id
++       OR claim.eligibility_decision_id IS DISTINCT FROM witness.eligibility_decision_id
++       OR claim.requested_by IS DISTINCT FROM witness.actor_user_id
++       OR claim.amount_cents IS DISTINCT FROM witness.amount_cents OR claim.currency IS DISTINCT FROM witness.currency
++       OR claim.secured_operation_id IS DISTINCT FROM public.universal_v1_work_order_operation_id_v1(witness.idempotency_key,'secure')
++       OR claim.void_operation_id IS DISTINCT FROM public.universal_v1_work_order_operation_id_v1(witness.idempotency_key,'void')
++       OR claim.void_idempotency_key IS DISTINCT FROM witness.idempotency_key||':void' THEN
++      RAISE EXCEPTION 'HXUV1-WOHISTORY-13-COMPENSATION_IDENTITY_INVALID'; END IF;
++    PERFORM 1 FROM public.task_financial_security_events event
++      WHERE event.id=claim.secured_event_id AND event.operation_id=claim.secured_operation_id::TEXT
++        AND event.idempotency_key=witness.idempotency_key||':secure'
++        AND event.provider_kind='FAKE' AND event.event_kind='SECURED' AND event.status='SUCCEEDED'
++        AND event.expected_version=2 AND event.task_draft_id=witness.task_draft_id AND event.task_id=witness.task_id
++        AND event.scope_version_id=witness.scope_version_id AND event.eligibility_decision_id=witness.eligibility_decision_id
++        AND event.amount_cents=witness.amount_cents AND event.currency=witness.currency;
++    IF NOT FOUND THEN RAISE EXCEPTION 'HXUV1-WOHISTORY-13-COMPENSATION_EVENT_INVALID'; END IF;
++    SELECT * INTO journal FROM public.financial_provider_command_journal
++      WHERE operation_id=claim.void_operation_id AND operation_kind='VOID' AND provider_kind='FAKE'
++        AND command_state='REQUESTED' AND provider_expected_version=0 AND idempotency_key=claim.void_idempotency_key;
++    IF journal.command_id IS NOT NULL THEN
++      SELECT * INTO STRICT prepared FROM public.universal_v1_prepared_financial_commands
++        WHERE prepared_command_id=journal.prepared_financial_command_id;
++      IF journal.recorded_actor_id IS DISTINCT FROM claim.requested_by
++         OR journal.task_draft_id IS DISTINCT FROM claim.task_draft_id OR journal.task_id IS DISTINCT FROM claim.task_id
++         OR journal.work_order_id IS NOT NULL OR journal.related_operation_id IS DISTINCT FROM claim.secured_operation_id
++         OR journal.amount_cents IS DISTINCT FROM claim.amount_cents OR journal.currency IS DISTINCT FROM claim.currency
++         OR prepared.operation_kind IS DISTINCT FROM 'VOID' OR prepared.operation_id IS DISTINCT FROM claim.void_operation_id
++         OR prepared.idempotency_key IS DISTINCT FROM claim.void_idempotency_key
++         OR prepared.task_draft_id IS DISTINCT FROM claim.task_draft_id OR prepared.task_id IS DISTINCT FROM claim.task_id
++         OR prepared.scope_version_id IS DISTINCT FROM claim.scope_version_id
++         OR prepared.eligibility_decision_id IS DISTINCT FROM claim.eligibility_decision_id
++         OR prepared.predecessor_event_id IS DISTINCT FROM claim.secured_event_id
++         OR prepared.lifecycle_expected_version IS DISTINCT FROM 3 OR prepared.work_order_id IS NOT NULL THEN
++        RAISE EXCEPTION 'HXUV1-WOHISTORY-13-VOID_IDENTITY_INVALID'; END IF;
++      public_progress:=hx_authority.read_fake_financial_public_progress_v13(journal.command_id);
++      IF public_progress IS NULL OR public_progress->>'ownerActorId' IS DISTINCT FROM actor.resolved_user_id::TEXT
++         OR public_progress->>'environment' IS DISTINCT FROM request.environment THEN
++        RAISE EXCEPTION 'HXUV1-WOHISTORY-13-VOID_PROGRESS_INVALID'; END IF;
++      public_progress:=public_progress-ARRAY['ownerActorId','environment']::TEXT[];
++    END IF;
++    history:=pg_catalog.jsonb_build_object('state','COMPENSATION_CLAIM','observedAt',pg_catalog.clock_timestamp(),'phase',phase,'source',provenance,
++      'compensation',pg_catalog.to_jsonb(claim),'voidProgress',public_progress);
++    RETURN NEXT; RETURN;
++  END IF;
++  history:=pg_catalog.jsonb_build_object('state','PREPARED','observedAt',pg_catalog.clock_timestamp(),'phase',phase,'source',provenance);
++  RETURN NEXT;
++END;
++$$;
++REVOKE ALL ON FUNCTION public.hxos_build_work_order_history_actor_request_v13(TEXT,JSONB) FROM PUBLIC;
++REVOKE ALL ON FUNCTION public.hxos_read_authenticated_work_order_history_v13(TEXT,JSONB) FROM PUBLIC;
++
+ ALTER FUNCTION public.universal_v1_effective_work_order_scope_id(uuid) SET search_path = pg_catalog, public;
+ ALTER FUNCTION public.universal_v1_pre_work_order_void_is_authorized(uuid,text,text,bigint,bigint,uuid,uuid,uuid,uuid,uuid,uuid,bigint,text,uuid) SET search_path = pg_catalog, public;
+ ALTER FUNCTION public.universal_v1_fake_terminal_plan_v1(text) SET search_path = pg_catalog, public;
+@@ -9499,6 +9725,8 @@ BEGIN
+         ('public.hxos_build_fake_financial_predecessor_actor_request_v13(text,jsonb)'),
+         ('hx_authority.read_fake_financial_predecessor_v13(jsonb)'),
+         ('public.hxos_read_authenticated_fake_financial_predecessor_v13(text,jsonb)'),
++        ('public.hxos_build_work_order_history_actor_request_v13(text,jsonb)'),
++        ('public.hxos_read_authenticated_work_order_history_v13(text,jsonb)'),
+         ('public.hxos_prepare_authenticated_fake_financial_command_v13(text,jsonb)'),
+         ('public.hxos_prepare_universal_v1_financial_command_v1(uuid,text,uuid,text,text,bigint,bigint,text,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,bigint,text,uuid)'),
+         ('public.universal_v1_effective_work_order_scope_id(uuid)'),
+@@ -9661,6 +9889,8 @@ BEGIN
+        pg_catalog.to_regprocedure('public.hxos_build_fake_financial_predecessor_actor_request_v13(text,jsonb)'),
+        pg_catalog.to_regprocedure('hx_authority.read_fake_financial_predecessor_v13(jsonb)'),
+        pg_catalog.to_regprocedure('public.hxos_read_authenticated_fake_financial_predecessor_v13(text,jsonb)'),
++       pg_catalog.to_regprocedure('public.hxos_build_work_order_history_actor_request_v13(text,jsonb)'),
++       pg_catalog.to_regprocedure('public.hxos_read_authenticated_work_order_history_v13(text,jsonb)'),
+        pg_catalog.to_regprocedure('public.hxos_prepare_authenticated_fake_financial_command_v13(text,jsonb)'),
+        pg_catalog.to_regprocedure('public.hxos_prepare_universal_v1_financial_command_v1(uuid,text,uuid,text,text,bigint,bigint,text,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,bigint,text,uuid)'),
+        pg_catalog.to_regprocedure('public.universal_v1_effective_work_order_scope_id(uuid)'),
+diff --git a/backend/src/auth/universal-v1-actor-attestation-contracts.ts b/backend/src/auth/universal-v1-actor-attestation-contracts.ts
+index f788e0d..51c5600 100644
+--- a/backend/src/auth/universal-v1-actor-attestation-contracts.ts
++++ b/backend/src/auth/universal-v1-actor-attestation-contracts.ts
+@@ -1,3 +1,4 @@
++import { WorkOrderHistoryPayloadSchema } from './work-order-history-command-contract.js';
+ import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+ 
+ import { z } from 'zod';
+@@ -24,6 +25,7 @@ export const UniversalV1ActorCommandKindSchema = z.enum([
+   'PREPARE_FAKE_FINANCIAL_COMMAND',
+   'READ_FAKE_FINANCIAL_REQUEST_PROGRESS',
+   'READ_FAKE_FINANCIAL_PREDECESSOR',
++  'READ_FAKE_WORK_ORDER_HISTORY',
+   'EXPRESS_POST_ESTIMATE_INTEREST',
+   'PLACE_CONDITIONAL_HOLD',
+   'PREPARE_FAKE_WORK_ORDER',
+@@ -41,6 +43,7 @@ const commandPayloadSchemas = {
+   PREPARE_FAKE_FINANCIAL_COMMAND: FakeFinancialPreparationPayloadSchema,
+   READ_FAKE_FINANCIAL_REQUEST_PROGRESS: FakeFinancialProgressPayloadSchema,
+   READ_FAKE_FINANCIAL_PREDECESSOR: FakeFinancialPredecessorPayloadSchema,
++  READ_FAKE_WORK_ORDER_HISTORY: WorkOrderHistoryPayloadSchema,
+   EXPRESS_POST_ESTIMATE_INTEREST: z
+     .object({
+       task_id: uuid,
+diff --git a/backend/src/auth/work-order-history-command-contract.ts b/backend/src/auth/work-order-history-command-contract.ts
+new file mode 100644
+index 0000000..e565d63
+--- /dev/null
++++ b/backend/src/auth/work-order-history-command-contract.ts
+@@ -0,0 +1,177 @@
++import { z } from 'zod';
++import {
++  FinancialProgressUuidSchema as uuid,
++  PublicFinancialRequestProgressSchema,
++} from './financial-progress-command-contract.js';
++
++const digest = z
++  .string()
++  .regex(/^[a-f0-9]{64}$/u)
++  .refine((value) => value !== '0'.repeat(64));
++const release = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
++const timestamp = z.string().datetime({ offset: true });
++const version = z.number().int().positive().max(2_147_483_647);
++const key = z.string().regex(/^[A-Za-z0-9:_-]{16,96}$/u);
++
++export const WorkOrderHistoryPayloadSchema = z
++  .object({
++    conditional_hold_id: uuid,
++    expected_eligibility_version: version,
++    idempotency_key: key,
++  })
++  .strict();
++export type WorkOrderHistoryPayload = z.infer<typeof WorkOrderHistoryPayloadSchema>;
++
++const context = z
++  .object({
++    task_id: uuid,
++    task_draft_id: uuid,
++    scope_version_id: uuid,
++    scope_version: version,
++    routing_decision_id: uuid,
++    provider_user_id: uuid,
++    provider_organization_id: uuid.nullable(),
++    provider_class: z.enum(['GENERAL_SERVICE_PROVIDER', 'VERIFIED_TRADE_BUSINESS']),
++    trade_credential_id: uuid.nullable(),
++    predecessor_eligibility_id: uuid,
++    predecessor_eligibility_version: version,
++    predecessor_valid_until: timestamp,
++    poster_user_id: uuid,
++    interest_application_id: uuid,
++    eligibility_decision_id: uuid,
++    eligibility_version: version,
++    eligibility_valid_until: timestamp,
++    conditional_hold_id: uuid,
++    hold_reserved_at: timestamp,
++    hold_expires_at: timestamp,
++    provider_estimate_submission_id: uuid,
++    customer_total_cents: z.number().int().safe().positive(),
++    currency: z.string().regex(/^[A-Z]{3}$/u),
++  })
++  .strict();
++const phase = z
++  .object({
++    completed: z.literal(false),
++    context,
++    idempotencyKey: key,
++    requestSha256: digest,
++    occurredAt: timestamp,
++  })
++  .strict();
++const source = z
++  .object({
++    targetAuthorityId: uuid,
++    releaseSha256: release,
++    canonicalRequestSha256: digest,
++    preparationExecutionId: uuid,
++  })
++  .strict();
++const result = z
++  .object({
++    work_order_id: uuid,
++    financial_security_event_id: uuid,
++    replayed: z.literal(true),
++    hard_assignment_created: z.literal(false),
++    payment_creation_performed: z.literal(false),
++  })
++  .strict();
++const compensation = z
++  .object({
++    compensation_command_id: uuid,
++    work_order_idempotency_key: key,
++    task_draft_id: uuid,
++    task_id: uuid,
++    scope_version_id: uuid,
++    eligibility_decision_id: uuid,
++    secured_event_id: uuid,
++    secured_operation_id: uuid,
++    void_operation_id: uuid,
++    void_idempotency_key: z.string().regex(/^[A-Za-z0-9:_-]{16,128}$/u),
++    amount_cents: z.number().int().safe().positive(),
++    currency: z.string().regex(/^[A-Z]{3}$/u),
++    requested_by: uuid,
++    created_at: timestamp,
++    reason_code: z.enum(['FINALIZATION_FAILED', 'RECOVERY_TIMEOUT']),
++  })
++  .strict();
++
++/** Backend-only historical facts; neither a new preparation nor authority to
++ * execute a successor. A compensation claim stays terminal for Work Order creation. */
++export const WorkOrderHistorySchema = z
++  .discriminatedUnion('state', [
++    z.object({ state: z.literal('PREPARED'), observedAt: timestamp, phase, source }).strict(),
++    z
++      .object({ state: z.literal('COMPLETED'), observedAt: timestamp, phase, source, result })
++      .strict(),
++    z
++      .object({
++        state: z.literal('COMPENSATION_CLAIM'),
++        observedAt: timestamp,
++        phase,
++        source,
++        compensation,
++        voidProgress: PublicFinancialRequestProgressSchema.nullable(),
++      })
++      .strict(),
++  ])
++  .superRefine((history, ctx) => {
++    const p = history.phase,
++      c = p.context;
++    let invalid =
++      p.occurredAt !== c.hold_reserved_at ||
++      c.predecessor_eligibility_id !== c.eligibility_decision_id ||
++      c.predecessor_eligibility_version !== c.eligibility_version ||
++      c.predecessor_valid_until !== c.eligibility_valid_until;
++    if (history.state === 'COMPENSATION_CLAIM') {
++      const claim = history.compensation,
++        progress = history.voidProgress;
++      invalid ||=
++        claim.work_order_idempotency_key !== p.idempotencyKey ||
++        claim.task_draft_id !== c.task_draft_id ||
++        claim.task_id !== c.task_id ||
++        claim.scope_version_id !== c.scope_version_id ||
++        claim.eligibility_decision_id !== c.eligibility_decision_id ||
++        claim.requested_by !== c.poster_user_id ||
++        claim.amount_cents !== c.customer_total_cents ||
++        claim.currency !== c.currency;
++      if (progress !== null)
++        invalid ||=
++          progress.operationKind !== 'VOID' ||
++          progress.operationId !== claim.void_operation_id ||
++          progress.taskDraftId !== claim.task_draft_id ||
++          progress.taskId !== claim.task_id ||
++          (progress.financialEvent !== null && progress.financialEvent.eventKind !== 'VOIDED');
++    }
++    if (invalid)
++      ctx.addIssue({
++        code: z.ZodIssueCode.custom,
++        message: 'Historical Work Order bindings disagree',
++      });
++  });
++export type WorkOrderHistory = z.infer<typeof WorkOrderHistorySchema>;
++
++export function workOrderHistoryMatchesPayload(
++  history: WorkOrderHistory,
++  payload: WorkOrderHistoryPayload,
++  actor: string
++): boolean {
++  return (
++    history.phase.idempotencyKey === payload.idempotency_key &&
++    history.phase.context.conditional_hold_id === payload.conditional_hold_id &&
++    history.phase.context.eligibility_version === payload.expected_eligibility_version &&
++    history.phase.context.poster_user_id === actor
++  );
++}
++
++export function freezeWorkOrderHistory(history: WorkOrderHistory): Readonly<WorkOrderHistory> {
++  Object.freeze(history.phase.context);
++  Object.freeze(history.phase);
++  Object.freeze(history.source);
++  if (history.state === 'COMPLETED') Object.freeze(history.result);
++  if (history.state === 'COMPENSATION_CLAIM') {
++    Object.freeze(history.compensation);
++    if (history.voidProgress?.financialEvent) Object.freeze(history.voidProgress.financialEvent);
++    if (history.voidProgress) Object.freeze(history.voidProgress);
++  }
++  return Object.freeze(history);
++}
+diff --git a/backend/src/jobs/work-order-command-role-authority.ts b/backend/src/jobs/work-order-command-role-authority.ts
+index 0f2a858..1202da8 100644
+--- a/backend/src/jobs/work-order-command-role-authority.ts
++++ b/backend/src/jobs/work-order-command-role-authority.ts
+@@ -1,3 +1,7 @@
++import {
++  WORK_ORDER_HISTORY_COMMAND,
++  WORK_ORDER_HISTORY_FUNCTIONS,
++} from './work-order-history-role-plans.js';
+ import {
+   FAKE_FINANCIAL_PREDECESSOR_COMMAND,
+   FAKE_FINANCIAL_PREDECESSOR_READER,
+@@ -200,6 +204,7 @@ export const WORK_ORDER_AUTHORITY_FUNCTIONS = [
+   ...FAKE_FINANCIAL_WEBHOOK_DEPENDENCIES,
+   ...FAKE_FINANCIAL_PUBLIC_PROGRESS_FUNCTIONS,
+   ...FAKE_FINANCIAL_PREDECESSOR_FUNCTIONS,
++  ...WORK_ORDER_HISTORY_FUNCTIONS,
+   ...FAKE_FINANCIAL_PREPARATION_FUNCTIONS,
+   ...FAKE_FINANCIAL_PREPARATION_DEPENDENCY_FUNCTIONS,
+   WORK_ORDER_ASSERTION_ISSUER_FUNCTION,
+@@ -333,7 +338,7 @@ export const WORK_ORDER_TRIGGER_CATALOG_SHA256 =
+ // paths, and ACLs are checked independently; this digest closes source-body
+ // drift that could otherwise preserve superficial protocol fragments.
+ export const WORK_ORDER_AUTHORITY_FUNCTION_CATALOG_SHA256 =
+-  '0aff5aa809da3055c3d0e6d51dec2c7a83f67c08b102c77dc94c012779f916ba';
++  'e28a36ccbc0fc2f2d41ac1cf5568982b9bbadf0e3c8cde6969cf83e8aa43f9b4';
+ 
+ export const WORK_ORDER_ORDINAL146_SQL_SHA256 =
+   '3920ac8d3208b9f573dc331cab60c373d0349611700c6e14a6e4c1dd8c53aac4';
+@@ -342,7 +347,7 @@ export const WORK_ORDER_FAKE_FINANCIAL_V12_SQL_SHA256 =
+ export const WORK_ORDER_BOOTSTRAP_SEAL_SQL_SHA256 =
+   'c69825589193885d0f6a3b93930880998e95e1c5cd44bb9b5999cb457192b2bd';
+ export const FAKE_FINANCIAL_OUTBOX_V13_SQL_SHA256 =
+-  'e358fcb5f06119e569a3b01ca1d73be3b380f224d6bf3d73f37fcf8f327db504';
++  '585026fd99b781142589b98f91de8c1f6ebe2889b4f95f2bd3c37ce7f35f913a';
+ 
+ export interface WorkOrderCommandRoleNames {
+   migrationRole: string;
+@@ -602,6 +607,15 @@ const FUNCTION_PLANS: readonly FunctionPlan[] = [
+       ...SEALED_VOLATILE,
+     })
+   ),
++  ...WORK_ORDER_HISTORY_FUNCTIONS.map(
++    (identity): FunctionPlan => ({
++      identity,
++      owner: 'commandOwnerRole',
++      permittedExecute: new Set<RoleKey>(['commandOwnerRole', 'apiRole']),
++      sourceKind: identity === WORK_ORDER_HISTORY_COMMAND ? 'human' : 'internal',
++      ...SEALED_VOLATILE,
++    })
++  ),
+   ...FAKE_FINANCIAL_PREDECESSOR_FUNCTIONS.map(
+     (identity): FunctionPlan => ({
+       identity,
+diff --git a/backend/src/jobs/work-order-history-role-plans.ts b/backend/src/jobs/work-order-history-role-plans.ts
+new file mode 100644
+index 0000000..9b4bc95
+--- /dev/null
++++ b/backend/src/jobs/work-order-history-role-plans.ts
+@@ -0,0 +1,8 @@
++export const WORK_ORDER_HISTORY_BUILDER =
++  'public.hxos_build_work_order_history_actor_request_v13(text,jsonb)';
++export const WORK_ORDER_HISTORY_COMMAND =
++  'public.hxos_read_authenticated_work_order_history_v13(text,jsonb)';
++export const WORK_ORDER_HISTORY_FUNCTIONS = [
++  WORK_ORDER_HISTORY_BUILDER,
++  WORK_ORDER_HISTORY_COMMAND,
++] as const;
+diff --git a/backend/src/routers/universalContract.ts b/backend/src/routers/universalContract.ts
+index f70406d..e8c721b 100644
+--- a/backend/src/routers/universalContract.ts
++++ b/backend/src/routers/universalContract.ts
+@@ -20,6 +20,7 @@ import { UniversalV1WorkOrderApplication } from '../services/UniversalV1WorkOrde
+ import {
+   ExpressUniversalV1ProviderInterestPublicSchema,
+   MaterializeUniversalV1WorkOrderPublicSchema,
++  UniversalV1WorkOrderPublicResultSchema,
+   PlaceUniversalV1ConditionalHoldPublicSchema,
+ } from '../services/UniversalV1WorkOrderContracts.js';
+ import { UniversalV1WorkOrderError } from '../services/UniversalV1WorkOrderContracts.js';
+@@ -347,11 +348,7 @@ export function createUniversalContractRouter(
+       .mutation(async ({ ctx, input }) => {
+         assertUniversalV1EstimateActor(ctx.user);
+         try {
+-          return await workOrders.expressProviderInterest(
+-            ctx.user.id,
+-            input,
+-            ctx.actorAttestation
+-          );
++          return await workOrders.expressProviderInterest(ctx.user.id, input, ctx.actorAttestation);
+         } catch (error) {
+           throw universalV1EstimateRouteError(error);
+         }
+@@ -361,17 +358,14 @@ export function createUniversalContractRouter(
+       .mutation(async ({ ctx, input }) => {
+         assertUniversalV1EstimateActor(ctx.user);
+         try {
+-          return await workOrders.placeConditionalHold(
+-            ctx.user.id,
+-            input,
+-            ctx.actorAttestation
+-          );
++          return await workOrders.placeConditionalHold(ctx.user.id, input, ctx.actorAttestation);
+         } catch (error) {
+           throw universalV1EstimateRouteError(error);
+         }
+       }),
+     secureAndMaterializeFakeWorkOrder: protectedProcedure
+       .input(MaterializeUniversalV1WorkOrderPublicSchema)
++      .output(UniversalV1WorkOrderPublicResultSchema)
+       .mutation(async ({ ctx, input }) => {
+         assertUniversalV1EstimateActor(ctx.user);
+         try {
+diff --git a/backend/src/services/UniversalV1ActorAttesterClient.ts b/backend/src/services/UniversalV1ActorAttesterClient.ts
+index b878d0d..c74514f 100644
+--- a/backend/src/services/UniversalV1ActorAttesterClient.ts
++++ b/backend/src/services/UniversalV1ActorAttesterClient.ts
+@@ -101,7 +101,9 @@ export class PostgresUniversalV1CanonicalRequestAuthority implements UniversalV1
+           ? 'public.hxos_build_fake_financial_progress_actor_request_v13'
+           : command.commandKind === 'READ_FAKE_FINANCIAL_PREDECESSOR'
+             ? 'public.hxos_build_fake_financial_predecessor_actor_request_v13'
+-            : 'public.hxos_build_universal_v1_work_order_actor_request_v1';
++            : command.commandKind === 'READ_FAKE_WORK_ORDER_HISTORY'
++              ? 'public.hxos_build_work_order_history_actor_request_v13'
++              : 'public.hxos_build_universal_v1_work_order_actor_request_v1';
+     const result = await this.query<CanonicalAuthorityRow>(
+       `SELECT target_authority_id,
+               environment,
+diff --git a/backend/src/services/UniversalV1WorkOrderApplication.ts b/backend/src/services/UniversalV1WorkOrderApplication.ts
+index 7f6ceb0..374a194 100644
+--- a/backend/src/services/UniversalV1WorkOrderApplication.ts
++++ b/backend/src/services/UniversalV1WorkOrderApplication.ts
+@@ -2,22 +2,24 @@ import {
+   type ExpressInterestPublic,
+   type MaterializeWorkOrderPublic,
+   type PlaceHoldPublic,
++  type UniversalV1WorkOrderPublicResult,
+   UniversalV1WorkOrderError,
+ } from './UniversalV1WorkOrderContracts.js';
+ import {
+   clientTimestampEpochMs,
+   type UniversalV1ActorAttestationHandle,
+ } from '../auth/universal-v1-actor-attestation-contracts.js';
+-import {
+-  deterministicUuid,
+-  PostgresUniversalV1WorkOrderRepository,
+-} from './UniversalV1WorkOrderPostgresRepository.js';
++import { PostgresUniversalV1WorkOrderRepository } from './UniversalV1WorkOrderPostgresRepository.js';
+ import { PostgresUniversalV1WorkOrderPublicFactReader } from './UniversalV1WorkOrderPublicFacts.js';
++import { createUniversalV1FinancialRequestService } from './payment/UniversalV1FinancialRequestService.js';
++import {
++  PostgresUniversalV1WorkOrderHistoryReader,
++  type UniversalV1WorkOrderHistoryReader,
++} from './UniversalV1WorkOrderHistory.js';
+ import {
+-  createUniversalV1FakeFinancialApplicationService,
+-  type UniversalV1FakeFinancialApplicationService,
+-} from './payment/UniversalV1FinancialApplicationService.js';
+-import { executeUniversalV1WorkOrderCompensation } from '../jobs/universal-v1-work-order-compensation-worker.js';
++  resumeUniversalV1WorkOrder,
++  type UniversalV1WorkOrderRequestFinance,
++} from './UniversalV1WorkOrderResume.js';
+ 
+ function current(ts: string) {
+   const d = Date.parse(ts),
+@@ -43,9 +45,10 @@ export class UniversalV1WorkOrderApplication {
+     private readonly facts = new PostgresUniversalV1WorkOrderPublicFactReader(),
+     private readonly repo = new PostgresUniversalV1WorkOrderRepository(),
+     private readonly createFinance: () =>
+-      | UniversalV1FakeFinancialApplicationService
+-      | Promise<UniversalV1FakeFinancialApplicationService> = () =>
+-      createUniversalV1FakeFinancialApplicationService()
++      | UniversalV1WorkOrderRequestFinance
++      | Promise<UniversalV1WorkOrderRequestFinance> = () =>
++      createUniversalV1FinancialRequestService(),
++    private readonly history: UniversalV1WorkOrderHistoryReader = new PostgresUniversalV1WorkOrderHistoryReader()
+   ) {}
+   async expressProviderInterest(
+     actor: string,
+@@ -114,133 +117,17 @@ export class UniversalV1WorkOrderApplication {
+     actor: string,
+     input: MaterializeWorkOrderPublic,
+     actorAttestation?: UniversalV1ActorAttestationHandle
+-  ) {
++  ): Promise<UniversalV1WorkOrderPublicResult> {
+     current(input.client_ts);
+-    const c = await this.facts.workOrder(actor, input.conditional_hold_id);
+-    if (!c)
+-      throw new UniversalV1WorkOrderError(
+-        'WORK_ORDER_CONTEXT_UNAVAILABLE',
+-        'Work Order context unavailable.'
+-      );
+-    if (c.eligibility_version !== input.expected_eligibility_version)
+-      throw new UniversalV1WorkOrderError(
+-        'WORK_ORDER_VERSION_CONFLICT',
+-        'Eligibility version changed.'
+-      );
+-    // Constructing the fake-finance service performs the exact manifest,
+-    // environment, build-identity, credential, money-freeze, and assignment-
+-    // freeze authorization. It must happen before Phase A commits the durable
+-    // Work Order command witness so production or unknown environments refuse
+-    // this fake-only command without leaving a partial row behind.
++    // Authorize the exact fake-only runtime before any Phase A witness write.
+     const finance = await this.createFinance();
+-    const attestation = exactAttestation(actorAttestation);
+-    const prepareAssertion = await attestation.issue({
+-      commandKind: 'PREPARE_FAKE_WORK_ORDER',
+-      commandPayload: {
+-        conditional_hold_id: input.conditional_hold_id,
+-        expected_eligibility_version: input.expected_eligibility_version,
+-        idempotency_key: input.idempotency_key,
+-        client_timestamp_epoch_ms: clientTimestampEpochMs(input.client_ts),
+-      },
+-    });
+-    const phaseA = await this.repo.prepareMaterialization(
+-      c,
+-      input.idempotency_key,
+-      prepareAssertion.actor_assertion_token,
+-      input.client_ts
+-    );
+-    if (phaseA.completed) return phaseA.result;
+-    const live = phaseA.context,
+-      occurred = phaseA.occurredAt;
+-    const base = {
+-      providerKind: 'FAKE' as const,
+-      providerExpectedVersion: 0,
+-      taskDraftId: live.task_draft_id,
+-      taskId: live.task_id,
+-      eligibilityDecisionId: live.eligibility_decision_id,
+-      scopeVersionId: live.scope_version_id,
+-      recordedBy: actor,
+-      scenario: 'SUCCESS' as const,
+-    };
+-    const prep = await finance.executeFinancialEvent(
+-      {
+-        ...base,
+-        operationKind: 'PREPARE_PAYMENT_METHOD',
+-        operationId: deterministicUuid(input.idempotency_key, 'prepare'),
+-        idempotencyKey: `${input.idempotency_key}:prep`,
+-        lifecycleExpectedVersion: 0,
+-        occurredAt: occurred,
+-        customerId: actor,
+-      },
+-      attestation
+-    );
+-    const auth = await finance.executeFinancialEvent(
+-      {
+-        ...base,
+-        operationKind: 'AUTHORIZE',
+-        operationId: deterministicUuid(input.idempotency_key, 'authorize'),
+-        idempotencyKey: `${input.idempotency_key}:auth`,
+-        lifecycleExpectedVersion: 1,
+-        occurredAt: new Date(Date.parse(occurred) + 1).toISOString(),
+-        predecessorEventId: prep.id,
+-        relatedOperationId: prep.operationId,
+-        amountCents: Number(live.customer_total_cents),
+-        currency: live.currency.toLowerCase(),
+-        paymentMethodReference: prep.externalReference,
+-      },
+-      attestation
++    return resumeUniversalV1WorkOrder(
++      actor,
++      input,
++      exactAttestation(actorAttestation),
++      this.repo,
++      finance,
++      this.history
+     );
+-    const secured = await finance.executeFinancialEvent(
+-      {
+-        ...base,
+-        operationKind: 'SECURE',
+-        operationId: deterministicUuid(input.idempotency_key, 'secure'),
+-        idempotencyKey: `${input.idempotency_key}:secure`,
+-        lifecycleExpectedVersion: 2,
+-        occurredAt: new Date(Date.parse(occurred) + 2).toISOString(),
+-        predecessorEventId: auth.id,
+-        relatedOperationId: auth.operationId,
+-        amountCents: Number(live.customer_total_cents),
+-        currency: live.currency.toLowerCase(),
+-        authorizationOperationId: auth.operationId,
+-      },
+-      attestation
+-    );
+-    try {
+-      const materializeAssertion = await attestation.issue({
+-        commandKind: 'MATERIALIZE_FAKE_WORK_ORDER',
+-        commandPayload: {
+-          idempotency_key: phaseA.idempotencyKey,
+-          request_sha256: phaseA.requestSha256,
+-          secured_event_id: secured.id,
+-        },
+-      });
+-      return await this.repo.finalizeMaterialization(
+-        phaseA,
+-        secured.id,
+-        materializeAssertion.actor_assertion_token
+-      );
+-    } catch (finalizeError) {
+-      // Resolve the ambiguous commit boundary while holding the same task lock
+-      // as finalization. A committed Work Order wins and is returned. Otherwise
+-      // the repository commits one immutable compensation claim, after which a
+-      // database guard permanently forbids Work Order creation for this task.
+-      const recoveryAssertion = await attestation.issue({
+-        commandKind: 'REQUEST_FAKE_WORK_ORDER_RECOVERY',
+-        commandPayload: {
+-          idempotency_key: phaseA.idempotencyKey,
+-          request_sha256: phaseA.requestSha256,
+-          secured_event_id: secured.id,
+-        },
+-      });
+-      const resolution = await this.repo.claimMaterializationCompensation(
+-        phaseA,
+-        secured.id,
+-        recoveryAssertion.actor_assertion_token
+-      );
+-      if (resolution.completed) return resolution.result;
+-      await executeUniversalV1WorkOrderCompensation(finance, resolution.command);
+-      throw finalizeError;
+-    }
+   }
+ }
+diff --git a/backend/src/services/UniversalV1WorkOrderContracts.ts b/backend/src/services/UniversalV1WorkOrderContracts.ts
+index 49be541..1805f08 100644
+--- a/backend/src/services/UniversalV1WorkOrderContracts.ts
++++ b/backend/src/services/UniversalV1WorkOrderContracts.ts
+@@ -2,50 +2,180 @@ import { createHash } from 'node:crypto';
+ import { z } from 'zod';
+ 
+ const uuid = z.string().uuid();
+-const key = z.string().trim().min(16).max(96).regex(/^[A-Za-z0-9:_-]+$/u);
++const key = z
++  .string()
++  .trim()
++  .min(16)
++  .max(96)
++  .regex(/^[A-Za-z0-9:_-]+$/u);
+ const clientTs = z.string().datetime();
+ 
+-export const ExpressUniversalV1ProviderInterestPublicSchema = z.object({
+-  task_id: uuid, expected_scope_version: z.number().int().positive(),
+-  idempotency_key: key, client_ts: clientTs,
+-}).strict();
+-export const PlaceUniversalV1ConditionalHoldPublicSchema = z.object({
+-  interest_application_id: uuid, expected_eligibility_version: z.number().int().positive(),
+-  idempotency_key: key, client_ts: clientTs,
+-}).strict();
+-export const MaterializeUniversalV1WorkOrderPublicSchema = z.object({
+-  conditional_hold_id: uuid, expected_eligibility_version: z.number().int().positive(),
+-  idempotency_key: key, client_ts: clientTs,
+-}).strict();
++export const ExpressUniversalV1ProviderInterestPublicSchema = z
++  .object({
++    task_id: uuid,
++    expected_scope_version: z.number().int().positive(),
++    idempotency_key: key,
++    client_ts: clientTs,
++  })
++  .strict();
++export const PlaceUniversalV1ConditionalHoldPublicSchema = z
++  .object({
++    interest_application_id: uuid,
++    expected_eligibility_version: z.number().int().positive(),
++    idempotency_key: key,
++    client_ts: clientTs,
++  })
++  .strict();
++export const MaterializeUniversalV1WorkOrderPublicSchema = z
++  .object({
++    conditional_hold_id: uuid,
++    expected_eligibility_version: z.number().int().positive(),
++    idempotency_key: key,
++    client_ts: clientTs,
++  })
++  .strict();
++
++const safety = {
++  hard_assignment_created: z.literal(false),
++  payment_creation_performed: z.literal(false),
++};
++export const UniversalV1WorkOrderPublicResultSchema = z.discriminatedUnion('status', [
++  z
++    .object({
++      status: z.literal('MATERIALIZED'),
++      work_order_id: uuid,
++      financial_security_event_id: uuid,
++      replayed: z.boolean(),
++      ...safety,
++    })
++    .strict(),
++  z
++    .object({
++      status: z.literal('PENDING'),
++      stage: z.enum([
++        'PAYMENT_SETUP',
++        'PAYMENT_AUTHORIZATION',
++        'FINANCIAL_SECURITY',
++        'COMPENSATION',
++      ]),
++      retry_after_ms: z.literal(1000),
++      ...safety,
++    })
++    .strict(),
++  z
++    .object({
++      status: z.literal('RECOVERY_REQUIRED'),
++      stage: z.enum([
++        'PAYMENT_SETUP',
++        'PAYMENT_AUTHORIZATION',
++        'FINANCIAL_SECURITY',
++        'COMPENSATION',
++      ]),
++      retry_after_ms: z.union([z.literal(1000), z.null()]),
++      ...safety,
++    })
++    .strict(),
++  z
++    .object({
++      status: z.literal('DECLINED'),
++      stage: z.enum([
++        'PAYMENT_SETUP',
++        'PAYMENT_AUTHORIZATION',
++        'FINANCIAL_SECURITY',
++        'COMPENSATION',
++      ]),
++      retry_after_ms: z.null(),
++      ...safety,
++    })
++    .strict(),
++  z
++    .object({
++      status: z.literal('FAILED'),
++      stage: z.enum([
++        'PAYMENT_SETUP',
++        'PAYMENT_AUTHORIZATION',
++        'FINANCIAL_SECURITY',
++        'COMPENSATION',
++      ]),
++      retry_after_ms: z.null(),
++      ...safety,
++    })
++    .strict(),
++  z
++    .object({
++      status: z.literal('COMPENSATING'),
++      stage: z.literal('COMPENSATION'),
++      retry_after_ms: z.literal(1000),
++      ...safety,
++    })
++    .strict(),
++  z
++    .object({
++      status: z.literal('COMPENSATED'),
++      stage: z.literal('COMPENSATION'),
++      retry_after_ms: z.null(),
++      ...safety,
++    })
++    .strict(),
++]);
++export type UniversalV1WorkOrderPublicResult = z.infer<
++  typeof UniversalV1WorkOrderPublicResultSchema
++>;
+ 
+ export type ExpressInterestPublic = z.infer<typeof ExpressUniversalV1ProviderInterestPublicSchema>;
+ export type PlaceHoldPublic = z.infer<typeof PlaceUniversalV1ConditionalHoldPublicSchema>;
+-export type MaterializeWorkOrderPublic = z.infer<typeof MaterializeUniversalV1WorkOrderPublicSchema>;
++export type MaterializeWorkOrderPublic = z.infer<
++  typeof MaterializeUniversalV1WorkOrderPublicSchema
++>;
+ 
+ export interface ProviderInterestContext {
+-  task_id: string; task_draft_id: string; scope_version_id: string; scope_version: number;
+-  routing_decision_id: string; provider_user_id: string; provider_organization_id: string | null;
++  task_id: string;
++  task_draft_id: string;
++  scope_version_id: string;
++  scope_version: number;
++  routing_decision_id: string;
++  provider_user_id: string;
++  provider_organization_id: string | null;
+   provider_class: 'GENERAL_SERVICE_PROVIDER' | 'VERIFIED_TRADE_BUSINESS';
+-  trade_credential_id: string | null; predecessor_eligibility_id: string;
+-  predecessor_eligibility_version: number; predecessor_valid_until: string;
++  trade_credential_id: string | null;
++  predecessor_eligibility_id: string;
++  predecessor_eligibility_version: number;
++  predecessor_valid_until: string;
+ }
+ export interface HoldContext extends ProviderInterestContext {
+-  poster_user_id: string; interest_application_id: string; eligibility_decision_id: string;
+-  eligibility_version: number; eligibility_valid_until: string;
++  poster_user_id: string;
++  interest_application_id: string;
++  eligibility_decision_id: string;
++  eligibility_version: number;
++  eligibility_valid_until: string;
+ }
+ export interface WorkOrderContext extends HoldContext {
+-  conditional_hold_id: string; hold_reserved_at: string; hold_expires_at: string;
+-  provider_estimate_submission_id: string; customer_total_cents: number; currency: string;
++  conditional_hold_id: string;
++  hold_reserved_at: string;
++  hold_expires_at: string;
++  provider_estimate_submission_id: string;
++  customer_total_cents: number;
++  currency: string;
+ }
+ 
+-export const commandHash = (value: object): string => createHash('sha256')
+-  .update(JSON.stringify(value, Object.keys(value).sort())).digest('hex');
++export const commandHash = (value: object): string =>
++  createHash('sha256')
++    .update(JSON.stringify(value, Object.keys(value).sort()))
++    .digest('hex');
+ 
+ export type UniversalV1WorkOrderErrorCode =
+-  | 'WORK_ORDER_CONTEXT_UNAVAILABLE' | 'WORK_ORDER_VERSION_CONFLICT'
+-  | 'WORK_ORDER_REQUEST_STALE' | 'WORK_ORDER_IDEMPOTENCY_CONFLICT'
+-  | 'WORK_ORDER_AUTHORITY_REVOKED' | 'WORK_ORDER_MATERIALIZATION_FAILED'
++  | 'WORK_ORDER_CONTEXT_UNAVAILABLE'
++  | 'WORK_ORDER_VERSION_CONFLICT'
++  | 'WORK_ORDER_REQUEST_STALE'
++  | 'WORK_ORDER_IDEMPOTENCY_CONFLICT'
++  | 'WORK_ORDER_AUTHORITY_REVOKED'
++  | 'WORK_ORDER_MATERIALIZATION_FAILED'
+   | 'WORK_ORDER_HARD_ASSIGNMENT_FORBIDDEN';
+ export class UniversalV1WorkOrderError extends Error {
+-  constructor(readonly code: UniversalV1WorkOrderErrorCode, message: string) { super(message); }
++  constructor(
++    readonly code: UniversalV1WorkOrderErrorCode,
++    message: string
++  ) {
++    super(message);
++  }
+ }
+diff --git a/backend/src/services/UniversalV1WorkOrderHistory.ts b/backend/src/services/UniversalV1WorkOrderHistory.ts
+new file mode 100644
+index 0000000..d8f3175
+--- /dev/null
++++ b/backend/src/services/UniversalV1WorkOrderHistory.ts
+@@ -0,0 +1,119 @@
++import { z } from 'zod';
++import { db, type Database } from '../db.js';
++import {
++  UniversalV1ActorAttestationResponseSchema,
++  type UniversalV1ActorAttestationHandle,
++} from '../auth/universal-v1-actor-attestation-contracts.js';
++import { FinancialProgressUuidSchema as uuid } from '../auth/financial-progress-command-contract.js';
++import {
++  WorkOrderHistoryPayloadSchema,
++  WorkOrderHistorySchema,
++  workOrderHistoryMatchesPayload,
++  freezeWorkOrderHistory,
++  type WorkOrderHistory,
++  type WorkOrderHistoryPayload,
++} from '../auth/work-order-history-command-contract.js';
++import { authorizedUniversalV1FinancialApiRelease } from './payment/UniversalV1FinancialRequestService.js';
++import type { FinancialProviderCommandReleaseEvidence } from './payment/FinancialProviderCommandJournal.js';
++import { deterministicUuid } from './UniversalV1WorkOrderPostgresRepository.js';
++
++const digest = z
++  .string()
++  .regex(/^[a-f0-9]{64}$/u)
++  .refine((value) => value !== '0'.repeat(64));
++const receiptSchema = z
++  .object({
++    history: WorkOrderHistorySchema.nullable(),
++    actor_user_id: uuid,
++    actor_assertion_id: uuid,
++    actor_request_sha256: digest,
++    target_authority_id: uuid,
++    reader_release_sha256: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
++  })
++  .strict();
++function refuse(reason: string): never {
++  throw new Error('WORK_ORDER_HISTORY_' + reason);
++}
++
++export interface UniversalV1WorkOrderHistoryReader {
++  read(
++    payload: WorkOrderHistoryPayload,
++    actor: string,
++    attestation: UniversalV1ActorAttestationHandle
++  ): Promise<Readonly<WorkOrderHistory> | null>;
++}
++
++export class PostgresUniversalV1WorkOrderHistoryReader implements UniversalV1WorkOrderHistoryReader {
++  constructor(
++    private readonly database: Database = db,
++    private readonly authorize: () => FinancialProviderCommandReleaseEvidence = authorizedUniversalV1FinancialApiRelease
++  ) {}
++
++  async read(
++    raw: WorkOrderHistoryPayload,
++    actor: string,
++    attestation: UniversalV1ActorAttestationHandle
++  ): Promise<Readonly<WorkOrderHistory> | null> {
++    try {
++      const payload = Object.freeze(WorkOrderHistoryPayloadSchema.parse(raw));
++      const expectedActor = uuid.parse(actor);
++      const release = Object.freeze({ ...this.authorize() });
++      const expectedRelease = JSON.stringify(release);
++      const parsed = UniversalV1ActorAttestationResponseSchema.safeParse(
++        await attestation.issue({
++          commandKind: 'READ_FAKE_WORK_ORDER_HISTORY',
++          commandPayload: payload,
++        })
++      );
++      if (
++        !parsed.success ||
++        parsed.data.command_kind !== 'READ_FAKE_WORK_ORDER_HISTORY' ||
++        !digest.safeParse(parsed.data.actor_assertion_token).success ||
++        !digest.safeParse(parsed.data.canonical_request_sha256).success ||
++        Date.parse(parsed.data.assertion_expires_at) <= Date.now()
++      )
++        return refuse('ASSERTION_INVALID');
++      const assertion = Object.freeze(parsed.data);
++      const history = await this.database.transaction(async (query) => {
++        const rows = await query(
++          'SELECT * FROM public.hxos_read_authenticated_work_order_history_v13($1,$2)',
++          [assertion.actor_assertion_token, payload]
++        );
++        if (rows.rowCount !== 1 || rows.rows.length !== 1) return refuse('RECEIPT_INVALID');
++        const receipt = receiptSchema.safeParse(rows.rows[0]);
++        if (
++          !receipt.success ||
++          receipt.data.actor_user_id !== expectedActor ||
++          receipt.data.actor_request_sha256 !== assertion.canonical_request_sha256 ||
++          receipt.data.reader_release_sha256 !== release.manifestDigest ||
++          (receipt.data.history !== null &&
++            !workOrderHistoryMatchesPayload(receipt.data.history, payload, expectedActor))
++        )
++          return refuse('RECEIPT_BINDING_MISMATCH');
++        const found = receipt.data.history;
++        if (found?.state === 'COMPENSATION_CLAIM') {
++          const claim = found.compensation;
++          if (
++            claim.secured_operation_id !== deterministicUuid(payload.idempotency_key, 'secure') ||
++            claim.void_operation_id !== deterministicUuid(payload.idempotency_key, 'void') ||
++            claim.void_idempotency_key !== payload.idempotency_key + ':void'
++          )
++            return refuse('RECEIPT_BINDING_MISMATCH');
++        }
++        return found === null ? null : freezeWorkOrderHistory(found);
++      });
++      if (JSON.stringify(this.authorize()) !== expectedRelease)
++        return refuse('RELEASE_AUTHORITY_CHANGED');
++      return history;
++    } catch (error) {
++      if (
++        error instanceof Error &&
++        /^WORK_ORDER_HISTORY_(ASSERTION_INVALID|RECEIPT_INVALID|RECEIPT_BINDING_MISMATCH|RELEASE_AUTHORITY_CHANGED)$/u.test(
++          error.message
++        )
++      )
++        throw error;
++      return refuse('UNAVAILABLE');
++    }
++  }
++}
+diff --git a/backend/src/services/UniversalV1WorkOrderPostgresRepository.ts b/backend/src/services/UniversalV1WorkOrderPostgresRepository.ts
+index 2647f33..2b11367 100644
+--- a/backend/src/services/UniversalV1WorkOrderPostgresRepository.ts
++++ b/backend/src/services/UniversalV1WorkOrderPostgresRepository.ts
+@@ -310,7 +310,7 @@ export class PostgresUniversalV1WorkOrderRepository {
+   }
+ 
+   async prepareMaterialization(
+-    context: WorkOrderContext,
++    context: Pick<WorkOrderContext, 'conditional_hold_id' | 'eligibility_version'>,
+     idempotencyKey: string,
+     actorAssertionToken: string,
+     clientTimestamp: string
+diff --git a/backend/src/services/UniversalV1WorkOrderResume.ts b/backend/src/services/UniversalV1WorkOrderResume.ts
+new file mode 100644
+index 0000000..faf1b7b
+--- /dev/null
++++ b/backend/src/services/UniversalV1WorkOrderResume.ts
+@@ -0,0 +1,315 @@
++import { UniversalV1WorkOrderPublicResultSchema } from './UniversalV1WorkOrderContracts.js';
++import type { UniversalV1ActorAttestationHandle } from '../auth/universal-v1-actor-attestation-contracts.js';
++import { clientTimestampEpochMs } from '../auth/universal-v1-actor-attestation-contracts.js';
++import type {
++  FinancialPredecessor,
++  FinancialPredecessorFacts,
++} from '../auth/financial-predecessor-command-contract.js';
++import type {
++  WorkOrderHistory,
++  WorkOrderHistoryPayload,
++} from '../auth/work-order-history-command-contract.js';
++import {
++  deterministicUuid,
++  type PostgresUniversalV1WorkOrderRepository,
++  type WorkOrderMaterializationPhase,
++  type WorkOrderResult,
++} from './UniversalV1WorkOrderPostgresRepository.js';
++import type {
++  MaterializeWorkOrderPublic,
++  UniversalV1WorkOrderPublicResult,
++} from './UniversalV1WorkOrderContracts.js';
++import type { UniversalV1WorkOrderHistoryReader } from './UniversalV1WorkOrderHistory.js';
++import type { UniversalV1FinancialRequestService } from './payment/UniversalV1FinancialRequestService.js';
++import type { ExecuteUniversalV1FinancialEventCommand } from './payment/UniversalV1FinancialApplicationService.js';
++
++export type UniversalV1WorkOrderRequestFinance = Pick<
++  UniversalV1FinancialRequestService,
++  'requestFinancialEvent' | 'readPredecessor'
++>;
++type Prepared = Extract<WorkOrderMaterializationPhase, { completed: false }>;
++type PendingStatus = Exclude<UniversalV1WorkOrderPublicResult['status'], 'MATERIALIZED'>;
++type Stage = 'PAYMENT_SETUP' | 'PAYMENT_AUTHORIZATION' | 'FINANCIAL_SECURITY' | 'COMPENSATION';
++type Repository = Pick<
++  PostgresUniversalV1WorkOrderRepository,
++  'prepareMaterialization' | 'finalizeMaterialization' | 'claimMaterializationCompensation'
++>;
++const steps = [
++  {
++    kind: 'PREPARE_PAYMENT_METHOD',
++    label: 'prepare',
++    suffix: 'prep',
++    stage: 'PAYMENT_SETUP',
++    version: 0,
++  },
++  {
++    kind: 'AUTHORIZE',
++    label: 'authorize',
++    suffix: 'auth',
++    stage: 'PAYMENT_AUTHORIZATION',
++    version: 1,
++  },
++  { kind: 'SECURE', label: 'secure', suffix: 'secure', stage: 'FINANCIAL_SECURITY', version: 2 },
++] as const;
++function pending(
++  status: PendingStatus,
++  stage: Stage,
++  retryable = status === 'PENDING' || status === 'COMPENSATING'
++): UniversalV1WorkOrderPublicResult {
++  return Object.freeze(
++    UniversalV1WorkOrderPublicResultSchema.parse({
++      status,
++      stage,
++      retry_after_ms: retryable ? 1_000 : null,
++      hard_assignment_created: false,
++      payment_creation_performed: false,
++    })
++  );
++}
++function completed(result: WorkOrderResult): UniversalV1WorkOrderPublicResult {
++  return Object.freeze({ status: 'MATERIALIZED' as const, ...result });
++}
++function refuse(): never {
++  throw new Error('WORK_ORDER_RESUME_HISTORY_UNAVAILABLE');
++}
++function normalizeTime(value: string, offset = 0): string {
++  return new Date(Date.parse(value) + offset).toISOString();
++}
++
++function exactPredecessor(
++  facts: FinancialPredecessorFacts,
++  phase: Prepared,
++  step: (typeof steps)[number],
++  previous: FinancialPredecessor | null
++): FinancialPredecessor | null {
++  const event = facts.predecessor,
++    c = phase.context;
++  if (event === null) return null;
++  if (
++    event.operationKind !== step.kind ||
++    event.operationId !== deterministicUuid(phase.idempotencyKey, step.label) ||
++    event.idempotencyKey !== phase.idempotencyKey + ':' + step.suffix ||
++    event.lifecycleExpectedVersion !== step.version ||
++    event.taskDraftId !== c.task_draft_id ||
++    event.taskId !== c.task_id ||
++    event.scopeVersionId !== c.scope_version_id ||
++    event.eligibilityDecisionId !== c.eligibility_decision_id ||
++    event.predecessorEventId !== (previous?.financialEventId ?? null) ||
++    (step.version > 0 &&
++      (event.amountCents !== c.customer_total_cents || event.currency !== c.currency))
++  )
++    return refuse();
++  return event;
++}
++
++/** A foreground request advances only from committed history. Each new command
++ * obtains its own fresh human assertion; workers execute only admitted requests. */
++export async function resumeUniversalV1WorkOrder(
++  actor: string,
++  input: MaterializeWorkOrderPublic,
++  attestation: UniversalV1ActorAttestationHandle,
++  repo: Repository,
++  finance: UniversalV1WorkOrderRequestFinance,
++  historyReader: UniversalV1WorkOrderHistoryReader
++): Promise<UniversalV1WorkOrderPublicResult> {
++  const payload: WorkOrderHistoryPayload = {
++    conditional_hold_id: input.conditional_hold_id,
++    expected_eligibility_version: input.expected_eligibility_version,
++    idempotency_key: input.idempotency_key,
++  };
++  const readHistory = () => historyReader.read(payload, actor, attestation);
++  async function compensate(
++    history: Extract<WorkOrderHistory, { state: 'COMPENSATION_CLAIM' }>
++  ): Promise<UniversalV1WorkOrderPublicResult> {
++    const progress = history.voidProgress;
++    if (progress !== null) {
++      if (progress.progressState === 'MATERIALIZED')
++        return pending(
++          progress.financialEvent?.status === 'SUCCEEDED' ? 'COMPENSATED' : 'RECOVERY_REQUIRED',
++          'COMPENSATION'
++        );
++      return pending(
++        progress.progressState === 'RECOVERY_REQUIRED' ? 'RECOVERY_REQUIRED' : 'COMPENSATING',
++        'COMPENSATION',
++        true
++      );
++    }
++    const claim = history.compensation;
++    await finance.requestFinancialEvent(
++      {
++        providerKind: 'FAKE',
++        providerExpectedVersion: 0,
++        operationKind: 'VOID',
++        operationId: claim.void_operation_id,
++        idempotencyKey: claim.void_idempotency_key,
++        lifecycleExpectedVersion: 3,
++        taskDraftId: claim.task_draft_id,
++        taskId: claim.task_id,
++        eligibilityDecisionId: claim.eligibility_decision_id,
++        scopeVersionId: claim.scope_version_id,
++        predecessorEventId: claim.secured_event_id,
++        relatedOperationId: claim.secured_operation_id,
++        amountCents: claim.amount_cents,
++        currency: claim.currency.toLowerCase(),
++        recordedBy: actor,
++        scenario: 'SUCCESS',
++        occurredAt: normalizeTime(claim.created_at),
++      },
++      attestation
++    );
++    return pending('COMPENSATING', 'COMPENSATION');
++  }
++
++  let history = await readHistory();
++  if (history?.state === 'COMPLETED') return completed(history.result);
++  if (history?.state === 'COMPENSATION_CLAIM') return compensate(history);
++  if (history === null) {
++    const assertion = await attestation.issue({
++      commandKind: 'PREPARE_FAKE_WORK_ORDER',
++      commandPayload: {
++        ...payload,
++        client_timestamp_epoch_ms: clientTimestampEpochMs(input.client_ts),
++      },
++    });
++    const prepared = await repo.prepareMaterialization(
++      {
++        conditional_hold_id: input.conditional_hold_id,
++        eligibility_version: input.expected_eligibility_version,
++      },
++      input.idempotency_key,
++      assertion.actor_assertion_token,
++      input.client_ts
++    );
++    if (prepared.completed) return completed(prepared.result);
++    // Observe committed history using the database clock before issuing finance.
++    history = await readHistory();
++    if (history?.state === 'COMPLETED') return completed(history.result);
++    if (history?.state === 'COMPENSATION_CLAIM') return compensate(history);
++    if (history === null || history.phase.requestSha256 !== prepared.requestSha256) return refuse();
++  }
++  const phase = history.phase,
++    c = phase.context,
++    observedAt = Date.parse(history.observedAt);
++  if (
++    phase.idempotencyKey !== input.idempotency_key ||
++    c.poster_user_id !== actor ||
++    c.conditional_hold_id !== input.conditional_hold_id ||
++    c.eligibility_version !== input.expected_eligibility_version
++  )
++    return refuse();
++  let previous: FinancialPredecessor | null = null;
++  for (const step of steps) {
++    const selector = {
++      operationKind: step.kind,
++      operationId: deterministicUuid(phase.idempotencyKey, step.label),
++      taskDraftId: c.task_draft_id,
++      idempotencyKey: phase.idempotencyKey + ':' + step.suffix,
++    };
++    const facts = await finance.readPredecessor(selector, actor, attestation);
++    if (facts !== null) {
++      const fact = exactPredecessor(facts, phase, step, previous);
++      if (fact !== null) {
++        previous = fact;
++        continue;
++      }
++      const event = facts.progress.financialEvent;
++      if (event !== null)
++        return pending(
++          step.kind === 'SECURE'
++            ? 'RECOVERY_REQUIRED'
++            : event.status === 'DECLINED'
++              ? 'DECLINED'
++              : 'FAILED',
++          step.stage
++        );
++      return pending(
++        facts.progress.progressState === 'RECOVERY_REQUIRED' ? 'RECOVERY_REQUIRED' : 'PENDING',
++        step.stage,
++        true
++      );
++    }
++    // Reading an old witness never renews its hold, eligibility or security.
++    if (
++      observedAt >= Date.parse(c.hold_expires_at) ||
++      observedAt >= Date.parse(c.eligibility_valid_until) ||
++      (step.kind === 'SECURE' &&
++        (!previous?.expiresAt || observedAt >= Date.parse(previous.expiresAt)))
++    ) {
++      return pending('RECOVERY_REQUIRED', step.stage);
++    }
++    const common = {
++      ...selector,
++      providerKind: 'FAKE' as const,
++      providerExpectedVersion: 0,
++      taskId: c.task_id,
++      eligibilityDecisionId: c.eligibility_decision_id,
++      scopeVersionId: c.scope_version_id,
++      lifecycleExpectedVersion: step.version,
++      recordedBy: actor,
++      scenario: 'SUCCESS' as const,
++      occurredAt: normalizeTime(phase.occurredAt, step.version),
++    };
++    let command: ExecuteUniversalV1FinancialEventCommand;
++    if (step.kind === 'PREPARE_PAYMENT_METHOD')
++      command = { ...common, operationKind: step.kind, customerId: actor };
++    else {
++      if (!previous) return refuse();
++      command = {
++        ...common,
++        operationKind: step.kind,
++        predecessorEventId: previous.financialEventId,
++        relatedOperationId: previous.operationId,
++        amountCents: c.customer_total_cents,
++        currency: c.currency.toLowerCase(),
++        ...(step.kind === 'AUTHORIZE'
++          ? { paymentMethodReference: previous.externalReference! }
++          : { authorizationOperationId: previous.operationId }),
++      };
++    }
++    await finance.requestFinancialEvent(command, attestation);
++    return pending('PENDING', step.stage);
++  }
++  if (!previous || previous.operationKind !== 'SECURE') return refuse();
++  try {
++    const assertion = await attestation.issue({
++      commandKind: 'MATERIALIZE_FAKE_WORK_ORDER',
++      commandPayload: {
++        idempotency_key: phase.idempotencyKey,
++        request_sha256: phase.requestSha256,
++        secured_event_id: previous.financialEventId,
++      },
++    });
++    return completed(
++      await repo.finalizeMaterialization(
++        phase,
++        previous.financialEventId,
++        assertion.actor_assertion_token
++      )
++    );
++  } catch {
++    // Resolve an ambiguous COMMIT before claiming compensation. A completed
++    // Work Order or existing claim wins, even if the hold has since expired.
++    const recovered = await readHistory();
++    if (recovered?.state === 'COMPLETED') return completed(recovered.result);
++    if (recovered?.state === 'COMPENSATION_CLAIM') return compensate(recovered);
++    if (recovered === null) return refuse();
++    const assertion = await attestation.issue({
++      commandKind: 'REQUEST_FAKE_WORK_ORDER_RECOVERY',
++      commandPayload: {
++        idempotency_key: phase.idempotencyKey,
++        request_sha256: phase.requestSha256,
++        secured_event_id: previous.financialEventId,
++      },
++    });
++    const resolution = await repo.claimMaterializationCompensation(
++      phase,
++      previous.financialEventId,
++      assertion.actor_assertion_token
++    );
++    if (resolution.completed) return completed(resolution.result);
++    const claimed = await readHistory();
++    if (claimed?.state === 'COMPLETED') return completed(claimed.result);
++    if (claimed?.state !== 'COMPENSATION_CLAIM') return refuse();
++    return compensate(claimed);
++  }
++}
+diff --git a/backend/src/services/payment/UniversalV1FinancialRequestService.ts b/backend/src/services/payment/UniversalV1FinancialRequestService.ts
+index 03e1e53..dfd0556 100644
+--- a/backend/src/services/payment/UniversalV1FinancialRequestService.ts
++++ b/backend/src/services/payment/UniversalV1FinancialRequestService.ts
+@@ -211,7 +211,7 @@ export class UniversalV1FinancialRequestService {
+   }
+ }
+ 
+-function authorizedApiRelease(): FinancialProviderCommandReleaseEvidence {
++export function authorizedUniversalV1FinancialApiRelease(): FinancialProviderCommandReleaseEvidence {
+   const manifest = assertNonproductionFakeFinanceAuthorized({ component: 'backend' });
+   const evidence = readReleaseManifest();
+   const digest = releaseManifestDigest(manifest);
+@@ -231,10 +231,10 @@ export function createUniversalV1FinancialRequestService(
+   ...callerArguments: readonly unknown[]
+ ): UniversalV1FinancialRequestService {
+   if (callerArguments.length) return refuse('CALLER_SHAPED_FACTORY_INPUT');
+-  authorizedApiRelease();
++  authorizedUniversalV1FinancialApiRelease();
+   return new UniversalV1FinancialRequestService(
+     new PostgresUniversalV1PreparedFinancialCommandAuthority(),
+     new PostgresFinancialProviderCommandJournal(),
+-    authorizedApiRelease
++    authorizedUniversalV1FinancialApiRelease
+   );
+ }
+diff --git a/backend/tests/helpers/universal-v1-synthetic-role-provisioning.ts b/backend/tests/helpers/universal-v1-synthetic-role-provisioning.ts
+index 73ef21a..77fab2b 100644
+--- a/backend/tests/helpers/universal-v1-synthetic-role-provisioning.ts
++++ b/backend/tests/helpers/universal-v1-synthetic-role-provisioning.ts
+@@ -1,3 +1,4 @@
++import { WORK_ORDER_HISTORY_FUNCTIONS } from '../../src/jobs/work-order-history-role-plans.js';
+ import {
+   FAKE_FINANCIAL_PREDECESSOR_READER,
+   FAKE_FINANCIAL_PREDECESSOR_FUNCTIONS,
+@@ -630,6 +631,10 @@ async function provisionAuthenticatedFinancialPreparationDependencies(
+         quote(internal ? roles.commandOwnerRole : roles.apiRole)
+     );
+   }
++  for (const identity of WORK_ORDER_HISTORY_FUNCTIONS) {
++    await client.query('ALTER FUNCTION ' + identity + ' OWNER TO ' + quote(roles.commandOwnerRole));
++    await client.query('GRANT EXECUTE ON FUNCTION ' + identity + ' TO ' + quote(roles.apiRole));
++  }
+   for (const identity of FAKE_FINANCIAL_PREDECESSOR_FUNCTIONS) {
+     const internal = identity === FAKE_FINANCIAL_PREDECESSOR_READER;
+     await client.query(
+diff --git a/backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts b/backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts
+index 7bbf6e7..d41363f 100644
+--- a/backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts
++++ b/backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts
+@@ -1,3 +1,7 @@
++import { UniversalV1WorkOrderApplication } from '../../src/services/UniversalV1WorkOrderApplication.js';
++import { PostgresUniversalV1WorkOrderRepository } from '../../src/services/UniversalV1WorkOrderPostgresRepository.js';
++import { createUniversalContractRouter } from '../../src/routers/universalContract.js';
++import { PostgresUniversalV1WorkOrderHistoryReader } from '../../src/services/UniversalV1WorkOrderHistory.js';
+ import { PostgresUniversalV1FinancialPredecessorReader } from '../../src/services/payment/UniversalV1FinancialPredecessor.js';
+ import type { Database } from '../../src/db.js';
+ import { Hono } from 'hono';
+@@ -957,6 +961,7 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
+ 
+   it.each([
+     'normal',
++    'compensation',
+     'lost_before_admission',
+     'lost_after_outcome',
+     'lost_after_admission',
+@@ -977,6 +982,7 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
+         'api-worker'
+       );
+       const { lane, phase, key } = phaseFixture;
++      const foreground = scenario === 'normal' || scenario === 'compensation';
+       const workerUrl = new URL(fixture.databaseUrl);
+       workerUrl.username = roles.workerRole;
+       workerUrl.password = password;
+@@ -1085,6 +1091,8 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
+           .spyOn(requestApplication, 'createUniversalV1FinancialRequestService')
+           .mockReturnValue(service),
+       ];
++      const captureRequest = vi.spyOn(service, 'requestFinancialEvent');
++      spies.push(captureRequest as never);
+       let running: Promise<void> | undefined;
+       let journeyError: unknown;
+       try {
+@@ -1100,6 +1108,28 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
+           ip: '127.0.0.1',
+           actorAttestation: await preparationAttestation(lane.posterUserId),
+         });
++        const workOrderRepository = new PostgresUniversalV1WorkOrderRepository(apiDatabase);
++        const workOrderApplication = new UniversalV1WorkOrderApplication(
++          undefined,
++          workOrderRepository,
++          () => service,
++          new PostgresUniversalV1WorkOrderHistoryReader(apiDatabase, () => release)
++        );
++        const workOrderRouter = createUniversalContractRouter({} as never, workOrderApplication);
++        const resumeWorkOrder = async () =>
++          workOrderRouter
++            .createCaller({
++              user,
++              firebaseUid: user.firebase_uid ?? null,
++              ip: '127.0.0.1',
++              actorAttestation: await preparationAttestation(lane.posterUserId),
++            })
++            .secureAndMaterializeFakeWorkOrder({
++              conditional_hold_id: phase.context.conditional_hold_id,
++              expected_eligibility_version: phase.context.eligibility_version,
++              idempotency_key: key,
++              client_ts: new Date().toISOString(),
++            });
+         const publisher = new FakeFinancialOutboxPublisher(
+           new PostgresFakeFinancialOutboxRepository(workerDatabase),
+           createFakeFinancialOutboxTransport({ redisUrl: process.env.REDIS_URL, prefix }),
+@@ -1185,7 +1215,22 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
+               await preparationAttestation(lane.posterUserId)
+             )
+           ).toBeNull();
+-          const requested = await caller.enqueueEvent(input);
++          const requested = foreground
++            ? await (async () => {
++                const status = await resumeWorkOrder();
++                expect(status).toMatchObject({
++                  status: 'PENDING',
++                  hard_assignment_created: false,
++                  payment_creation_performed: false,
++                });
++                expect(captureRequest).toHaveBeenCalledTimes(
++                  kind === 'PREPARE_PAYMENT_METHOD' ? 1 : kind === 'AUTHORIZE' ? 2 : 3
++                );
++                const last = captureRequest.mock.results.at(-1);
++                if (last?.type !== 'return') throw Error('WORK_ORDER_REQUEST_RECEIPT_MISSING');
++                return await last.value;
++              })()
++            : await caller.enqueueEvent(input);
+           expect(
+             await service.readPredecessor(
+               predecessorPayload,
+@@ -1276,10 +1321,15 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
+             requestState: 'REQUESTED',
+             idempotencyReplayed: false,
+           });
+-          expect(await caller.enqueueEvent(input)).toEqual({
+-            ...requested,
+-            idempotencyReplayed: true,
+-          });
++          if (foreground) {
++            const count = captureRequest.mock.calls.length;
++            expect(await resumeWorkOrder()).toMatchObject({ status: 'PENDING' });
++            expect(captureRequest).toHaveBeenCalledTimes(count);
++          } else
++            expect(await caller.enqueueEvent(input)).toEqual({
++              ...requested,
++              idempotencyReplayed: true,
++            });
+           const outbox = (
+             await fixture.pool.query(
+               `SELECT bullmq_job_id,jsonb_build_object('version',payload_contract_version,
+@@ -1565,8 +1615,88 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
+             )
+           ).rows[0].n
+         ).toBe(3);
++        if (scenario === 'normal') {
++          const materialized = await resumeWorkOrder();
++          expect(materialized).toMatchObject({
++            status: 'MATERIALIZED',
++            replayed: false,
++            financial_security_event_id: predecessor!.financialEventId,
++            hard_assignment_created: false,
++            payment_creation_performed: false,
++          });
++          const replay = await resumeWorkOrder();
++          expect(replay).toEqual({ ...materialized, replayed: true });
++          expect(captureRequest).toHaveBeenCalledTimes(3);
++          const task = (
++            await fixture.pool.query(
++              'SELECT work_order_id,worker_id,universal_payment_posture FROM public.tasks WHERE id=$1',
++              [lane.taskId]
++            )
++          ).rows[0];
++          expect(task).toMatchObject({
++            worker_id: null,
++            universal_payment_posture: 'PAYMENT_CREATION_FROZEN',
++          });
++          if (materialized.status !== 'MATERIALIZED') throw Error('WORK_ORDER_NOT_MATERIALIZED');
++          expect(task.work_order_id).toBe(materialized.work_order_id);
++        }
++        if (scenario === 'compensation') {
++          const rejectFinalize = vi
++            .spyOn(workOrderRepository, 'finalizeMaterialization')
++            .mockRejectedValueOnce(Error('INJECTED_FINALIZE_FAILURE'));
++          try {
++            await worker.pause();
++            expect(await resumeWorkOrder()).toMatchObject({
++              status: 'COMPENSATING',
++              stage: 'COMPENSATION',
++            });
++            expect(captureRequest).toHaveBeenCalledTimes(4);
++            const requestedVoid = await captureRequest.mock.results.at(-1)!.value;
++            expect(await resumeWorkOrder()).toMatchObject({ status: 'COMPENSATING' });
++            expect(captureRequest).toHaveBeenCalledTimes(4);
++            const outbox = (
++              await fixture.pool.query(
++                'SELECT bullmq_job_id FROM hx_authority.fake_financial_command_outbox_requests_v13 WHERE command_id=$1',
++                [requestedVoid.commandId]
++              )
++            ).rows[0];
++            expect(await publisher.runOnce()).toMatchObject({
++              claimed: 1,
++              confirmed: 1,
++              persistenceErrors: 0,
++            });
++            const job = await queue.getJob(outbox.bullmq_job_id);
++            expect(job).toBeDefined();
++            const finished = job!.waitUntilFinished(events, 20_000);
++            worker.resume();
++            await finished;
++            expect(await resumeWorkOrder()).toMatchObject({
++              status: 'COMPENSATED',
++              stage: 'COMPENSATION',
++              retry_after_ms: null,
++            });
++            expect(await resumeWorkOrder()).toMatchObject({ status: 'COMPENSATED' });
++            expect(captureRequest).toHaveBeenCalledTimes(4);
++            const task = (
++              await fixture.pool.query(
++                'SELECT work_order_id,worker_id FROM public.tasks WHERE id=$1',
++                [lane.taskId]
++              )
++            ).rows[0];
++            expect(task).toEqual({ work_order_id: null, worker_id: null });
++            const counts = (
++              await fixture.pool.query(
++                "SELECT (SELECT count(*)::int FROM public.universal_v1_work_order_compensation_commands WHERE task_id=$1) AS claims,(SELECT count(*)::int FROM public.task_financial_security_events WHERE task_id=$1 AND event_kind='VOIDED' AND status='SUCCEEDED') AS voids",
++                [lane.taskId]
++              )
++            ).rows[0];
++            expect(counts).toEqual({ claims: 1, voids: 1 });
++          } finally {
++            rejectFinalize.mockRestore();
++          }
++        }
+         expect(await queue.getJobCounts('completed', 'failed')).toMatchObject({
+-          completed: scenario === 'lost_after_outcome' ? 2 : 3,
++          completed: scenario === 'lost_after_outcome' ? 2 : scenario === 'compensation' ? 4 : 3,
+           failed: 0,
+         });
+         expect(runtimeErrors).toEqual([]);
+@@ -3033,6 +3163,124 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
+     }
+   });
+ 
++  it('work order history reads the exact committed Phase A through the restricted API login', async () => {
++    const api = preparationDatabase(clients.get('apiRole')!);
++    const lane = await createPreparedWorkOrderFixture(
++      preparationDatabase(),
++      fixture.pool,
++      api,
++      clients.get('attesterRole')!,
++      roles.attesterRole,
++      'sha256:' + 'b'.repeat(64),
++      'history-read'
++    );
++    const release = {
++      manifestDigest: 'sha256:' + 'b'.repeat(64),
++      releaseId: 'synthetic.history',
++      revision: 'c'.repeat(40),
++      environment: 'local' as const,
++      authenticationStatus: 'VERIFIED' as const,
++    };
++    const reader = new PostgresUniversalV1WorkOrderHistoryReader(api, () => release);
++    const payload = {
++      conditional_hold_id: lane.hold.conditional_hold_id,
++      expected_eligibility_version: lane.interest.eligibility_version,
++      idempotency_key: lane.key,
++    };
++    const attestation = (actor: string) =>
++      createSyntheticActorAttestation(
++        fixture.pool,
++        api,
++        clients.get('attesterRole')!,
++        roles.attesterRole,
++        release.manifestDigest,
++        actor
++      );
++    const history = await reader.read(
++      payload,
++      lane.lane.posterUserId,
++      await attestation(lane.lane.posterUserId)
++    );
++    expect(history).toMatchObject({
++      state: 'PREPARED',
++      phase: {
++        idempotencyKey: lane.key,
++        requestSha256: lane.phase.requestSha256,
++        context: {
++          conditional_hold_id: lane.hold.conditional_hold_id,
++          eligibility_decision_id: lane.phase.context.eligibility_decision_id,
++          customer_total_cents: lane.phase.context.customer_total_cents,
++        },
++      },
++      source: { releaseSha256: release.manifestDigest },
++    });
++    expect(Date.parse(history!.phase.occurredAt)).toBe(Date.parse(lane.phase.occurredAt));
++    expect(Object.isFrozen(history!.phase.context)).toBe(true);
++    await expect(
++      reader.read(payload, lane.lane.providerUserId, await attestation(lane.lane.providerUserId))
++    ).resolves.toBeNull();
++    await expect(
++      reader.read(
++        { ...payload, idempotency_key: lane.key + ':missing' },
++        lane.lane.posterUserId,
++        await attestation(lane.lane.posterUserId)
++      )
++    ).resolves.toBeNull();
++    await expect(
++      reader.read(
++        { ...payload, conditional_hold_id: randomUUID() },
++        lane.lane.posterUserId,
++        await attestation(lane.lane.posterUserId)
++      )
++    ).rejects.toThrow('WORK_ORDER_HISTORY_UNAVAILABLE');
++    await expect(
++      reader.read(
++        { ...payload, expected_eligibility_version: payload.expected_eligibility_version + 1 },
++        lane.lane.posterUserId,
++        await attestation(lane.lane.posterUserId)
++      )
++    ).rejects.toThrow('WORK_ORDER_HISTORY_UNAVAILABLE');
++    const sql = 'SELECT * FROM public.hxos_read_authenticated_work_order_history_v13($1,$2)';
++    const token = await (
++      await attestation(lane.lane.posterUserId)
++    ).issue({ commandKind: 'READ_FAKE_WORK_ORDER_HISTORY', commandPayload: payload });
++    await clients.get('apiRole')!.query(sql, [token.actor_assertion_token, payload]);
++    await expect(
++      clients.get('apiRole')!.query(sql, [token.actor_assertion_token, payload])
++    ).rejects.toThrow();
++    const substituted = await (
++      await attestation(lane.lane.posterUserId)
++    ).issue({ commandKind: 'READ_FAKE_WORK_ORDER_HISTORY', commandPayload: payload });
++    await expect(
++      clients
++        .get('apiRole')!
++        .query(sql, [
++          substituted.actor_assertion_token,
++          { ...payload, idempotency_key: lane.key + ':other' },
++        ])
++    ).rejects.toThrow();
++    const snapshot = await (
++      await attestation(lane.lane.posterUserId)
++    ).issue({ commandKind: 'READ_FAKE_WORK_ORDER_HISTORY', commandPayload: payload });
++    await clients.get('apiRole')!.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
++    try {
++      await expect(
++        clients.get('apiRole')!.query(sql, [snapshot.actor_assertion_token, payload])
++      ).rejects.toThrow('READ_COMMITTED_REQUIRED');
++    } finally {
++      await clients.get('apiRole')!.query('ROLLBACK');
++    }
++    for (const key of ['apiRole', 'workerRole', 'attesterRole'] as const) {
++      await expect(
++        clients.get(key)!.query('SELECT * FROM public.task_work_order_command_requests')
++      ).rejects.toThrow('permission denied');
++    }
++    for (const key of ['workerRole', 'attesterRole'] as const)
++      await expect(
++        clients.get(key)!.query(sql, [snapshot.actor_assertion_token, payload])
++      ).rejects.toThrow('permission denied');
++  });
++
+   it.each(loginKeys)('certifies the exact full catalog through the real %s login', async (key) => {
+     const client = clients.get(key)!;
+     const query: QueryFn = async <T>(sql: string, params?: unknown[]) => {
+diff --git a/backend/tests/unit/universal-v1-actor-attestation-application.test.ts b/backend/tests/unit/universal-v1-actor-attestation-application.test.ts
+index f6ece86..dc8895a 100644
+--- a/backend/tests/unit/universal-v1-actor-attestation-application.test.ts
++++ b/backend/tests/unit/universal-v1-actor-attestation-application.test.ts
+@@ -1,3 +1,4 @@
++import { deterministicUuid } from '../../src/services/UniversalV1WorkOrderPostgresRepository.js';
+ import { describe, expect, it, vi } from 'vitest';
+ 
+ import type { UniversalV1ActorAttestationHandle } from '../../src/auth/universal-v1-actor-attestation-contracts.js';
+@@ -48,6 +49,38 @@ const interestContext = {
+   predecessor_valid_until: new Date(now.getTime() + 60_000).toISOString(),
+ };
+ 
++function financeFixture(phase: any) {
++  const kinds = ['PREPARE_PAYMENT_METHOD', 'AUTHORIZE', 'SECURE'];
++  const labels = ['prepare', 'authorize', 'secure'];
++  const suffixes = ['prep', 'auth', 'secure'];
++  const events = [ids.draft, ids.scope, ids.secured],
++    c = phase.context;
++  return {
++    requestFinancialEvent: vi.fn(),
++    readPredecessor: vi.fn(async (selector: any) => {
++      const n = kinds.indexOf(selector.operationKind);
++      return {
++        predecessor: {
++          operationKind: kinds[n],
++          operationId: deterministicUuid(phase.idempotencyKey, labels[n]!),
++          idempotencyKey: phase.idempotencyKey + ':' + suffixes[n],
++          lifecycleExpectedVersion: n,
++          taskDraftId: c.task_draft_id,
++          taskId: c.task_id,
++          scopeVersionId: c.scope_version_id,
++          eligibilityDecisionId: c.eligibility_decision_id,
++          financialEventId: events[n],
++          predecessorEventId: n === 0 ? null : events[n - 1],
++          amountCents: n === 0 ? null : c.customer_total_cents,
++          currency: n === 0 ? null : c.currency,
++          externalReference: n === 0 ? 'pm' : null,
++          expiresAt: c.hold_expires_at,
++        },
++      };
++    }),
++  };
++}
++
+ describe('UniversalV1WorkOrderApplication actor-attestation propagation', () => {
+   it('binds provider interest to the exact public command and passes only the one-time token', async () => {
+     const token = '1'.repeat(64);
+@@ -118,19 +151,18 @@ describe('UniversalV1WorkOrderApplication actor-attestation propagation', () =>
+       }),
+       claimMaterializationCompensation: vi.fn(),
+     };
+-    const executeFinancialEvent = vi
+-      .fn()
+-      .mockResolvedValueOnce({ id: ids.draft, operationId: ids.draft, externalReference: 'pm' })
+-      .mockResolvedValueOnce({ id: ids.scope, operationId: ids.scope, externalReference: 'auth' })
+-      .mockResolvedValueOnce({
+-        id: ids.secured,
+-        operationId: ids.secured,
+-        externalReference: 'secure',
+-      });
++    const finance = financeFixture(phase);
++    const history = {
++      read: vi
++        .fn()
++        .mockResolvedValueOnce(null)
++        .mockResolvedValue({ state: 'PREPARED', phase, observedAt: now.toISOString() }),
++    };
+     const app = new UniversalV1WorkOrderApplication(
+       { workOrder: vi.fn().mockResolvedValue(hold) } as never,
+       repo as never,
+-      vi.fn().mockResolvedValue({ executeFinancialEvent }) as never
++      vi.fn().mockResolvedValue(finance) as never,
++      history
+     );
+     const input = {
+       conditional_hold_id: ids.hold,
+@@ -145,7 +177,7 @@ describe('UniversalV1WorkOrderApplication actor-attestation propagation', () =>
+       'MATERIALIZE_FAKE_WORK_ORDER',
+     ]);
+     expect(repo.prepareMaterialization).toHaveBeenCalledWith(
+-      hold,
++      { conditional_hold_id: ids.hold, eligibility_version: 2 },
+       input.idempotency_key,
+       prepareToken,
+       input.client_ts
+@@ -188,19 +220,18 @@ describe('UniversalV1WorkOrderApplication actor-attestation propagation', () =>
+         },
+       }),
+     };
+-    const executeFinancialEvent = vi
+-      .fn()
+-      .mockResolvedValueOnce({ id: ids.draft, operationId: ids.draft, externalReference: 'pm' })
+-      .mockResolvedValueOnce({ id: ids.scope, operationId: ids.scope, externalReference: 'auth' })
+-      .mockResolvedValueOnce({
+-        id: ids.secured,
+-        operationId: ids.secured,
+-        externalReference: 'secure',
+-      });
++    const finance = financeFixture(phase);
++    const history = {
++      read: vi
++        .fn()
++        .mockResolvedValueOnce(null)
++        .mockResolvedValue({ state: 'PREPARED', phase, observedAt: now.toISOString() }),
++    };
+     const app = new UniversalV1WorkOrderApplication(
+       { workOrder: vi.fn().mockResolvedValue(hold) } as never,
+       repo as never,
+-      vi.fn().mockResolvedValue({ executeFinancialEvent }) as never
++      vi.fn().mockResolvedValue(finance) as never,
++      history
+     );
+     await app.secureAndMaterializeFakeWorkOrder(
+       ids.actor,
+diff --git a/backend/tests/unit/universal-v1-work-order-application.test.ts b/backend/tests/unit/universal-v1-work-order-application.test.ts
+index 6e0490b..8b593f3 100644
+--- a/backend/tests/unit/universal-v1-work-order-application.test.ts
++++ b/backend/tests/unit/universal-v1-work-order-application.test.ts
+@@ -68,7 +68,7 @@ describe('UniversalV1WorkOrderApplication', () => {
+     ).rejects.toMatchObject({ code: 'WORK_ORDER_VERSION_CONFLICT' });
+     expect(repo.express).not.toHaveBeenCalled();
+   });
+-  it('authorizes fake finance before committing the witness, then runs finance and finalizes', async () => {
++  it('authorizes fake finance before committing the witness, then queues preparation and returns pending', async () => {
+     const hold = {
+       ...base,
+       poster_user_id: ids.poster,
+@@ -99,25 +99,16 @@ describe('UniversalV1WorkOrderApplication', () => {
+         payment_creation_performed: false,
+       }),
+     };
+-    const executeFinancialEvent = vi
+-      .fn()
+-      .mockResolvedValueOnce({
+-        id: ids.prior,
+-        operationId: ids.prior,
+-        externalReference: 'pm_fake',
+-      })
+-      .mockResolvedValueOnce({
+-        id: ids.interest,
+-        operationId: ids.interest,
+-        externalReference: 'auth_fake',
+-      })
+-      .mockResolvedValueOnce({
+-        id: ids.elig,
+-        operationId: ids.elig,
+-        externalReference: 'secure_fake',
+-      });
+-    const createFinance = vi.fn().mockResolvedValue({ executeFinancialEvent });
+-    const app = new UniversalV1WorkOrderApplication(facts, repo, createFinance as any);
++    const requestFinancialEvent = vi.fn().mockResolvedValue({});
++    const readPredecessor = vi.fn().mockResolvedValue(null);
++    const createFinance = vi.fn().mockResolvedValue({ requestFinancialEvent, readPredecessor });
++    const history = {
++      read: vi
++        .fn()
++        .mockResolvedValueOnce(null)
++        .mockResolvedValue({ state: 'PREPARED', phase, observedAt: new Date().toISOString() }),
++    };
++    const app = new UniversalV1WorkOrderApplication(facts, repo, createFinance, history);
+     const clientTs = new Date().toISOString();
+     const prepareToken = '1'.repeat(64);
+     const materializeToken = '2'.repeat(64);
+@@ -135,13 +126,18 @@ describe('UniversalV1WorkOrderApplication', () => {
+       repo.prepareMaterialization.mock.invocationCallOrder[0]
+     );
+     expect(repo.prepareMaterialization).toHaveBeenCalledWith(
+-      hold,
++      { conditional_hold_id: ids.hold, eligibility_version: 2 },
+       'workorder:test:0001',
+       prepareToken,
+       clientTs
+     );
+-    expect(executeFinancialEvent).toHaveBeenCalledTimes(3);
+-    expect(repo.finalizeMaterialization).toHaveBeenCalledWith(phase, ids.elig, materializeToken);
++    expect(requestFinancialEvent).toHaveBeenCalledTimes(1);
++    expect(requestFinancialEvent.mock.calls[0]![0]).toMatchObject({
++      operationKind: 'PREPARE_PAYMENT_METHOD',
++    });
++    expect(facts.workOrder).not.toHaveBeenCalled();
++    expect(repo.finalizeMaterialization).not.toHaveBeenCalled();
++    expect(out).toMatchObject({ status: 'PENDING', stage: 'PAYMENT_SETUP' });
+     expect(out).toMatchObject({
+       hard_assignment_created: false,
+       payment_creation_performed: false,
+@@ -216,12 +212,16 @@ describe('UniversalV1WorkOrderApplication', () => {
+       prepareMaterialization: vi.fn().mockResolvedValue({ completed: true, result }),
+       finalizeMaterialization: vi.fn(),
+     };
+-    const executeFinancialEvent = vi.fn();
+-    const createFinance = vi.fn().mockReturnValue({ executeFinancialEvent });
++    const requestFinancialEvent = vi.fn();
++    const createFinance = vi
++      .fn()
++      .mockReturnValue({ requestFinancialEvent, readPredecessor: vi.fn() });
++    const history = { read: vi.fn().mockResolvedValue({ state: 'COMPLETED', result }) };
+     const app = new UniversalV1WorkOrderApplication(
+       { workOrder: vi.fn().mockResolvedValue(hold) } as any,
+       repo,
+-      createFinance as any
++      createFinance,
++      history
+     );
+     const replayToken = '3'.repeat(64);
+     await expect(
+@@ -235,9 +235,10 @@ describe('UniversalV1WorkOrderApplication', () => {
+         },
+         actorAttestation(replayToken)
+       )
+-    ).resolves.toEqual(result);
++    ).resolves.toEqual({ status: 'MATERIALIZED', ...result });
+     expect(createFinance).toHaveBeenCalledTimes(1);
+-    expect(executeFinancialEvent).not.toHaveBeenCalled();
++    expect(requestFinancialEvent).not.toHaveBeenCalled();
++    expect(repo.prepareMaterialization).not.toHaveBeenCalled();
+     expect(repo.finalizeMaterialization).not.toHaveBeenCalled();
+   });
+ });
+diff --git a/backend/tests/unit/universal-v1-work-order-compensation.test.ts b/backend/tests/unit/universal-v1-work-order-compensation.test.ts
+index a38d316..879ce4e 100644
+--- a/backend/tests/unit/universal-v1-work-order-compensation.test.ts
++++ b/backend/tests/unit/universal-v1-work-order-compensation.test.ts
+@@ -107,27 +107,36 @@ function successfulVoid(replayed: boolean = false) {
+   };
+ }
+ 
+-function financeExecutionMock(voidReplayed: boolean = false) {
+-  return vi
+-    .fn()
+-    .mockResolvedValueOnce({
+-      id: ids.preparedEvent,
+-      operationId: deterministicUuid(key, 'prepare'),
+-      externalReference: 'fake_prepare',
+-    })
+-    .mockResolvedValueOnce({
+-      id: ids.authorizedEvent,
+-      operationId: deterministicUuid(key, 'authorize'),
+-      externalReference: 'fake_authorize',
+-    })
+-    .mockResolvedValueOnce({
+-      id: ids.securedEvent,
+-      operationId: deterministicUuid(key, 'secure'),
+-      externalReference: 'fake_secure',
+-    })
+-    .mockResolvedValueOnce(successfulVoid(voidReplayed));
++function financeRequestMock() {
++  const kinds = ['PREPARE_PAYMENT_METHOD', 'AUTHORIZE', 'SECURE'];
++  const labels = ['prepare', 'authorize', 'secure'];
++  const suffixes = ['prep', 'auth', 'secure'];
++  const events = [ids.preparedEvent, ids.authorizedEvent, ids.securedEvent];
++  return {
++    requestFinancialEvent: vi.fn().mockResolvedValue({}),
++    readPredecessor: vi.fn(async (selector: any) => {
++      const n = kinds.indexOf(selector.operationKind);
++      return {
++        predecessor: {
++          operationKind: kinds[n],
++          operationId: deterministicUuid(key, labels[n]!),
++          idempotencyKey: key + ':' + suffixes[n],
++          lifecycleExpectedVersion: n,
++          taskDraftId: ids.draft,
++          taskId: ids.task,
++          scopeVersionId: ids.scope,
++          eligibilityDecisionId: ids.eligibility,
++          financialEventId: events[n],
++          predecessorEventId: n === 0 ? null : events[n - 1],
++          amountCents: n === 0 ? null : 12000,
++          currency: n === 0 ? null : 'USD',
++          externalReference: n === 0 ? 'fake_prepare' : null,
++          expiresAt: hold.hold_expires_at,
++        },
++      };
++    }),
++  };
+ }
+-
+ function actorAttestation(...tokens: string[]) {
+   const issue = vi.fn();
+   for (const token of tokens) issue.mockResolvedValueOnce({ actor_assertion_token: token });
+@@ -153,9 +162,9 @@ describe('Universal V1 WorkOrder compensation', () => {
+     expect(params).toEqual([5, 30]);
+   });
+ 
+-  it('claims and materializes one exact fake VOID when finalization fails', async () => {
++  it('claims and queues one exact fake VOID when finalization fails', async () => {
+     const finalizeError = Object.assign(new Error('INJECTED_FINALIZE_FAILURE'), { code: 'XX999' });
+-    const executeFinancialEvent = financeExecutionMock();
++    const finance = financeRequestMock();
+     const repository = {
+       prepareMaterialization: vi.fn().mockResolvedValue(phase),
+       finalizeMaterialization: vi.fn().mockRejectedValue(finalizeError),
+@@ -167,7 +176,19 @@ describe('Universal V1 WorkOrder compensation', () => {
+     const application = new UniversalV1WorkOrderApplication(
+       { workOrder: vi.fn().mockResolvedValue(hold) } as never,
+       repository as never,
+-      () => ({ executeFinancialEvent }) as never
++      () => finance as never,
++      {
++        read: vi
++          .fn()
++          .mockResolvedValueOnce({ state: 'PREPARED', phase, observedAt: new Date().toISOString() })
++          .mockResolvedValueOnce({ state: 'PREPARED', phase, observedAt: new Date().toISOString() })
++          .mockResolvedValueOnce({
++            state: 'COMPENSATION_CLAIM',
++            phase,
++            compensation: { ...compensation, reason_code: 'FINALIZATION_FAILED' },
++            voidProgress: null,
++          }),
++      }
+     );
+ 
+     const recoveryToken = '3'.repeat(64);
+@@ -180,17 +201,17 @@ describe('Universal V1 WorkOrder compensation', () => {
+           idempotency_key: key,
+           client_ts: new Date().toISOString(),
+         },
+-        actorAttestation('1'.repeat(64), '2'.repeat(64), recoveryToken)
++        actorAttestation('2'.repeat(64), recoveryToken)
+       )
+-    ).rejects.toBe(finalizeError);
++    ).resolves.toMatchObject({ status: 'COMPENSATING', stage: 'COMPENSATION' });
+ 
+     expect(repository.claimMaterializationCompensation).toHaveBeenCalledWith(
+       phase,
+       ids.securedEvent,
+       recoveryToken
+     );
+-    expect(executeFinancialEvent).toHaveBeenCalledTimes(4);
+-    expect(executeFinancialEvent.mock.calls[3]![0]).toMatchObject({
++    expect(finance.requestFinancialEvent).toHaveBeenCalledTimes(1);
++    expect(finance.requestFinancialEvent.mock.calls[0]![0]).toMatchObject({
+       operationKind: 'VOID',
+       operationId: deterministicUuid(key, 'void'),
+       idempotencyKey: `${key}:void`,
+@@ -212,7 +233,7 @@ describe('Universal V1 WorkOrder compensation', () => {
+       hard_assignment_created: false as const,
+       payment_creation_performed: false as const,
+     };
+-    const executeFinancialEvent = financeExecutionMock();
++    const finance = financeRequestMock();
+     const repository = {
+       prepareMaterialization: vi.fn().mockResolvedValue(phase),
+       finalizeMaterialization: vi.fn().mockRejectedValue(new Error('AMBIGUOUS_COMMIT')),
+@@ -221,7 +242,12 @@ describe('Universal V1 WorkOrder compensation', () => {
+     const application = new UniversalV1WorkOrderApplication(
+       { workOrder: vi.fn().mockResolvedValue(hold) } as never,
+       repository as never,
+-      () => ({ executeFinancialEvent }) as never
++      () => finance as never,
++      {
++        read: vi
++          .fn()
++          .mockResolvedValue({ state: 'PREPARED', phase, observedAt: new Date().toISOString() }),
++      }
+     );
+ 
+     await expect(
+@@ -235,8 +261,8 @@ describe('Universal V1 WorkOrder compensation', () => {
+         },
+         actorAttestation('4'.repeat(64), '5'.repeat(64), '6'.repeat(64))
+       )
+-    ).resolves.toEqual(result);
+-    expect(executeFinancialEvent).toHaveBeenCalledTimes(3);
++    ).resolves.toEqual({ status: 'MATERIALIZED', ...result });
++    expect(finance.requestFinancialEvent).not.toHaveBeenCalled();
+   });
+ 
+   it('drains exact claims idempotently and gates before acquiring commands', async () => {
+diff --git a/backend/tests/unit/universal-v1-work-order-resume.test.ts b/backend/tests/unit/universal-v1-work-order-resume.test.ts
+new file mode 100644
+index 0000000..016f763
+--- /dev/null
++++ b/backend/tests/unit/universal-v1-work-order-resume.test.ts
+@@ -0,0 +1,445 @@
++import { describe, expect, it, vi } from 'vitest';
++import { UniversalV1WorkOrderApplication } from '../../src/services/UniversalV1WorkOrderApplication.js';
++import { UniversalV1WorkOrderPublicResultSchema } from '../../src/services/UniversalV1WorkOrderContracts.js';
++import { deterministicUuid } from '../../src/services/UniversalV1WorkOrderPostgresRepository.js';
++import type { WorkOrderHistory } from '../../src/auth/work-order-history-command-contract.js';
++import type { FinancialPredecessorFacts } from '../../src/auth/financial-predecessor-command-contract.js';
++
++const id = (n: number) => '30000000-0000-4000-8000-' + String(n).padStart(12, '0');
++const key = 'workorder:resume:0001';
++function fixture() {
++  const now = new Date().toISOString(),
++    later = new Date(Date.now() + 120_000).toISOString();
++  const context = {
++    task_id: id(1),
++    task_draft_id: id(2),
++    scope_version_id: id(3),
++    scope_version: 1,
++    routing_decision_id: id(4),
++    provider_user_id: id(5),
++    provider_organization_id: null,
++    provider_class: 'GENERAL_SERVICE_PROVIDER' as const,
++    trade_credential_id: null,
++    predecessor_eligibility_id: id(6),
++    predecessor_eligibility_version: 2,
++    predecessor_valid_until: later,
++    poster_user_id: id(7),
++    interest_application_id: id(8),
++    eligibility_decision_id: id(6),
++    eligibility_version: 2,
++    eligibility_valid_until: later,
++    conditional_hold_id: id(9),
++    hold_reserved_at: now,
++    hold_expires_at: later,
++    provider_estimate_submission_id: id(10),
++    customer_total_cents: 12000,
++    currency: 'USD',
++  };
++  const phase = {
++    completed: false as const,
++    context,
++    idempotencyKey: key,
++    requestSha256: 'a'.repeat(64),
++    occurredAt: now,
++  };
++  const source = {
++    targetAuthorityId: id(11),
++    releaseSha256: 'sha256:' + 'b'.repeat(64),
++    canonicalRequestSha256: 'c'.repeat(64),
++    preparationExecutionId: id(12),
++  };
++  const prepared: WorkOrderHistory = { state: 'PREPARED', phase, source, observedAt: now };
++  const result = {
++    work_order_id: id(13),
++    financial_security_event_id: id(22),
++    replayed: true as const,
++    hard_assignment_created: false as const,
++    payment_creation_performed: false as const,
++  };
++  const completed: WorkOrderHistory = {
++    state: 'COMPLETED',
++    phase,
++    source,
++    result,
++    observedAt: now,
++  };
++  const compensation = {
++    compensation_command_id: id(14),
++    work_order_idempotency_key: key,
++    task_draft_id: id(2),
++    task_id: id(1),
++    scope_version_id: id(3),
++    eligibility_decision_id: id(6),
++    secured_event_id: id(22),
++    secured_operation_id: deterministicUuid(key, 'secure'),
++    void_operation_id: deterministicUuid(key, 'void'),
++    void_idempotency_key: key + ':void',
++    amount_cents: 12000,
++    currency: 'USD',
++    requested_by: id(7),
++    created_at: now,
++    reason_code: 'FINALIZATION_FAILED' as const,
++  };
++  const claimed: Extract<WorkOrderHistory, { state: 'COMPENSATION_CLAIM' }> = {
++    state: 'COMPENSATION_CLAIM',
++    phase,
++    source,
++    compensation,
++    voidProgress: null,
++    observedAt: now,
++  };
++  const kinds = ['PREPARE_PAYMENT_METHOD', 'AUTHORIZE', 'SECURE'] as const;
++  const labels = ['prepare', 'authorize', 'secure'];
++  const suffixes = ['prep', 'auth', 'secure'];
++  const eventKinds = ['PAYMENT_METHOD_PREPARED', 'AUTHORIZED', 'SECURED'];
++  const events: FinancialPredecessorFacts[] = kinds.map((kind, n) => ({
++    idempotencyKey: key + ':' + suffixes[n],
++    progress: {
++      commandId: id(30 + n),
++      operationId: deterministicUuid(key, labels[n]!),
++      operationKind: kind,
++      taskDraftId: id(2),
++      taskId: id(1),
++      requestedAt: now,
++      observedAt: now,
++      requestState: 'REQUESTED',
++      progressState: 'MATERIALIZED',
++      financialEvent: { id: id(20 + n), eventKind: eventKinds[n]!, status: 'SUCCEEDED' },
++    },
++    predecessor: {
++      commandId: id(30 + n),
++      idempotencyKey: key + ':' + suffixes[n],
++      preparedCommandId: id(40 + n),
++      operationId: deterministicUuid(key, labels[n]!),
++      operationKind: kind,
++      financialEventId: id(20 + n),
++      eventKind: eventKinds[n]!,
++      lifecycleExpectedVersion: n,
++      taskDraftId: id(2),
++      taskId: id(1),
++      scopeVersionId: id(3),
++      eligibilityDecisionId: id(6),
++      predecessorEventId: n === 0 ? null : id(19 + n),
++      amountCents: n === 0 ? null : 12000,
++      currency: n === 0 ? null : 'USD',
++      externalReference: n === 0 ? 'fake:private-payment-reference' : null,
++      occurredAt: now,
++      expiresAt: n === 0 ? null : later,
++      sourceTargetAuthorityId: id(11),
++      sourceReleaseSha256: source.releaseSha256,
++    },
++  }));
++  const history = { read: vi.fn().mockResolvedValue(prepared) };
++  const repo = {
++    prepareMaterialization: vi.fn().mockResolvedValue(phase),
++    finalizeMaterialization: vi.fn().mockResolvedValue({ ...result, replayed: false }),
++    claimMaterializationCompensation: vi
++      .fn()
++      .mockResolvedValue({ completed: false, command: compensation }),
++  };
++  const finance = {
++    requestFinancialEvent: vi.fn().mockResolvedValue({}),
++    readPredecessor: vi
++      .fn()
++      .mockImplementation(
++        async (selector) =>
++          events.find((e) => e.progress.operationKind === selector.operationKind) ?? null
++      ),
++  };
++  const issue = vi.fn().mockResolvedValue({ actor_assertion_token: 'd'.repeat(64) });
++  const facts = {
++    workOrder: vi.fn(() => {
++      throw Error('NO_RAW_WORK_ORDER_READ');
++    }),
++  };
++  const createFinance = vi.fn().mockResolvedValue(finance);
++  const app = new UniversalV1WorkOrderApplication(
++    facts as never,
++    repo as never,
++    createFinance,
++    history
++  );
++  const input = {
++    conditional_hold_id: id(9),
++    expected_eligibility_version: 2,
++    idempotency_key: key,
++    client_ts: now,
++  };
++  const run = () =>
++    app.secureAndMaterializeFakeWorkOrder(
++      id(7),
++      { ...input, client_ts: new Date().toISOString() },
++      { issue }
++    );
++  return {
++    run,
++    input,
++    context,
++    phase,
++    prepared,
++    completed,
++    claimed,
++    result,
++    events,
++    repo,
++    finance,
++    history,
++    issue,
++    facts,
++    createFinance,
++  };
++}
++
++describe('foreground Work Order committed-history resume', () => {
++  it('authorizes before Phase A and requests only PREPARE before returning pending', async () => {
++    const f = fixture();
++    f.history.read.mockResolvedValueOnce(null).mockResolvedValue(f.prepared);
++    f.finance.readPredecessor.mockResolvedValue(null);
++    const result = await f.run();
++    expect(result).toEqual({
++      status: 'PENDING',
++      stage: 'PAYMENT_SETUP',
++      retry_after_ms: 1000,
++      hard_assignment_created: false,
++      payment_creation_performed: false,
++    });
++    expect(f.createFinance.mock.invocationCallOrder[0]).toBeLessThan(
++      f.repo.prepareMaterialization.mock.invocationCallOrder[0]!
++    );
++    expect(f.repo.prepareMaterialization).toHaveBeenCalledWith(
++      { conditional_hold_id: f.input.conditional_hold_id, eligibility_version: 2 },
++      key,
++      'd'.repeat(64),
++      expect.any(String)
++    );
++    expect(f.finance.requestFinancialEvent).toHaveBeenCalledExactlyOnceWith(
++      expect.objectContaining({
++        operationKind: 'PREPARE_PAYMENT_METHOD',
++        operationId: deterministicUuid(key, 'prepare'),
++      }),
++      { issue: f.issue }
++    );
++    expect(f.repo.finalizeMaterialization).not.toHaveBeenCalled();
++    expect(f.facts.workOrder).not.toHaveBeenCalled();
++  });
++  it.each([0, 1, 2])(
++    'resumes from committed boundary %i without reissuing earlier operations',
++    async (boundary) => {
++      const f = fixture();
++      f.finance.readPredecessor.mockImplementation(
++        async (selector) =>
++          f.events
++            .slice(0, boundary)
++            .find((e) => e.predecessor?.operationKind === selector.operationKind) ?? null
++      );
++      const result = await f.run();
++      expect(result.status).toBe('PENDING');
++      expect(f.repo.prepareMaterialization).not.toHaveBeenCalled();
++      expect(f.finance.requestFinancialEvent).toHaveBeenCalledTimes(1);
++      const command = f.finance.requestFinancialEvent.mock.calls[0]![0] as any;
++      expect(command.operationKind).toBe(
++        ['PREPARE_PAYMENT_METHOD', 'AUTHORIZE', 'SECURE'][boundary]
++      );
++      if (boundary > 0)
++        expect(command.predecessorEventId).toBe(
++          f.events[boundary - 1]!.predecessor!.financialEventId
++        );
++      expect(JSON.stringify(result)).not.toContain('fake:private');
++      expect(f.repo.finalizeMaterialization).not.toHaveBeenCalled();
++    }
++  );
++  it('waits for a committed successful materialization before issuing a successor', async () => {
++    const f = fixture();
++    f.events[0]!.predecessor = null;
++    f.events[0]!.progress.progressState = 'PROCESSING';
++    f.events[0]!.progress.financialEvent = null;
++    await expect(f.run()).resolves.toMatchObject({ status: 'PENDING', stage: 'PAYMENT_SETUP' });
++    expect(f.finance.requestFinancialEvent).not.toHaveBeenCalled();
++    expect(f.repo.finalizeMaterialization).not.toHaveBeenCalled();
++  });
++  it('finalizes using fresh authority and the exact original Phase A request', async () => {
++    const f = fixture();
++    await expect(f.run()).resolves.toEqual({
++      status: 'MATERIALIZED',
++      ...f.result,
++      replayed: false,
++    });
++    expect(f.issue).toHaveBeenCalledExactlyOnceWith({
++      commandKind: 'MATERIALIZE_FAKE_WORK_ORDER',
++      commandPayload: {
++        idempotency_key: key,
++        request_sha256: f.phase.requestSha256,
++        secured_event_id: id(22),
++      },
++    });
++    expect(f.repo.finalizeMaterialization).toHaveBeenCalledWith(f.phase, id(22), 'd'.repeat(64));
++    expect(f.finance.requestFinancialEvent).not.toHaveBeenCalled();
++  });
++  it('reads completed history after expiry without finance or preparation writes', async () => {
++    const f = fixture();
++    f.context.hold_expires_at = '2020-01-01T00:00:00.000Z';
++    f.history.read.mockResolvedValue(f.completed);
++    await expect(f.run()).resolves.toEqual({ status: 'MATERIALIZED', ...f.result });
++    expect(f.repo.prepareMaterialization).not.toHaveBeenCalled();
++    expect(f.finance.readPredecessor).not.toHaveBeenCalled();
++    expect(f.issue).not.toHaveBeenCalled();
++  });
++  it.each(['hold_expires_at', 'eligibility_valid_until'] as const)(
++    'never renews an expired %s to issue a new request',
++    async (field) => {
++      const f = fixture();
++      f.context[field] = '2020-01-01T00:00:00.000Z';
++      f.finance.readPredecessor.mockResolvedValue(null);
++      await expect(f.run()).resolves.toMatchObject({ status: 'RECOVERY_REQUIRED' });
++      expect(f.finance.requestFinancialEvent).not.toHaveBeenCalled();
++    }
++  );
++  it('does not secure an expired authorization', async () => {
++    const f = fixture();
++    f.events[1]!.predecessor!.expiresAt = '2020-01-01T00:00:00.000Z';
++    f.events.pop();
++    await expect(f.run()).resolves.toMatchObject({
++      status: 'RECOVERY_REQUIRED',
++      stage: 'FINANCIAL_SECURITY',
++    });
++    expect(f.finance.requestFinancialEvent).not.toHaveBeenCalled();
++  });
++  it.each([
++    'operationId',
++    'scopeVersionId',
++    'eligibilityDecisionId',
++    'predecessorEventId',
++  ] as const)('refuses substituted predecessor %s', async (field) => {
++    const f = fixture();
++    f.events[1]!.predecessor![field] = id(99);
++    await expect(f.run()).rejects.toThrow('WORK_ORDER_RESUME_HISTORY_UNAVAILABLE');
++    expect(f.finance.requestFinancialEvent).not.toHaveBeenCalled();
++    expect(f.repo.finalizeMaterialization).not.toHaveBeenCalled();
++  });
++  it('resolves a lost finalization COMMIT from history before compensation', async () => {
++    const f = fixture();
++    f.repo.finalizeMaterialization.mockRejectedValue(Error('COMMIT_ACK_LOST'));
++    f.history.read.mockResolvedValueOnce(f.prepared).mockResolvedValueOnce(f.completed);
++    await expect(f.run()).resolves.toEqual({ status: 'MATERIALIZED', ...f.result });
++    expect(f.repo.claimMaterializationCompensation).not.toHaveBeenCalled();
++    expect(f.finance.requestFinancialEvent).not.toHaveBeenCalled();
++  });
++  it('claims compensation with fresh authority and submits one claim-bound VOID', async () => {
++    const f = fixture();
++    f.repo.finalizeMaterialization.mockRejectedValue(Error('FINALIZE_FAILED'));
++    f.history.read
++      .mockResolvedValueOnce(f.prepared)
++      .mockResolvedValueOnce(f.prepared)
++      .mockResolvedValueOnce(f.claimed);
++    await expect(f.run()).resolves.toMatchObject({ status: 'COMPENSATING', stage: 'COMPENSATION' });
++    expect(f.issue).toHaveBeenNthCalledWith(2, {
++      commandKind: 'REQUEST_FAKE_WORK_ORDER_RECOVERY',
++      commandPayload: {
++        idempotency_key: key,
++        request_sha256: f.phase.requestSha256,
++        secured_event_id: id(22),
++      },
++    });
++    expect(f.finance.requestFinancialEvent).toHaveBeenCalledExactlyOnceWith(
++      expect.objectContaining({
++        operationKind: 'VOID',
++        operationId: f.claimed.compensation.void_operation_id,
++        relatedOperationId: deterministicUuid(key, 'secure'),
++        predecessorEventId: id(22),
++        lifecycleExpectedVersion: 3,
++      }),
++      { issue: f.issue }
++    );
++  });
++  it('honors the concurrent finalizer winner at the recovery claim boundary', async () => {
++    const f = fixture();
++    f.repo.finalizeMaterialization.mockRejectedValue(Error('AMBIGUOUS_COMMIT'));
++    f.repo.claimMaterializationCompensation.mockResolvedValue({
++      completed: true,
++      result: f.result,
++    } as never);
++    await expect(f.run()).resolves.toEqual({ status: 'MATERIALIZED', ...f.result });
++    expect(f.finance.requestFinancialEvent).not.toHaveBeenCalled();
++  });
++  it('resumes compensation first even after hold expiry without replaying preparation', async () => {
++    const f = fixture();
++    f.context.hold_expires_at = '2020-01-01T00:00:00.000Z';
++    f.history.read.mockResolvedValue(f.claimed);
++    await expect(f.run()).resolves.toMatchObject({ status: 'COMPENSATING' });
++    expect(f.finance.readPredecessor).not.toHaveBeenCalled();
++    expect(f.repo.finalizeMaterialization).not.toHaveBeenCalled();
++    expect(f.repo.prepareMaterialization).not.toHaveBeenCalled();
++  });
++  it.each(['REQUESTED', 'RECOVERY_REQUIRED', 'MATERIALIZED'] as const)(
++    'does not duplicate a claim VOID in %s',
++    async (state) => {
++      const f = fixture();
++      f.claimed.voidProgress = {
++        ...f.events[2]!.progress,
++        operationKind: 'VOID',
++        operationId: f.claimed.compensation.void_operation_id,
++        progressState: state,
++        financialEvent:
++          state === 'MATERIALIZED'
++            ? { id: id(50), eventKind: 'VOIDED', status: 'SUCCEEDED' }
++            : null,
++      };
++      f.history.read.mockResolvedValue(f.claimed);
++      await expect(f.run()).resolves.toMatchObject({
++        status:
++          state === 'MATERIALIZED'
++            ? 'COMPENSATED'
++            : state === 'REQUESTED'
++              ? 'COMPENSATING'
++              : 'RECOVERY_REQUIRED',
++      });
++      expect(f.finance.requestFinancialEvent).not.toHaveBeenCalled();
++      expect(f.repo.finalizeMaterialization).not.toHaveBeenCalled();
++    }
++  );
++  it('keeps committed outcomes awaiting materialization pollable without another request', async () => {
++    const f = fixture();
++    f.events[0]!.predecessor = null;
++    f.events[0]!.progress.progressState = 'RECOVERY_REQUIRED';
++    f.events[0]!.progress.financialEvent = null;
++    await expect(f.run()).resolves.toMatchObject({
++      status: 'RECOVERY_REQUIRED',
++      retry_after_ms: 1000,
++    });
++    expect(f.finance.requestFinancialEvent).not.toHaveBeenCalled();
++  });
++  it('uses database observation time when the API clock is ahead of hold expiry', async () => {
++    const f = fixture();
++    f.finance.readPredecessor.mockResolvedValue(null);
++    const skew = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 180_000);
++    try {
++      await expect(f.run()).resolves.toMatchObject({ status: 'PENDING', stage: 'PAYMENT_SETUP' });
++      expect(f.finance.requestFinancialEvent).toHaveBeenCalledTimes(1);
++    } finally {
++      skew.mockRestore();
++    }
++  });
++  it('rejects private additions and inconsistent public status contracts', () => {
++    const pending = {
++      status: 'PENDING',
++      stage: 'PAYMENT_SETUP',
++      retry_after_ms: 1000,
++      hard_assignment_created: false,
++      payment_creation_performed: false,
++    };
++    expect(
++      UniversalV1WorkOrderPublicResultSchema.safeParse({ ...pending, providerReference: 'secret' })
++        .success
++    ).toBe(false);
++    expect(
++      UniversalV1WorkOrderPublicResultSchema.safeParse({ ...pending, status: 'COMPENSATED' })
++        .success
++    ).toBe(false);
++    expect(
++      UniversalV1WorkOrderPublicResultSchema.safeParse({
++        ...pending,
++        hard_assignment_created: true,
++      }).success
++    ).toBe(false);
++  });
++});
+diff --git a/backend/tests/unit/work-order-command-role-authority.test.ts b/backend/tests/unit/work-order-command-role-authority.test.ts
+index a05e255..a52a873 100644
+--- a/backend/tests/unit/work-order-command-role-authority.test.ts
++++ b/backend/tests/unit/work-order-command-role-authority.test.ts
+@@ -1,3 +1,7 @@
++import {
++  WORK_ORDER_HISTORY_COMMAND,
++  WORK_ORDER_HISTORY_FUNCTIONS,
++} from '../../src/jobs/work-order-history-role-plans.js';
+ import {
+   FAKE_FINANCIAL_PREDECESSOR_COMMAND,
+   FAKE_FINANCIAL_PREDECESSOR_READER,
+@@ -889,6 +893,31 @@ function functionRow(
+       execute_grantees: [names.commandOwnerRole, internal ? names.financeOwnerRole : names.apiRole],
+     };
+   }
++  if (WORK_ORDER_HISTORY_FUNCTIONS.some((item) => item === identity)) {
++    const internal = false;
++    const human = identity === WORK_ORDER_HISTORY_COMMAND;
++    return {
++      function_identity: identity,
++      function_oid: String(4_200 + WORK_ORDER_AUTHORITY_FUNCTIONS.indexOf(identity)),
++      owner_role: internal ? names.financeOwnerRole : names.commandOwnerRole,
++      security_definer: true,
++      volatility: 'v',
++      parallel_safety: 'u',
++      configuration: ['search_path=pg_catalog'],
++      argument_names: human ? ['actor_assertion_token', 'command_payload'] : [],
++      definition: human ? humanDefinition() : 'BEGIN RETURN; END',
++      migration_execute: false,
++      api_execute: !internal,
++      worker_execute: false,
++      attester_execute: false,
++      command_owner_execute: true,
++      assertion_owner_execute: false,
++      finance_owner_execute: internal,
++      telemetry_owner_execute: false,
++      public_execute: false,
++      execute_grantees: [names.commandOwnerRole, internal ? names.financeOwnerRole : names.apiRole],
++    };
++  }
+   const preparation = FAKE_FINANCIAL_PREPARATION_FUNCTIONS.some((item) => item === identity);
+   const dependency = FAKE_FINANCIAL_PREPARATION_DEPENDENCY_FUNCTIONS.some(
+     (item) => item === identity
+diff --git a/backend/tests/unit/work-order-history.test.ts b/backend/tests/unit/work-order-history.test.ts
+new file mode 100644
+index 0000000..4732c4c
+--- /dev/null
++++ b/backend/tests/unit/work-order-history.test.ts
+@@ -0,0 +1,224 @@
++import { describe, expect, it, vi } from 'vitest';
++import type { QueryFn } from '../../src/database-contracts.js';
++import { PostgresUniversalV1WorkOrderHistoryReader } from '../../src/services/UniversalV1WorkOrderHistory.js';
++import {
++  WorkOrderHistoryPayloadSchema,
++  WorkOrderHistorySchema,
++} from '../../src/auth/work-order-history-command-contract.js';
++import { parseUniversalV1ActorCommandPayload } from '../../src/auth/universal-v1-actor-attestation-contracts.js';
++
++const id = (n: number) => '40000000-0000-4000-8000-' + String(n).padStart(12, '0');
++const key = 'history:read:000001';
++const release = {
++  manifestDigest: 'sha256:' + 'a'.repeat(64),
++  releaseId: 'history-fixture',
++  revision: 'b'.repeat(40),
++  environment: 'local' as const,
++  authenticationStatus: 'VERIFIED' as const,
++};
++const payload = {
++  conditional_hold_id: id(1),
++  expected_eligibility_version: 2,
++  idempotency_key: key,
++};
++function prepared() {
++  const time = '2026-01-01T00:00:00.000123Z';
++  return {
++    state: 'PREPARED' as const,
++    observedAt: '2026-09-05T00:00:00.000Z',
++    phase: {
++      completed: false as const,
++      idempotencyKey: key,
++      requestSha256: 'd'.repeat(64),
++      occurredAt: time,
++      context: {
++        task_id: id(2),
++        task_draft_id: id(3),
++        scope_version_id: id(4),
++        scope_version: 1,
++        routing_decision_id: id(5),
++        provider_user_id: id(6),
++        provider_organization_id: null,
++        provider_class: 'GENERAL_SERVICE_PROVIDER' as const,
++        trade_credential_id: null,
++        predecessor_eligibility_id: id(7),
++        predecessor_eligibility_version: 2,
++        predecessor_valid_until: time,
++        poster_user_id: id(8),
++        interest_application_id: id(9),
++        eligibility_decision_id: id(7),
++        eligibility_version: 2,
++        eligibility_valid_until: time,
++        conditional_hold_id: id(1),
++        hold_reserved_at: time,
++        hold_expires_at: time,
++        provider_estimate_submission_id: id(10),
++        customer_total_cents: 12000,
++        currency: 'USD',
++      },
++    },
++    source: {
++      targetAuthorityId: id(11),
++      releaseSha256: 'sha256:' + 'e'.repeat(64),
++      canonicalRequestSha256: 'f'.repeat(64),
++      preparationExecutionId: id(12),
++    },
++  };
++}
++function receipt() {
++  return {
++    history: prepared(),
++    actor_user_id: id(8),
++    actor_assertion_id: id(13),
++    actor_request_sha256: 'c'.repeat(64),
++    target_authority_id: id(14),
++    reader_release_sha256: release.manifestDigest,
++  };
++}
++function fixture(row: unknown = receipt()) {
++  const issue = vi.fn().mockResolvedValue({
++    schema_version: 1,
++    command_kind: 'READ_FAKE_WORK_ORDER_HISTORY',
++    canonical_request_sha256: 'c'.repeat(64),
++    actor_assertion_token: 'd'.repeat(64),
++    assertion_expires_at: new Date(Date.now() + 60_000).toISOString(),
++  });
++  const query = vi.fn().mockResolvedValue({ rows: [row], rowCount: 1 });
++  const transaction = vi.fn(async (callback: (query: QueryFn) => Promise<unknown>) =>
++    callback(query as QueryFn)
++  );
++  const authorize = vi.fn(() => release);
++  const reader = new PostgresUniversalV1WorkOrderHistoryReader({ transaction } as never, authorize);
++  return {
++    issue,
++    query,
++    transaction,
++    authorize,
++    reader,
++    read: () => reader.read(payload, id(8), { issue }),
++  };
++}
++describe('fresh authenticated Work Order history contract', () => {
++  it('binds the closed identity without a replacement timestamp or caller financial facts', () => {
++    expect(parseUniversalV1ActorCommandPayload('READ_FAKE_WORK_ORDER_HISTORY', payload)).toEqual(
++      payload
++    );
++    for (const extra of [
++      { client_ts: new Date().toISOString() },
++      { actor_user_id: id(8) },
++      { commandId: id(9) },
++      { secured_event_id: id(9) },
++    ])
++      expect(WorkOrderHistoryPayloadSchema.safeParse({ ...payload, ...extra }).success).toBe(false);
++    expect(
++      WorkOrderHistoryPayloadSchema.safeParse({
++        ...payload,
++        expected_eligibility_version: 2147483648,
++      }).success
++    ).toBe(false);
++  });
++  it('returns immutable old source facts under fresh current read authority without renewing expiry', async () => {
++    const f = fixture();
++    const history = await f.read();
++    expect(history).toEqual(prepared());
++    expect(f.issue).toHaveBeenCalledExactlyOnceWith({
++      commandKind: 'READ_FAKE_WORK_ORDER_HISTORY',
++      commandPayload: payload,
++    });
++    expect(f.query).toHaveBeenCalledExactlyOnceWith(
++      'SELECT * FROM public.hxos_read_authenticated_work_order_history_v13($1,$2)',
++      ['d'.repeat(64), payload]
++    );
++    expect(Object.isFrozen(history!.phase.context)).toBe(true);
++    expect(Object.isFrozen(history!.source)).toBe(true);
++    expect(f.authorize).toHaveBeenCalledTimes(2);
++  });
++  it('does not release history before COMMIT resolves', async () => {
++    const f = fixture();
++    let commit!: () => void;
++    const gate = new Promise<void>((resolve) => {
++      commit = resolve;
++    });
++    f.transaction.mockImplementation(async (callback) => {
++      const result = await callback(f.query as QueryFn);
++      await gate;
++      return result;
++    });
++    let returned = false;
++    const read = f.read().then((value) => {
++      returned = true;
++      return value;
++    });
++    await vi.waitFor(() => expect(f.query).toHaveBeenCalledTimes(1));
++    expect(returned).toBe(false);
++    commit();
++    await expect(read).resolves.toEqual(prepared());
++  });
++  it('treats a lost COMMIT acknowledgement as unavailable instead of returning prepared authority', async () => {
++    const f = fixture();
++    f.transaction.mockImplementation(async (callback) => {
++      await callback(f.query as QueryFn);
++      throw Error('private database failure');
++    });
++    await expect(f.read()).rejects.toThrow('WORK_ORDER_HISTORY_UNAVAILABLE');
++  });
++  it('rejects a release change while the read commits', async () => {
++    const f = fixture();
++    f.authorize
++      .mockReturnValueOnce(release)
++      .mockReturnValue({ ...release, manifestDigest: 'sha256:' + 'f'.repeat(64) });
++    await expect(f.read()).rejects.toThrow('WORK_ORDER_HISTORY_RELEASE_AUTHORITY_CHANGED');
++  });
++  it.each(['actor_user_id', 'actor_request_sha256', 'reader_release_sha256'] as const)(
++    'rejects a substituted %s receipt',
++    async (field) => {
++      const row = receipt();
++      row[field] =
++        field === 'actor_user_id'
++          ? id(99)
++          : field === 'actor_request_sha256'
++            ? 'f'.repeat(64)
++            : 'sha256:' + 'f'.repeat(64);
++      await expect(fixture(row).read()).rejects.toThrow(
++        'WORK_ORDER_HISTORY_RECEIPT_BINDING_MISMATCH'
++      );
++    }
++  );
++  it.each(['conditional_hold_id', 'poster_user_id'] as const)(
++    'rejects a substituted historical %s',
++    async (field) => {
++      const row = receipt();
++      row.history.phase.context[field] = id(99);
++      await expect(fixture(row).read()).rejects.toThrow(
++        'WORK_ORDER_HISTORY_RECEIPT_BINDING_MISMATCH'
++      );
++    }
++  );
++  it('allows an authenticated absent result but rejects private additions and inconsistent historical timestamps', async () => {
++    await expect(fixture({ ...receipt(), history: null }).read()).resolves.toBeNull();
++    await expect(fixture({ ...receipt(), providerReference: 'private' }).read()).rejects.toThrow(
++      'WORK_ORDER_HISTORY_RECEIPT_BINDING_MISMATCH'
++    );
++    const history = prepared();
++    history.phase.occurredAt = '2026-01-01T00:00:01.000123Z';
++    expect(WorkOrderHistorySchema.safeParse(history).success).toBe(false);
++  });
++  it.each([
++    { command_kind: 'PREPARE_FAKE_WORK_ORDER' },
++    { actor_assertion_token: '0'.repeat(64) },
++    { assertion_expires_at: '2020-01-01T00:00:00.000Z' },
++  ])('rejects invalid or expired assertion metadata before the database', async (override) => {
++    const f = fixture();
++    const original = await f.issue();
++    f.issue.mockResolvedValue({ ...original, ...override });
++    await expect(f.read()).rejects.toThrow('WORK_ORDER_HISTORY_ASSERTION_INVALID');
++    expect(f.query).not.toHaveBeenCalled();
++  });
++  it('rejects malformed caller payload before issuing an assertion', async () => {
++    const f = fixture();
++    await expect(
++      f.reader.read({ ...payload, idempotency_key: 'too-short' }, id(8), { issue: f.issue })
++    ).rejects.toThrow('WORK_ORDER_HISTORY_UNAVAILABLE');
++    expect(f.issue).not.toHaveBeenCalled();
++  });
++});

@@ -1991,14 +1991,29 @@ async function verifyRecoveryTimestampPrecision(url) {
     await fixtureClient.end();
   }
 
-  process.env.DATABASE_URL = url;
-  process.env.NODE_ENV = 'test';
+  const previousPaymentCreationMode = process.env.HX_PAYMENT_CREATION_MODE;
   process.env.HX_PAYMENT_CREATION_MODE = 'frozen';
-  const [{ recoverOrphanQuotePayment }, { db }] = await Promise.all([
-    import('../dist/backend/src/services/QuotePaymentRecoveryService.js'),
-    import('../dist/backend/src/db.js'),
-  ]);
+  const recoveryClient = runtime.createClient(url);
   try {
+    await recoveryClient.connect();
+    const { recoverOrphanQuotePayment } =
+      await import('../dist/backend/src/services/QuotePaymentRecoveryService.js');
+    // This standalone verifier owns a connection to its allowlisted fixture
+    // database. It must not install or bypass the application's attested runtime.
+    const database = {
+      query: (sql, params) => recoveryClient.query(sql, params),
+      async transaction(work) {
+        await recoveryClient.query('BEGIN');
+        try {
+          const value = await work(database.query);
+          await recoveryClient.query('COMMIT');
+          return value;
+        } catch (error) {
+          await recoveryClient.query('ROLLBACK');
+          throw error;
+        }
+      },
+    };
     const result = await recoverOrphanQuotePayment(
       {
         quoteId: 'd4000000-0000-4000-8000-000000000001',
@@ -2017,7 +2032,8 @@ async function verifyRecoveryTimestampPrecision(url) {
             providerOperationId: 'pi_quote_recovery_precision',
           },
         }),
-      }
+      },
+      database
     );
     assert.deepEqual(result, {
       success: true,
@@ -2030,7 +2046,7 @@ async function verifyRecoveryTimestampPrecision(url) {
         replayed: false,
       },
     });
-    const evidence = await db.query(`
+    const evidence = await database.query(`
       SELECT payment.status,
              operation.operation_state,
              operation.expected_payment_updated_at =
@@ -2053,7 +2069,9 @@ async function verifyRecoveryTimestampPrecision(url) {
       completed_event: true,
     });
   } finally {
-    await db.close();
+    if (previousPaymentCreationMode === undefined) delete process.env.HX_PAYMENT_CREATION_MODE;
+    else process.env.HX_PAYMENT_CREATION_MODE = previousPaymentCreationMode;
+    await recoveryClient.end();
   }
 }
 

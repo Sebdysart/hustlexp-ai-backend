@@ -1,0 +1,2 @@
+BUILD VALIDATION: exact disposable local PostgreSQL identity verified. Standard verifier may recreate only hx_ci_fresh_test and hx_ci_upgrade_test; full-suite databases remain separate. Credentials scrubbed.
+HXOS_ENGINE_MIGRATIONS_POSTGRES_OK 146

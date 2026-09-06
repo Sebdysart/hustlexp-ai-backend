@@ -1,3 +1,4 @@
+import { WORKER_CHANGE_ORDER_ADJUSTMENT_DEPENDENCIES, WORKER_CHANGE_ORDER_ADJUSTMENT_READ_COLUMNS, WORKER_CHANGE_ORDER_ADJUSTMENT_LOCK_COLUMNS } from '../../src/jobs/change-order-adjustment-role-plans.js';
 import {
   CHANGE_ORDER_TERMINAL_INSERT_COLUMNS,
   CHANGE_ORDER_TERMINAL_LOCK_COLUMNS,
@@ -18,6 +19,9 @@ import {
 } from '../../src/jobs/change-order-recovery-role-plans.js';
 import {
   CHANGE_ORDER_MATERIALIZATION_ADDITIONAL_RELATIONS,
+  WORKER_CHANGE_ORDER_FINALIZE_COMMAND,
+  WORKER_CHANGE_ORDER_MATERIALIZATION_ORIGINS,
+  WORKER_CHANGE_ORDER_TARGET_DEPENDENCY,
   CHANGE_ORDER_MATERIALIZATION_FUNCTIONS,
   CHANGE_ORDER_MATERIALIZATION_PUBLIC_FUNCTIONS,
   CHANGE_ORDER_MATERIALIZATION_WITNESS_HASH,
@@ -564,6 +568,11 @@ export async function provisionUniversalV1SyntheticRoles(
       'GRANT EXECUTE ON FUNCTION ' + identity + ' TO ' + quote(roles.financeOwnerRole)
     );
   await provisionAuthenticatedFinancialPreparationDependencies(client, roles);
+  for (const [privilege, grants] of [['SELECT',WORKER_CHANGE_ORDER_ADJUSTMENT_READ_COLUMNS],['UPDATE',WORKER_CHANGE_ORDER_ADJUSTMENT_LOCK_COLUMNS]] as const)
+    for (const [relation,columns] of Object.entries(grants))
+      await client.query('GRANT '+privilege+'('+columns.join(',')+') ON '+relation+' TO '+quote(roles.financeOwnerRole));
+  for (const dependency of WORKER_CHANGE_ORDER_ADJUSTMENT_DEPENDENCIES)
+    await client.query('GRANT EXECUTE ON FUNCTION '+dependency+' TO '+quote(roles.financeOwnerRole));
   for (const relation of FAKE_FINANCIAL_WEBHOOK_RELATIONS) {
     const owner =
       relation === FAKE_FINANCIAL_WEBHOOK_VERIFICATIONS
@@ -751,6 +760,18 @@ async function provisionAuthenticatedFinancialPreparationDependencies(
     await client.query('ALTER FUNCTION ' + identity + ' OWNER TO ' + quote(roles.commandOwnerRole));
     await client.query('GRANT EXECUTE ON FUNCTION ' + identity + ' TO ' + quote(roles.apiRole));
   }
+  await client.query(
+    'ALTER TABLE ' +
+      WORKER_CHANGE_ORDER_MATERIALIZATION_ORIGINS +
+      ' OWNER TO ' +
+      quote(roles.commandOwnerRole)
+  );
+  await client.query(
+    'GRANT EXECUTE ON FUNCTION ' +
+      WORKER_CHANGE_ORDER_TARGET_DEPENDENCY +
+      ' TO ' +
+      quote(roles.commandOwnerRole)
+  );
   for (const identity of CHANGE_ORDER_MATERIALIZATION_FUNCTIONS) {
     const shared = identity === CHANGE_ORDER_MATERIALIZATION_WITNESS_HASH;
     await client.query(
@@ -770,6 +791,10 @@ async function provisionAuthenticatedFinancialPreparationDependencies(
       );
     if (CHANGE_ORDER_MATERIALIZATION_PUBLIC_FUNCTIONS.some((value) => value === identity))
       await client.query('GRANT EXECUTE ON FUNCTION ' + identity + ' TO ' + quote(roles.apiRole));
+    if (identity === WORKER_CHANGE_ORDER_FINALIZE_COMMAND)
+      await client.query(
+        'GRANT EXECUTE ON FUNCTION ' + identity + ' TO ' + quote(roles.workerRole)
+      );
   }
   for (const identity of CHANGE_ORDER_COMMAND_FUNCTIONS) {
     await client.query('ALTER FUNCTION ' + identity + ' OWNER TO ' + quote(roles.commandOwnerRole));

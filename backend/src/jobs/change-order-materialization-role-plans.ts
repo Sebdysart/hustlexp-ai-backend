@@ -6,6 +6,12 @@ export const CHANGE_ORDER_PREPARE_COMMAND =
   'public.hxos_prepare_authenticated_change_order_v13(text,jsonb)';
 export const CHANGE_ORDER_FINALIZE_COMMAND =
   'public.hxos_finalize_authenticated_change_order_v13(text,jsonb)';
+export const WORKER_CHANGE_ORDER_FINALIZE_COMMAND =
+  'public.hxos_finalize_worker_change_order_v13(uuid,text,text,text,uuid,uuid,uuid,text,uuid,uuid)';
+export const WORKER_CHANGE_ORDER_MATERIALIZATION_ORIGINS =
+  'hx_authority.fake_financial_change_order_materialization_origins_v13';
+export const WORKER_CHANGE_ORDER_TARGET_DEPENDENCY =
+  'hx_authority.assert_fake_financial_outbox_target_v13(uuid,text,text,text)';
 export const CHANGE_ORDER_MATERIALIZATION_PUBLIC_FUNCTIONS = [
   CHANGE_ORDER_MATERIALIZATION_BUILDER,
   CHANGE_ORDER_KIND_COMMAND,
@@ -24,6 +30,7 @@ export const CHANGE_ORDER_MATERIALIZATION_DEFERRED_GUARDS = [
 ] as const;
 export const CHANGE_ORDER_MATERIALIZATION_FUNCTIONS = [
   ...CHANGE_ORDER_MATERIALIZATION_PUBLIC_FUNCTIONS,
+  WORKER_CHANGE_ORDER_FINALIZE_COMMAND,
   ...CHANGE_ORDER_MATERIALIZATION_HASH_FUNCTIONS,
   ...CHANGE_ORDER_MATERIALIZATION_DEFERRED_GUARDS,
 ] as const;
@@ -35,6 +42,20 @@ export const CHANGE_ORDER_MATERIALIZATION_ADDITIONAL_RELATIONS = [
 export const CHANGE_ORDER_MATERIALIZATION_READ_COLUMNS: Readonly<
   Record<string, readonly string[]>
 > = {
+  'public.universal_v1_change_order_recovery_leases': [
+    'recovery_lease_id',
+    'proposal_id',
+    'lease_owner_id',
+    'acquired_at',
+    'expires_at',
+  ],
+  'hx_authority.fake_financial_command_outbox_requests_v13': [
+    'command_id',
+    'target_authority_id',
+    'target_database_name',
+    'release_environment',
+    'release_manifest_digest',
+  ],
   'public.task_work_order_amendments': ['supersedes_amendment_id', 'materialized_at'],
   // Existing task projection guards inspect READY clarification state and lock the exact region policy.
   'public.task_public_questions': ['task_id', 'status'],
@@ -114,6 +135,8 @@ export const CHANGE_ORDER_MATERIALIZATION_INSERT_COLUMNS: Readonly<
 export const CHANGE_ORDER_MATERIALIZATION_UPDATE_COLUMNS: Readonly<
   Record<string, readonly string[]>
 > = {
+  'public.universal_v1_change_order_recovery_leases': ['recovery_lease_id'],
+  'public.universal_v1_change_order_materialization_commands': ['proposal_id'],
   'public.region_policies': ['id'],
   'public.task_scope_change_proposals': ['approved_version_id'],
   'public.tasks': [

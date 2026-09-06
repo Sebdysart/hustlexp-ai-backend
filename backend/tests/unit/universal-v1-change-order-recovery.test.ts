@@ -215,10 +215,7 @@ describe('Universal V1 change-order recovery', () => {
     const executeFinancialEvent = vi.fn();
     const service = new UniversalV1ChangeOrderRecoveryService(repo as never, finalizer as never);
 
-    for (const observation of [
-      'ADJUST_RECONCILE_ONLY',
-      'COMPENSATION_RECONCILE_ONLY',
-    ] as const) {
+    for (const observation of ['ADJUST_RECONCILE_ONLY', 'COMPENSATION_RECONCILE_ONLY'] as const) {
       await expect(
         service.recover(claim(observation), { executeFinancialEvent } as never)
       ).resolves.toEqual({
@@ -239,12 +236,14 @@ describe('Universal V1 change-order recovery', () => {
       command: compensationCommand,
     });
     const finalizer = {
-      finalizePriceAndScopeMaterialization: vi.fn().mockRejectedValue(
-        new UniversalV1ChangeOrderError(
-          'CHANGE_ORDER_AUTHORITY_REVOKED',
-          'current authority was revoked'
-        )
-      ),
+      finalizePriceAndScopeMaterialization: vi
+        .fn()
+        .mockRejectedValue(
+          new UniversalV1ChangeOrderError(
+            'CHANGE_ORDER_AUTHORITY_REVOKED',
+            'current authority was revoked'
+          )
+        ),
     };
     const executeFinancialEvent = vi.fn().mockResolvedValue(reversalEvent());
     const service = new UniversalV1ChangeOrderRecoveryService(repo as never, finalizer as never);
@@ -303,9 +302,12 @@ describe('Universal V1 change-order recovery', () => {
     async (observation, evidence) => {
       const repo = repository();
       const executeFinancialEvent = vi.fn();
-      const service = new UniversalV1ChangeOrderRecoveryService(repo as never, {
-        finalizePriceAndScopeMaterialization: vi.fn(),
-      } as never);
+      const service = new UniversalV1ChangeOrderRecoveryService(
+        repo as never,
+        {
+          finalizePriceAndScopeMaterialization: vi.fn(),
+        } as never
+      );
       const recoveryClaim = claim(observation, evidence);
 
       await expect(
@@ -325,18 +327,20 @@ describe('Universal V1 change-order recovery', () => {
 
   it('fails closed when a purported REVERSAL drifts from its immutable command', async () => {
     const repo = repository();
-    const executeFinancialEvent = vi.fn().mockResolvedValue(
-      reversalEvent({ scopeVersionId: ids.replacementScope })
+    const executeFinancialEvent = vi
+      .fn()
+      .mockResolvedValue(reversalEvent({ scopeVersionId: ids.replacementScope }));
+    const service = new UniversalV1ChangeOrderRecoveryService(
+      repo as never,
+      {
+        finalizePriceAndScopeMaterialization: vi.fn(),
+      } as never
     );
-    const service = new UniversalV1ChangeOrderRecoveryService(repo as never, {
-      finalizePriceAndScopeMaterialization: vi.fn(),
-    } as never);
 
     await expect(
-      service.recover(
-        claim('COMPENSATION_READY', { compensationCommand }),
-        { executeFinancialEvent } as never
-      )
+      service.recover(claim('COMPENSATION_READY', { compensationCommand }), {
+        executeFinancialEvent,
+      } as never)
     ).rejects.toThrow('CHANGE_ORDER_RECOVERY_COMPENSATION_IDENTITY_MISMATCH');
     expect(repo.recordCompensated).not.toHaveBeenCalled();
   });
@@ -347,9 +351,7 @@ describe('Universal V1 change-order recovery', () => {
       throw new Error('CAPABILITY_DENIED');
     });
     const worker = new UniversalV1ChangeOrderRecoveryWorker(
-      repo as never,
-      { recover: vi.fn() } as never,
-      createFinance as never,
+      { claims: repo, assertAuthorized: createFinance } as never,
       { leaseOwnerId: ids.owner }
     );
     await expect(worker.runOnce()).rejects.toThrow('CAPABILITY_DENIED');
@@ -464,9 +466,7 @@ describe('Universal V1 change-order recovery', () => {
     expect(migration).not.toContain('acquired_at::TEXT');
     expect(migration).not.toMatch(/APPROVED_PROVIDER|stripe_|payment_intent/iu);
     expect(
-      analyzeMigrationFile(migrationPath, migration).filter(
-        (issue) => issue.severity === 'BLOCKER'
-      )
+      analyzeMigrationFile(migrationPath, migration).filter((issue) => issue.severity === 'BLOCKER')
     ).toEqual([]);
   });
 });

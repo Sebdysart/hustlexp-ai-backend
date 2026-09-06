@@ -1,0 +1,61 @@
+
+ RUN  v4.1.10 C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip
+
+[08:23:10.316] [33mWARN[39m: [36mFirebase Admin credentials missing — auth verification disabled[39m
+    module: "auth"
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > reads progress using only the server actor and request attestation 9ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > rejects actor and provider attributes in progress input before service access 3ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > requires login to read progress 1ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > returns a generic absence for unknown and unauthorized progress 1ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > sanitizes progress failure details 1ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > keeps the synthetic route name as an exact compatibility alias 0ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > requires a current authenticated user 1ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > executeEvent commits a request with server-owned actor authority without synchronous execution 5ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > enqueueEvent commits a request with server-owned actor authority without synchronous execution 2ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > keeps the pre-WorkOrder AUTHORIZE lane participant-bound 2ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > keeps the pre-WorkOrder SECURE lane participant-bound 1ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > executeEvent rejects a caller-supplied financial actor before service access 1ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > enqueueEvent rejects a caller-supplied financial actor before service access 1ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > refuses public terminal operation VOID before service, authority, or queue calls 2ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > refuses public terminal operation ADJUST before service, authority, or queue calls 1ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > refuses public terminal operation CAPTURE before service, authority, or queue calls 1ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > refuses public terminal operation REFUND before service, authority, or queue calls 1ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > refuses public terminal operation REVERSAL before service, authority, or queue calls 1ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > refuses public terminal operation SETTLE before service, authority, or queue calls 4ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > refuses public terminal operation FUND before service, authority, or queue calls 1ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > refuses public terminal operation PROVIDER_RELEASE before service, authority, or queue calls 1ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > refuses public terminal operation PAYOUT before service, authority, or queue calls 1ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > refuses public terminal operation OBSERVE_BANK_SETTLEMENT before service, authority, or queue calls 1ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > queues only the closed fake-provider command schema 1ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > refuses direct and queued generic reconciliation before service, authority, or queue calls 2ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > limits provider onboarding and account refresh to self and queues signed observations 3ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > proves organization authority before establishing and materializing an account fact 1ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > refuses organization account commands before committing fake provider evidence 1ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > does not derive task or actor authority from an authenticated provider observation 1ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > fails retryably when durable inbox persistence is unavailable 1ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > does not trust an authenticated tRPC caller without fake-provider HMAC authority 1ms
+ ✓ backend/tests/unit/synthetic-finance-router.test.ts > universalFinanceRouter > refuses an unauthorized environment before authenticating or persisting a tRPC webhook 1ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > uses only the supplied database for claim and success persistence 8ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > uses only the supplied database for claim and provider failure persistence 9ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > commits a durable claim before processor work and then records terminal void evidence 4ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > refunds a succeeded orphan through the same claim/finalize operation 2ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > permits zero-effect terminal FAILED replay only with a matching completed operation and event 2ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > permits zero-effect terminal REFUNDED replay only with a matching completed operation and event 1ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > fails closed when terminal local state lacks immutable recovery evidence 1ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > reconciles a legacy terminal row without an operation instead of trusting local status 1ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > blocks concurrent processor work while a durable lease is active 2ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > renews an expired claim and reuses the deterministic provider recovery key 2ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > records reconciliation-required evidence if materialization wins after the claim 1ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > uses the database-native payment witness and reconciles any version drift 1ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > persists provider failure on the durable claim without canonical money mutation 1ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > rejects an ineligible obligation before claiming or provider work 1ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > rejects an ineligible obligation before claiming or provider work 0ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > rejects an ineligible obligation before claiming or provider work 0ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > surfaces a durable recovery/materialization collision as reconciliation required 0ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > is unavailable when the isolated payment-creation cohort is enabled 10ms
+
+ Test Files  2 passed (2)
+      Tests  50 passed (50)
+   Start at  01:23:07
+   Duration  4.45s (transform 1.10s, setup 147ms, import 3.46s, tests 108ms, environment 0ms)
+

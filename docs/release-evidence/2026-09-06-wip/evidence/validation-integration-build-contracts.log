@@ -1,0 +1,256 @@
+TAP version 13
+# Subtest: required Vitest uses the bounded two-project config and cross-platform loader
+ok 1 - required Vitest uses the bounded two-project config and cross-platform loader
+  ---
+  duration_ms: 1.9115
+  type: 'test'
+  ...
+# Subtest: required Vitest preserves console diagnostics alongside exact JSON accounting
+ok 2 - required Vitest preserves console diagnostics alongside exact JSON accounting
+  ---
+  duration_ms: 0.4865
+  type: 'test'
+  ...
+# Subtest: direct-execution detection canonicalizes aliases and covers platform path semantics
+ok 3 - direct-execution detection canonicalizes aliases and covers platform path semantics
+  ---
+  duration_ms: 1.9157
+  type: 'test'
+  ...
+# Subtest: direct-execution detection fails closed when canonical identity is unavailable
+ok 4 - direct-execution detection fails closed when canonical identity is unavailable
+  ---
+  duration_ms: 1.0091
+  type: 'test'
+  ...
+# Subtest: direct required-test invocation fails closed for an invalid policy
+ok 5 - direct required-test invocation fails closed for an invalid policy
+  ---
+  duration_ms: 126.6194
+  type: 'test'
+  ...
+# Subtest: required local test environment derives only fixed isolated database targets
+ok 6 - required local test environment derives only fixed isolated database targets
+  ---
+  duration_ms: 2.6912
+  type: 'test'
+  ...
+# Subtest: required local tests reject remote, production, and mismatched test infrastructure
+ok 7 - required local tests reject remote, production, and mismatched test infrastructure
+  ---
+  duration_ms: 1.344
+  type: 'test'
+  ...
+# Subtest: required local test gates are exact and bind the container flag to non-admin targets
+ok 8 - required local test gates are exact and bind the container flag to non-admin targets
+  ---
+  duration_ms: 0.9153
+  type: 'test'
+  ...
+# Subtest: required child environments scrub every external provider credential and selector
+ok 9 - required child environments scrub every external provider credential and selector
+  ---
+  duration_ms: 1.0509
+  type: 'test'
+  ...
+# Subtest: required child environments scrub ambient internal authority credentials and actors
+ok 10 - required child environments scrub ambient internal authority credentials and actors
+  ---
+  duration_ms: 0.8485
+  type: 'test'
+  ...
+# Subtest: external provider scrub inventory covers every matching backend environment read
+ok 11 - external provider scrub inventory covers every matching backend environment read
+  ---
+  duration_ms: 0.7488
+  type: 'test'
+  ...
+# Subtest: required child environments replace ambient providers with fixed synthetic values only
+ok 12 - required child environments replace ambient providers with fixed synthetic values only
+  ---
+  duration_ms: 0.5918
+  type: 'test'
+  ...
+# Subtest: required runner owns the exact source gate inventory and scopes every gate to Vitest
+ok 13 - required runner owns the exact source gate inventory and scopes every gate to Vitest
+  ---
+  duration_ms: 138.3706
+  type: 'test'
+  ...
+# Subtest: required runner fixes money creation frozen and preserves exact hosted commit identity
+ok 14 - required runner fixes money creation frozen and preserves exact hosted commit identity
+  ---
+  duration_ms: 0.3629
+  type: 'test'
+  ...
+# Subtest: required runner owns every release contract and executes in fail-closed order
+ok 15 - required runner owns every release contract and executes in fail-closed order
+  ---
+  duration_ms: 0.264
+  type: 'test'
+  ...
+# Subtest: migration verification accepts only the explicit isolated recreate authority
+ok 16 - migration verification accepts only the explicit isolated recreate authority
+  ---
+  duration_ms: 2.1579
+  type: 'test'
+  ...
+# Subtest: migration verification refuses production, remote, wrong-user, and broad database authority
+ok 17 - migration verification refuses production, remote, wrong-user, and broad database authority
+  ---
+  duration_ms: 0.315
+  type: 'test'
+  ...
+# Subtest: engine execution authority accepts only exact disposable verifier targets, never admin
+ok 18 - engine execution authority accepts only exact disposable verifier targets, never admin
+  ---
+  duration_ms: 1.0332
+  type: 'test'
+  ...
+# Subtest: force-drop implementation checks exact recreate authority before connecting or dropping
+ok 19 - force-drop implementation checks exact recreate authority before connecting or dropping
+  ---
+  duration_ms: 8.9293
+  type: 'test'
+  ...
+# Subtest: PostgreSQL verifier binds and consumes one stateful exact plan per migration client
+ok 20 - PostgreSQL verifier binds and consumes one stateful exact plan per migration client
+  ---
+  duration_ms: 1.8308
+  type: 'test'
+  ...
+# Subtest: PostgreSQL verification executes the legacy assignment-alias bypass proof
+ok 21 - PostgreSQL verification executes the legacy assignment-alias bypass proof
+  ---
+  duration_ms: 1.2908
+  type: 'test'
+  ...
+# Subtest: PostgreSQL verification executes the TaskDraft claim upgrade and raw-rerun matrix
+ok 22 - PostgreSQL verification executes the TaskDraft claim upgrade and raw-rerun matrix
+  ---
+  duration_ms: 1.3564
+  type: 'test'
+  ...
+# Subtest: PostgreSQL verification refuses partial completion audit truth and raw-replays 138
+ok 23 - PostgreSQL verification refuses partial completion audit truth and raw-replays 138
+  ---
+  duration_ms: 1.6139
+  type: 'test'
+  ...
+# Subtest: PostgreSQL verification certifies purpose-bound occurrence audit migration 139
+ok 24 - PostgreSQL verification certifies purpose-bound occurrence audit migration 139
+  ---
+  duration_ms: 2.3077
+  type: 'test'
+  ...
+# Subtest: required CI has read-only repository authority and never persists checkout credentials
+ok 25 - required CI has read-only repository authority and never persists checkout credentials
+  ---
+  duration_ms: 21.7824
+  type: 'test'
+  ...
+# Subtest: every install lane proves exact-candidate local-tooling absence before npm install
+ok 26 - every install lane proves exact-candidate local-tooling absence before npm install
+  ---
+  duration_ms: 5.7015
+  type: 'test'
+  ...
+# Subtest: required test check provisions only isolated PostgreSQL and loopback Redis services
+ok 27 - required test check provisions only isolated PostgreSQL and loopback Redis services
+  ---
+  duration_ms: 7.3217
+  type: 'test'
+  ...
+# Subtest: CI delegates the complete suite and deterministic provider policy to one runner
+ok 28 - CI delegates the complete suite and deterministic provider policy to one runner
+  ---
+  duration_ms: 5.6554
+  type: 'test'
+  ...
+# Subtest: database recreation authority is scoped only to the runner and migration proof
+ok 29 - database recreation authority is scoped only to the runner and migration proof
+  ---
+  duration_ms: 3.1737
+  type: 'test'
+  ...
+# Subtest: required test stages preserve install-runner-evidence-role-legal ordering
+ok 30 - required test stages preserve install-runner-evidence-role-legal ordering
+  ---
+  duration_ms: 2.9536
+  type: 'test'
+  ...
+# Subtest: required test evidence is exact-SHA named and cannot pass without a report
+ok 31 - required test evidence is exact-SHA named and cannot pass without a report
+  ---
+  duration_ms: 4.4732
+  type: 'test'
+  ...
+# Subtest: required test check does not depend on ambient shared infrastructure secrets
+ok 32 - required test check does not depend on ambient shared infrastructure secrets
+  ---
+  duration_ms: 1.694
+  type: 'test'
+  ...
+# Subtest: package exposes cross-platform fail-closed required and hygiene runners
+ok 33 - package exposes cross-platform fail-closed required and hygiene runners
+  ---
+  duration_ms: 2.3752
+  type: 'test'
+  ...
+# Subtest: public-repository security checks are enforcing and bind to the PR head candidate
+ok 34 - public-repository security checks are enforcing and bind to the PR head candidate
+  ---
+  duration_ms: 18.1984
+  type: 'test'
+  ...
+# Subtest: build validation executes PostgreSQL proofs and verifies the exact candidate image
+ok 35 - build validation executes PostgreSQL proofs and verifies the exact candidate image
+  ---
+  duration_ms: 10.1567
+  type: 'test'
+  ...
+# Subtest: required tests delegate isolated infrastructure and frozen-provider policy to one runner
+ok 36 - required tests delegate isolated infrastructure and frozen-provider policy to one runner
+  ---
+  duration_ms: 5.6173
+  type: 'test'
+  ...
+# Subtest: recreate authority and required-test ordering stay narrow and fail closed
+ok 37 - recreate authority and required-test ordering stay narrow and fail closed
+  ---
+  duration_ms: 7.0009
+  type: 'test'
+  ...
+# Subtest: trusts Railway commit provenance for a production engine artifact
+ok 38 - trusts Railway commit provenance for a production engine artifact
+  ---
+  duration_ms: 3.5078
+  type: 'test'
+  ...
+# Subtest: marks a dirty local Git fallback without blocking development
+ok 39 - marks a dirty local Git fallback without blocking development
+  ---
+  duration_ms: 0.4727
+  type: 'test'
+  ...
+# Subtest: rejects unattributed or dirty production engine artifacts
+ok 40 - rejects unattributed or dirty production engine artifacts
+  ---
+  duration_ms: 1.0485
+  type: 'test'
+  ...
+# Subtest: creates and measures a missing artifact directory without trusting an empty tree
+ok 41 - creates and measures a missing artifact directory without trusting an empty tree
+  ---
+  duration_ms: 18.3033
+  type: 'test'
+  ...
+1..41
+# tests 41
+# suites 0
+# pass 41
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 710.8778

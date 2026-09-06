@@ -82,8 +82,10 @@ function routeError(error: unknown): never {
  * Generic event calls are limited to the pre-WorkOrder preparation,
  * authorization, and secure lane. Terminal events and reconciliation remain
  * internal to the exact-intent fulfillment application. The provider-neutral
- * application service permits only deterministic fake value in local, preview,
- * or staging. Legacy processor-specific routers remain compatibility/recovery
+ * request service permits only deterministic fake value in local, preview,
+ * or staging. Both event route names return a durable REQUESTED receipt;
+ * execution and lifecycle recording belong to the admitted worker.
+ * Legacy processor-specific routers remain compatibility/recovery
  * surfaces and are not imported here.
  */
 export const universalFinanceRouter = router({
@@ -114,13 +116,7 @@ export const universalFinanceRouter = router({
     .input(syntheticFinancialEventCommandSchema)
     .mutation(async ({ ctx, input }) => {
       try {
-        const service = await createUniversalV1FakeFinancialApplicationService();
-        await syntheticFinancialCommandAuthority.assertTaskParticipant(
-          ctx.user.id,
-          input.taskDraftId,
-          input.taskId
-        );
-        return await service.executeFinancialEvent(
+        return await createUniversalV1FinancialRequestService().requestFinancialEvent(
           {
             ...input,
             recordedBy: ctx.user.id,

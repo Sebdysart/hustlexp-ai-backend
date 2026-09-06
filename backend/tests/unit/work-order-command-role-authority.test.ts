@@ -1,5 +1,10 @@
 import { CHANGE_ORDER_REVERSAL_EXECUTION_FUNCTION } from '../../src/jobs/change-order-reversal-role-plans.js';
 import {
+  WORKER_CHANGE_ORDER_ADJUSTMENT_DEPENDENCIES,
+  WORKER_CHANGE_ORDER_ADJUSTMENT_READ_COLUMNS,
+  WORKER_CHANGE_ORDER_ADJUSTMENT_LOCK_COLUMNS,
+} from '../../src/jobs/change-order-adjustment-role-plans.js';
+import {
   CHANGE_ORDER_TERMINAL_INSERT_COLUMNS,
   CHANGE_ORDER_TERMINAL_LOCK_COLUMNS,
   CHANGE_ORDER_TERMINAL_READ_COLUMNS,
@@ -17,6 +22,9 @@ import {
 } from '../../src/jobs/change-order-recovery-role-plans.js';
 import {
   CHANGE_ORDER_MATERIALIZATION_ADDITIONAL_RELATIONS,
+  WORKER_CHANGE_ORDER_FINALIZE_COMMAND,
+  WORKER_CHANGE_ORDER_MATERIALIZATION_ORIGINS,
+  WORKER_CHANGE_ORDER_TARGET_DEPENDENCY,
   CHANGE_ORDER_MATERIALIZATION_FUNCTIONS,
   CHANGE_ORDER_MATERIALIZATION_PUBLIC_FUNCTIONS,
   CHANGE_ORDER_MATERIALIZATION_HASH_FUNCTIONS,
@@ -975,6 +983,7 @@ function functionRowBeforeRecoveryObservation(
     );
     const shared = identity === CHANGE_ORDER_MATERIALIZATION_WITNESS_HASH;
     const api = CHANGE_ORDER_MATERIALIZATION_PUBLIC_FUNCTIONS.some((value) => value === identity);
+    const worker = identity === WORKER_CHANGE_ORDER_FINALIZE_COMMAND;
     const human = [
       CHANGE_ORDER_KIND_COMMAND,
       CHANGE_ORDER_PREPARE_COMMAND,
@@ -992,7 +1001,7 @@ function functionRowBeforeRecoveryObservation(
       definition: human ? humanDefinition() : 'BEGIN RETURN; END',
       migration_execute: shared,
       api_execute: api,
-      worker_execute: false,
+      worker_execute: worker,
       attester_execute: false,
       command_owner_execute: true,
       assertion_owner_execute: false,
@@ -1003,6 +1012,7 @@ function functionRowBeforeRecoveryObservation(
         names.commandOwnerRole,
         ...(shared ? [names.migrationRole, names.financeOwnerRole] : []),
         ...(api ? [names.apiRole] : []),
+        ...(worker ? [names.workerRole] : []),
       ],
     };
   }
@@ -1089,7 +1099,10 @@ function functionRowBeforeRecoveryObservation(
 
 function functionRow(identity: (typeof WORK_ORDER_AUTHORITY_FUNCTIONS)[number]) {
   const row = functionRowBeforeRecoveryObservation(identity);
-  if (identity === CHANGE_ORDER_REVERSAL_EXECUTION_FUNCTION)
+  if (
+    identity === CHANGE_ORDER_REVERSAL_EXECUTION_FUNCTION ||
+    identity === WORKER_CHANGE_ORDER_TARGET_DEPENDENCY
+  )
     return {
       ...row,
       command_owner_execute: true,
@@ -1106,6 +1119,7 @@ function functionRow(identity: (typeof WORK_ORDER_AUTHORITY_FUNCTIONS)[number]) 
       ...CHANGE_ORDER_TERMINAL_DEPENDENCIES,
       ...CHANGE_ORDER_RECOVERY_OBSERVATION_DEPENDENCIES,
       ...CHANGE_ORDER_RECOVERY_COMPENSATION_DEPENDENCIES,
+      ...WORKER_CHANGE_ORDER_ADJUSTMENT_DEPENDENCIES,
     ].some((dependency) => dependency === identity)
   )
     return row;
@@ -1156,7 +1170,7 @@ function relationRow(
     ...FAKE_FINANCIAL_PREPARATION_ADDITIONAL_RELATIONS,
     ...CHANGE_ORDER_MATERIALIZATION_ADDITIONAL_RELATIONS,
   ].some((item) => item === relation);
-  if (provenance) {
+  if (provenance || relation === WORKER_CHANGE_ORDER_MATERIALIZATION_ORIGINS) {
     row.owner_role = names.commandOwnerRole;
     row.command_owner_insert =
       row.command_owner_update =
@@ -1164,8 +1178,9 @@ function relationRow(
       row.command_owner_truncate =
         true;
     row.command_owner_any_column_update = true;
-    for (const column of FAKE_FINANCIAL_PREPARATION_PROVENANCE_READ_COLUMNS)
-      row.acl_grants!.push(names.financeOwnerRole + '|SELECT|' + column);
+    if (provenance)
+      for (const column of FAKE_FINANCIAL_PREPARATION_PROVENANCE_READ_COLUMNS)
+        row.acl_grants!.push(names.financeOwnerRole + '|SELECT|' + column);
   }
   if (additional) {
     row.migration_insert =
@@ -1215,10 +1230,13 @@ function relationRow(
     row.acl_grants!.push(names.financeOwnerRole + '|SELECT|' + column);
   for (const column of CHANGE_ORDER_RECOVERY_OBSERVATION_READ_COLUMNS[relation] ?? [])
     row.acl_grants!.push(names.financeOwnerRole + '|SELECT|' + column);
+  for (const column of WORKER_CHANGE_ORDER_ADJUSTMENT_READ_COLUMNS[relation] ?? [])
+    row.acl_grants!.push(names.financeOwnerRole + '|SELECT|' + column);
   for (const column of [
     ...(CHANGE_ORDER_TERMINAL_LOCK_COLUMNS[relation] ?? []),
     ...(CHANGE_ORDER_RECOVERY_CLAIM_LOCK_COLUMNS[relation] ?? []),
     ...(CHANGE_ORDER_RECOVERY_COMPENSATION_LOCK_COLUMNS[relation] ?? []),
+    ...(WORKER_CHANGE_ORDER_ADJUSTMENT_LOCK_COLUMNS[relation] ?? []),
   ]) {
     row.finance_owner_any_column_update = true;
     row.acl_grants!.push(names.financeOwnerRole + '|UPDATE|' + column);

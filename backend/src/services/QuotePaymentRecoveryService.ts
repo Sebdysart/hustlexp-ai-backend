@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { db, type QueryFn } from '../db.js';
+import { db, type Database, type QueryFn } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { newPaymentCreationMode } from './NewPaymentCreationGuard.js';
 import type {
@@ -22,6 +22,7 @@ export interface RecoverOrphanQuotePaymentInput {
 
 type PaymentStatus = 'PENDING' | 'SUCCEEDED' | 'FAILED' | 'REFUNDED';
 type RecoveryAction = 'VOIDED' | 'REFUNDED';
+type QuotePaymentRecoveryDatabase = Pick<Database, 'query' | 'transaction'>;
 
 interface LockedQuotePayment {
   id: string;
@@ -245,11 +246,12 @@ async function insertClaimEvent(
 }
 
 async function claimRecovery(
-  input: RecoverOrphanQuotePaymentInput
+  input: RecoverOrphanQuotePaymentInput,
+  database: QuotePaymentRecoveryDatabase
 ): Promise<ServiceResult<ClaimOutcome>> {
   const claimToken = randomUUID();
   const correlationId = randomUUID();
-  return db.transaction(async (query) => {
+  return database.transaction(async (query) => {
     const payment = await readPayment(query, input, true);
     const paymentFailure = ineligiblePayment(payment, true);
     if (paymentFailure) return paymentFailure;
@@ -458,9 +460,10 @@ async function markReconciliationRequired(
 async function finalizeRecovery(
   input: RecoverOrphanQuotePaymentInput,
   claim: RecoveryClaim,
-  recovered: RecoverLegacyQuoteFinancialSecurityResult
+  recovered: RecoverLegacyQuoteFinancialSecurityResult,
+  database: QuotePaymentRecoveryDatabase
 ): Promise<ServiceResult<QuotePaymentRecoveryResult>> {
-  return db.transaction(async (query) => {
+  return database.transaction(async (query) => {
     // Match claimRecovery and quote materialization lock order: payment first,
     // recovery operation second. Reversing these locks permits a retry and
     // phase-two finalizer to deadlock after the processor effect has succeeded.
@@ -565,7 +568,8 @@ async function finalizeRecovery(
 
 export async function recoverOrphanQuotePayment(
   input: RecoverOrphanQuotePaymentInput,
-  provider?: LegacyQuotePaymentRecoveryPort
+  provider?: LegacyQuotePaymentRecoveryPort,
+  database: QuotePaymentRecoveryDatabase = db
 ): Promise<ServiceResult<QuotePaymentRecoveryResult>> {
   try {
     if (newPaymentCreationMode() !== 'frozen') {
@@ -575,7 +579,7 @@ export async function recoverOrphanQuotePayment(
       );
     }
 
-    const claimed = await claimRecovery(input);
+    const claimed = await claimRecovery(input, database);
     if (!claimed.success) return claimed;
     if (claimed.data.kind === 'replayed') {
       return { success: true, data: claimed.data.result };
@@ -604,7 +608,7 @@ export async function recoverOrphanQuotePayment(
       const normalizedErrorCode = /^[A-Z0-9_]{3,96}$/.test(recovered.error.code)
         ? recovered.error.code
         : 'PAYMENT_RECOVERY_FAILED';
-      await db.query(
+      await database.query(
         `UPDATE quote_payment_recovery_operations
          SET last_error_code = $3
          WHERE id = $1
@@ -615,7 +619,7 @@ export async function recoverOrphanQuotePayment(
       return recovered;
     }
 
-    return finalizeRecovery(input, claim, recovered.data);
+    return finalizeRecovery(input, claim, recovered.data, database);
   } catch {
     return failure(
       'QUOTE_PAYMENT_RECOVERY_FAILED',

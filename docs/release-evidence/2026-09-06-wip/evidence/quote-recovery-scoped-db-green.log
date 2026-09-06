@@ -1,0 +1,41 @@
+
+ RUN  v4.1.10 C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip
+
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > uses only the supplied database for claim and success persistence 9ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > uses only the supplied database for claim and provider failure persistence 5ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > commits a durable claim before processor work and then records terminal void evidence 2ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > refunds a succeeded orphan through the same claim/finalize operation 1ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > permits zero-effect terminal FAILED replay only with a matching completed operation and event 1ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > permits zero-effect terminal REFUNDED replay only with a matching completed operation and event 1ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > fails closed when terminal local state lacks immutable recovery evidence 1ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > reconciles a legacy terminal row without an operation instead of trusting local status 1ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > blocks concurrent processor work while a durable lease is active 1ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > renews an expired claim and reuses the deterministic provider recovery key 1ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > records reconciliation-required evidence if materialization wins after the claim 1ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > uses the database-native payment witness and reconciles any version drift 1ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > persists provider failure on the durable claim without canonical money mutation 1ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > rejects an ineligible obligation before claiming or provider work 0ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > rejects an ineligible obligation before claiming or provider work 0ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > rejects an ineligible obligation before claiming or provider work 0ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > surfaces a durable recovery/materialization collision as reconciliation required 0ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > is unavailable when the isolated payment-creation cohort is enabled 8ms
+[08:12:57.977] [33mWARN[39m: [36mFirebase Admin credentials missing — auth verification disabled[39m
+    module: "auth"
+ ✓ backend/tests/unit/quote-payment-recovery-router.test.ts > quote payment recovery router > rejects 'live production with an enabled overr…' before provider or canonical writes 11ms
+ ✓ backend/tests/unit/quote-payment-recovery-router.test.ts > quote payment recovery router > rejects 'production process pointed at test St…' before provider or canonical writes 2ms
+ ✓ backend/tests/unit/quote-payment-recovery-router.test.ts > quote payment recovery router > rejects 'test process pointed at the productio…' before provider or canonical writes 3ms
+ ✓ backend/tests/unit/quote-payment-recovery-router.test.ts > quote payment recovery router > rejects 'test process pointed at live Stripe' before provider or canonical writes 1ms
+ ✓ backend/tests/unit/quote-payment-recovery-router.test.ts > quote payment recovery router > rejects 'test-mode labels with a live credenti…' before provider or canonical writes 2ms
+ ✓ backend/tests/unit/quote-payment-recovery-router.test.ts > quote payment recovery router > rejects 'explicitly frozen production' before provider or canonical writes 1ms
+ ✓ backend/tests/unit/quote-payment-recovery-router.test.ts > quote payment recovery router > rejects 'the former isolated Stripe test cohort' before provider or canonical writes 1ms
+ ✓ backend/tests/unit/quote-payment-recovery-router.test.ts > quote payment recovery router > keeps the historical test-confirm route as an environment-independent tombstone 1ms
+ ✓ backend/tests/unit/quote-payment-recovery-router.test.ts > quote payment recovery router > binds the authenticated Poster and returns only normalized recovery state 5ms
+ ✓ backend/tests/unit/quote-payment-recovery-router.test.ts > quote payment recovery router > rejects non-Poster callers before recovery work 1ms
+ ✓ backend/tests/unit/quote-payment-recovery-router.test.ts > quote payment recovery router > rejects browser-supplied reason authority at the request boundary 1ms
+ ✓ backend/tests/unit/quote-payment-recovery-migration.test.ts > quote payment recovery migration > registers durable recovery ownership plus append-only transition evidence 3ms
+
+ Test Files  3 passed (3)
+      Tests  30 passed (30)
+   Start at  01:12:55
+   Duration  3.23s (transform 595ms, setup 121ms, import 2.25s, tests 75ms, environment 0ms)
+

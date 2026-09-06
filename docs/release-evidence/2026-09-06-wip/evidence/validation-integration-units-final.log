@@ -1,0 +1,51 @@
+
+ RUN  v4.1.10 C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip
+
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > pins runtime authority to the exact packaged v13 SQL bytes 4ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > is an append-only successor foundation with hostile-search-path and predecessor holds 14ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > captures one exact PREPARED plus REQUESTED fake command in the journal transaction 5ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > derives a PII-free deterministic BullMQ identity from immutable command and target authority 2ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > uses append-only publisher leases and outcomes for retry and queue-add acknowledgement recovery 1ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > retires stale target requests append-only and only claims the exact locked current tip 1ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > rejects forged Redis identity before recording fake-only dispatch crash-boundary evidence 2ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > forward-replaces the legacy NULL-outcome redispatch hole with a null-safe zero-write denial 1ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > keeps authenticated fake webhooks on a distinct append-only inert evidence rail 2ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > preserves digest-only unauthenticated fake webhook rejection evidence with zero authority 2ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > keeps transport ports invoker-only, seals the worker admission port, and closes new authority objects 6ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > confines canonical event insertion to the sealed fake materializer and excludes live effects 44ms
+ ✓ backend/tests/unit/nonproduction-runtime-insert-authority-migration.test.ts > nonproduction runtime insert authority migration > is supplemental and leaves the exact ordinal-146 engine tail unchanged 7ms
+ ✓ backend/tests/unit/nonproduction-runtime-insert-authority-migration.test.ts > nonproduction runtime insert authority migration > creates exactly ten typed, sealed, PUBLIC-revoked definer ports 13ms
+ ✓ backend/tests/unit/nonproduction-runtime-insert-authority-migration.test.ts > nonproduction runtime insert authority migration > requires caller-owned UUID identities and contains no grant or migration-time effect 4ms
+ ✓ backend/tests/unit/nonproduction-runtime-insert-authority-migration.test.ts > nonproduction runtime insert authority migration > routes every production writer through its exact port with no direct target INSERT 5ms
+ ✓ backend/tests/unit/nonproduction-runtime-insert-authority-migration.test.ts > nonproduction runtime insert authority migration > consumes actor authority before the preparation wrapper delegates to the frozen insert port 3ms
+ ✓ backend/tests/unit/nonproduction-runtime-insert-authority-migration.test.ts > nonproduction runtime insert authority migration > makes canonical fake lifecycle and reconciliation writes atomic with their bridge 2ms
+ ✓ backend/tests/unit/nonproduction-runtime-insert-authority-migration.test.ts > nonproduction runtime insert authority migration > seals deferred canonical-fact guards without granting runtime execution 2ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > uses only the supplied database for claim and success persistence 9ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > uses only the supplied database for claim and provider failure persistence 5ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > commits a durable claim before processor work and then records terminal void evidence 5ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > refunds a succeeded orphan through the same claim/finalize operation 3ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > permits zero-effect terminal FAILED replay only with a matching completed operation and event 3ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > permits zero-effect terminal REFUNDED replay only with a matching completed operation and event 2ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > fails closed when terminal local state lacks immutable recovery evidence 5ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > reconciles a legacy terminal row without an operation instead of trusting local status 3ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > blocks concurrent processor work while a durable lease is active 2ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > renews an expired claim and reuses the deterministic provider recovery key 4ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > records reconciliation-required evidence if materialization wins after the claim 2ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > uses the database-native payment witness and reconciles any version drift 1ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > persists provider failure on the durable claim without canonical money mutation 1ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > rejects an ineligible obligation before claiming or provider work 1ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > rejects an ineligible obligation before claiming or provider work 1ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > rejects an ineligible obligation before claiming or provider work 1ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > surfaces a durable recovery/materialization collision as reconciliation required 1ms
+ ✓ backend/tests/unit/quote-payment-recovery.test.ts > quote payment orphan recovery > is unavailable when the isolated payment-creation cohort is enabled 11ms
+ ✓ backend/tests/unit/engine-migration-manifest.test.ts > engine migration manifest > binds every registered runtime migration to its exact file hash 29ms
+ ✓ backend/tests/unit/engine-migration-manifest.test.ts > engine migration manifest > binds the registered execution order into the artifact digest 1ms
+ ✓ backend/tests/unit/engine-migration-manifest.test.ts > engine migration manifest > matches the reviewed artifact digest used by Build Validation 44ms
+ ✓ backend/tests/unit/engine-migration-manifest.test.ts > engine migration manifest > binds the exact constitutional baseline bytes into the artifact digest 972ms
+ ✓ backend/tests/unit/engine-migration-manifest.test.ts > engine migration manifest > fails closed when the constitutional baseline is absent 460ms
+
+ Test Files  4 passed (4)
+      Tests  42 passed (42)
+   Start at  01:18:12
+   Duration  4.64s (transform 604ms, setup 160ms, import 1.61s, tests 1.70s, environment 1ms)
+
