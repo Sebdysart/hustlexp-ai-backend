@@ -57,9 +57,13 @@ interface DraftRow {
   category: string;
   title: string | null;
   scope_summary: string | null;
-  structured: Record<string, unknown> | null;
+  structured:
+    Record<string, unknown> | null;
   zip: string | null;
   region: string | null;
+
+  scheduled_service_date:
+    string | null;
 }
 
 interface LeadRow {
@@ -318,6 +322,7 @@ export async function finalizePaidQuote(
           scope_summary,
           structured,
           zip,
+          scheduled_service_date::text AS scheduled_service_date,
           region
         FROM task_drafts
         WHERE id = $1

@@ -12,6 +12,16 @@ const QuoteDecisionSchema = z.object({
   quoteId: z.string().uuid(),
 });
 
+const AcceptQuoteDecisionSchema =
+  QuoteDecisionSchema.extend({
+    scheduledServiceDate: z
+      .string()
+      .regex(
+        /^\d{4}-\d{2}-\d{2}$/,
+        'scheduledServiceDate must be YYYY-MM-DD.',
+      ),
+  });
+
 export const quoteDecisionRouter = router({
   listForDraft: posterProcedure
     .input(DraftIdSchema)
@@ -91,15 +101,22 @@ export const quoteDecisionRouter = router({
     }),
 
   accept: posterProcedure
-    .input(QuoteDecisionSchema)
+    .input(AcceptQuoteDecisionSchema)
     .mutation(async ({ ctx, input }) => {
       return db.transaction(async (query) => {
         const draftResult = await query<{
           id: string;
           quote_id: string | null;
+          scheduled_service_date:
+            | string
+            | null;
         }>(
           `
-          SELECT id, quote_id
+          SELECT
+            id,
+            quote_id,
+            scheduled_service_date::text
+              AS scheduled_service_date
           FROM task_drafts
           WHERE id = $1
             AND poster_user_id = $2
@@ -116,19 +133,37 @@ export const quoteDecisionRouter = router({
             message: 'Task draft not found.',
           });
         }
-
+        
         if (draft.quote_id) {
-          if (draft.quote_id === input.quoteId) {
+          if (
+            draft.quote_id ===
+              input.quoteId &&
+            draft.scheduled_service_date ===
+              input.scheduledServiceDate
+          ) {
             return {
               ok: true,
-              quoteId: input.quoteId,
+              quoteId:
+                input.quoteId,
               replayed: true,
             };
           }
 
+          if (
+            draft.quote_id ===
+            input.quoteId
+          ) {
+            throw new TRPCError({
+              code: 'CONFLICT',
+              message:
+                'This quote has already been accepted for a different service date.',
+            });
+          }
+
           throw new TRPCError({
             code: 'CONFLICT',
-            message: 'Another quote has already been accepted for this task.',
+            message:
+              'Another quote has already been accepted for this task.',
           });
         }
 
@@ -136,13 +171,22 @@ export const quoteDecisionRouter = router({
           id: string;
           active_version_id: string | null;
           status: string;
+          arrival_window_start: Date | null;
+          arrival_window_end: Date | null;
         }>(
           `
-          SELECT id, active_version_id, status
-          FROM quotes
-          WHERE id = $1
-            AND task_draft_id = $2
-          FOR UPDATE
+          SELECT
+            q.id,
+            q.active_version_id,
+            q.status,
+            qv.arrival_window_start,
+            qv.arrival_window_end
+          FROM quotes q
+          LEFT JOIN quote_versions qv
+            ON qv.id = q.active_version_id
+          WHERE q.id = $1
+            AND q.task_draft_id = $2
+          FOR UPDATE OF q
           `,
           [input.quoteId, input.taskDraftId],
         );
@@ -170,6 +214,75 @@ export const quoteDecisionRouter = router({
           });
         }
 
+        if (
+          !quote.arrival_window_start ||
+          !quote.arrival_window_end
+        ) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message:
+              'Quote does not have an arrival window.',
+          });
+        }
+
+        const windowResult = await query<{
+          start_date: string;
+          end_date: string;
+        }>(
+          `
+          SELECT
+            ($1::timestamptz AT TIME ZONE 'America/Los_Angeles')::date::text
+              AS start_date,
+            ($2::timestamptz AT TIME ZONE 'America/Los_Angeles')::date::text
+              AS end_date
+          `,
+          [
+            quote.arrival_window_start,
+            quote.arrival_window_end,
+          ],
+        );
+
+        const window =
+          windowResult.rows[0];
+
+        const todayResult = await query<{
+          today: string;
+        }>(
+          `
+          SELECT
+            (NOW() AT TIME ZONE 'America/Los_Angeles')::date::text
+              AS today
+          `,
+        );
+
+        const today =
+          todayResult.rows[0]?.today;
+
+        if (
+          !today ||
+          input.scheduledServiceDate < today
+        ) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message:
+              'Selected service date cannot be in the past.',
+          });
+        }
+        if (
+          !window ||
+          input.scheduledServiceDate <
+            window.start_date ||
+          input.scheduledServiceDate >
+            window.end_date
+        ) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message:
+              'Selected service date must fall within the business availability window.',
+          });
+        }
+
+       
         await query(
           `
           UPDATE quotes
@@ -196,11 +309,12 @@ export const quoteDecisionRouter = router({
           `
           UPDATE task_drafts
           SET quote_id = $1,
+              scheduled_service_date = $2::date,
               quote_send_ready_at = NOW(),
               updated_at = NOW()
-          WHERE id = $2
+          WHERE id = $3
           `,
-          [input.quoteId, input.taskDraftId],
+          [input.quoteId,  input.scheduledServiceDate, input.taskDraftId],
         );
 
         return {

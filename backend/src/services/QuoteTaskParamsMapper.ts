@@ -10,6 +10,7 @@ interface QuoteTaskDraft {
   structured: JsonObject | null;
   zip: string | null;
   region: string | null;
+  scheduled_service_date: string | null;
 }
 
 interface QuoteVersion {
@@ -188,6 +189,8 @@ export function mapQuoteToCreateTaskParams(
     automationClassification: input.automationClassification,
 
     dispatchExpiresAt: quoteVersion.dispatch_expires_at,
+
+    scheduledServiceDate: draft.scheduled_service_date ?? undefined,
 
     // Existing task-create policy defaults will handle the rest.
     clientIdempotencyKey: input.clientIdempotencyKey,

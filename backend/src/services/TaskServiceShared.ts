@@ -16,6 +16,7 @@ export interface CreateTaskParams {
   regionCode?: string;
   category?: string;
   deadline?: Date;
+  scheduledServiceDate?: string;
   dispatchExpiresAt?: Date;
   requiresProof?: boolean;
   riskLevel?: TaskRiskLevel;
@@ -118,6 +119,7 @@ export function buildTaskCreateRequestHash(params: CreateTaskParams): string {
     ...(params.regionCode !== undefined ? { regionCode: params.regionCode } : {}),
     category: optionalValue(params.category),
     deadline: optionalDate(params.deadline),
+    scheduledServiceDate: optionalValue( params.scheduledServiceDate, ),
     dispatchExpiresAt: optionalDate(params.dispatchExpiresAt),
     requiresProof: defaultValue(params.requiresProof, true),
     riskLevel: defaultValue(params.requestedRiskLevel ?? params.riskLevel, 'LOW'),

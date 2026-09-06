@@ -116,4 +116,5 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260826_business_local_test_payout_evidence', fileName: '20260826_business_local_test_payout_evidence.sql' },
   { name: '20260904_allow_multiple_claim', fileName: '20260904_allow_multiple_claim.sql' },
   { name: '20260904_add_claim_links_quote_id', fileName: '20260904_add_claim_links_quote_id.sql' },
+  { name: '20260905_scheduled_service_date', fileName: '20260905_scheduled_service_date.sql' },
 ] as const;

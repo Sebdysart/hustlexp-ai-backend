@@ -163,6 +163,7 @@ listClaimedDrafts: protectedProcedure
       created_at: Date;
 
       task_id: string | null;
+      scheduled_service_date: string | null;
     }>(
       `
       SELECT
@@ -186,7 +187,9 @@ listClaimedDrafts: protectedProcedure
         link.claimed_at,
         draft.created_at,
 
-        draft.task_id
+        draft.task_id,
+
+        task.scheduled_service_date::text AS scheduled_service_date
 
       FROM ops_business_claim_links link
 
@@ -195,6 +198,9 @@ listClaimedDrafts: protectedProcedure
 
       LEFT JOIN quotes quote
         ON quote.id = link.quote_id
+
+      LEFT JOIN tasks task
+        ON task.id = draft.task_id
 
       WHERE link.claimed_by_organization_id = $1
         AND link.status = 'CLAIMED'
@@ -242,6 +248,9 @@ listClaimedDrafts: protectedProcedure
 
       taskId:
         row.task_id,
+
+      scheduledServiceDate:
+        row.scheduled_service_date,
     }));
   }),
   claim: protectedProcedure
