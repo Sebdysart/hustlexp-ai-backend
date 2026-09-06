@@ -1,4 +1,9 @@
-import { CHANGE_ORDER_RECOVERY_CLAIM_FUNCTION, CHANGE_ORDER_RECOVERY_OBSERVATION_FUNCTION } from './change-order-recovery-role-plans.js';
+import {
+  CHANGE_ORDER_RECOVERY_COMPENSATION_FUNCTION,
+  CHANGE_ORDER_RECOVERY_COMPENSATION_ORIGINS,
+  CHANGE_ORDER_RECOVERY_CLAIM_FUNCTION,
+  CHANGE_ORDER_RECOVERY_OBSERVATION_FUNCTION,
+} from './change-order-recovery-role-plans.js';
 /** Exact additive v13 surface for the existing eight-role authority model. */
 export const FAKE_FINANCIAL_RUNTIME_AUTHORITY_FUNCTION =
   'public.hxos_read_universal_v1_fake_financial_runtime_authority_v13()';
@@ -48,6 +53,7 @@ export const FAKE_FINANCIAL_RECOVERY_ADMISSION_FUNCTION =
   'hx_authority.read_fake_financial_admission_evidence_v13(uuid,uuid)';
 
 export const FAKE_FINANCIAL_OUTBOX_WORKER_FUNCTIONS = [
+  CHANGE_ORDER_RECOVERY_COMPENSATION_FUNCTION,
   CHANGE_ORDER_RECOVERY_CLAIM_FUNCTION,
   CHANGE_ORDER_RECOVERY_OBSERVATION_FUNCTION,
   'public.hxos_scan_fake_financial_recovery_v13(uuid,integer)',
@@ -120,6 +126,7 @@ export const FAKE_FINANCIAL_OUTBOX_FUNCTIONS = [
 ] as const;
 
 export const FAKE_FINANCIAL_OUTBOX_RELATIONS = [
+  CHANGE_ORDER_RECOVERY_COMPENSATION_ORIGINS,
   'hx_authority.fake_financial_exact_requests_v13',
   'hx_authority.fake_financial_command_outbox_requests_v13',
   'hx_authority.fake_financial_outbox_publish_claims_v13',

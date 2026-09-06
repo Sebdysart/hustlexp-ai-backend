@@ -374,7 +374,9 @@ export function financialReadinessFunctionCustody(roles: WorkOrderCommandRoleNam
           ]
         : p.identity === CHANGE_ORDER_MATERIALIZATION_WITNESS_HASH
           ? ['search_path=pg_catalog']
-          : null,
+          : p.identity === 'public.universal_v1_change_order_recovery_uuid_v1(text,text)'
+            ? ['search_path=pg_catalog, public']
+            : null,
       allowed_execute: [
         roles[p.owner],
         ...(p.financeExecute ? [roles.financeOwnerRole] : []),

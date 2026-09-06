@@ -1,0 +1,2813 @@
+FOCUSED DIAGNOSTIC: bounded read-only local PG16 identity verified; existing unique-database restrictions and loopback Redis preserved. Four complete financial and readiness cohorts, including all ADJUST cases; not the full required release gate.
+
+ RUN  v4.1.10 C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip
+
+[01:58:46.254] [33mWARN[39m: [36mFirebase Admin credentials missing — auth verification disabled[39m
+    module: "auth"
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > migration predecessor enforcement > removes hostile global and schema default ACLs from every new authority object 707ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > migration predecessor enforcement > rejects inherited object-owner authority and rolls back the entire installation 629ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > migration predecessor enforcement > restores predecessor guards and removes all v13 evidence on a late installation failure 653ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > migration predecessor enforcement > rejects 'missing' hash for '20261014_universal_v1_work_order_comm…' without installing v13 24ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > migration predecessor enforcement > rejects 'wrong' hash for '20261014_universal_v1_work_order_comm…' without installing v13 24ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > migration predecessor enforcement > rejects 'null' hash for '20261014_universal_v1_work_order_comm…' without installing v13 23ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > migration predecessor enforcement > rejects 'duplicate' hash for '20261014_universal_v1_work_order_comm…' without installing v13 27ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > migration predecessor enforcement > rejects 'missing' hash for '20261015_universal_v1_work_order_fake…' without installing v13 40ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > migration predecessor enforcement > rejects 'wrong' hash for '20261015_universal_v1_work_order_fake…' without installing v13 58ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > migration predecessor enforcement > rejects 'null' hash for '20261015_universal_v1_work_order_fake…' without installing v13 25ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > migration predecessor enforcement > rejects 'duplicate' hash for '20261015_universal_v1_work_order_fake…' without installing v13 38ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > migration predecessor enforcement > rejects 'missing' hash for '20261015_universal_v1_work_order_boot…' without installing v13 50ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > migration predecessor enforcement > rejects 'wrong' hash for '20261015_universal_v1_work_order_boot…' without installing v13 53ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > migration predecessor enforcement > rejects 'null' hash for '20261015_universal_v1_work_order_boot…' without installing v13 23ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > migration predecessor enforcement > rejects 'duplicate' hash for '20261015_universal_v1_work_order_boot…' without installing v13 40ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > refuses runtime authority with 'missing' ledger hash for '20261014_universal_v1_work_order_comm…' 27ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > refuses runtime authority with 'wrong' ledger hash for '20261014_universal_v1_work_order_comm…' 14ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > refuses runtime authority with 'null' ledger hash for '20261014_universal_v1_work_order_comm…' 14ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > refuses runtime authority with 'duplicate' ledger hash for '20261014_universal_v1_work_order_comm…' 15ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > refuses runtime authority with 'missing' ledger hash for '20261015_universal_v1_work_order_fake…' 14ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > refuses runtime authority with 'wrong' ledger hash for '20261015_universal_v1_work_order_fake…' 16ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > refuses runtime authority with 'null' ledger hash for '20261015_universal_v1_work_order_fake…' 16ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > refuses runtime authority with 'duplicate' ledger hash for '20261015_universal_v1_work_order_fake…' 16ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > refuses runtime authority with 'missing' ledger hash for '20261015_universal_v1_work_order_boot…' 13ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > refuses runtime authority with 'wrong' ledger hash for '20261015_universal_v1_work_order_boot…' 13ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > refuses runtime authority with 'null' ledger hash for '20261015_universal_v1_work_order_boot…' 12ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > refuses runtime authority with 'duplicate' ledger hash for '20261015_universal_v1_work_order_boot…' 16ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > refuses runtime authority with 'missing' ledger hash for '20261016_universal_v1_fake_financial_…' 14ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > refuses runtime authority with 'wrong' ledger hash for '20261016_universal_v1_fake_financial_…' 15ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > refuses runtime authority with 'null' ledger hash for '20261016_universal_v1_fake_financial_…' 16ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > refuses runtime authority with 'duplicate' ledger hash for '20261016_universal_v1_fake_financial_…' 18ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > preserves actual pre-column raw events as exact immutable projection contract 1 after v13 installation 49ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > commits exact request bytes and outbox with REQUESTED after separately committed PREPARED 504ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > serializes concurrent exact submissions to one durable request and outbox identity 367ms
+[01:59:04.067] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "86283ab6-d90d-466f-9174-7fb359277c34"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:04.098] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "86283ab6-d90d-466f-9174-7fb359277c34"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:04.504] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "14f14eb6-d845-45d9-8a9d-3502f8147d8d"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:04.536] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "14f14eb6-d845-45d9-8a9d-3502f8147d8d"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:04.901] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "bd3fff38-ca49-4130-b8f5-7d5690b47f41"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:04.937] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "bd3fff38-ca49-4130-b8f5-7d5690b47f41"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > rejects a changed idempotency identity without another command 302ms
+[01:59:05.166] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "d105667a-5698-4270-b4f2-a082da81082e"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:05.198] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "d105667a-5698-4270-b4f2-a082da81082e"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > rejects a changed operation-version identity without another command 268ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > rejects duplicate before a REQUESTED or outbox commit 197ms
+[01:59:05.431] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "efa7338e-323d-4c11-8e40-0e443da9e811"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:05.464] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "efa7338e-323d-4c11-8e40-0e443da9e811"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:05.597] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "55bfce2d-f791-4a60-ba66-a69df0f60ace"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:05.623] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "55bfce2d-f791-4a60-ba66-a69df0f60ace"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > rejects extra-field before a REQUESTED or outbox commit 133ms
+[01:59:05.773] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "ff6337c6-e59a-4be8-83fa-0e3b20bd5b5a"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:05.810] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "ff6337c6-e59a-4be8-83fa-0e3b20bd5b5a"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > rejects wrong-hash before a REQUESTED or outbox commit 238ms
+[01:59:06.007] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "715e088b-c648-40b0-8bda-3570ff908538"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:06.043] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "715e088b-c648-40b0-8bda-3570ff908538"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > rejects identity-order before a REQUESTED or outbox commit 228ms
+[01:59:06.237] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "a112c530-c24a-4e42-ba1f-8790cd8d9087"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:06.266] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "a112c530-c24a-4e42-ba1f-8790cd8d9087"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > rejects non-encoder identity spelling actor-case without reserving the command 227ms
+[01:59:06.474] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "fe75c30c-1f53-4b3c-a3f9-5c3ef83c50eb"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:06.507] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "fe75c30c-1f53-4b3c-a3f9-5c3ef83c50eb"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > rejects non-encoder identity spelling actor-braces without reserving the command 241ms
+[01:59:06.710] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "bb3899a6-3e72-45aa-a220-964f186c6829"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:06.740] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "bb3899a6-3e72-45aa-a220-964f186c6829"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > rejects non-encoder identity spelling prepared-id-braces without reserving the command 228ms
+[01:59:06.935] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "ef94a453-6e3a-465e-8d0f-7a8de1061c8d"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:06.965] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "ef94a453-6e3a-465e-8d0f-7a8de1061c8d"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > rejects non-encoder identity spelling padded-hash without reserving the command 234ms
+[01:59:07.172] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "505b5cd6-e8de-4fde-96f1-ac25f874fcc8"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:07.205] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "505b5cd6-e8de-4fde-96f1-ac25f874fcc8"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > rejects non-encoder identity spelling padded-revision without reserving the command 238ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > reads exact application bytes for the PREPARE_PAYMENT_METHOD request contract 13ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > reads exact application bytes for the AUTHORIZE request contract 3ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > reads exact application bytes for the SECURE request contract 3ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > reads exact application bytes for the VOID request contract 3ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > reads exact application bytes for the ADJUST request contract 3ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > reads exact application bytes for the CAPTURE request contract 3ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > reads exact application bytes for the REFUND request contract 2ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > reads exact application bytes for the REVERSAL request contract 2ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > reads exact application bytes for the SETTLE request contract 2ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > reads exact application bytes for the FUND request contract 2ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > reads exact application bytes for the PROVIDER_RELEASE request contract 3ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > reads exact application bytes for the PAYOUT request contract 3ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > reads exact application bytes for the OBSERVE_BANK_SETTLEMENT request contract 2ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > derives exact projection contract 1 for 'PREPARE_PAYMENT_METHOD' 56ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > derives exact projection contract 2 for 'PREPARE_PAYMENT_METHOD' 50ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > derives exact projection contract 1 for 'AUTHORIZE' 47ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > derives exact projection contract 2 for 'AUTHORIZE' 50ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > derives exact projection contract 1 for 'SECURE' 53ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > derives exact projection contract 2 for 'SECURE' 53ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > derives exact projection contract 1 for 'VOID' 48ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > derives exact projection contract 2 for 'VOID' 49ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > derives exact projection contract 1 for 'ADJUST' 54ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > derives exact projection contract 2 for 'ADJUST' 48ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > derives exact projection contract 1 for 'CAPTURE' 46ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > derives exact projection contract 2 for 'CAPTURE' 47ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > derives exact projection contract 1 for 'REFUND' 57ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > derives exact projection contract 2 for 'REFUND' 61ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > derives exact projection contract 1 for 'REVERSAL' 53ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > derives exact projection contract 2 for 'REVERSAL' 57ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > derives exact projection contract 1 for 'SETTLE' 53ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > derives exact projection contract 2 for 'SETTLE' 55ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > derives exact projection contract 1 for 'FUND' 57ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > derives exact projection contract 2 for 'FUND' 56ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > derives exact projection contract 1 for 'PROVIDER_RELEASE' 64ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > derives exact projection contract 2 for 'PROVIDER_RELEASE' 55ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > derives exact projection contract 1 for 'PAYOUT' 60ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > derives exact projection contract 2 for 'PAYOUT' 55ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > derives exact projection contract 1 for 'OBSERVE_BANK_SETTLEMENT' 51ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > derives exact projection contract 2 for 'OBSERVE_BANK_SETTLEMENT' 54ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > matches JavaScript reference validation and exact bytes for PostgreSQL Unicode strings 137ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > rolls back legacy direct REQUESTED insertion lacking its exact request at commit 316ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > preserves complete sealed compensation and reversal guards while replacing four legacy hash calls 6ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > preserves all five complete execution and outcome dependency guards with only fixed-path SHA substitution 8ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > reads the complete four-migration authority in a read-only repeatable-read snapshot 19ms
+[01:59:08.997] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "11a1c209-8858-4671-9ce8-3cadd87c2f3c"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:09.042] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "11a1c209-8858-4671-9ce8-3cadd87c2f3c"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:09.324] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "698a5c67-1eb2-45d0-bda6-25dddc1a6335"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:09.369] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "698a5c67-1eb2-45d0-bda6-25dddc1a6335"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > requires outer COMMIT after a released publication savepoint before restoration 1368ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > cannot restore a publication rolled back to a savepoint or held by a terminal outcome 240ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > scans committed IDs with strict keyset pagination and exposes publication holds without granting dispatch 15ms
+[01:59:10.676] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "16bf57fb-0e87-4218-a2a8-7bf40ff21ff6"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:10.707] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "16bf57fb-0e87-4218-a2a8-7bf40ff21ff6"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:10.945] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "8d4b486e-c5a4-48d8-a673-1e38de8df2c6"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:10.980] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "8d4b486e-c5a4-48d8-a673-1e38de8df2c6"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > recovers one expired publisher lease with the same job identity and rejects forged Redis with zero dispatch writes 1523ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > rolls back REQUESTED and its captured outbox together before either becomes externally visible 210ms
+[01:59:12.464] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "89b41fdb-142b-43df-bcde-b2cd3d1e38f7"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:12.485] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "89b41fdb-142b-43df-bcde-b2cd3d1e38f7"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:12.638] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "dda9be49-7f31-4268-b51e-9087b46595cc"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:12.662] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "dda9be49-7f31-4268-b51e-9087b46595cc"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:12.813] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "34f0e3c4-6cf9-478a-8fb6-1a8d61eb91f9"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:12.838] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "34f0e3c4-6cf9-478a-8fb6-1a8d61eb91f9"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > admits exactly one concurrent worker replay and denies terminal publisher outcomes 336ms
+[01:59:13.017] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "94d6c27e-72b6-49d9-8faf-17b85637ca61"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:13.046] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "94d6c27e-72b6-49d9-8faf-17b85637ca61"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > rejects a worker with a stale REPEATABLE READ snapshot after a terminal hold commits 328ms
+[01:59:13.301] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "e265f6a1-d5cd-49bb-a677-76fea95cf979"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:13.326] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "e265f6a1-d5cd-49bb-a677-76fea95cf979"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:13.446] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "211676fc-9474-4fdb-8d88-6d90695682eb"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:13.474] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "211676fc-9474-4fdb-8d88-6d90695682eb"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > rejects a worker with a stale SERIALIZABLE snapshot after a terminal hold commits 143ms
+[01:59:13.648] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "fbac99db-3f43-428e-b01b-f3ad47e83ed2"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > sees a terminal hold committed while a READ COMMITTED worker waits for the publisher lock 167ms
+[01:59:13.676] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "fbac99db-3f43-428e-b01b-f3ad47e83ed2"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > keeps serializable business REQUESTED capture atomic while rejecting transport mutation 227ms
+[01:59:13.841] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "8e0de5f4-3db5-4b0f-a9bc-c45879ae5908"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:13.865] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "8e0de5f4-3db5-4b0f-a9bc-c45879ae5908"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:14.062] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "ed5d700b-2ca0-4d29-988e-634b4b1ad21d"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > sealed admission rejects legacy direct initial and NULL-outcome DISPATCH with zero writes 183ms
+[01:59:14.091] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "ed5d700b-2ca0-4d29-988e-634b4b1ad21d"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > rejects an exact BullMQ replay after DISPATCH_ATTEMPTED with zero writes 318ms
+[01:59:14.383] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "09241a1e-e0ec-4e61-bf88-bf098d0d36b0"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:14.438] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "09241a1e-e0ec-4e61-bf88-bf098d0d36b0"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > allows redispatch only after an explicit due retryable FAILED CONFIRMED_NO_EFFECT outcome 2569ms
+[01:59:16.941] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "5681559d-7b70-416d-8ee5-08690ae817d9"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:59:16.970] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "5681559d-7b70-416d-8ee5-08690ae817d9"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:24.392] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "8b0efb7d-4fbe-4876-8871-ca685210652e"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:24.423] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "8b0efb7d-4fbe-4876-8871-ca685210652e"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > records publisher exhaustion without starving later work or reopening dispatch 68858ms
+[02:00:25.819] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "22a94c16-49d5-43e1-ab4d-c23babde7809"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:25.849] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "22a94c16-49d5-43e1-ab4d-c23babde7809"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > committed admitted-request readback > reads exact bytes after admission commits without adding provider or lifecycle facts 617ms
+[02:00:26.386] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "a39da8a2-4586-4eb4-9921-03489f733245"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:26.412] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "a39da8a2-4586-4eb4-9921-03489f733245"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > committed admitted-request readback > rejects admission and readback in the same transaction 421ms
+[02:00:26.805] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "a1c011bd-da6d-417f-8b0a-43b96d9ab0b4"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:26.830] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "a1c011bd-da6d-417f-8b0a-43b96d9ab0b4"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:27.035] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "fa3d4e8e-36e3-4e9c-99af-c45d0804e75f"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > committed admitted-request readback > rejects another worker and nonexistent validation IDs 167ms
+[02:00:27.067] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "fa3d4e8e-36e3-4e9c-99af-c45d0804e75f"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > committed admitted-request readback > rejects a terminal publisher hold committed after admission 348ms
+[02:00:27.373] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "a268e080-41a2-49da-ac0e-cce2b699a4c2"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:27.402] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "a268e080-41a2-49da-ac0e-cce2b699a4c2"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > committed admitted-request readback > rejects an elapsed outcome deadline even while its lease remains live 1698ms
+[02:00:29.081] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "f20189bc-4ce2-4cc8-bc8e-479efdc3491a"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:29.111] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "f20189bc-4ce2-4cc8-bc8e-479efdc3491a"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > committed admitted-request readback > rejects a OUTCOME_UNKNOWN observation committed after admission 694ms
+[02:00:29.770] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "2f12e135-90a8-455d-8657-4ec706e2849f"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:29.799] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "2f12e135-90a8-455d-8657-4ec706e2849f"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > committed admitted-request readback > rejects a FAILED observation committed after admission 615ms
+[02:00:30.386] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "4e736d1b-5c0b-453a-9703-c1ebb4dfddbf"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:30.418] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "4e736d1b-5c0b-453a-9703-c1ebb4dfddbf"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > committed admitted-request readback > refuses REPEATABLE READ snapshots for admitted readback 332ms
+[02:00:30.666] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "a0f83920-b46f-4f43-b735-fb4a251f8c26"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:30.692] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "a0f83920-b46f-4f43-b735-fb4a251f8c26"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:30.836] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "ac9c7d54-a8ab-4a92-84b2-0be32ec77e1f"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:30.866] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "ac9c7d54-a8ab-4a92-84b2-0be32ec77e1f"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > committed admitted-request readback > refuses SERIALIZABLE snapshots for admitted readback 169ms
+[02:00:31.005] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "f3ae9fa5-4a46-4251-bc42-b223c2edc06c"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:31.038] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "f3ae9fa5-4a46-4251-bc42-b223c2edc06c"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > committed admitted-request readback > rejects a replaced target after admission 176ms
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > committed admitted-request readback > rechecks the outcome after waiting for the command recovery lock 501ms
+[02:00:31.551] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "7e19013b-d823-4e6b-8d44-302fcc1ee215"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:31.574] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "7e19013b-d823-4e6b-8d44-302fcc1ee215"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > refuses recovery evidence for a request not yet committed by its caller 223ms
+[02:00:31.742] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "0ef9f951-3081-4f08-9fc6-bc1b70fd94c4"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:31.768] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "0ef9f951-3081-4f08-9fc6-bc1b70fd94c4"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:37.189] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "58022b8a-ce5e-4faf-b944-ba95cf6d4370"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:37.217] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "58022b8a-ce5e-4faf-b944-ba95cf6d4370"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:40.349] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "61a37b30-1de5-4cce-95da-371ad7be7592"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:40.372] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "61a37b30-1de5-4cce-95da-371ad7be7592"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:40.790] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "e816c310-1c84-4aa7-94a7-101bfe003288"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:40.818] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "e816c310-1c84-4aa7-94a7-101bfe003288"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:46.522] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "75f0fd4a-de1e-4644-a00d-5eb14f069390"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:46.543] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "75f0fd4a-de1e-4644-a00d-5eb14f069390"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:50.832] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "478e57cc-fefb-4094-8a24-70cf31bfe3bb"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:50.856] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "478e57cc-fefb-4094-8a24-70cf31bfe3bb"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:54.881] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "700bcda4-aa93-4fbe-8c89-8928b7611127"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:54.904] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "700bcda4-aa93-4fbe-8c89-8928b7611127"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:58.056] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "f96ace14-906c-4a7e-a7c3-7e430ebc4661"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:00:58.077] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "f96ace14-906c-4a7e-a7c3-7e430ebc4661"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:00.219] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "c3be3e4e-ebb5-4fd7-a7b9-cb0138477887"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:00.247] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "c3be3e4e-ebb5-4fd7-a7b9-cb0138477887"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:00.393] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "9741ceab-20f4-4a51-8067-18dacdf260e2"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:00.426] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "9741ceab-20f4-4a51-8067-18dacdf260e2"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:00.591] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "bdc100f9-cfc8-421a-b9bd-13d9aef682e4"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:00.615] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "bdc100f9-cfc8-421a-b9bd-13d9aef682e4"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:00.770] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "f1fbec5c-0df5-4e9f-9198-e3a7dbfbf4bb"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:00.797] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "f1fbec5c-0df5-4e9f-9198-e3a7dbfbf4bb"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:01.052] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "0160a54f-574a-427b-b4f4-01a012d7d022"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:01.084] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "0160a54f-574a-427b-b4f4-01a012d7d022"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:01.558] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "1d105bf4-6db4-446a-a7d6-991a7a7bb2a0"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:01.584] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "1d105bf4-6db4-446a-a7d6-991a7a7bb2a0"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:02.011] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "4e066df5-25f2-49a2-ae88-eaac3d3839a3"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:02.031] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "4e066df5-25f2-49a2-ae88-eaac3d3839a3"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:02.346] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "ed2a601c-5f5c-488b-abe4-db55aa1a5f13"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:02.367] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "ed2a601c-5f5c-488b-abe4-db55aa1a5f13"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:02.711] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "3ba3642a-d413-458a-969c-47c4b5f6a43b"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:02.733] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "3ba3642a-d413-458a-969c-47c4b5f6a43b"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:03.079] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "85ee6e28-852d-4445-b08a-91507bf473aa"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:03.101] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "85ee6e28-852d-4445-b08a-91507bf473aa"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:03.497] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "6104f2fd-f0c4-4e1a-bbce-0ac377b8fdcd"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:03.539] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "6104f2fd-f0c4-4e1a-bbce-0ac377b8fdcd"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:04.764] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "a93d763e-8528-4dd5-8c95-85d37bcf4b7f"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:04.788] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "a93d763e-8528-4dd5-8c95-85d37bcf4b7f"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:05.094] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "6139818e-d6e7-4050-baf4-c48af80a111a"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:05.124] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "6139818e-d6e7-4050-baf4-c48af80a111a"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:06.382] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "068b77db-437e-4469-b53d-a0ec43e9d8fe"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:06.408] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "068b77db-437e-4469-b53d-a0ec43e9d8fe"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:07.218] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "9ba5e471-0ed8-4bb7-a5c9-743cc577ad98"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:07.237] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "9ba5e471-0ed8-4bb7-a5c9-743cc577ad98"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:08.108] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "5eed7c26-4cdb-4151-9919-58a87ecada4f"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:08.129] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "5eed7c26-4cdb-4151-9919-58a87ecada4f"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:14.331] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "f653630b-785e-41aa-9824-c799d5a6a337"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:14.351] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "f653630b-785e-41aa-9824-c799d5a6a337"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:17.596] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "bd8c21e0-b3d4-4c8b-b1ad-a14222b75b28"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:17.620] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "bd8c21e0-b3d4-4c8b-b1ad-a14222b75b28"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:17.769] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "6913e168-f72c-4619-bae6-179b8bf4ea34"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:17.789] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "6913e168-f72c-4619-bae6-179b8bf4ea34"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:19.026] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "6b5b3081-089b-4c6f-a838-29f0792c7c5a"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:19.045] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "6b5b3081-089b-4c6f-a838-29f0792c7c5a"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:19.170] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "5adc2074-7907-4ac0-9e79-5c50ab312922"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:19.190] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "5adc2074-7907-4ac0-9e79-5c50ab312922"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:19.313] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "23be98e7-795f-45c6-9432-e8ab4fcd4065"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:19.332] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "23be98e7-795f-45c6-9432-e8ab4fcd4065"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts > Universal V1 fake-financial command outbox authority v13 PostgreSQL > installed runtime authority > uses distinct worker and API logins with sealed publisher ports and no direct v13 writes 48148ms
+[02:01:21.821] [33mWARN[39m: [36mFirebase Admin credentials missing — auth verification disabled[39m
+    module: "auth"
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > records independently signed webhook bytes through the API login with stable inbox and verification facts 122ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > refuses caller-VERIFIED legacy receipts even with exact new hashes, while independently authenticating a fresh delivery 59ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > denies key custody, provisioning, raw receipts and ingress invocation outside their exact roles 68ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > rejects invalid signatures, target transplants, malformed payloads and key revocation without inbox writes 68ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > preserves the original receipt after commit acknowledgement loss and rolls back incomplete inbox transactions 37ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > serializes duplicate signed deliveries from separate API connections and refuses conflicting identities 86ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > refuses a substituted HMAC implementation even when its SQL name is unchanged 27ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > authenticates the actual HTTP route with a restricted API database and no API-held webhook key 91ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > observes committed key revocation after waiting for the revoker transaction 16ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > refuses a new key in the provisioning transaction even after a released savepoint 15ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > rechecks key expiry after an inbox lock wait 1093ms
+[02:01:40.542] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "758a879d-cfc6-4429-a26f-9832e2a884ba"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:40.592] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "758a879d-cfc6-4429-a26f-9832e2a884ba"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:42.088] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "e722067b-8075-4ea6-93a4-74f51c63d0eb"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:42.127] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "e722067b-8075-4ea6-93a4-74f51c63d0eb"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > refuses a historical REPEATABLE READ snapshot for new webhook verification 37ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > refuses a historical SERIALIZABLE snapshot for new webhook verification 30ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > submits PREPARE, AUTHORIZE and SECURE through restricted API/worker ports: normal 9371ms
+[02:01:49.804] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "f5c77f9b-fa19-4f6f-9d66-261bbe970bb7"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:49.828] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "f5c77f9b-fa19-4f6f-9d66-261bbe970bb7"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > submits PREPARE, AUTHORIZE and SECURE through restricted API/worker ports: compensation 6588ms
+[02:01:56.391] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "a8c486c4-9423-4de7-b92e-ba8fdbf163a3"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:01:56.412] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "a8c486c4-9423-4de7-b92e-ba8fdbf163a3"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > submits PREPARE, AUTHORIZE and SECURE through restricted API/worker ports: lost_before_admission 6372ms
+[02:02:02.774] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "1fc5b647-135f-473b-a93d-ff18e0d050e6"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:02.798] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "1fc5b647-135f-473b-a93d-ff18e0d050e6"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > submits PREPARE, AUTHORIZE and SECURE through restricted API/worker ports: lost_after_outcome 5959ms
+[02:02:08.725] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "47466f78-7912-43cb-9457-1f4d5289dbc1"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:08.747] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "47466f78-7912-43cb-9457-1f4d5289dbc1"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > submits PREPARE, AUTHORIZE and SECURE through restricted API/worker ports: lost_after_admission 10664ms
+[02:02:19.386] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "0be5ff95-edc2-4b58-bfa1-10098862d0b0"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:19.406] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "0be5ff95-edc2-4b58-bfa1-10098862d0b0"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > submits PREPARE, AUTHORIZE and SECURE through restricted API/worker ports: retained_after_admission 10516ms
+[02:02:29.903] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "4341142a-8ea4-46b0-bf12-ee236c4c8813"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:29.924] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "4341142a-8ea4-46b0-bf12-ee236c4c8813"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order commands accept public provider proposals and independent approvals without financial effects 4370ms
+[02:02:34.274] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "baab0760-3214-44fa-ba9a-3622166d12c1"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:34.295] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "baab0760-3214-44fa-ba9a-3622166d12c1"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order commands replay with fresh timestamps and reject conflicting payloads 1301ms
+[02:02:35.579] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "ac1bf49c-4537-410f-a54a-c31ccb4d9f07"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:35.599] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "ac1bf49c-4537-410f-a54a-c31ccb4d9f07"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order commands atomically reject scope-only proposals and keep money fields empty 757ms
+[02:02:36.329] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "f9221430-2ae8-4339-b1a6-5c41e86a6e5f"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:36.348] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "f9221430-2ae8-4339-b1a6-5c41e86a6e5f"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:37.003] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "575a7a2d-186c-4447-bbcb-e6caa899ff55"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:37.023] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "575a7a2d-186c-4447-bbcb-e6caa899ff55"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order commands refuse raw DML and foreign actors before domain writes 766ms
+[02:02:37.095] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "87625c91-99b8-4296-a8d9-964d61e777d9"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:37.114] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "87625c91-99b8-4296-a8d9-964d61e777d9"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order commands keep SQL Unicode length validation aligned with the signed public schema 682ms
+[02:02:37.779] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "d991e9d4-71d9-4646-8aa8-9bf68dd306de"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:37.800] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "d991e9d4-71d9-4646-8aa8-9bf68dd306de"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order commands prevent new memberships from appearing before command commit 865ms
+[02:02:38.641] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "ebf374ed-1437-4cc2-85da-c69703f01cd0"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:38.660] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "ebf374ed-1437-4cc2-85da-c69703f01cd0"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order commands recheck actor revocation after assertion issuance without creating a proposal 637ms
+[02:02:39.282] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "be71bd41-586d-4197-bccd-5d67195aeed9"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:39.302] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "be71bd41-586d-4197-bccd-5d67195aeed9"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:39.921] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "f74f6f92-6f30-4c7b-afc5-10a6e5a5a856"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:39.940] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "f74f6f92-6f30-4c7b-afc5-10a6e5a5a856"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order materialization denies delegated preparation without exact authority: revoked_membership 928ms
+[02:02:40.209] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "e2bf4c26-40c9-4678-9d67-71a3e3c4d88b"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:40.227] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "e2bf4c26-40c9-4678-9d67-71a3e3c4d88b"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:40.823] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "ec10561e-f48d-4717-8268-b42907d0f1a1"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:40.842] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "ec10561e-f48d-4717-8268-b42907d0f1a1"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order materialization denies delegated preparation without exact authority: foreign_actor 870ms
+[02:02:41.085] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "866c8fe9-eeda-46d5-86d1-61728d6c5d94"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:41.105] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "866c8fe9-eeda-46d5-86d1-61728d6c5d94"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:41.711] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "b820b1ae-4b7e-4628-b4d1-d7e2b501da9f"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:41.734] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "b820b1ae-4b7e-4628-b4d1-d7e2b501da9f"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order materialization denies delegated preparation without exact authority: altered_operation 899ms
+[02:02:41.975] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "f3b7b9e9-382b-45cf-860e-6ce4c39ccff6"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:41.994] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "f3b7b9e9-382b-45cf-860e-6ce4c39ccff6"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:42.592] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "cb2311fd-8e5c-453a-aa01-85e9881c42bc"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:42.615] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "cb2311fd-8e5c-453a-aa01-85e9881c42bc"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order materialization denies delegated preparation without exact authority: non_adjustment 872ms
+[02:02:42.849] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "3d997c55-c26b-42d3-86e3-01cdf54f9a48"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:42.874] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "3d997c55-c26b-42d3-86e3-01cdf54f9a48"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:43.478] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "55443558-b4c5-4f6c-8fe9-bbcb15e0d829"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:43.497] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "55443558-b4c5-4f6c-8fe9-bbcb15e0d829"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order materialization preserves exact delegate authority through ADJUST and progress: active 1266ms
+[02:02:44.113] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "c7378e31-01ee-4ddc-8acc-c413737e034b"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:44.133] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "c7378e31-01ee-4ddc-8acc-c413737e034b"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:44.730] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "898addb8-b635-4996-9072-44b2fde0d8df"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:44.748] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "898addb8-b635-4996-9072-44b2fde0d8df"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order materialization preserves exact delegate authority through ADJUST and progress: revoked_before_execution 1330ms
+[02:02:45.445] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "0613d65c-6953-4e8c-a8d8-f3cf04bab64b"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:45.465] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "0613d65c-6953-4e8c-a8d8-f3cf04bab64b"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:46.060] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "c17bf4ee-ecf5-4109-9d0f-8827ba4028d7"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:46.079] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "c17bf4ee-ecf5-4109-9d0f-8827ba4028d7"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order materialization preserves exact delegate authority through ADJUST and progress: progress_revocation_race 1331ms
+[02:02:46.774] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "eec9c61f-b91b-4b20-bc04-d1d555c4b163"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:46.794] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "eec9c61f-b91b-4b20-bc04-d1d555c4b163"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > authenticated change order materialization commits SCOPE_ONLY through the API without financial authorization 835ms
+[02:02:47.612] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "514307e4-dc6a-40de-a776-d827d6e50c42"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:47.632] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "514307e4-dc6a-40de-a776-d827d6e50c42"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:48.241] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "d1e048f4-6368-4a71-93a0-44d407236523"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:48.262] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "d1e048f4-6368-4a71-93a0-44d407236523"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > authenticated change order materialization prepares and finalizes an exact delegated ADJUST through API commit 1334ms
+[02:02:48.945] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "5641bf2d-e7a1-4b1a-872b-221e6406868c"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:48.964] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "5641bf2d-e7a1-4b1a-872b-221e6406868c"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > public change order resume commits and replays scope-only through the authenticated router 834ms
+[02:02:49.783] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "23f92ef5-e7e3-45bd-b87f-a77f3baedc35"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:49.802] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "23f92ef5-e7e3-45bd-b87f-a77f3baedc35"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:50.405] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "2650d77b-6de8-450c-b281-dbc0e47c35c4"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:50.424] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "2650d77b-6de8-450c-b281-dbc0e47c35c4"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > public change order resume completes delegated ADJUST: normal 1520ms
+[02:02:51.297] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "962a40ec-a902-4b45-8da4-540aef67a920"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:51.322] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "962a40ec-a902-4b45-8da4-540aef67a920"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:51.904] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "d5f88ca6-0c1c-47d5-af0e-054bb36ca449"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:51.923] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "d5f88ca6-0c1c-47d5-af0e-054bb36ca449"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > public change order resume completes delegated ADJUST: lost_final_commit 1425ms
+[02:02:52.724] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "d80ab419-7e78-44c0-8237-21fc787929e7"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:52.742] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "d80ab419-7e78-44c0-8237-21fc787929e7"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:53.366] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "49b8ae20-bcdb-417d-bf1e-93364f7556c3"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:02:53.385] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "49b8ae20-bcdb-417d-bf1e-93364f7556c3"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > public change order resume completes delegated ADJUST: old_phase_time 301607ms
+[02:07:54.378] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "45996fad-1720-4ff8-920b-b809d8f7e3f6"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:07:54.410] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "45996fad-1720-4ff8-920b-b809d8f7e3f6"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > public change order resume completes delegated ADJUST: lost_prepare_commit 2881ms
+[02:07:56.233] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "235272f6-5ac5-45c3-a2e0-f48a9c1bbe10"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:07:56.258] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "235272f6-5ac5-45c3-a2e0-f48a9c1bbe10"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:07:57.219] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "7710b22b-b4cb-446e-a95d-c6270f115b8d"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:07:57.246] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "7710b22b-b4cb-446e-a95d-c6270f115b8d"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:07:57.946] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "214a4355-07fb-4f8f-8a79-2c7c7333e2f8"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:07:57.968] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "214a4355-07fb-4f8f-8a79-2c7c7333e2f8"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > public change order resume completes delegated ADJUST: future_client_time 1367ms
+[02:07:58.582] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "b653391c-7ca1-495a-a3b8-6de20524c843"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:07:58.606] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "b653391c-7ca1-495a-a3b8-6de20524c843"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:07:59.308] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "573b8bfb-831f-498b-a5eb-314160f94ff6"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:07:59.332] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "573b8bfb-831f-498b-a5eb-314160f94ff6"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > public change order resume completes delegated ADJUST: lost_request_commit 1330ms
+[02:07:59.913] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "03c22016-3d02-46d6-be49-dc0c902aeb9f"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:07:59.934] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "03c22016-3d02-46d6-be49-dc0c902aeb9f"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > adjustment execution revalidates current authority: success 979ms
+[02:08:00.893] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "3fd435c1-a3e7-4522-a6ba-4686290a0e56"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:08:00.913] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "3fd435c1-a3e7-4522-a6ba-4686290a0e56"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > adjustment execution revalidates current authority: customer_revoked 1028ms
+[02:08:01.920] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "75640c81-c916-4830-9c38-56fd9198c84e"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:08:01.941] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "75640c81-c916-4830-9c38-56fd9198c84e"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > adjustment execution revalidates current authority: provider_revoked 972ms
+[02:08:02.894] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "1785818b-0177-40a1-be1a-7b906ddc4a29"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:08:02.915] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "1785818b-0177-40a1-be1a-7b906ddc4a29"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > adjustment execution revalidates current authority: provider_trust_hold 938ms
+[02:08:03.832] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "472fda54-3c9b-4b59-9efc-9fe8f8a75054"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:08:03.852] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "472fda54-3c9b-4b59-9efc-9fe8f8a75054"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > adjustment execution revalidates current authority: replay_after_revocation 859ms
+[02:08:04.691] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "cbed700e-9d60-4fa4-a334-83e3460ae0be"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:08:04.712] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "cbed700e-9d60-4fa4-a334-83e3460ae0be"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > adjustment execution refuses domain lock contention and retries after release: proposal 904ms
+[02:08:05.593] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "21603fa9-0492-4e06-b718-30f2ed48d8b8"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:08:05.613] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "21603fa9-0492-4e06-b718-30f2ed48d8b8"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > adjustment execution refuses domain lock contention and retries after release: fulfillment 866ms
+[02:08:06.473] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "bc5d356e-0cbe-47b2-92a9-9668ca62c2e5"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:08:06.500] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "bc5d356e-0cbe-47b2-92a9-9668ca62c2e5"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > adjustment execution refuses domain lock contention and retries after release: provider_row 969ms
+[02:08:07.439] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "50587774-d607-48e7-b12b-1300274363a2"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:08:07.464] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "50587774-d607-48e7-b12b-1300274363a2"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > worker change order compensation creates one immutable winner after customer revocation 6058ms
+[02:08:13.489] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "f37cc170-a9fa-4882-840b-6729ad8e5d1e"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:08:13.511] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "f37cc170-a9fa-4882-840b-6729ad8e5d1e"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > worker change order compensation refuses active authority, temporary holds and mismatched bindings 6009ms
+[02:08:19.503] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "f8722f20-26da-4641-bb87-1b3c3a309c0e"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:08:19.526] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "f8722f20-26da-4641-bb87-1b3c3a309c0e"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > worker change order compensation locks authority and rolls back winner with its origin 5970ms
+[02:08:25.468] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "d55b59a6-2e03-42cc-9d0b-4251140d1f78"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:08:25.489] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "d55b59a6-2e03-42cc-9d0b-4251140d1f78"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > worker change order compensation fences new membership insertion until commit 6041ms
+[02:08:31.508] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "06789499-ed63-44b7-9724-6f418dacb4e4"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:08:31.531] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "06789499-ed63-44b7-9724-6f418dacb4e4"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > worker change order compensation preserves an amendment winner and suppresses terminal lease observation 7556ms
+[02:08:39.067] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "6694117d-ca19-4c5d-b1d8-6ed5d6ce2566"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:08:39.088] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "6694117d-ca19-4c5d-b1d8-6ed5d6ce2566"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > worker change order compensation preserves legacy winner without inventing worker origin 7077ms
+[02:08:46.149] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "e2d62489-a866-4ad9-b69a-94ef9f38dfb7"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:08:46.170] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "e2d62489-a866-4ad9-b69a-94ef9f38dfb7"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > worker change order compensation refuses downstream financial lock inversion 5982ms
+[02:08:52.123] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "3fc5474e-7c87-4274-ab64-afb862b56af3"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:08:52.143] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "3fc5474e-7c87-4274-ab64-afb862b56af3"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > worker change order compensation rolls back both facts when lease expires during persistence 10988ms
+[02:09:03.112] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "9128a3b1-b89d-4cdb-94e4-e8fde6458dfd"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:09:03.132] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "9128a3b1-b89d-4cdb-94e4-e8fde6458dfd"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:09:03.829] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "8cbef7c7-d479-4553-9849-d8999726b018"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:09:03.849] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "8cbef7c7-d479-4553-9849-d8999726b018"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > worker change order compensation records revoked delegate identity through the typed port 6160ms
+[02:09:09.272] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "e4d5d202-a3a1-4088-bdbc-1f7468a1929b"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:09:09.293] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "e4d5d202-a3a1-4088-bdbc-1f7468a1929b"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > worker change order recovery observes exact adjustment and amendment progression 7523ms
+[02:09:16.808] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "c1204eed-456f-4dbb-95c6-49e2770365b1"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:09:16.836] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "c1204eed-456f-4dbb-95c6-49e2770365b1"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > worker change order recovery observes only its exact active lease and current release 5995ms
+[02:09:22.789] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "b2c78463-d4bd-4567-9d53-d95539634b75"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:09:22.810] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "b2c78463-d4bd-4567-9d53-d95539634b75"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > worker change order recovery observes revoked customer through a scoped lease port 5983ms
+[02:09:28.771] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "53cc1bde-5a96-4d5a-972d-d9c5f9c497d9"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:09:28.791] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "53cc1bde-5a96-4d5a-972d-d9c5f9c497d9"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > worker change order recovery claims an immutable witness after customer revocation without an actor assertion 5925ms
+[02:09:34.707] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "c14e808f-d974-42ba-bb80-8291c062164f"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:09:34.732] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "c14e808f-d974-42ba-bb80-8291c062164f"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:09:36.317] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "d1804a55-b39d-4e2a-bc5c-5cde2075601d"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:09:36.338] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "d1804a55-b39d-4e2a-bc5c-5cde2075601d"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > worker change order recovery skips a busy proposal and claims unrelated work 7635ms
+[02:09:42.331] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "b7b76c6a-2db2-45ca-b71b-4c825bea0792"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:09:42.351] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "b7b76c6a-2db2-45ca-b71b-4c825bea0792"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:09:43.279] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "a10433bf-9d1d-4356-b255-2cdd5bdb9db5"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:09:43.299] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "a10433bf-9d1d-4356-b255-2cdd5bdb9db5"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > worker change order recovery skips a busy witness and claims unrelated work 6970ms
+[02:09:49.305] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "600346ee-91ec-4d56-baae-fc5650e69315"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:09:49.326] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "600346ee-91ec-4d56-baae-fc5650e69315"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > worker change order recovery enforces roles, bounds, current target and rollback 6078ms
+[02:09:55.401] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "9550cb8d-18b4-4bc3-b14c-e6d536f354fa"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:09:55.428] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "9550cb8d-18b4-4bc3-b14c-e6d536f354fa"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > worker change order recovery serializes competing workers and preserves immutable expired leases 11261ms
+[02:10:06.688] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "f0249fbd-b4af-48e8-ad50-8d453a0cc5d7"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:10:06.716] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "f0249fbd-b4af-48e8-ad50-8d453a0cc5d7"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order history exposes an exact authenticated builder for the committed Phase A 1301ms
+[02:10:07.946] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "10e54fa6-fcdf-4f00-a884-a191e5886214"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:10:07.970] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "10e54fa6-fcdf-4f00-a884-a191e5886214"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order history preserves the original witness and reads committed progress after provider revocation 1514ms
+[02:10:09.459] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "de2a3ca4-354e-49f4-8e1b-dcf60f042a36"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:10:09.481] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "de2a3ca4-354e-49f4-8e1b-dcf60f042a36"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order history conceals another actor and refuses an altered original version 1211ms
+[02:10:10.670] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "c2f03b9e-b70a-4ee7-9937-7db45cdfa939"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:10:10.692] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "c2f03b9e-b70a-4ee7-9937-7db45cdfa939"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order history replays a completed amendment after later provider restriction 2875ms
+[02:10:13.544] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "b54b1515-0981-46cb-ac02-004bec7b502b"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:10:13.565] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "b54b1515-0981-46cb-ac02-004bec7b502b"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order history holds customer read authority across a financial lock wait 1230ms
+[02:10:14.776] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "107fc39e-57a7-4197-ae13-0dfe5cdb6c79"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:10:14.798] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "107fc39e-57a7-4197-ae13-0dfe5cdb6c79"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > public change order resume retains an immutable compensation claim and requests only its reversal 9523ms
+[02:10:24.294] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "fd429732-d9d9-4a8e-ae85-8a83c0ebe045"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:10:24.314] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "fd429732-d9d9-4a8e-ae85-8a83c0ebe045"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > adjustment execution serializes concurrent workers into one immutable effect 1410ms
+[02:10:25.711] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "88749ccc-239b-44a9-9102-a5d174a87197"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:10:25.734] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "88749ccc-239b-44a9-9102-a5d174a87197"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > materializes signed money-valued authorization resolution while preserving pending raw bytes and fixed provider expiry 4016ms
+[02:10:29.720] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "ae7787dd-45aa-4c77-9bd7-0ad99017d5e4"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:10:29.741] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "ae7787dd-45aa-4c77-9bd7-0ad99017d5e4"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > serializes concurrent resolved authorization materialization and preserves replay after a later signed conflict 6352ms
+[02:10:36.076] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "ff2b9801-9025-4eb8-9676-b8e32089c8b4"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:10:36.097] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "ff2b9801-9025-4eb8-9676-b8e32089c8b4"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > rejects substituted resolved bridge provenance and one-microsecond lifecycle time drift in PostgreSQL 6195ms
+[02:10:42.268] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "ddc0b58b-0343-49c4-80cc-cac8edad31c6"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:10:42.288] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "ddc0b58b-0343-49c4-80cc-cac8edad31c6"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > recovers a signed authorization through the normal worker implementation after protected API requests 3550ms
+[02:10:45.819] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "193c6ebc-68cc-46d0-b0ab-1f73b0156cd3"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:10:45.839] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "193c6ebc-68cc-46d0-b0ab-1f73b0156cd3"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > resolves an admitted pending operation through committed signed evidence without rewriting its raw event or dispatch 3213ms
+[02:10:49.035] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "3a23089c-096a-44ec-81c9-1dd4254c17e4"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:10:49.055] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "3a23089c-096a-44ec-81c9-1dd4254c17e4"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > ignores unrelated signed versions/value references while selecting the exact dispatched result 3149ms
+[02:10:52.179] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "1b2db901-ef7e-4b29-b15b-c3014a8dedb6"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:10:52.198] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "1b2db901-ef7e-4b29-b15b-c3014a8dedb6"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > holds conflicting authenticated terminal state without committing a terminal outcome 3136ms
+[02:10:55.316] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "abb89bcf-a089-4637-9452-d6838e2cd96f"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:10:55.335] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "abb89bcf-a089-4637-9452-d6838e2cd96f"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > holds conflicting authenticated terminal provider_time without committing a terminal outcome 3140ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > rejects signed timestamp 2026-09-05T00:00:00.1234567Z outside the decoder contract before storing resolution evidence 180ms
+[02:10:58.460] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "5351f214-59ff-4919-9515-c97682a35f39"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:10:58.490] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "5351f214-59ff-4919-9515-c97682a35f39"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:10:58.636] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "b995d9bc-d640-4e04-a1c7-dd40c5c479ac"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:10:58.665] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "b995d9bc-d640-4e04-a1c7-dd40c5c479ac"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:10:58.803] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "c155d714-e3f2-4bae-ad23-0c8eab1c04e8"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:10:58.822] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "c155d714-e3f2-4bae-ad23-0c8eab1c04e8"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > rejects signed timestamp 2026-09-05T24:00:00Z outside the decoder contract before storing resolution evidence 168ms
+[02:10:58.957] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "26f7e7aa-ef99-4ba4-a1e5-4c17816a7fb1"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:10:58.977] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "26f7e7aa-ef99-4ba4-a1e5-4c17816a7fb1"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > rejects signed timestamp 2026-09-05T00:00:60Z outside the decoder contract before storing resolution evidence 154ms
+[02:10:59.146] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "dec9c972-7802-49dd-aba1-074ff60e52c5"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:10:59.166] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "dec9c972-7802-49dd-aba1-074ff60e52c5"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > requires a prior outer COMMIT of signed verification even after a released savepoint 188ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > rolls back tentative terminal outcomes and exactly replays after a discarded COMMIT acknowledgement 3168ms
+[02:11:02.318] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "02c945c6-4935-4082-88a0-5aba3ad4c99c"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:11:02.338] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "02c945c6-4935-4082-88a0-5aba3ad4c99c"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > serializes concurrent restricted-worker resolution into one immutable terminal outcome 4659ms
+[02:11:06.976] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "495214af-581b-4c03-9c4a-4b29931f34d0"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:11:06.997] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "495214af-581b-4c03-9c4a-4b29931f34d0"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > keeps an admitted command pending when legacy caller-VERIFIED receipts have no independent verification 3145ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > admits authenticated preparation into REQUESTED and replays with exactly one outbox entry through the API login 112ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > refuses REQUESTED for an otherwise valid legacy owner-created preparation without authenticated provenance 86ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > prepares and exactly replays through real API and attester logins with immutable provenance 121ms
+[02:11:10.122] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "d1b79fe1-d23c-4de1-beba-0a76d524206a"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:11:10.143] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "d1b79fe1-d23c-4de1-beba-0a76d524206a"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:11:10.230] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "19cd8c32-9a7f-4653-af71-eaf910f5e506"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:11:10.254] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "19cd8c32-9a7f-4653-af71-eaf910f5e506"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:11:10.317] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "6694f4f0-9e59-47bf-8c56-086693e03ad4"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:11:10.337] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "6694f4f0-9e59-47bf-8c56-086693e03ad4"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:11:10.483] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "90651d25-c34f-47f2-8b7a-74abcbe4c86e"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:11:10.518] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "90651d25-c34f-47f2-8b7a-74abcbe4c86e"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > preserves exact authenticated unbound preparation replay after real estimate acceptance binds the draft 441ms
+[02:11:10.886] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "e03d6390-994d-4988-8e8e-7db9abc2ecba"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:11:10.910] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "e03d6390-994d-4988-8e8e-7db9abc2ecba"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:11:10.962] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "71a60205-3cc2-4c9c-838b-f36e7f01328a"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:11:10.986] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "71a60205-3cc2-4c9c-838b-f36e7f01328a"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:11:11.060] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "4fd1c89e-ded7-46c3-9921-7ab501a7dca4"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:11:11.082] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "4fd1c89e-ded7-46c3-9921-7ab501a7dca4"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > rolls back assertion consumption and preparation when an authenticated different customer submits 178ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > binds all fields to the assertion and refuses token reuse after one committed preparation 99ms
+[02:11:11.158] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "c3715496-c486-4260-8981-462c75b1a062"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:11:11.180] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "c3715496-c486-4260-8981-462c75b1a062"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > refuses nonzero PREPARE provider version at the public canonical builder 71ms
+[02:11:11.228] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "5258e8de-2265-427c-b02e-1bf71ccbaa02"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:11:11.250] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "5258e8de-2265-427c-b02e-1bf71ccbaa02"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:11:11.348] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "88161447-f2e1-4931-b5f4-bcfb3c8fb51c"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:11:11.371] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "88161447-f2e1-4931-b5f4-bcfb3c8fb51c"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > binds predecessor reads to the complete tuple and one-use command-kind assertion 121ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > rechecks a revoked actor at the predecessor read port without consuming its assertion 94ms
+[02:11:11.479] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "95e67fbb-bbb8-4042-b162-991630067d84"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:11:11.505] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "95e67fbb-bbb8-4042-b162-991630067d84"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > refuses a historical REPEATABLE READ snapshot for a fresh predecessor read 3ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > refuses a historical SERIALIZABLE snapshot for a fresh predecessor read 3ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > limits the authenticated predecessor read to API and keeps its internal financial projection sealed 27ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > binds progress to the exact command and one-use assertion, including absent commands 122ms
+[02:11:11.599] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "6aa96115-7902-4637-9dbc-8c25d307fdfe"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:11:11.620] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "6aa96115-7902-4637-9dbc-8c25d307fdfe"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > rechecks a revoked actor when consuming a previously issued progress assertion 90ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > limits authenticated progress to the API and keeps the internal projection sealed 11ms
+[02:11:11.733] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "ae89dbd6-c6ba-4f38-84c8-6b86a0b696a5"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:11:11.755] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "ae89dbd6-c6ba-4f38-84c8-6b86a0b696a5"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > denies raw preparation/provenance reads and the legacy actor-supplied insert port to runtime logins 29ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > work order history reads the exact committed Phase A through the restricted API login 546ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > certifies the exact full catalog through the real migrationRole login 521ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > certifies the exact full catalog through the real apiRole login 438ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > certifies the exact full catalog through the real workerRole login 449ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > certifies the exact full catalog through the real attesterRole login 509ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > limits durable discovery and restoration to the worker login without exposing table access 11ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > keeps all runtime logins outside the v13 relations and NOLOGIN owners 139ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > verifies every production startup migration through the genuine apiRole login 62ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > verifies every production startup migration through the genuine workerRole login 40ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > verifies every production startup migration through the genuine attesterRole login 40ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > reads exact metadata through real runtime logins while denying raw evidence access 169ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > preserves missing, null and duplicate applied receipts in the metadata output 25ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > runs bounded multiquery attestation through the real api data plane with a stable read-only snapshot 676ms
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > runs bounded multiquery attestation through the real attester data plane with a stable read-only snapshot 751ms
+[02:11:16.110] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "d9213836-04fb-47b7-a6e1-53c797ce2bca"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[02:11:16.132] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "d9213836-04fb-47b7-a6e1-53c797ce2bca"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ ✓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > preserves committed predecessor source identity under fresh read authority after target rollover 3790ms
+ ✓ backend/tests/system/nonproduction-financial-guarded-readiness.pg.test.ts > signed test authority through actual financial readiness data plane > runs actual api startup migration checks and financial readiness through the guarded pool 2018ms
+ ✓ backend/tests/system/nonproduction-financial-guarded-readiness.pg.test.ts > signed test authority through actual financial readiness data plane > re-attests api after physical pool shutdown 1780ms
+ ✓ backend/tests/system/nonproduction-financial-guarded-readiness.pg.test.ts > signed test authority through actual financial readiness data plane > rejects api custody drift after connection attestation 1586ms
+ ✓ backend/tests/system/nonproduction-financial-guarded-readiness.pg.test.ts > signed test authority through actual financial readiness data plane > runs actual worker startup migration checks and financial readiness through the guarded pool 1847ms
+ ✓ backend/tests/system/nonproduction-financial-guarded-readiness.pg.test.ts > signed test authority through actual financial readiness data plane > re-attests worker after physical pool shutdown 1722ms
+ ✓ backend/tests/system/nonproduction-financial-guarded-readiness.pg.test.ts > signed test authority through actual financial readiness data plane > rejects worker custody drift after connection attestation 1558ms
+ ✓ backend/tests/system/nonproduction-financial-guarded-readiness.pg.test.ts > signed test authority through actual financial readiness data plane > refuses the ephemeral test signer at the normal process composition boundary 3ms
+ ✓ backend/tests/system/nonproduction-financial-guarded-readiness.pg.test.ts > signed test authority through actual financial readiness data plane > blocks old API/worker capabilities after target rollover and requires fresh attestation 3470ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > reports actual backend readiness with current restricted roles and an exact local release 913ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > reports actual worker readiness with current restricted roles and an exact local release 864ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on retained helper moved outside configured custody 1044ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on retained helper missing from its required identity 1062ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on residual column SELECT 997ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on retained function EXECUTE by attester 973ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on digest ownership drift 1055ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on missing finance digest EXECUTE 990ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on digest detached from pgcrypto 1008ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on database CREATE 993ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on database TEMP 990ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on public schema USAGE grant option 1166ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on private schema USAGE 1067ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on residual custodian default function grant 939ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on residual relation owner drift 1141ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on compensation origin missing target FK 1262ms
+ × backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on compensation origin disabled private FK trigger 402ms
+   → expected [] to include 'FOREIGN_KEY_TRIGGER_ENFORCEMENT_INVAL…'
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on compensation origin changed origin timestamp default 1264ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on a disabled incoming FK constraint trigger 1021ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on compensation origin disabled private FK trigger
+AssertionError: expected [] to include 'FOREIGN_KEY_TRIGGER_ENFORCEMENT_INVAL…'
+ ❯ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts:402:37
+    400|         expect(result.report).toMatchObject({ ready: false });
+    401|         if (mode === 'disabled private FK trigger')
+    402|           expect(result.violations).toContain('FOREIGN_KEY_TRIGGER_ENF…
+       |                                     ^
+    403|       } finally {
+    404|         await fixture.pool.query(restore);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed | 3 passed (4)
+      Tests  1 failed | 262 passed (263)
+   Start at  18:58:43
+   Duration  826.16s (transform 2.36s, setup 2.31s, import 5.32s, tests 817.51s, environment 1ms)
+

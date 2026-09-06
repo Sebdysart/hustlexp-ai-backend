@@ -1,0 +1,29 @@
+FOCUSED DIAGNOSTIC: bounded read-only local PG16 identity verified; existing unique-database restrictions and loopback Redis preserved. Complete readiness cohort after diagnostic-collector correction; not the full release gate.
+
+ RUN  v4.1.10 C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip
+
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > reports actual backend readiness with current restricted roles and an exact local release 873ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > reports actual worker readiness with current restricted roles and an exact local release 816ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on retained helper moved outside configured custody 1113ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on retained helper missing from its required identity 1197ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on residual column SELECT 1134ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on retained function EXECUTE by attester 945ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on digest ownership drift 974ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on missing finance digest EXECUTE 995ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on digest detached from pgcrypto 1115ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on database CREATE 1133ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on database TEMP 1056ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on public schema USAGE grant option 1110ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on private schema USAGE 1112ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on residual custodian default function grant 1014ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on residual relation owner drift 1140ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on compensation origin missing target FK 1582ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on compensation origin disabled private FK trigger 1408ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on compensation origin changed origin timestamp default 1593ms
+ ✓ backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts > v13 actual financial bootstrap readiness > fails closed on a disabled incoming FK constraint trigger 1114ms
+
+ Test Files  1 passed (1)
+      Tests  19 passed (19)
+   Start at  19:13:51
+   Duration  44.34s (transform 641ms, setup 1.07s, import 452ms, tests 42.54s, environment 0ms)
+

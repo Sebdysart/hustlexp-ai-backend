@@ -399,23 +399,23 @@ const CRITICAL_SCHEMA_IDENTITY_NAMES = Object.freeze([
 const CRITICAL_SCHEMA_EVIDENCE = Object.freeze([
   {
     identityName: 'relations',
-    sha256: 'e4e0706947648698ae01a70019a36eb149a8d9f6910b6d72e055f5e5c3926e42',
+    sha256: 'd7ecec5ae7c04077d62fb668486f9726e89d8231f46106a84c797117779ab2ca',
   },
   {
     identityName: 'constraints',
-    sha256: '927c550aa4be246f95a31b19c35cabc59021b00133e794c7bad284c472cf08ef',
+    sha256: '84c8b54a03bd4c2ac2340b977adb5c9d1ee59e22b4d5e949d39ab0ca58a203b3',
   },
   {
     identityName: 'indexes',
-    sha256: '9f801062d6308c63a0c14b5aeb94f7d05de779acf3e4135025905ae714766353',
+    sha256: '9f37130df486b14ea943e255ab81ba4df1acf347bb26232b0e46ce11e4b9784f',
   },
   {
     identityName: 'functions',
-    sha256: '69475967edb0c64491291d494452af0437154370323744815b8138db9291d141',
+    sha256: 'afca9d4e36d964306a051e5d831176ae764406fccfd702cbf85d6a5f3aacfa69',
   },
   {
     identityName: 'triggers',
-    sha256: 'fbc7b1d95fa35a96f9fdca5c29ce5609f0c67fa64885b49a18bf9acf8a1a94b4',
+    sha256: 'fc06d8677aafd69d1fd496d75f43bac0f41e5216c74787b097addfdc7b1cbbb1',
   },
   {
     identityName: 'rewrite_rules',
@@ -423,7 +423,7 @@ const CRITICAL_SCHEMA_EVIDENCE = Object.freeze([
   },
   {
     identityName: 'constraint_triggers',
-    sha256: 'd0a58b6800f3c206647eee9d4ea461fbd18c06f144fb2a800d5136788bd5ab72',
+    sha256: 'd7d9a944695d458e29b98dfb896c0e0578b2fc6604dca036cd57d36d96ff354f',
   },
   {
     identityName: 'policies',
@@ -669,9 +669,9 @@ async function readCriticalSchemaIdentityEvidence(
        SELECT configured.key AS role_label, role_record.oid AS role_oid
        FROM pg_catalog.jsonb_each_text($1::jsonb) configured
        JOIN pg_catalog.pg_roles role_record ON role_record.rolname=configured.value
-     ), target_relations(relation_name) AS (
-       VALUES
-         ${sqlTextValues(CRITICAL_RELATION_NAMES)}
+     ), target_relations(relation_name,schema_name) AS (
+       SELECT relation_name,'public' FROM (VALUES ${sqlTextValues(CRITICAL_RELATION_NAMES)}) configured(relation_name)
+       UNION ALL SELECT 'fake_financial_change_order_compensation_origins_v13','hx_authority'
      ), target_functions(function_name) AS (
        VALUES
          ${sqlTextValues(CRITICAL_FUNCTION_NAMES)}
@@ -695,7 +695,7 @@ async function readCriticalSchemaIdentityEvidence(
               relation.reloptions
          FROM target_relations target
          LEFT JOIN pg_catalog.pg_namespace namespace
-           ON namespace.nspname = 'public'
+           ON namespace.nspname = target.schema_name
          LEFT JOIN pg_catalog.pg_class relation
            ON relation.relnamespace = namespace.oid
           AND relation.relname = target.relation_name
@@ -758,11 +758,11 @@ async function readCriticalSchemaIdentityEvidence(
          LEFT JOIN pg_catalog.pg_namespace referenced_namespace
            ON referenced_namespace.oid = referenced_relation.relnamespace
         WHERE ((
-            namespace.nspname = 'public'
-            AND relation.relname IN (SELECT relation_name FROM target_relations)
+            EXISTS (SELECT 1 FROM target_relations target
+              WHERE target.schema_name=namespace.nspname AND target.relation_name=relation.relname)
           ) OR (
-            referenced_namespace.nspname = 'public'
-            AND referenced_relation.relname IN (SELECT relation_name FROM target_relations)
+            EXISTS (SELECT 1 FROM target_relations target
+              WHERE target.schema_name=referenced_namespace.nspname AND target.relation_name=referenced_relation.relname)
           ))
           AND constraint_record.contype IN ('p', 'f', 'u', 'c')
      ), index_identities AS (
@@ -800,8 +800,8 @@ async function readCriticalSchemaIdentityEvidence(
            ON index_relation.oid = index_record.indexrelid
          JOIN pg_catalog.pg_am access_method
            ON access_method.oid = index_relation.relam
-        WHERE namespace.nspname = 'public'
-          AND relation.relname IN (SELECT relation_name FROM target_relations)
+        WHERE EXISTS (SELECT 1 FROM target_relations target
+              WHERE target.schema_name=namespace.nspname AND target.relation_name=relation.relname)
      ), extension_function_members AS (
        SELECT extension_dependency.objid AS function_oid,
               extension_record.extname AS extension_name
@@ -944,8 +944,8 @@ async function readCriticalSchemaIdentityEvidence(
            ON function_record.oid = trigger_record.tgfoid
          JOIN pg_catalog.pg_namespace function_namespace
            ON function_namespace.oid = function_record.pronamespace
-        WHERE namespace.nspname = 'public'
-          AND relation.relname IN (SELECT relation_name FROM target_relations)
+        WHERE EXISTS (SELECT 1 FROM target_relations target
+              WHERE target.schema_name=namespace.nspname AND target.relation_name=relation.relname)
           AND NOT trigger_record.tgisinternal
      ), rewrite_rule_identities AS (
        SELECT namespace.nspname || '.' || relation.relname || '.' ||
@@ -961,8 +961,8 @@ async function readCriticalSchemaIdentityEvidence(
            ON relation.oid = rewrite_record.ev_class
          JOIN pg_catalog.pg_namespace namespace
            ON namespace.oid = relation.relnamespace
-        WHERE namespace.nspname = 'public'
-          AND relation.relname IN (SELECT relation_name FROM target_relations)
+        WHERE EXISTS (SELECT 1 FROM target_relations target
+              WHERE target.schema_name=namespace.nspname AND target.relation_name=relation.relname)
      ), constraint_trigger_identities AS (
        SELECT constraint_relation.relname || '.' || constraint_record.conname || '|' ||
               trigger_relation.relname || '|' || function_record.proname || '|' ||
@@ -996,11 +996,11 @@ async function readCriticalSchemaIdentityEvidence(
          LEFT JOIN pg_catalog.pg_namespace referenced_namespace
            ON referenced_namespace.oid = referenced_relation.relnamespace
         WHERE ((
-            constraint_namespace.nspname = 'public'
-            AND constraint_relation.relname IN (SELECT relation_name FROM target_relations)
+            EXISTS (SELECT 1 FROM target_relations target
+              WHERE target.schema_name=constraint_namespace.nspname AND target.relation_name=constraint_relation.relname)
           ) OR (
-            referenced_namespace.nspname = 'public'
-            AND referenced_relation.relname IN (SELECT relation_name FROM target_relations)
+            EXISTS (SELECT 1 FROM target_relations target
+              WHERE target.schema_name=referenced_namespace.nspname AND target.relation_name=referenced_relation.relname)
           ))
           AND constraint_record.contype IN ('p', 'f', 'u', 'c')
      ), policy_identities AS (
@@ -1031,8 +1031,8 @@ async function readCriticalSchemaIdentityEvidence(
            ON relation.oid = policy_record.polrelid
          JOIN pg_catalog.pg_namespace namespace
            ON namespace.oid = relation.relnamespace
-        WHERE namespace.nspname = 'public'
-          AND relation.relname IN (SELECT relation_name FROM target_relations)
+        WHERE EXISTS (SELECT 1 FROM target_relations target
+              WHERE target.schema_name=namespace.nspname AND target.relation_name=relation.relname)
      ), extension_identities AS (
        SELECT target.extension_name AS object_name,
               CASE WHEN extension_record.oid IS NULL THEN 'MISSING'
@@ -1170,8 +1170,9 @@ async function readInternalConstraintViolations(
   query: QueryFn
 ): Promise<DatabaseAuthorityViolationRow[]> {
   const result =
-    await query<DatabaseAuthorityViolationRow>(`WITH target_relations(relation_name) AS (
-    VALUES ${sqlTextValues(CRITICAL_RELATION_NAMES)}
+    await query<DatabaseAuthorityViolationRow>(`WITH target_relations(relation_name,schema_name) AS (
+       SELECT relation_name,'public' FROM (VALUES ${sqlTextValues(CRITICAL_RELATION_NAMES)}) configured(relation_name)
+       UNION ALL SELECT 'fake_financial_change_order_compensation_origins_v13','hx_authority'
   ), target_foreign_keys AS (
        SELECT constraint_record.oid
          FROM pg_catalog.pg_constraint constraint_record
@@ -1184,11 +1185,11 @@ async function readInternalConstraintViolations(
          LEFT JOIN pg_catalog.pg_namespace referenced_namespace
            ON referenced_namespace.oid = referenced_relation.relnamespace
         WHERE ((
-            namespace.nspname = 'public'
-            AND relation.relname IN (SELECT relation_name FROM target_relations)
+            EXISTS (SELECT 1 FROM target_relations target
+              WHERE target.schema_name=namespace.nspname AND target.relation_name=relation.relname)
           ) OR (
-            referenced_namespace.nspname = 'public'
-            AND referenced_relation.relname IN (SELECT relation_name FROM target_relations)
+            EXISTS (SELECT 1 FROM target_relations target
+              WHERE target.schema_name=referenced_namespace.nspname AND target.relation_name=referenced_relation.relname)
           ))
           AND constraint_record.contype = 'f'
      ), foreign_key_trigger_state AS (
@@ -1217,11 +1218,11 @@ async function readInternalConstraintViolations(
          LEFT JOIN pg_catalog.pg_namespace referenced_namespace
            ON referenced_namespace.oid = referenced_relation.relnamespace
         WHERE ((
-            namespace.nspname = 'public'
-            AND relation.relname IN (SELECT relation_name FROM target_relations)
+            EXISTS (SELECT 1 FROM target_relations target
+              WHERE target.schema_name=namespace.nspname AND target.relation_name=relation.relname)
           ) OR (
-            referenced_namespace.nspname = 'public'
-            AND referenced_relation.relname IN (SELECT relation_name FROM target_relations)
+            EXISTS (SELECT 1 FROM target_relations target
+              WHERE target.schema_name=referenced_namespace.nspname AND target.relation_name=referenced_relation.relname)
           ))
           AND trigger_record.tgisinternal
           AND trigger_record.tgenabled NOT IN ('O', 'A')

@@ -1,0 +1,289 @@
+{
+  "recordedAt": "2026-09-06T02:16:15.061Z",
+  "repository": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip",
+  "head": "36255e604e718320ccae7d4e3ac269ad09678205",
+  "status": "LOCAL_WORKER_COMPENSATION_WINNER_PASS",
+  "releaseEligible": false,
+  "goalComplete": false,
+  "productionEffects": "NONE",
+  "customerMoney": "FROZEN",
+  "hardAssignment": "FROZEN",
+  "previousGoalTurn": "PROGRESS_VERIFIED_OBSERVATION_AND_PUBLICATION",
+  "baseline": {
+    "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/change-order-recovery-compensation-baseline.json",
+    "sha256": "f238fc3fa6bc6b5f9d5317cce39f17bc1a39055fc79526dcdbacdc89c28ab188",
+    "sequence": "Incremental after the published worker recovery observation checkpoint."
+  },
+  "files": [
+    {
+      "path": "backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql",
+      "change": "modified",
+      "beforeSha256": "ef8faf0f0b753c51f02d4578f6dfd2da05d83dc282dc19e514187c403f669735",
+      "afterSha256": "d4c8fd24abed5adf887e40601ea97a2e395022e58e524975d9f9ac3f09b83ac2"
+    },
+    {
+      "path": "backend/src/jobs/change-order-recovery-role-plans.ts",
+      "change": "modified",
+      "beforeSha256": "5854c081ed2b50067e40ce552e1b9fe38041d26b02db91cb7b89f18f4db76412",
+      "afterSha256": "1343e6cbc50de2827f2eed347e3d5d0e43c4be73db0a7729aadf43b1c7271717"
+    },
+    {
+      "path": "backend/src/jobs/fake-financial-outbox-role-plans.ts",
+      "change": "modified",
+      "beforeSha256": "1e6217311367698c45db79059a46bf8cac1dc272616b20999c917a18792fcb3e",
+      "afterSha256": "5aaefb768e5b70d4b9b75f6b47d9facdd3be1ba087ab44e265a421bc8b4671e7"
+    },
+    {
+      "path": "backend/src/jobs/financial-readiness-custody.ts",
+      "change": "modified",
+      "beforeSha256": "d609d7e15f1263cfc343fba8d50770480c4f5292283ced8d538535d5671082e0",
+      "afterSha256": "aed76a0a3294ac00aec3f7533f8fe003110bee8a78ea14df7102078d4cae7dd9"
+    },
+    {
+      "path": "backend/src/jobs/work-order-command-role-authority.ts",
+      "change": "modified",
+      "beforeSha256": "2aa0fc3fd9546355ac83e4c9220aa2226815131320c7cbfdf22c9ba2b261c661",
+      "afterSha256": "78e3ff8ba72765b8555c63f4a37448065505dcdb31fdedc58e7704f86279994d"
+    },
+    {
+      "path": "backend/src/services/UniversalV1ChangeOrderRecoveryCompensation.ts",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "b553edf851e4996007c37d5161b758771d4af482b2e5e8534f60428783a23e4f"
+    },
+    {
+      "path": "backend/src/services/payment/NonproductionFinancialBootstrapReadiness.ts",
+      "change": "modified",
+      "beforeSha256": "530cc25ca467fe69bb5c3d4edfb3b9160f46d258087958b64ff582e1f440e2db",
+      "afterSha256": "6e7e430248a4a1b07c874a77f730e66783d8b608df34b354f17f1a95ef752b60"
+    },
+    {
+      "path": "backend/tests/helpers/universal-v1-synthetic-role-provisioning.ts",
+      "change": "modified",
+      "beforeSha256": "b7da655808ee03e6a0edeb559c1e3ec1b8db12f756727ec7ccb180914bf2f98e",
+      "afterSha256": "475dfbcc0210427f93959c8c03f4a8476cfee9cab58e496c1eec314f65581575"
+    },
+    {
+      "path": "backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts",
+      "change": "modified",
+      "beforeSha256": "d76fd72bfd507baf742b584177beed591d7c78da2f1ce35e8f78f8a9e210c53b",
+      "afterSha256": "46cac6f21d85c1e46b06c3f4db96ff6e72086b8acd8bf2e595d476e4dd8691b2"
+    },
+    {
+      "path": "backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts",
+      "change": "modified",
+      "beforeSha256": "93a7a18ffbc5154259d7ea505496547787d9350e33cf5a458dc397abfd8b6a38",
+      "afterSha256": "b3945ce4a369fd260904b145a20a943b199d6fa2b0b674c2df2b4e2bfe473c55"
+    },
+    {
+      "path": "backend/tests/unit/change-order-recovery-compensation.test.ts",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "482709e0f0ca3eede5d014ec50ac3f35c7a2528e77a61d9fbb0e914d2cbcc5ca"
+    },
+    {
+      "path": "backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts",
+      "change": "modified",
+      "beforeSha256": "b37b9507b010b214b42c870828290378aa838855ab0253732b7662e68d44dc71",
+      "afterSha256": "27f1a9648ec389d8c49398d302faf1ae4e52dd85b3c2eea979959b7de406d827"
+    },
+    {
+      "path": "backend/tests/unit/work-order-command-role-authority.test.ts",
+      "change": "modified",
+      "beforeSha256": "d629435334f292b3aad0925cc040aac7b3fe0fcb2c99d1cfd59228d9f31e09a9",
+      "afterSha256": "2228598302b4c2ba5d8dba1a927df3354e56c354d5af9472e0a89bea65622b46"
+    }
+  ],
+  "patchSha256": "a36cc6a93ab4dd4ac4df8f680c1c43acec8c3446c4351bf56e34ea2582285ef7",
+  "patchBytes": 95925,
+  "logs": [
+    {
+      "path": "change-order-recovery-compensation-units-4.log",
+      "sha256": "864c1013cc47e568f12f9ca68476d461b23e8bff73cbe3b050cfced2f1b356e3"
+    },
+    {
+      "path": "change-order-recovery-compensation-types-2.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "change-order-recovery-compensation-compile.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "change-order-recovery-compensation-lint.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "change-order-recovery-compensation-domain-full.log",
+      "sha256": "684597f7d1dd7264dec2a510bba7bcd928a643e8470f3b5a78506296df7784f5"
+    },
+    {
+      "path": "change-order-recovery-compensation-readiness-full-2.log",
+      "sha256": "f2774abeac22fd1731b0d77b8030ae0dd3e11fa6e54d5589e3689eafbdd9633c"
+    },
+    {
+      "path": "change-order-recovery-compensation-red.log",
+      "sha256": "31c7079c01d9e3e1d05508ac4133177d6cc2d1f8f095b4cc2f7f0b35aceca5ac"
+    }
+  ],
+  "integrationObservation": {
+    "path": "work/change-order-recovery-compensation-integration-observation.json",
+    "recordedAt": "2026-09-06T02:13:46.555Z",
+    "sha256": "5539dd31e986fd091f4224bfc4805b5a2605890f2cfb10133135426f556a0f4d",
+    "scope": "Final source observed before full readiness rerun. Application and other three cohort source bytes match the earlier full run; the exact inverse-byte proof is recorded in the composed cohort evidence."
+  },
+  "validation": {
+    "unitContracts": {
+      "files": 7,
+      "passed": 246,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    "financialAndReadinessRegression": {
+      "files": 4,
+      "passed": 263,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0,
+      "evidenceComposition": "Three unchanged passing cohorts from the first full run plus the complete 19-case readiness rerun after a test-only diagnostic collector correction; not one Vitest invocation."
+    },
+    "sourceCompilation": "PASS",
+    "expandedTestTypes": "PASS",
+    "allSourceLintZeroWarnings": "PASS",
+    "gitDiffCheck": "PASS",
+    "patchReverseCheck": "PASS",
+    "patchForwardByteReproduction": "PASS",
+    "unrelatedWorktreePreserved": true,
+    "baselineInventoryEntries": 1792,
+    "currentInventoryEntries": 1794,
+    "fullRequiredGate": {
+      "status": "FAIL",
+      "passed": 10571,
+      "failed": 27,
+      "skipped": 33,
+      "todo": 0,
+      "files": 684,
+      "sourceRelation": "Prior full required run. Not rerun on these bytes; focused successes do not replace it."
+    }
+  },
+  "semanticReview": {
+    "catalogCapture": "backend-change-order-recovery-compensation-catalog-capture.json",
+    "catalogSha256": "33f79c543c862514e834059354f3f2a7004d01cde4143de6c4ceed289e71ee52",
+    "v13MigrationSha256": "d4c8fd24abed5adf887e40601ea97a2e395022e58e524975d9f9ac3f09b83ac2",
+    "functionCatalog": {
+      "function_count": 153,
+      "function_catalog_sha256": "0b8c8f301119ddd8480ee5de22886f7ff440be1a1d79e0df3d030ca9aa681105"
+    },
+    "triggerCatalog": {
+      "trigger_count": 345,
+      "trigger_catalog_sha256": "ae6a3003d3c0b6f3a00780142e750bca7a3749c9002f131e95e96baa742c0a23"
+    },
+    "predecessorV13TextUnchanged": true,
+    "independentFreshCatalogs": 2,
+    "frozenMigrations": {
+      "20261014_universal_v1_work_order_command_ports_v1.sql": "3920ac8d3208b9f573dc331cab60c373d0349611700c6e14a6e4c1dd8c53aac4",
+      "20261015_universal_v1_work_order_fake_financial_authority_hardening_v12.sql": "5bb8ee72b9113146b88c22c6751ebe527ba6246b4463a8611ef9c24b999b7ac5",
+      "20261015_universal_v1_work_order_bootstrap_seal_v1.sql": "c69825589193885d0f6a3b93930880998e95e1c5cd44bb9b5999cb457192b2bd"
+    },
+    "criticalFunctionsSha256": "afca9d4e36d964306a051e5d831176ae764406fccfd702cbf85d6a5f3aacfa69"
+  },
+  "review": {
+    "kind": "Root source and integration review plus independent read-only agent review; required independent human release review remains outstanding",
+    "evidenceBoundary": "Nine new actual PostgreSQL cases cover revoked-customer and public delegate-owned claims, restored authority replay, amendment precedence, legacy origin-null winners, principal and financial lock races, rollback, and natural lease expiry while origin insertion is blocked. Three readiness cases cover missing private origin FK, disabled internal FK trigger and changed timestamp default. Installed runtime identity remains synthetic. JSON timestamps preserve original microsecond strings; JavaScript comparison precision remains milliseconds, while SQL enforces exact lease expiry."
+  },
+  "behavior": [
+    "Worker-only sealed compensation claim validates exact current target/release, proposal, lease, witness, Work Order and admitted successful ADJUST",
+    "Sorted locked current principal/domain revocation evidence and deterministic N+2/base-scope reversal identity; amendment and existing compensation precedence",
+    "Atomic append-only worker provenance preserves the historical requested_by participant and distinguishes current service identity; legacy winner origin remains null",
+    "Try financial advisory locks refuse inverted-order contention; final exact SQL clock check rolls back late winner and origin writes",
+    "Namespace-aware readiness covers the private origin relation, five foreign keys, internal and explicit triggers, defaults and indexes; exact new object ACL scrub and named finance permissions"
+  ],
+  "docs": {
+    "checkedAtUtc": "2026-09-06 01:18:23 UTC",
+    "modificationTimesUnchanged": true
+  },
+  "remaining": [
+    "Worker-origin-derived durable REVERSAL preparation/request, explicit legacy adoption if needed, exact materialized/compensated/no-effect terminal writers",
+    "Remaining compensation observations, NO_EFFECT versus request/first-admission races, and scheduled-worker integration",
+    "Remaining financial/account callers, current-Docs product work, all thirteen end-to-end journeys and full zero-failure/skip/todo required gate",
+    "Clean clones, signatures, protected independent human review and isolated staging"
+  ],
+  "publicationAuthorization": "User explicitly requested publication of all work to a public branch. This WIP publication is separate from release certification.",
+  "cohortEvidence": {
+    "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/outputs/backend-change-order-recovery-compensation-cohort-evidence.json",
+    "sha256": "151b3c54ac061ca4e3594dab05a7e3884f61e40ec0ecda862e2df602de654ae9",
+    "recordedAt": "2026-09-06T02:16:13.417Z",
+    "kind": "COMPOSED_COMPLETE_COHORT_EVIDENCE",
+    "notOneVitestInvocation": true,
+    "files": 4,
+    "passed": 263,
+    "failed": 0,
+    "skipped": 0,
+    "todo": 0,
+    "cohorts": [
+      {
+        "path": "backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts",
+        "passed": 116,
+        "failed": 0,
+        "skipped": 0,
+        "todo": 0,
+        "sourceLog": "change-order-recovery-compensation-domain-full.log",
+        "sourceRelation": "Test and application source unchanged after this run"
+      },
+      {
+        "path": "backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts",
+        "passed": 120,
+        "failed": 0,
+        "skipped": 0,
+        "todo": 0,
+        "sourceLog": "change-order-recovery-compensation-domain-full.log",
+        "sourceRelation": "Test and application source unchanged after this run"
+      },
+      {
+        "path": "backend/tests/system/nonproduction-financial-guarded-readiness.pg.test.ts",
+        "passed": 8,
+        "failed": 0,
+        "skipped": 0,
+        "todo": 0,
+        "sourceLog": "change-order-recovery-compensation-domain-full.log",
+        "sourceRelation": "Test and application source unchanged after this run"
+      },
+      {
+        "path": "backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts",
+        "passed": 19,
+        "failed": 0,
+        "skipped": 0,
+        "todo": 0,
+        "sourceLog": "change-order-recovery-compensation-readiness-full-2.log",
+        "sourceRelation": "Complete rerun on final test helper; application source unchanged"
+      }
+    ],
+    "logs": [
+      {
+        "path": "change-order-recovery-compensation-domain-full.log",
+        "sha256": "684597f7d1dd7264dec2a510bba7bcd928a643e8470f3b5a78506296df7784f5"
+      },
+      {
+        "path": "change-order-recovery-compensation-readiness-full-2.log",
+        "sha256": "f2774abeac22fd1731b0d77b8030ae0dd3e11fa6e54d5589e3689eafbdd9633c"
+      }
+    ],
+    "originalRun": {
+      "passed": 262,
+      "failed": 1,
+      "skipped": 0,
+      "todo": 0,
+      "exitCode": 1
+    },
+    "correction": {
+      "path": "backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts",
+      "scope": "Only test diagnostic collector adds the existing internal foreign-key query; application and remaining test source unchanged",
+      "beforeSha256": "1650561a5833e30fc013ee64c4b73b22f959317e0ade6d1d88b7865034a3fccd",
+      "afterSha256": "46cac6f21d85c1e46b06c3f4db96ff6e72086b8acd8bf2e595d476e4dd8691b2",
+      "inverseByteProof": true
+    },
+    "applicationSourceUnchanged": true,
+    "finalSourceObservation": "2026-09-06T02:13:46.555Z"
+  }
+}

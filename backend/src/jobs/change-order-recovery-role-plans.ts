@@ -93,3 +93,64 @@ export const CHANGE_ORDER_RECOVERY_OBSERVATION_READ_COLUMNS: Readonly<
     'permitted_work_categories',
   ],
 };
+
+export const CHANGE_ORDER_RECOVERY_COMPENSATION_FUNCTION =
+  'public.hxos_claim_fake_financial_change_order_compensation_v13(uuid,text,text,text,uuid,uuid,uuid,text,uuid,uuid)';
+export const CHANGE_ORDER_RECOVERY_COMPENSATION_ORIGINS =
+  'hx_authority.fake_financial_change_order_compensation_origins_v13';
+export const CHANGE_ORDER_RECOVERY_COMPENSATION_DEPENDENCIES = [
+  'public.universal_v1_change_order_recovery_lease_is_active_v1(uuid,uuid,uuid)',
+  'public.universal_v1_change_order_recovery_uuid_v1(text,text)',
+  'public.digest(text,text)',
+] as const;
+export const CHANGE_ORDER_RECOVERY_COMPENSATION_INSERT_COLUMNS: Readonly<
+  Record<string, readonly string[]>
+> = {
+  'public.universal_v1_change_order_compensation_commands': [
+    'proposal_id',
+    'recovery_lease_id',
+    'lease_owner_id',
+    'adjustment_event_id',
+    'requested_by',
+    'reason_code',
+  ],
+};
+export const CHANGE_ORDER_RECOVERY_COMPENSATION_READ_COLUMNS: Readonly<
+  Record<string, readonly string[]>
+> = {
+  'public.task_work_order_amendments': ['adjustment_event_id'],
+  'public.universal_v1_change_order_compensation_commands': [
+    'recovery_lease_id',
+    'lease_owner_id',
+    'reason_code',
+    'authority_revocation_reason',
+  ],
+  'public.business_memberships': ['id'],
+  'public.task_scope_change_approvals': ['id'],
+  'public.business_credentials': ['id'],
+  'public.verified_trades': [
+    'user_id',
+    'provider_organization_id',
+    'business_credential_id',
+    'trade',
+  ],
+  'public.task_drafts': ['poster_user_id', 'claimed_at', 'ingress_origin'],
+};
+// UPDATE on one named column permits locking; existing immutable row guards remain.
+export const CHANGE_ORDER_RECOVERY_COMPENSATION_LOCK_COLUMNS: Readonly<
+  Record<string, readonly string[]>
+> = {
+  'public.task_work_orders': ['id'],
+  'public.tasks': ['id'],
+  'public.task_drafts': ['id'],
+  'public.task_scope_change_proposals': ['id'],
+  'public.task_provider_eligibility_decisions': ['id'],
+  'public.task_scope_versions': ['id'],
+  'public.task_scope_change_approvals': ['id'],
+  'public.users': ['id'],
+  'public.business_organizations': ['id'],
+  'public.business_memberships': ['id'],
+  'public.capability_profiles': ['user_id'],
+  'public.business_credentials': ['id'],
+  'public.verified_trades': ['user_id'],
+};

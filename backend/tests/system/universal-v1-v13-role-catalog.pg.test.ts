@@ -3120,7 +3120,8 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
   async function claimChangeOrderRecovery(
     client: pg.Client | pg.Pool,
     leaseOwnerId = randomUUID(),
-    overrides: unknown[] = []
+    overrides: unknown[] = [],
+    leaseDurationSeconds = 300
   ) {
     const target = (
       await fixture.pool.query(
@@ -3138,7 +3139,7 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
             target.release_manifest_sha256,
             leaseOwnerId,
             100,
-            300,
+            leaseDurationSeconds,
             5,
           ]
     );
@@ -3168,17 +3169,503 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
   }
 
   async function recoveryObservationLease(
-    setup: Awaited<ReturnType<typeof changeOrderHistoryFixture>>
+    setup: Awaited<ReturnType<typeof changeOrderHistoryFixture>>,
+    leaseDurationSeconds = 300
   ) {
     await fixture.pool.query(
       'SELECT pg_sleep(GREATEST(0,5.05-EXTRACT(EPOCH FROM (clock_timestamp()-prepared_at)))) FROM public.universal_v1_change_order_materialization_commands WHERE proposal_id=$1',
       [setup.changePhase.context.proposalId]
     );
-    const result = await claimChangeOrderRecovery(clients.get('workerRole')!);
+    const result = await claimChangeOrderRecovery(
+      clients.get('workerRole')!,
+      undefined,
+      [],
+      leaseDurationSeconds
+    );
     const lease = result.rows.find((row) => row.proposal_id === setup.payload.proposal_id)!;
     expect(lease).toBeDefined();
     return lease;
   }
+
+  async function compensationWinnerFixture(leaseDurationSeconds = 300) {
+    const setup = await changeOrderHistoryFixture(),
+      worker = clients.get('workerRole')!;
+    await setup.execute();
+    const outcome = (
+      await worker.query('SELECT * FROM public.hxos_record_fake_financial_outcome_v13($1,$2,$3)', [
+        setup.binding.admission.job_validation_id,
+        setup.binding.workerId,
+        setup.binding.admission.recovery_lease_id,
+      ])
+    ).rows[0];
+    const event = (
+      await worker.query('SELECT * FROM public.hxos_materialize_fake_financial_event_v13($1,$2)', [
+        setup.binding.admission.job_validation_id,
+        outcome.outcome_fact.outcome_fact_id,
+      ])
+    ).rows[0].financial_event;
+    const lease = await recoveryObservationLease(setup, leaseDurationSeconds);
+    return { setup, event, lease };
+  }
+
+  async function claimCompensationWinner(
+    lease: pg.QueryResultRow,
+    eventId: string,
+    client = clients.get('workerRole')!,
+    overrides: unknown[] = []
+  ) {
+    return client.query(
+      'SELECT * FROM public.hxos_claim_fake_financial_change_order_compensation_v13($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',
+      overrides.length
+        ? overrides
+        : [
+            lease.target_authority_id,
+            new URL(fixture.databaseUrl).pathname.slice(1),
+            'local',
+            lease.release_manifest_digest,
+            lease.proposal_id,
+            lease.recovery_lease_id,
+            lease.lease_owner_id,
+            lease.witness_request_sha256,
+            lease.work_order_id,
+            eventId,
+          ]
+    );
+  }
+
+  it('worker change order compensation creates one immutable winner after customer revocation', async () => {
+    const { setup, event, lease } = await compensationWinnerFixture();
+    await fixture.pool.query('UPDATE public.users SET is_banned=TRUE WHERE id=$1', [
+      setup.lane.posterUserId,
+    ]);
+    const result = await claimCompensationWinner(lease, event.id);
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({
+      target_authority_id: lease.target_authority_id,
+      release_manifest_digest: lease.release_manifest_digest,
+      resolution: {
+        kind: 'COMPENSATE',
+        command: {
+          proposal_id: lease.proposal_id,
+          witness_request_sha256: lease.witness_request_sha256,
+          adjustment_event_id: event.id,
+          requested_by: setup.lane.posterUserId,
+          lifecycle_expected_version: setup.changePhase.context.expectedFinancialVersion + 2,
+          amount_cents: setup.changePhase.context.customerTotalCents,
+          semantic_limitation: 'PRIOR_SECURED_STATE_NOT_RESTORED',
+        },
+      },
+    });
+    const before = (
+      await fixture.pool.query(
+        'SELECT to_jsonb(c) AS command FROM public.universal_v1_change_order_compensation_commands c WHERE proposal_id=$1',
+        [lease.proposal_id]
+      )
+    ).rows[0].command;
+    const origins = await fixture.pool.query(
+      'SELECT * FROM hx_authority.fake_financial_change_order_compensation_origins_v13 WHERE compensation_command_id=$1',
+      [before.compensation_command_id]
+    );
+    expect(origins.rows).toHaveLength(1);
+    expect(origins.rows[0]).toMatchObject({
+      target_authority_id: lease.target_authority_id,
+      service_database_role: roles.workerRole,
+      recovery_lease_id: lease.recovery_lease_id,
+      witness_request_sha256: lease.witness_request_sha256,
+      adjustment_event_id: event.id,
+      revocation_reason: 'CUSTOMER_ACTOR_AUTHORITY_REVOKED',
+    });
+    await fixture.pool.query('UPDATE public.users SET is_banned=FALSE WHERE id=$1', [
+      setup.lane.posterUserId,
+    ]);
+    expect((await claimCompensationWinner(lease, event.id)).rows[0].resolution.command).toEqual(
+      before
+    );
+    expect(
+      (
+        await fixture.pool.query(
+          'SELECT * FROM hx_authority.fake_financial_change_order_compensation_origins_v13 WHERE compensation_command_id=$1',
+          [before.compensation_command_id]
+        )
+      ).rows
+    ).toEqual(origins.rows);
+    expect((await observeChangeOrderRecovery(lease)).rows[0].observation.recovery_state).toBe(
+      'COMPENSATION_READY'
+    );
+    expect(await setup.effects()).toEqual({ operations: 1, events: 1 });
+  }, 60_000);
+
+  it('worker change order compensation refuses active authority, temporary holds and mismatched bindings', async () => {
+    const { setup, event, lease } = await compensationWinnerFixture();
+    await expect(claimCompensationWinner(lease, event.id)).rejects.toThrow(
+      'PERMANENT_REVOCATION_REQUIRED'
+    );
+    await fixture.pool.query(
+      'UPDATE public.users SET trust_hold=TRUE,trust_hold_until=NULL WHERE id=$1',
+      [setup.lane.providerUserId]
+    );
+    await expect(claimCompensationWinner(lease, event.id)).rejects.toThrow(
+      'PERMANENT_REVOCATION_REQUIRED'
+    );
+    await fixture.pool.query('UPDATE public.users SET is_banned=TRUE WHERE id=$1', [
+      setup.lane.posterUserId,
+    ]);
+    for (const role of ['apiRole', 'attesterRole'] as const)
+      await expect(claimCompensationWinner(lease, event.id, clients.get(role)!)).rejects.toThrow(
+        /permission denied/u
+      );
+    const args: unknown[] = [
+      lease.target_authority_id,
+      new URL(fixture.databaseUrl).pathname.slice(1),
+      'local',
+      lease.release_manifest_digest,
+      lease.proposal_id,
+      lease.recovery_lease_id,
+      lease.lease_owner_id,
+      lease.witness_request_sha256,
+      lease.work_order_id,
+      event.id,
+    ];
+    for (const [index, value] of [
+      [0, randomUUID()],
+      [1, 'wrong_database'],
+      [2, 'staging'],
+      [3, 'sha256:' + 'c'.repeat(64)],
+      [4, randomUUID()],
+      [5, randomUUID()],
+      [6, randomUUID()],
+      [7, 'a'.repeat(64)],
+      [8, randomUUID()],
+      [9, randomUUID()],
+      [9, null],
+    ] as const) {
+      const altered = [...args];
+      altered[index] = value;
+      await expect(
+        claimCompensationWinner(lease, event.id, clients.get('workerRole')!, altered)
+      ).rejects.toThrow();
+    }
+    const counts = (
+      await fixture.pool.query(
+        `SELECT
+      (SELECT count(*)::int FROM public.universal_v1_change_order_compensation_commands WHERE proposal_id=$1) AS winners,
+      (SELECT count(*)::int FROM hx_authority.fake_financial_change_order_compensation_origins_v13 WHERE proposal_id=$1) AS origins`,
+        [lease.proposal_id]
+      )
+    ).rows[0];
+    expect(counts).toEqual({ winners: 0, origins: 0 });
+    expect(await setup.effects()).toEqual({ operations: 1, events: 1 });
+  }, 60_000);
+
+  it('worker change order compensation locks authority and rolls back winner with its origin', async () => {
+    const { setup, event, lease } = await compensationWinnerFixture(),
+      worker = clients.get('workerRole')!;
+    await fixture.pool.query('UPDATE public.users SET is_banned=TRUE WHERE id=$1', [
+      setup.lane.posterUserId,
+    ]);
+    const holder = await fixture.pool.connect();
+    try {
+      await holder.query('BEGIN');
+      await holder.query('UPDATE public.users SET is_banned=FALSE WHERE id=$1', [
+        setup.lane.posterUserId,
+      ]);
+      await expect(claimCompensationWinner(lease, event.id)).rejects.toThrow('LOCK_BUSY');
+      await holder.query('COMMIT');
+      await expect(claimCompensationWinner(lease, event.id)).rejects.toThrow(
+        'PERMANENT_REVOCATION_REQUIRED'
+      );
+      await fixture.pool.query('UPDATE public.users SET is_banned=TRUE WHERE id=$1', [
+        setup.lane.posterUserId,
+      ]);
+      await worker.query('BEGIN');
+      const provisional = (await claimCompensationWinner(lease, event.id)).rows[0];
+      expect(provisional.resolution.created).toBe(true);
+      expect(
+        (
+          await holder.query(
+            'SELECT count(*)::int AS count FROM public.universal_v1_change_order_compensation_commands WHERE proposal_id=$1',
+            [lease.proposal_id]
+          )
+        ).rows[0].count
+      ).toBe(0);
+      await worker.query('ROLLBACK');
+      const counts = (
+        await holder.query(
+          `SELECT
+        (SELECT count(*)::int FROM public.universal_v1_change_order_compensation_commands WHERE proposal_id=$1) AS winners,
+        (SELECT count(*)::int FROM hx_authority.fake_financial_change_order_compensation_origins_v13 WHERE proposal_id=$1) AS origins`,
+          [lease.proposal_id]
+        )
+      ).rows[0];
+      expect(counts).toEqual({ winners: 0, origins: 0 });
+      const committed = (await claimCompensationWinner(lease, event.id)).rows[0];
+      expect(committed.resolution.command.compensation_command_id).toBe(
+        provisional.resolution.command.compensation_command_id
+      );
+      expect(committed.resolution.created).toBe(true);
+    } finally {
+      await worker.query('ROLLBACK');
+      await holder.query('ROLLBACK');
+      holder.release();
+    }
+  }, 60_000);
+
+  it('worker change order compensation fences new membership insertion until commit', async () => {
+    const { setup, event, lease } = await compensationWinnerFixture(),
+      worker = clients.get('workerRole')!;
+    const organization = (
+      await fixture.pool.query(
+        "INSERT INTO public.business_organizations(legal_name,display_name,client_enabled,created_by,creation_idempotency_key) VALUES('Synthetic compensation race','Synthetic compensation race',true,$1,$2) RETURNING id",
+        [setup.lane.posterUserId, 'compensation:org:' + randomUUID()]
+      )
+    ).rows[0];
+    await fixture.pool.query('UPDATE public.users SET is_banned=TRUE WHERE id=$1', [
+      setup.lane.posterUserId,
+    ]);
+    const member = await fixture.pool.connect();
+    const insert =
+      "INSERT INTO public.business_memberships(organization_id,user_id,role,status,invited_by) VALUES($1,$2,'OWNER','ACTIVE',$3)";
+    const params = [organization.id, setup.lane.providerUserId, setup.lane.posterUserId];
+    try {
+      await worker.query('BEGIN');
+      await claimCompensationWinner(lease, event.id);
+      await member.query('BEGIN');
+      await member.query("SET LOCAL lock_timeout='150ms'");
+      await expect(member.query(insert, params)).rejects.toMatchObject({ code: '55P03' });
+      await member.query('ROLLBACK');
+      await worker.query('COMMIT');
+      await member.query(insert, params);
+      expect((await claimCompensationWinner(lease, event.id)).rows[0].resolution.created).toBe(
+        false
+      );
+    } finally {
+      await worker.query('ROLLBACK');
+      await member.query('ROLLBACK');
+      member.release();
+    }
+  }, 60_000);
+
+  it('worker change order compensation preserves an amendment winner and suppresses terminal lease observation', async () => {
+    const { setup, event, lease } = await compensationWinnerFixture();
+    const completed = await setup.changeOrders.finalizePriceAndScopeMaterialization(
+      setup.changePhase,
+      event.id,
+      setup.lane.posterUserId
+    );
+    await fixture.pool.query('UPDATE public.users SET is_banned=TRUE WHERE id=$1', [
+      setup.lane.posterUserId,
+    ]);
+    expect((await claimCompensationWinner(lease, event.id)).rows[0].resolution).toEqual({
+      kind: 'AMENDMENT_MATERIALIZED',
+      amendmentId: completed.amendment_id,
+      adjustmentEventId: event.id,
+    });
+    // Historical terminal setup uses the frozen owner function; the new terminal writer remains pending.
+    await fixture.pool.query(
+      'SELECT * FROM public.record_universal_v1_change_order_materialized_recovery_v1($1,$2,$3,$4,$5)',
+      [
+        lease.proposal_id,
+        lease.recovery_lease_id,
+        lease.lease_owner_id,
+        completed.amendment_id,
+        event.id,
+      ]
+    );
+    expect((await observeChangeOrderRecovery(lease)).rows).toHaveLength(0);
+    expect((await claimCompensationWinner(lease, event.id)).rows).toHaveLength(0);
+    expect(
+      (
+        await fixture.pool.query(
+          'SELECT count(*)::int AS count FROM public.universal_v1_change_order_compensation_commands WHERE proposal_id=$1',
+          [lease.proposal_id]
+        )
+      ).rows[0].count
+    ).toBe(0);
+  }, 60_000);
+
+  it('worker change order compensation preserves legacy winner without inventing worker origin', async () => {
+    const { setup, event, lease } = await compensationWinnerFixture();
+    await fixture.pool.query("UPDATE public.users SET account_status='SUSPENDED' WHERE id=$1", [
+      setup.lane.providerUserId,
+    ]);
+    const legacy = (
+      await fixture.pool.query(
+        'SELECT * FROM public.claim_universal_v1_change_order_compensation_v1($1,$2,$3,$4)',
+        [lease.proposal_id, lease.recovery_lease_id, lease.lease_owner_id, event.id]
+      )
+    ).rows[0];
+    await fixture.pool.query("UPDATE public.users SET account_status='ACTIVE' WHERE id=$1", [
+      setup.lane.providerUserId,
+    ]);
+    const result = (await claimCompensationWinner(lease, event.id)).rows[0].resolution;
+    expect(result).toMatchObject({
+      kind: 'COMPENSATE',
+      created: false,
+      workerOrigin: null,
+      command: {
+        compensation_command_id: legacy.compensation_command_id,
+        recovery_lease_id: lease.recovery_lease_id,
+      },
+    });
+  }, 60_000);
+
+  it('worker change order compensation refuses downstream financial lock inversion', async () => {
+    const { setup, event, lease } = await compensationWinnerFixture();
+    await fixture.pool.query('UPDATE public.users SET is_banned=TRUE WHERE id=$1', [
+      setup.lane.posterUserId,
+    ]);
+    const holder = await fixture.pool.connect();
+    try {
+      for (const [family, key] of [
+        ['financial-provider-command-recovery-v1', setup.requested.commandId],
+        ['fake-financial-operation', setup.changePhase.context.adjustmentOperationId],
+      ]) {
+        await holder.query('BEGIN');
+        await holder.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))', [
+          family,
+          key,
+        ]);
+        await expect(claimCompensationWinner(lease, event.id)).rejects.toThrow('LOCK_BUSY');
+        await holder.query('ROLLBACK');
+      }
+      expect((await claimCompensationWinner(lease, event.id)).rows[0].resolution.created).toBe(
+        true
+      );
+    } finally {
+      await holder.query('ROLLBACK');
+      holder.release();
+    }
+  }, 60_000);
+
+  it('worker change order compensation rolls back both facts when lease expires during persistence', async () => {
+    const { setup, event, lease } = await compensationWinnerFixture(5),
+      worker = clients.get('workerRole')!;
+    await fixture.pool.query('UPDATE public.users SET is_banned=TRUE WHERE id=$1', [
+      setup.lane.posterUserId,
+    ]);
+    const holder = await fixture.pool.connect();
+    const pid = (await worker.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+    let pending: Promise<{ value?: pg.QueryResult; error?: unknown }> | undefined;
+    try {
+      await holder.query('BEGIN');
+      await holder.query(
+        'LOCK TABLE hx_authority.fake_financial_change_order_compensation_origins_v13 IN SHARE MODE'
+      );
+      pending = claimCompensationWinner(lease, event.id).then(
+        (value) => ({ value }),
+        (error) => ({ error })
+      );
+      let waiting = false;
+      for (let i = 0; i < 40 && !waiting; i++) {
+        waiting = (
+          await holder.query(
+            "SELECT EXISTS(SELECT 1 FROM pg_locks WHERE pid=$1 AND relation='hx_authority.fake_financial_change_order_compensation_origins_v13'::regclass AND NOT granted) AS waiting",
+            [pid]
+          )
+        ).rows[0].waiting;
+        if (!waiting) await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(waiting).toBe(true);
+      await holder.query(
+        'SELECT pg_sleep(GREATEST(0,EXTRACT(EPOCH FROM ($1::timestamptz-clock_timestamp()))+0.1))',
+        [lease.expires_at]
+      );
+      await holder.query('COMMIT');
+      expect((await pending).error).toMatchObject({
+        message: expect.stringContaining('LEASE_EXPIRED'),
+      });
+      expect((await observeChangeOrderRecovery(lease)).rows).toHaveLength(0);
+      expect((await claimCompensationWinner(lease, event.id)).rows).toHaveLength(0);
+      const counts = (
+        await holder.query(
+          `SELECT
+        (SELECT count(*)::int FROM public.universal_v1_change_order_compensation_commands WHERE proposal_id=$1) AS winners,
+        (SELECT count(*)::int FROM hx_authority.fake_financial_change_order_compensation_origins_v13 WHERE proposal_id=$1) AS origins`,
+          [lease.proposal_id]
+        )
+      ).rows[0];
+      expect(counts).toEqual({ winners: 0, origins: 0 });
+    } finally {
+      await holder.query('ROLLBACK');
+      if (pending) await pending;
+      holder.release();
+    }
+  }, 60_000);
+
+  it('worker change order compensation records revoked delegate identity through the typed port', async () => {
+    const setup = await changeOrderDelegateFixture('public'),
+      { f } = setup,
+      worker = clients.get('workerRole')!;
+    const journal = (
+      await fixture.pool.query(
+        'SELECT command_id FROM public.financial_provider_command_journal WHERE operation_id=$1',
+        [setup.phase.context.adjustmentOperationId]
+      )
+    ).rows[0];
+    const binding = await f.admit(journal.command_id);
+    await f.execute(binding);
+    const outcome = (
+      await worker.query('SELECT * FROM public.hxos_record_fake_financial_outcome_v13($1,$2,$3)', [
+        binding.admission.job_validation_id,
+        binding.workerId,
+        binding.admission.recovery_lease_id,
+      ])
+    ).rows[0];
+    const event = (
+      await worker.query('SELECT * FROM public.hxos_materialize_fake_financial_event_v13($1,$2)', [
+        binding.admission.job_validation_id,
+        outcome.outcome_fact.outcome_fact_id,
+      ])
+    ).rows[0].financial_event;
+    await setup.setMembership('REVOKED');
+    await fixture.pool.query(
+      'SELECT pg_sleep(GREATEST(0,5.05-EXTRACT(EPOCH FROM (clock_timestamp()-prepared_at)))) FROM public.universal_v1_change_order_materialization_commands WHERE proposal_id=$1',
+      [setup.phase.context.proposalId]
+    );
+    const lease = (await claimChangeOrderRecovery(worker)).rows.find(
+      (row) => row.proposal_id === setup.phase.context.proposalId
+    )!;
+    expect(lease).toBeDefined();
+    const { PostgresUniversalV1ChangeOrderRecoveryCompensation } =
+      await import('../../src/services/UniversalV1ChangeOrderRecoveryCompensation.js');
+    const port = new PostgresUniversalV1ChangeOrderRecoveryCompensation(
+      preparationDatabase(worker),
+      () => ({
+        databaseName: new URL(fixture.databaseUrl).pathname.slice(1),
+        serviceLogin: roles.workerRole,
+        environment: 'local',
+        manifestDigest: lease.release_manifest_digest,
+        targetDigest: 'sha256:' + 'd'.repeat(64),
+      })
+    );
+    const result = await port.claim(
+      {
+        ...lease,
+        acquired_at: lease.acquired_at.toISOString(),
+        expires_at: lease.expires_at.toISOString(),
+      },
+      event.id
+    );
+    expect(result).toMatchObject({
+      created: true,
+      resolution: {
+        kind: 'COMPENSATE',
+        command: {
+          requestedBy: setup.delegate,
+          adjustmentEventId: event.id,
+          semanticLimitation: 'PRIOR_SECURED_STATE_NOT_RESTORED',
+        },
+      },
+      workerOrigin: {
+        service_database_role: roles.workerRole,
+        revocation_reason: 'CUSTOMER_ACTOR_AUTHORITY_REVOKED',
+      },
+    });
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen(result!.resolution)).toBe(true);
+    expect(Object.isFrozen(result!.workerOrigin)).toBe(true);
+    expect(await setup.effects()).toMatchObject({ operations: 1, events: 1 });
+  }, 60_000);
 
   it('worker change order recovery observes exact adjustment and amendment progression', async () => {
     const setup = await changeOrderHistoryFixture(),

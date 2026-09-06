@@ -1,4 +1,8 @@
 import {
+  CHANGE_ORDER_RECOVERY_COMPENSATION_INSERT_COLUMNS,
+  CHANGE_ORDER_RECOVERY_COMPENSATION_LOCK_COLUMNS,
+  CHANGE_ORDER_RECOVERY_COMPENSATION_READ_COLUMNS,
+  CHANGE_ORDER_RECOVERY_COMPENSATION_DEPENDENCIES,
   CHANGE_ORDER_RECOVERY_CLAIM_INSERT_COLUMNS,
   CHANGE_ORDER_RECOVERY_CLAIM_LOCK_COLUMNS,
   CHANGE_ORDER_RECOVERY_OBSERVATION_READ_COLUMNS,
@@ -1078,7 +1082,12 @@ function functionRowBeforeRecoveryObservation(
 
 function functionRow(identity: (typeof WORK_ORDER_AUTHORITY_FUNCTIONS)[number]) {
   const row = functionRowBeforeRecoveryObservation(identity);
-  if (!CHANGE_ORDER_RECOVERY_OBSERVATION_DEPENDENCIES.some((dependency) => dependency === identity))
+  if (
+    ![
+      ...CHANGE_ORDER_RECOVERY_OBSERVATION_DEPENDENCIES,
+      ...CHANGE_ORDER_RECOVERY_COMPENSATION_DEPENDENCIES,
+    ].some((dependency) => dependency === identity)
+  )
     return row;
   return {
     ...row,
@@ -1176,12 +1185,20 @@ function relationRow(
     row.acl_grants!.push(names.commandOwnerRole + '|INSERT|' + column);
   for (const column of CHANGE_ORDER_RECOVERY_CLAIM_INSERT_COLUMNS[relation] ?? [])
     row.acl_grants!.push(names.financeOwnerRole + '|INSERT|' + column);
+  for (const column of CHANGE_ORDER_RECOVERY_COMPENSATION_INSERT_COLUMNS[relation] ?? [])
+    row.acl_grants!.push(names.financeOwnerRole + '|INSERT|' + column);
+  for (const column of CHANGE_ORDER_RECOVERY_COMPENSATION_READ_COLUMNS[relation] ?? [])
+    row.acl_grants!.push(names.financeOwnerRole + '|SELECT|' + column);
   for (const column of CHANGE_ORDER_RECOVERY_OBSERVATION_READ_COLUMNS[relation] ?? [])
     row.acl_grants!.push(names.financeOwnerRole + '|SELECT|' + column);
-  for (const column of CHANGE_ORDER_RECOVERY_CLAIM_LOCK_COLUMNS[relation] ?? []) {
+  for (const column of [
+    ...(CHANGE_ORDER_RECOVERY_CLAIM_LOCK_COLUMNS[relation] ?? []),
+    ...(CHANGE_ORDER_RECOVERY_COMPENSATION_LOCK_COLUMNS[relation] ?? []),
+  ]) {
     row.finance_owner_any_column_update = true;
     row.acl_grants!.push(names.financeOwnerRole + '|UPDATE|' + column);
   }
+  row.acl_grants = [...new Set(row.acl_grants)];
   return row;
 }
 

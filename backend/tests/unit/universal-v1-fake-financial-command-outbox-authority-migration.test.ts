@@ -76,6 +76,7 @@ describe('Universal V1 fake-financial command outbox authority v13 migration', (
         .map(([definition]) => definition.match(/^CREATE TABLE\s+([a-z0-9_.]+)/u)?.[1])
         .sort()
     ).toEqual([
+      'hx_authority.fake_financial_change_order_compensation_origins_v13',
       'hx_authority.fake_financial_command_outbox_requests_v13',
       'hx_authority.fake_financial_dispatch_admissions_v13',
       'hx_authority.fake_financial_exact_requests_v13',

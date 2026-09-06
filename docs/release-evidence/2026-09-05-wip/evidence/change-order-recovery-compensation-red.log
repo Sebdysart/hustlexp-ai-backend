@@ -1,0 +1,157 @@
+FOCUSED DIAGNOSTIC: bounded read-only local PG16 identity verified; existing unique-database restrictions and loopback Redis preserved. Focused proposal and decision regression; not the full release gate.
+
+ RUN  v4.1.10 C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip
+
+[01:22:49.524] [33mWARN[39m: [36mFirebase Admin credentials missing — auth verification disabled[39m
+    module: "auth"
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > records independently signed webhook bytes through the API login with stable inbox and verification facts
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > refuses caller-VERIFIED legacy receipts even with exact new hashes, while independently authenticating a fresh delivery
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > denies key custody, provisioning, raw receipts and ingress invocation outside their exact roles
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > rejects invalid signatures, target transplants, malformed payloads and key revocation without inbox writes
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > preserves the original receipt after commit acknowledgement loss and rolls back incomplete inbox transactions
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > serializes duplicate signed deliveries from separate API connections and refuses conflicting identities
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > refuses a substituted HMAC implementation even when its SQL name is unchanged
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > authenticates the actual HTTP route with a restricted API database and no API-held webhook key
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > observes committed key revocation after waiting for the revoker transaction
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > refuses a new key in the provisioning transaction even after a released savepoint
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > rechecks key expiry after an inbox lock wait
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > refuses a historical REPEATABLE READ snapshot for new webhook verification
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > refuses a historical SERIALIZABLE snapshot for new webhook verification
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > submits PREPARE, AUTHORIZE and SECURE through restricted API/worker ports: normal
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > submits PREPARE, AUTHORIZE and SECURE through restricted API/worker ports: compensation
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > submits PREPARE, AUTHORIZE and SECURE through restricted API/worker ports: lost_before_admission
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > submits PREPARE, AUTHORIZE and SECURE through restricted API/worker ports: lost_after_outcome
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > submits PREPARE, AUTHORIZE and SECURE through restricted API/worker ports: lost_after_admission
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > submits PREPARE, AUTHORIZE and SECURE through restricted API/worker ports: retained_after_admission
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order commands accept public provider proposals and independent approvals without financial effects
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order commands replay with fresh timestamps and reject conflicting payloads
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order commands atomically reject scope-only proposals and keep money fields empty
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order commands refuse raw DML and foreign actors before domain writes
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order commands keep SQL Unicode length validation aligned with the signed public schema
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order commands prevent new memberships from appearing before command commit
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order commands recheck actor revocation after assertion issuance without creating a proposal
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order materialization denies delegated preparation without exact authority: revoked_membership
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order materialization denies delegated preparation without exact authority: foreign_actor
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order materialization denies delegated preparation without exact authority: altered_operation
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order materialization denies delegated preparation without exact authority: non_adjustment
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order materialization preserves exact delegate authority through ADJUST and progress: active
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order materialization preserves exact delegate authority through ADJUST and progress: revoked_before_execution
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order materialization preserves exact delegate authority through ADJUST and progress: progress_revocation_race
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > authenticated change order materialization commits SCOPE_ONLY through the API without financial authorization
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > authenticated change order materialization prepares and finalizes an exact delegated ADJUST through API commit
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > public change order resume commits and replays scope-only through the authenticated router
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > public change order resume completes delegated ADJUST: normal
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > public change order resume completes delegated ADJUST: lost_final_commit
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > public change order resume completes delegated ADJUST: old_phase_time
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > public change order resume completes delegated ADJUST: lost_prepare_commit
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > public change order resume completes delegated ADJUST: future_client_time
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > public change order resume completes delegated ADJUST: lost_request_commit
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > adjustment execution revalidates current authority: success
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > adjustment execution revalidates current authority: customer_revoked
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > adjustment execution revalidates current authority: provider_revoked
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > adjustment execution revalidates current authority: provider_trust_hold
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > adjustment execution revalidates current authority: replay_after_revocation
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > adjustment execution refuses domain lock contention and retries after release: proposal
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > adjustment execution refuses domain lock contention and retries after release: fulfillment
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > adjustment execution refuses domain lock contention and retries after release: provider_row
+[01:23:07.462] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "e5aa715a-ecef-44e1-b672-9fb580cb881e"
+    action: "create"
+    version: 1
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+[01:23:07.492] [32mINFO[39m: [36mUniversal V1 TaskDraft mutation persisted[39m
+    router: "web.taskDrafts"
+    draftId: "e5aa715a-ecef-44e1-b672-9fb580cb881e"
+    action: "link_contact"
+    version: 2
+    outcome: "ESTIMATE_REQUIRED"
+    replayed: false
+ × backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > worker change order compensation creates one immutable winner after customer revocation 10258ms
+   → function public.hxos_claim_fake_financial_change_order_compensation_v13(unknown, unknown, unknown, unknown, unknown, unknown, unknown, unknown, unknown, unknown) does not exist
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > worker change order recovery observes exact adjustment and amendment progression
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > worker change order recovery observes only its exact active lease and current release
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > worker change order recovery observes revoked customer through a scoped lease port
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > worker change order recovery claims an immutable witness after customer revocation without an actor assertion
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > worker change order recovery skips a busy proposal and claims unrelated work
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > worker change order recovery skips a busy witness and claims unrelated work
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > worker change order recovery enforces roles, bounds, current target and rollback
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > worker change order recovery serializes competing workers and preserves immutable expired leases
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order history exposes an exact authenticated builder for the committed Phase A
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order history preserves the original witness and reads committed progress after provider revocation
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order history conceals another actor and refuses an altered original version
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order history replays a completed amendment after later provider restriction
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > change order history holds customer read authority across a financial lock wait
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > public change order resume retains an immutable compensation claim and requests only its reversal
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > adjustment execution serializes concurrent workers into one immutable effect
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > materializes signed money-valued authorization resolution while preserving pending raw bytes and fixed provider expiry
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > serializes concurrent resolved authorization materialization and preserves replay after a later signed conflict
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > rejects substituted resolved bridge provenance and one-microsecond lifecycle time drift in PostgreSQL
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > recovers a signed authorization through the normal worker implementation after protected API requests
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > resolves an admitted pending operation through committed signed evidence without rewriting its raw event or dispatch
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > ignores unrelated signed versions/value references while selecting the exact dispatched result
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > holds conflicting authenticated terminal state without committing a terminal outcome
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > holds conflicting authenticated terminal provider_time without committing a terminal outcome
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > rejects signed timestamp 2026-09-05T00:00:00.1234567Z outside the decoder contract before storing resolution evidence
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > rejects signed timestamp 2026-09-05T24:00:00Z outside the decoder contract before storing resolution evidence
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > rejects signed timestamp 2026-09-05T00:00:60Z outside the decoder contract before storing resolution evidence
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > requires a prior outer COMMIT of signed verification even after a released savepoint
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > rolls back tentative terminal outcomes and exactly replays after a discarded COMMIT acknowledgement
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > serializes concurrent restricted-worker resolution into one immutable terminal outcome
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > keeps an admitted command pending when legacy caller-VERIFIED receipts have no independent verification
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > admits authenticated preparation into REQUESTED and replays with exactly one outbox entry through the API login
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > refuses REQUESTED for an otherwise valid legacy owner-created preparation without authenticated provenance
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > prepares and exactly replays through real API and attester logins with immutable provenance
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > preserves exact authenticated unbound preparation replay after real estimate acceptance binds the draft
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > rolls back assertion consumption and preparation when an authenticated different customer submits
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > binds all fields to the assertion and refuses token reuse after one committed preparation
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > refuses nonzero PREPARE provider version at the public canonical builder
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > binds predecessor reads to the complete tuple and one-use command-kind assertion
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > rechecks a revoked actor at the predecessor read port without consuming its assertion
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > refuses a historical REPEATABLE READ snapshot for a fresh predecessor read
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > refuses a historical SERIALIZABLE snapshot for a fresh predecessor read
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > limits the authenticated predecessor read to API and keeps its internal financial projection sealed
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > binds progress to the exact command and one-use assertion, including absent commands
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > rechecks a revoked actor when consuming a previously issued progress assertion
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > limits authenticated progress to the API and keeps the internal projection sealed
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > denies raw preparation/provenance reads and the legacy actor-supplied insert port to runtime logins
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > work order history reads the exact committed Phase A through the restricted API login
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > certifies the exact full catalog through the real migrationRole login
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > certifies the exact full catalog through the real apiRole login
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > certifies the exact full catalog through the real workerRole login
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > certifies the exact full catalog through the real attesterRole login
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > limits durable discovery and restoration to the worker login without exposing table access
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > keeps all runtime logins outside the v13 relations and NOLOGIN owners
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > verifies every production startup migration through the genuine apiRole login
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > verifies every production startup migration through the genuine workerRole login
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > verifies every production startup migration through the genuine attesterRole login
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > reads exact metadata through real runtime logins while denying raw evidence access
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > preserves missing, null and duplicate applied receipts in the metadata output
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > runs bounded multiquery attestation through the real api data plane with a stable read-only snapshot
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > runs bounded multiquery attestation through the real attester data plane with a stable read-only snapshot
+ ↓ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > preserves committed predecessor source identity under fresh read authority after target rollover
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts > v13 complete eight-role PostgreSQL authority catalog > worker change order compensation creates one immutable winner after customer revocation
+error: function public.hxos_claim_fake_financial_change_order_compensation_v13(unknown, unknown, unknown, unknown, unknown, unknown, unknown, unknown, unknown, unknown) does not exist
+ ❯ node_modules/pg/lib/client.js:545:17
+ ❯ backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts:3210:20
+    3208|     const {setup,event,lease} = await compensationWinnerFixture();
+    3209|     await fixture.pool.query('UPDATE public.users SET is_banned=TRUE W…
+    3210|     const result = await claimCompensationWinner(lease,event.id);
+       |                    ^
+    3211|     expect(result.rows).toHaveLength(1);
+    3212|     expect(result.rows[0]).toMatchObject({target_authority_id:lease.ta…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+Serialized Error: { length: 345, severity: 'ERROR', code: '42883', detail: undefined, hint: 'No function matches the given name and argument types. You might need to add explicit type casts.', position: '15', internalPosition: undefined, internalQuery: undefined, where: undefined, schema: undefined, table: undefined, dataType: undefined, constraint: undefined, file: 'parse_func.c', routine: 'ParseFuncOrColumn' }
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 111 skipped (112)
+   Start at  18:22:45
+   Duration  32.01s (transform 1.96s, setup 1.12s, import 3.93s, tests 26.68s, environment 0ms)
+

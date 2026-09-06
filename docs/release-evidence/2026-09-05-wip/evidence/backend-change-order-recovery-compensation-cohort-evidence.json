@@ -1,0 +1,74 @@
+{
+  "recordedAt": "2026-09-06T02:16:13.417Z",
+  "kind": "COMPOSED_COMPLETE_COHORT_EVIDENCE",
+  "notOneVitestInvocation": true,
+  "files": 4,
+  "passed": 263,
+  "failed": 0,
+  "skipped": 0,
+  "todo": 0,
+  "cohorts": [
+    {
+      "path": "backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts",
+      "passed": 116,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0,
+      "sourceLog": "change-order-recovery-compensation-domain-full.log",
+      "sourceRelation": "Test and application source unchanged after this run"
+    },
+    {
+      "path": "backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts",
+      "passed": 120,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0,
+      "sourceLog": "change-order-recovery-compensation-domain-full.log",
+      "sourceRelation": "Test and application source unchanged after this run"
+    },
+    {
+      "path": "backend/tests/system/nonproduction-financial-guarded-readiness.pg.test.ts",
+      "passed": 8,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0,
+      "sourceLog": "change-order-recovery-compensation-domain-full.log",
+      "sourceRelation": "Test and application source unchanged after this run"
+    },
+    {
+      "path": "backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts",
+      "passed": 19,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0,
+      "sourceLog": "change-order-recovery-compensation-readiness-full-2.log",
+      "sourceRelation": "Complete rerun on final test helper; application source unchanged"
+    }
+  ],
+  "logs": [
+    {
+      "path": "change-order-recovery-compensation-domain-full.log",
+      "sha256": "684597f7d1dd7264dec2a510bba7bcd928a643e8470f3b5a78506296df7784f5"
+    },
+    {
+      "path": "change-order-recovery-compensation-readiness-full-2.log",
+      "sha256": "f2774abeac22fd1731b0d77b8030ae0dd3e11fa6e54d5589e3689eafbdd9633c"
+    }
+  ],
+  "originalRun": {
+    "passed": 262,
+    "failed": 1,
+    "skipped": 0,
+    "todo": 0,
+    "exitCode": 1
+  },
+  "correction": {
+    "path": "backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts",
+    "scope": "Only test diagnostic collector adds the existing internal foreign-key query; application and remaining test source unchanged",
+    "beforeSha256": "1650561a5833e30fc013ee64c4b73b22f959317e0ade6d1d88b7865034a3fccd",
+    "afterSha256": "46cac6f21d85c1e46b06c3f4db96ff6e72086b8acd8bf2e595d476e4dd8691b2",
+    "inverseByteProof": true
+  },
+  "applicationSourceUnchanged": true,
+  "finalSourceObservation": "2026-09-06T02:13:46.555Z"
+}

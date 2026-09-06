@@ -1,4 +1,8 @@
 import {
+  CHANGE_ORDER_RECOVERY_COMPENSATION_INSERT_COLUMNS,
+  CHANGE_ORDER_RECOVERY_COMPENSATION_LOCK_COLUMNS,
+  CHANGE_ORDER_RECOVERY_COMPENSATION_READ_COLUMNS,
+  CHANGE_ORDER_RECOVERY_COMPENSATION_DEPENDENCIES,
   CHANGE_ORDER_RECOVERY_OBSERVATION_READ_COLUMNS,
   CHANGE_ORDER_RECOVERY_OBSERVATION_DEPENDENCIES,
 } from './change-order-recovery-role-plans.js';
@@ -363,20 +367,20 @@ export const WORK_ORDER_COMMAND_WRITE_RELATIONS = [
 // a sealed command. Relations without triggers contribute no catalog rows.
 export const WORK_ORDER_TRIGGER_RELATIONS = WORK_ORDER_COMMAND_WRITE_RELATIONS;
 
-export const WORK_ORDER_TRIGGER_CATALOG_COUNT = 343;
+export const WORK_ORDER_TRIGGER_CATALOG_COUNT = 345;
 
 // Re-captured from a clean PG16 ordinal-146 + sealed v13 catalog after every trigger edge,
 // owner class, SECURITY mode, and fixed path is canonicalized by the readback
 // query below.  A migration changing even one edge must deliberately recapture
 // this value and its focused PostgreSQL proof.
 export const WORK_ORDER_TRIGGER_CATALOG_SHA256 =
-  'b23def6b0513e6951e9730233fa33f36997b0fce34de782479e9f497395dc34b';
+  'ae6a3003d3c0b6f3a00780142e750bca7a3749c9002f131e95e96baa742c0a23';
 
 // Re-captured from the exact PG16 ordinal-146 + v13 function family. Flags, owners,
 // paths, and ACLs are checked independently; this digest closes source-body
 // drift that could otherwise preserve superficial protocol fragments.
 export const WORK_ORDER_AUTHORITY_FUNCTION_CATALOG_SHA256 =
-  '19e7c6d624bb4391a1824cb8fb9692ffe9eec8f56cb5933e40cdfd8d2b4ea634';
+  '0b8c8f301119ddd8480ee5de22886f7ff440be1a1d79e0df3d030ca9aa681105';
 
 export const WORK_ORDER_ORDINAL146_SQL_SHA256 =
   '3920ac8d3208b9f573dc331cab60c373d0349611700c6e14a6e4c1dd8c53aac4';
@@ -385,7 +389,7 @@ export const WORK_ORDER_FAKE_FINANCIAL_V12_SQL_SHA256 =
 export const WORK_ORDER_BOOTSTRAP_SEAL_SQL_SHA256 =
   'c69825589193885d0f6a3b93930880998e95e1c5cd44bb9b5999cb457192b2bd';
 export const FAKE_FINANCIAL_OUTBOX_V13_SQL_SHA256 =
-  'ef8faf0f0b753c51f02d4578f6dfd2da05d83dc282dc19e514187c403f669735';
+  'd4c8fd24abed5adf887e40601ea97a2e395022e58e524975d9f9ac3f09b83ac2';
 
 export interface WorkOrderCommandRoleNames {
   migrationRole: string;
@@ -749,9 +753,10 @@ const FUNCTION_PLANS: readonly FunctionPlan[] = [
       permittedExecute: new Set<RoleKey>([
         'migrationRole',
         'commandOwnerRole',
-        ...(CHANGE_ORDER_RECOVERY_OBSERVATION_DEPENDENCIES.some(
-          (dependency) => dependency === identity
-        )
+        ...([
+          ...CHANGE_ORDER_RECOVERY_OBSERVATION_DEPENDENCIES,
+          ...CHANGE_ORDER_RECOVERY_COMPENSATION_DEPENDENCIES,
+        ].some((dependency) => dependency === identity)
           ? ['financeOwnerRole' as const]
           : []),
       ]),
@@ -1589,6 +1594,14 @@ const RELATION_PLANS: readonly RelationPlan[] = BASE_RELATION_PLANS.map((plan) =
     ...plan,
     permittedColumnUpdates: [
       ...(plan.permittedColumnUpdates ?? []),
+      ...(CHANGE_ORDER_RECOVERY_COMPENSATION_LOCK_COLUMNS[plan.relation]
+        ? [
+            {
+              role: 'financeOwnerRole' as const,
+              columns: CHANGE_ORDER_RECOVERY_COMPENSATION_LOCK_COLUMNS[plan.relation]!,
+            },
+          ]
+        : []),
       ...(CHANGE_ORDER_RECOVERY_CLAIM_LOCK_COLUMNS[plan.relation]
         ? [
             {
@@ -1613,6 +1626,14 @@ const RELATION_PLANS: readonly RelationPlan[] = BASE_RELATION_PLANS.map((plan) =
     ],
     permittedColumnSelects: [
       ...plan.permittedColumnSelects,
+      ...(CHANGE_ORDER_RECOVERY_COMPENSATION_READ_COLUMNS[plan.relation]
+        ? [
+            {
+              role: 'financeOwnerRole' as const,
+              columns: CHANGE_ORDER_RECOVERY_COMPENSATION_READ_COLUMNS[plan.relation]!,
+            },
+          ]
+        : []),
       ...(CHANGE_ORDER_RECOVERY_OBSERVATION_READ_COLUMNS[plan.relation]
         ? [
             {
@@ -1641,6 +1662,14 @@ const RELATION_PLANS: readonly RelationPlan[] = BASE_RELATION_PLANS.map((plan) =
     ],
     permittedColumnInserts: [
       ...(plan.permittedColumnInserts ?? []),
+      ...(CHANGE_ORDER_RECOVERY_COMPENSATION_INSERT_COLUMNS[plan.relation]
+        ? [
+            {
+              role: 'financeOwnerRole' as const,
+              columns: CHANGE_ORDER_RECOVERY_COMPENSATION_INSERT_COLUMNS[plan.relation]!,
+            },
+          ]
+        : []),
       ...(CHANGE_ORDER_RECOVERY_CLAIM_INSERT_COLUMNS[plan.relation]
         ? [
             {
@@ -2986,8 +3015,10 @@ export function evaluateWorkOrderCommandAuthority(
           .flatMap((grant) => grant.columns);
         if (roleKey === 'commandOwnerRole' || additionalColumns.length > 0) {
           const expectedColumns = [
-            ...additionalColumns,
-            ...(roleKey === 'commandOwnerRole' ? plan.permittedCommandOwnerUpdateColumns : []),
+            ...new Set([
+              ...additionalColumns,
+              ...(roleKey === 'commandOwnerRole' ? plan.permittedCommandOwnerUpdateColumns : []),
+            ]),
           ].sort();
           const actualColumns =
             roleKey === 'commandOwnerRole'

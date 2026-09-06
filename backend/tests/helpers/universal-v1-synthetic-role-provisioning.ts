@@ -1,4 +1,8 @@
 import {
+  CHANGE_ORDER_RECOVERY_COMPENSATION_INSERT_COLUMNS,
+  CHANGE_ORDER_RECOVERY_COMPENSATION_LOCK_COLUMNS,
+  CHANGE_ORDER_RECOVERY_COMPENSATION_READ_COLUMNS,
+  CHANGE_ORDER_RECOVERY_COMPENSATION_DEPENDENCIES,
   CHANGE_ORDER_RECOVERY_OBSERVATION_READ_COLUMNS,
   CHANGE_ORDER_RECOVERY_OBSERVATION_DEPENDENCIES,
 } from '../../src/jobs/change-order-recovery-role-plans.js';
@@ -499,6 +503,9 @@ export async function provisionUniversalV1SyntheticRoles(
       quote(roles.migrationRole)
   );
   for (const [privilege, grants] of [
+    ['INSERT', CHANGE_ORDER_RECOVERY_COMPENSATION_INSERT_COLUMNS],
+    ['UPDATE', CHANGE_ORDER_RECOVERY_COMPENSATION_LOCK_COLUMNS],
+    ['SELECT', CHANGE_ORDER_RECOVERY_COMPENSATION_READ_COLUMNS],
     ['INSERT', CHANGE_ORDER_RECOVERY_CLAIM_INSERT_COLUMNS],
     ['UPDATE', CHANGE_ORDER_RECOVERY_CLAIM_LOCK_COLUMNS],
   ] as const)
@@ -535,7 +542,10 @@ export async function provisionUniversalV1SyntheticRoles(
         .map(quote)
         .join(',')
   );
-  for (const identity of CHANGE_ORDER_RECOVERY_OBSERVATION_DEPENDENCIES)
+  for (const identity of [
+    ...CHANGE_ORDER_RECOVERY_OBSERVATION_DEPENDENCIES,
+    ...CHANGE_ORDER_RECOVERY_COMPENSATION_DEPENDENCIES,
+  ])
     await client.query(
       'GRANT EXECUTE ON FUNCTION ' + identity + ' TO ' + quote(roles.financeOwnerRole)
     );
