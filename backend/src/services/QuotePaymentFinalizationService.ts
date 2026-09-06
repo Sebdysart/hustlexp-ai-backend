@@ -429,7 +429,7 @@ export async function finalizePaidQuote(
         mapQuoteToCreateTaskParams(taskParamsInput);
 
       const taskResult =
-        await TaskCreateService.createInTransaction(
+        await TaskCreateService.materializeQuotedTaskInTransaction(
           query,
           taskParams,
         );

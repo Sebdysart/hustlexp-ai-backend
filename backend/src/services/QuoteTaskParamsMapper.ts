@@ -107,14 +107,6 @@ function buildRequirements(answers: DraftAnswers): string | undefined {
   return lines.length > 0 ? lines.join('\n') : undefined;
 }
 
-export interface MapQuoteToTaskParamsInput {
-  posterId: string;
-  draft: QuoteTaskDraft;
-  quoteVersion: QuoteVersion;
-  automationClassification: 'PRODUCTION' | 'CONTROLLED_TEST';
-  clientIdempotencyKey?: string;
-}
-
 export function mapQuoteToCreateTaskParams(
   input: MapQuoteToTaskParamsInput,
 ): CreateTaskParams {
@@ -195,11 +187,24 @@ export function mapQuoteToCreateTaskParams(
     // Existing task-create policy defaults will handle the rest.
     clientIdempotencyKey: input.clientIdempotencyKey,
     
-    businessOrganizationId: input.businessOrganizationId ?? undefined,
-    businessLocationId: input.businessLocationId ?? undefined,
-    providerOrganizationId: undefined,
-    providerServiceProfileId: undefined,
-    businessFulfillerOrganizationId: input.businessFulfillerOrganizationId ?? undefined,
-    orchestrationMode: input.businessOrganizationId ? 'OPS_MANUAL' : 'AUTOMATED',
+    businessOrganizationId:
+      input.businessOrganizationId ?? undefined,
+
+    businessLocationId:
+      input.businessLocationId ?? undefined,
+
+    providerOrganizationId:
+      undefined,
+
+    providerServiceProfileId:
+      input.providerServiceProfileId ?? undefined,
+
+    businessFulfillerOrganizationId:
+      input.businessFulfillerOrganizationId ?? undefined,
+
+    orchestrationMode:
+      input.businessOrganizationId
+        ? 'OPS_MANUAL'
+        : 'AUTOMATED',
   };
 }
