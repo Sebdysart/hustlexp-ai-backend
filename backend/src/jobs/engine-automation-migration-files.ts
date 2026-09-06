@@ -116,5 +116,5 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260904_allow_multiple_claim', fileName: '20260904_allow_multiple_claim.sql' },
   { name: '20260904_add_claim_links_quote_id', fileName: '20260904_add_claim_links_quote_id.sql' },
   { name: '20260905_scheduled_service_date', fileName: '20260905_scheduled_service_date.sql' },
-  { name: '20260906_region_policy_contract', fileName: '20260906_region_policy_contract.sql' },
+  { name: '20260906_region_policy_contract_v2', fileName: '20260906_region_policy_contract_v2.sql' },
 ] as const;
