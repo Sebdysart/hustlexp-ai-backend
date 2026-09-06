@@ -1,0 +1,12 @@
+
+ RUN  v4.1.10 C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip
+
+ ✓ |database-serial| backend/tests/system/provider-observation-normalization.pg.test.ts (2 tests) 13658ms
+ ✓ |database-serial| backend/tests/system/provider-observation-authority-v13.pg.test.ts (2 tests) 18288ms
+
+ Test Files  2 passed (2)
+      Tests  4 passed (4)
+   Start at  14:37:47
+   Duration  34.80s (transform 773ms, setup 1.62s, import 701ms, tests 31.95s, environment 0ms)
+
+JSON report written to C:/Users/Manfish/Documents/Codex/2026-09-04/let/outputs/provider-observation-boundaries-pg-vitest.json

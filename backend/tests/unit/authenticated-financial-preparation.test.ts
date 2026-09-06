@@ -51,6 +51,22 @@ function fixture() {
   };
 }
 describe('authenticated financial PREPARED submission', () => {
+  it('maps the sealed idempotency refusal to the public preparation conflict without retry', async () => {
+    const f = fixture();
+    f.query.mockRejectedValueOnce(new Error('HXUV1-FINPREP-13-IDEMPOTENCY_CONFLICT'));
+    await expect(f.authority.prepare(input, f.attestation)).rejects.toMatchObject({
+      name: 'PreparedFinancialCommandAuthorityError',
+      reason: 'IDEMPOTENCY_CONFLICT',
+    });
+    expect(f.query).toHaveBeenCalledTimes(1);
+  });
+  it('preserves unrelated database failures without treating them as conflicts or retrying', async () => {
+    const f = fixture();
+    const failure = new Error('DATABASE_CONNECTION_LOST');
+    f.query.mockRejectedValueOnce(failure);
+    await expect(f.authority.prepare(input, f.attestation)).rejects.toBe(failure);
+    expect(f.query).toHaveBeenCalledTimes(1);
+  });
   it('refuses missing request authentication before any database call', async () => {
     const f = fixture();
     await expect(f.authority.prepare(input)).rejects.toThrow('ACTOR_ATTESTATION_REQUIRED');

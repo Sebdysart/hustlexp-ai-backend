@@ -38,10 +38,6 @@ import {
   type FakeFinancialPublisherHandle,
 } from './fake-financial-publisher-runtime.js';
 import {
-  startProviderEventReplayWorker,
-  type ProviderEventReplayWorkerHandle,
-} from './provider-event-replay-worker.js';
-import {
   startFakeFinancialDurableRecovery,
   type FakeFinancialDurableRecoveryHandle,
 } from './fake-financial-durable-recovery-runtime.js';
@@ -67,7 +63,6 @@ const activeWorkers: Worker[] = [];
 let outboxHandles: OutboxWorkerHandles | null = null;
 let fakeFinancialPublisher: FakeFinancialPublisherHandle | null = null;
 let workerHealthServer: WorkerHealthServer | null = null;
-let providerEventReplayWorker: ProviderEventReplayWorkerHandle | null = null;
 let fakeFinancialCommandRecoveryWorker: FakeFinancialDurableRecoveryHandle | null = null;
 let workOrderCompensationWorker: UniversalV1WorkOrderCompensationPollerHandle | null = null;
 let changeOrderRecoveryWorker: UniversalV1ChangeOrderRecoveryPollerHandle | null = null;
@@ -95,25 +90,6 @@ function nonproductionFinancialWorkerEnvironment(): 'local' | 'preview' | 'stagi
   return NONPRODUCTION_FINANCIAL_WORKER_ENVIRONMENTS.has(environment)
     ? (environment as 'local' | 'preview' | 'staging')
     : null;
-}
-
-async function startProviderEventReplayRuntime(): Promise<ProviderEventReplayWorkerHandle | null> {
-  const environment = nonproductionFinancialWorkerEnvironment();
-  if (!environment) return null;
-  const release = readReleaseManifest();
-  const readiness = await readNonproductionFinancialBootstrapReadiness({
-    environment,
-    component: 'worker',
-    env: process.env,
-    release,
-    identity: buildIdentity,
-    database: db,
-  });
-  if (!readiness.ready || readiness.status !== 'ready') {
-    throw new Error(`PROVIDER_EVENT_REPLAY_BOOTSTRAP_NOT_READY:${readiness.status}`);
-  }
-  const configuredInterval = Number(process.env.HX_PROVIDER_EVENT_REPLAY_INTERVAL_MS ?? 5_000);
-  return startProviderEventReplayWorker(configuredInterval);
 }
 
 async function startFakeFinancialCommandRecoveryRuntime(): Promise<void> {
@@ -244,7 +220,8 @@ async function startWorkers(): Promise<void> {
       await fakeFinancialPublisher.ready;
       if (shutdownInProgress) throw new Error('WORKER_STARTUP_ABORTED');
     }
-    providerEventReplayWorker = await startProviderEventReplayRuntime();
+    // Signed observations are reconciled by the sealed durable recovery loop.
+    // The retained legacy replay repository has no current runtime table authority.
     await startFakeFinancialCommandRecoveryRuntime();
     workOrderCompensationWorker = await startWorkOrderCompensationRuntime();
     changeOrderRecoveryWorker = await startChangeOrderRecoveryRuntime();
@@ -421,8 +398,6 @@ export async function gracefulShutdown(signal: string): Promise<void> {
   const workersToDrain = activeWorkers.splice(0, activeWorkers.length);
   const fakeFinancialPublisherToClose = fakeFinancialPublisher;
   fakeFinancialPublisher = null;
-  const providerEventReplayToClose = providerEventReplayWorker;
-  providerEventReplayWorker = null;
   const fakeFinancialCommandRecoveryToClose = fakeFinancialCommandRecoveryWorker;
   fakeFinancialCommandRecoveryWorker = null;
   const workOrderCompensationToClose = workOrderCompensationWorker;
@@ -438,9 +413,6 @@ export async function gracefulShutdown(signal: string): Promise<void> {
       closeFakeFinancialPublisher: fakeFinancialPublisherToClose?.stop.bind(
         fakeFinancialPublisherToClose
       ),
-      closeProviderEventReplay: providerEventReplayToClose
-        ? () => providerEventReplayToClose.stop()
-        : undefined,
       closeFakeFinancialCommandRecovery: fakeFinancialCommandRecoveryToClose
         ? () => fakeFinancialCommandRecoveryToClose.stop()
         : undefined,
@@ -494,7 +466,6 @@ export async function bootWorkerProcess(): Promise<void> {
   try {
     workerHealthServer = await startWorkerHealthServer({
       fakeFinancialPublisherHealth: () => fakeFinancialPublisher?.status() ?? null,
-      providerEventReplayHealth: () => providerEventReplayWorker?.health() ?? null,
       fakeFinancialCommandRecoveryHealth: () =>
         fakeFinancialCommandRecoveryWorker?.health() ?? null,
       workOrderCompensationHealth: () => workOrderCompensationWorker?.health() ?? null,
@@ -514,7 +485,6 @@ export async function bootWorkerProcess(): Promise<void> {
       await shutdownWorkerResources({
         workers: activeWorkers.splice(0, activeWorkers.length),
         closeFakeFinancialPublisher: fakeFinancialPublisher?.stop.bind(fakeFinancialPublisher),
-        closeProviderEventReplay: providerEventReplayWorker?.stop.bind(providerEventReplayWorker),
         closeFakeFinancialCommandRecovery: fakeFinancialCommandRecoveryWorker?.stop.bind(
           fakeFinancialCommandRecoveryWorker
         ),
@@ -530,7 +500,6 @@ export async function bootWorkerProcess(): Promise<void> {
       throw new AggregateError([error, cleanupError], 'WORKER_BOOT_AND_CLEANUP_FAILED');
     } finally {
       fakeFinancialPublisher = null;
-      providerEventReplayWorker = null;
       fakeFinancialCommandRecoveryWorker = null;
       workOrderCompensationWorker = null;
       changeOrderRecoveryWorker = null;

@@ -4,32 +4,40 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const root = resolve(import.meta.dirname, '../../..');
-const migration = readFileSync(resolve(
-  root,
-  'backend/database/migrations/20260919_provider_event_processing_v1.sql',
-), 'utf8');
-const repository = readFileSync(resolve(
-  root,
-  'backend/src/services/payment/ProviderEventProcessing.ts',
-), 'utf8');
-const replayWorker = readFileSync(resolve(
-  root,
-  'backend/src/jobs/provider-event-replay-worker.ts',
-), 'utf8');
-const productionWorkerBootstrap = readFileSync(resolve(
-  root,
-  'backend/src/jobs/workers.ts',
-), 'utf8');
+const migration = readFileSync(
+  resolve(root, 'backend/database/migrations/20260919_provider_event_processing_v1.sql'),
+  'utf8'
+);
+const repository = readFileSync(
+  resolve(root, 'backend/src/services/payment/ProviderEventProcessing.ts'),
+  'utf8'
+);
+const replayWorker = readFileSync(
+  resolve(root, 'backend/src/jobs/provider-event-replay-worker.ts'),
+  'utf8'
+);
+const productionWorkerBootstrap = readFileSync(
+  resolve(root, 'backend/src/jobs/workers.ts'),
+  'utf8'
+);
 
 describe('provider-event processing migration and scheduling contract', () => {
   it('separates mutable lease coordination from append-only attempt and outcome evidence', () => {
-    expect(migration).toContain('CREATE TABLE IF NOT EXISTS public.provider_event_processing_state');
-    expect(migration).toContain('CREATE TABLE IF NOT EXISTS public.provider_event_processing_attempts');
-    expect(migration).toContain('CREATE TABLE IF NOT EXISTS public.provider_event_processing_outcomes');
+    expect(migration).toContain(
+      'CREATE TABLE IF NOT EXISTS public.provider_event_processing_state'
+    );
+    expect(migration).toContain(
+      'CREATE TABLE IF NOT EXISTS public.provider_event_processing_attempts'
+    );
+    expect(migration).toContain(
+      'CREATE TABLE IF NOT EXISTS public.provider_event_processing_outcomes'
+    );
     expect(migration).toContain('provider_event_processing_attempt_no_update_delete');
     expect(migration).toContain('provider_event_processing_outcome_no_update_delete');
     expect(migration).toContain('provider event processing evidence is append-only');
-    expect(migration).toContain("'SUCCEEDED', 'RETRYABLE_FAILED', 'TERMINAL_FAILED', 'LEASE_EXPIRED'");
+    expect(migration).toContain(
+      "'SUCCEEDED', 'RETRYABLE_FAILED', 'TERMINAL_FAILED', 'LEASE_EXPIRED'"
+    );
   });
 
   it('binds each attempt to one fake provider event identity and a bounded lease', () => {
@@ -48,8 +56,10 @@ describe('provider-event processing migration and scheduling contract', () => {
     expect(repository).toContain("receipt.authentication_status='VERIFIED'");
   });
 
-  it('keeps replay opt-in, fake-gated, causally bound, and absent from production execution', () => {
-    expect(replayWorker).toContain("assertNonproductionFakeFinanceAuthorized({ component: 'worker' })");
+  it('retains legacy replay evidence while boot uses sealed durable financial recovery', () => {
+    expect(replayWorker).toContain(
+      "assertNonproductionFakeFinanceAuthorized({ component: 'worker' })"
+    );
     expect(replayWorker).toContain('assertReplayClaimEvidence');
     expect(replayWorker).toContain('RAW_PAYLOAD_DIGEST_MISMATCH');
     expect(replayWorker).toContain('OBSERVATION_BINDING_MISMATCH');
@@ -57,20 +67,22 @@ describe('provider-event processing migration and scheduling contract', () => {
     expect(replayWorker).toContain('PostgresProviderObservationNormalizationRepository');
     expect(replayWorker).not.toContain('createUniversalV1FakeFinancialApplicationService');
     expect(productionWorkerBootstrap).toContain(
-      "const NONPRODUCTION_FINANCIAL_WORKER_ENVIRONMENTS = new Set(['local', 'preview', 'staging'])",
+      "const NONPRODUCTION_FINANCIAL_WORKER_ENVIRONMENTS = new Set(['local', 'preview', 'staging'])"
     );
     expect(productionWorkerBootstrap).toContain('if (!environment) return null;');
     expect(productionWorkerBootstrap).toContain('readNonproductionFinancialBootstrapReadiness');
+    expect(productionWorkerBootstrap).not.toContain('startProviderEventReplayWorker');
     expect(productionWorkerBootstrap).toContain(
-      'providerEventReplayWorker = await startProviderEventReplayRuntime();',
+      'await startFakeFinancialCommandRecoveryRuntime();'
     );
+    expect(productionWorkerBootstrap).toContain('await fakeFinancialCommandRecoveryWorker.ready;');
     expect(migration).not.toMatch(/stripe|payment_intent|live provider/iu);
   });
 
   it('rejects every non-expiry outcome after its processing lease has expired', () => {
     expect(migration).toContain("NEW.outcome_kind <> 'LEASE_EXPIRED'");
     expect(migration).toContain('expired lease cannot record a processing outcome');
-    expect(migration).toContain("NEW.recorded_at := clock_timestamp()");
-    expect(migration).toContain("NEW.leased_at := clock_timestamp()");
+    expect(migration).toContain('NEW.recorded_at := clock_timestamp()');
+    expect(migration).toContain('NEW.leased_at := clock_timestamp()');
   });
 });

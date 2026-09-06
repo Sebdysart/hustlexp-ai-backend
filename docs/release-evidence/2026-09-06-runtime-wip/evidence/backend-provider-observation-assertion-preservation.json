@@ -1,0 +1,20 @@
+{
+  "recordedAt": "2026-09-06T21:25:22.704Z",
+  "originalSha256": "608245407a6bc3a411bb4c7c0985b8811c593157fd4b3ff0ac73b68828e9053c",
+  "sourceSha256": "d6162c6af68db0cc4675e37a2a66cc9b8bb6094e7f0ffdfeec9036043fdd5b9d",
+  "scope": "Both original test bodies are token-identical after repository formatting, replacing the PREPARED/REQUESTED prerequisite call names and adding the current result type fields recordedAt (database dispatch time) and expiresAt (null). The legacy projection hash ignores these two timestamp fields. Every original assertion and all other fixture data are preserved. Database execution is still required.",
+  "results": [
+    {
+      "name": "corroborates an exact terminal observation without provider I/O or lifecycle success",
+      "sha256": "cf6c5077827e684c28e55ca007faf3eaf013ac14a7400ebbb213578c868afecc",
+      "assertions": 8,
+      "preserved": true
+    },
+    {
+      "name": "preserves authenticated raw evidence but refuses normalization before exact command authority",
+      "sha256": "eb9e6adb10c7e200be479a25c103ca3a5dce2fd0adc9f1e2a49bccdd2c574445",
+      "assertions": 2,
+      "preserved": true
+    }
+  ]
+}

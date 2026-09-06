@@ -1,8 +1,16 @@
 import { randomUUID } from 'node:crypto';
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type pg from 'pg';
 
-import { db, hasDb } from '../../src/db.js';
+import type { Database, QueryFn } from '../../src/db.js';
+import type { UniversalV1ActorAttestationHandle } from '../../src/auth/universal-v1-actor-attestation-contracts.js';
+import {
+  createFinancialReadinessDatabase,
+  type FinancialReadinessDatabase,
+} from '../helpers/universal-v1-financial-readiness-database.js';
+import { createClaimedTaskDraftFixture } from '../helpers/universal-v1-claimed-task-draft-fixture.js';
+import { createSyntheticActorAttestation } from '../helpers/universal-v1-prepared-work-order-fixture.js';
 import {
   canonicalFinancialProviderRequestSha256,
   JournaledFinancialProviderInvoker,
@@ -11,11 +19,58 @@ import {
 import {
   PostgresUniversalV1PreparedFinancialCommandAuthority,
   type PrepareUniversalV1FinancialCommandInput,
+  type PreparedUniversalV1FinancialCommandReceipt,
 } from '../../src/services/payment/PreparedFinancialCommandAuthority.js';
 
-const describePg = describe.sequential.skipIf(!hasDb);
-let actorId = randomUUID();
-let taskDraftId = randomUUID();
+const describePg = describe.skipIf(!process.env.DATABASE_URL).sequential;
+let context: FinancialReadinessDatabase;
+let db: Database;
+let apiDatabase: Database;
+let apiPool: pg.Pool;
+let attestation: UniversalV1ActorAttestationHandle;
+let preparedAuthority: PostgresUniversalV1PreparedFinancialCommandAuthority;
+let synchronizePreparations: (() => Promise<void>) | undefined;
+const transactionPids = new Set<number>();
+
+function pooledDatabase(pool: pg.Pool): Database {
+  const query: QueryFn = async <Row>(sql: string, values?: unknown[]) => {
+    const result = await pool.query(sql, values);
+    return { rows: result.rows as Row[], rowCount: result.rowCount ?? 0 };
+  };
+  const transaction = async <T>(
+    work: (query: QueryFn) => Promise<T>,
+    serializable = false
+  ): Promise<T> => {
+    const client = await pool.connect();
+    try {
+      await client.query(serializable ? 'BEGIN ISOLATION LEVEL SERIALIZABLE' : 'BEGIN');
+      if (pool === apiPool && synchronizePreparations) {
+        const identity = await client.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+        transactionPids.add(identity.rows[0]!.pid);
+        await synchronizePreparations();
+      }
+      const result = await work(async <Row>(sql: string, values?: unknown[]) => {
+        const reply = await client.query(sql, values);
+        return { rows: reply.rows as Row[], rowCount: reply.rowCount ?? 0 };
+      });
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  };
+  return {
+    query,
+    readQuery: query,
+    transaction,
+    serializableTransaction: <T>(work: (query: QueryFn) => Promise<T>) => transaction(work, true),
+  } as Database;
+}
+let actorId: string = randomUUID();
+let taskDraftId: string = randomUUID();
 let operationId = randomUUID();
 let idempotencyKey = `prepared-finance:${randomUUID()}`;
 
@@ -24,7 +79,7 @@ function exactRequest() {
     operationId,
     idempotencyKey,
     expectedVersion: 0,
-    customerId: 'synthetic-customer',
+    customerId: actorId,
   };
 }
 
@@ -55,30 +110,69 @@ function preparation(
 }
 
 describePg('Universal V1 PREPARED financial command PostgreSQL authority', () => {
-  const authority = new PostgresUniversalV1PreparedFinancialCommandAuthority(db);
-
+  const authority = {
+    prepare: (input: PrepareUniversalV1FinancialCommandInput) =>
+      preparedAuthority.prepare(input, attestation),
+  };
+  beforeAll(async () => {
+    context = await createFinancialReadinessDatabase();
+    apiPool = context.poolForRole('apiRole', 6);
+    db = pooledDatabase(context.fixture.pool);
+    apiDatabase = pooledDatabase(apiPool);
+    preparedAuthority = new PostgresUniversalV1PreparedFinancialCommandAuthority(apiDatabase);
+  }, 120_000);
+  afterAll(async () => {
+    await context?.close();
+  }, 30_000);
   beforeEach(async () => {
-    actorId = randomUUID();
-    taskDraftId = randomUUID();
-    operationId = randomUUID();
-    idempotencyKey = `prepared-finance:${randomUUID()}`;
-    await db.query(
-      `INSERT INTO public.users(id, email, full_name)
-       VALUES ($1, $2, 'Prepared Finance System Actor')`,
-      [actorId, `prepared-finance-${actorId}@example.invalid`]
+    synchronizePreparations = undefined;
+    transactionPids.clear();
+    const owner = await createClaimedTaskDraftFixture(
+      db,
+      context.fixture.pool,
+      'prepared-' + randomUUID()
     );
-    await db.query(
-      `INSERT INTO public.task_drafts(
-         id, submission_id, card_token_hash, raw_input, universal_contract_version
-       ) VALUES ($1, $2, $3, 'Synthetic prepared finance proof', 1)`,
-      [taskDraftId, randomUUID(), `prepared-finance-card-${randomUUID()}`]
+    actorId = owner.posterUserId;
+    taskDraftId = owner.draftId;
+    operationId = randomUUID();
+    idempotencyKey = 'prepared-finance:' + randomUUID();
+    attestation = await createSyntheticActorAttestation(
+      context.fixture.pool,
+      apiDatabase,
+      context.clients.get('attesterRole')!,
+      context.roles.attesterRole,
+      context.authority.release.digest!,
+      actorId
     );
   });
 
   it('serializes concurrent exact preparation into one committed immutable fact', async () => {
-    const attempts = await Promise.allSettled(
-      Array.from({ length: 6 }, () => authority.prepare(preparation()))
+    let entered = 0;
+    let unlock!: () => void;
+    let fail!: (error: Error) => void;
+    const gate = new Promise<void>((resolve, reject) => {
+      unlock = resolve;
+      fail = reject;
+    });
+    synchronizePreparations = () => {
+      if (++entered === 6) unlock();
+      return gate;
+    };
+    const timeout = setTimeout(
+      () => fail(new Error('SIX_CONCURRENT_API_TRANSACTIONS_REQUIRED')),
+      10_000
     );
+    let attempts: PromiseSettledResult<PreparedUniversalV1FinancialCommandReceipt>[];
+    try {
+      attempts = await Promise.allSettled(
+        Array.from({ length: 6 }, () => authority.prepare(preparation()))
+      );
+    } finally {
+      clearTimeout(timeout);
+      synchronizePreparations = undefined;
+    }
+    expect(entered).toBe(6);
+    expect(transactionPids.size).toBe(6);
     const receipts = attempts.flatMap((attempt) =>
       attempt.status === 'fulfilled' ? [attempt.value] : []
     );
@@ -111,17 +205,16 @@ describePg('Universal V1 PREPARED financial command PostgreSQL authority', () =>
 
   it('replays an exact request and rejects changed-key, changed-context, and occupied lifecycle identities', async () => {
     const committed = await authority.prepare(preparation());
-    await expect(
-      authority.prepare(preparation())
-    ).resolves.toEqual({ ...committed, idempotencyReplayed: true });
+    await expect(authority.prepare(preparation())).resolves.toEqual({
+      ...committed,
+      idempotencyReplayed: true,
+    });
     await expect(
       authority.prepare(preparation({ providerRequestSha256: 'f'.repeat(64) }))
     ).rejects.toThrow('UNIVERSAL_V1_PREPARED_FINANCIAL_COMMAND_IDEMPOTENCY_CONFLICT');
     await expect(
-      authority.prepare(
-        preparation({ idempotencyKey: `prepared-finance:${randomUUID()}` })
-      )
-    ).rejects.toThrow('UNIVERSAL_V1_PREPARED_FINANCIAL_COMMAND_OPERATION_VERSION_CONFLICT');
+      authority.prepare(preparation({ idempotencyKey: `prepared-finance:${randomUUID()}` }))
+    ).rejects.toThrow('UNIVERSAL_V1_PREPARED_FINANCIAL_COMMAND_IDEMPOTENCY_CONFLICT');
     await expect(
       authority.prepare(
         preparation({
@@ -129,32 +222,47 @@ describePg('Universal V1 PREPARED financial command PostgreSQL authority', () =>
           idempotencyKey: `prepared-finance:${randomUUID()}`,
         })
       )
-    ).rejects.toThrow('UNIVERSAL_V1_PREPARED_FINANCIAL_COMMAND_LIFECYCLE_VERSION_CONFLICT');
+    ).rejects.toThrow('UNIVERSAL_V1_PREPARED_FINANCIAL_COMMAND_IDEMPOTENCY_CONFLICT');
   });
 
   it('commits PREPARED and REQUESTED but refuses adapter entry without DISPATCH_ATTEMPTED', async () => {
     const prepared = await authority.prepare(preparation());
     const adapter = vi.fn(async () => 'adapter-entered');
-    await expect(new JournaledFinancialProviderInvoker(
-      new PostgresFinancialProviderCommandJournal(db)
-    ).invokeAfterCommit(
-      {
-        operationKind: 'PREPARE_PAYMENT_METHOD',
-        operationId,
-        providerKind: 'FAKE',
-        idempotencyKey,
-        providerExpectedVersion: 0,
-        exactRequest: exactRequest(),
-        evidence: {
-          preparedFinancialCommandId: prepared.preparedCommandId,
-          preparedAuthoritySha256: prepared.authorityContextSha256,
-          taskDraftId,
+    await expect(
+      new JournaledFinancialProviderInvoker(
+        new PostgresFinancialProviderCommandJournal(apiDatabase)
+      ).invokeAfterCommit(
+        {
+          operationKind: 'PREPARE_PAYMENT_METHOD',
+          operationId,
+          providerKind: 'FAKE',
+          idempotencyKey,
+          providerExpectedVersion: 0,
+          exactRequest: exactRequest(),
+          evidence: {
+            preparedFinancialCommandId: prepared.preparedCommandId,
+            preparedAuthoritySha256: prepared.authorityContextSha256,
+            taskDraftId,
+          },
+          actor: { actorId, actorKind: 'PARTICIPANT' },
+          // Synthetic release metadata bound to this disposable target; not release certification.
+          release: {
+            manifestDigest: context.authority.release.digest!,
+            releaseId: context.authority.manifest.releaseId,
+            revision: context.authority.manifest.components.backend.revision,
+            environment: 'local',
+            authenticationStatus: 'VERIFIED',
+          },
         },
-        actor: { actorId, actorKind: 'PARTICIPANT' },
-      },
-      adapter
-    )).rejects.toThrow('FOREGROUND_DISPATCH_COORDINATOR_REQUIRED');
+        adapter
+      )
+    ).rejects.toThrow('FOREGROUND_DISPATCH_COORDINATOR_REQUIRED');
     expect(adapter).not.toHaveBeenCalled();
+    const persisted = await context.fixture.pool.query(
+      'SELECT count(*)::int AS count FROM public.financial_provider_command_journal WHERE prepared_financial_command_id=$1',
+      [prepared.preparedCommandId]
+    );
+    expect(persisted.rows).toEqual([{ count: 1 }]);
 
     await expect(
       db.query(

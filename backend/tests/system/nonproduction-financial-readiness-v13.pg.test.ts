@@ -1,129 +1,28 @@
-import { randomUUID } from 'node:crypto';
-import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { QueryFn } from '../../src/database-contracts.js';
-import { REQUIRED_MIGRATION_FILES } from '../../src/jobs/engine-automation-migration-files.js';
 import { RUNTIME_DATABASE_WORK_ORDER_TARGET_LOCK_SQL } from '../../src/jobs/runtime-database-authority.js';
-import { type WorkOrderCommandRoleNames } from '../../src/jobs/work-order-command-role-authority.js';
+import type { WorkOrderCommandRoleNames } from '../../src/jobs/work-order-command-role-authority.js';
 import { readNonproductionFinancialBootstrapReadiness } from '../../src/services/payment/NonproductionFinancialBootstrapReadiness.js';
-import { createUniversalV1DisposableDatabase } from '../helpers/universal-v1-disposable-database.js';
 import {
-  provisionUniversalV1SyntheticRoles,
-  provisionFinancialReadinessCustody,
-} from '../helpers/universal-v1-synthetic-role-provisioning.js';
-import { createLocalFinancialReadinessAuthority } from '../helpers/universal-v1-local-financial-readiness-fixture.js';
+  createFinancialReadinessDatabase,
+  quoteFinancialReadinessRole as quote,
+  type FinancialReadinessDatabase,
+} from '../helpers/universal-v1-financial-readiness-database.js';
+
 const describePg = describe.skipIf(!process.env.DATABASE_URL).sequential;
 describePg('v13 actual financial bootstrap readiness', () => {
-  let authority: Awaited<ReturnType<typeof createLocalFinancialReadinessAuthority>>;
-  let fixture: Awaited<ReturnType<typeof createUniversalV1DisposableDatabase>>;
-  const suffix = randomUUID().replaceAll('-', '').slice(0, 20);
-  const roles: WorkOrderCommandRoleNames = {
-    migrationRole: `hx_ci_${suffix}_migration`,
-    apiRole: `hx_ci_${suffix}_api`,
-    workerRole: `hx_ci_${suffix}_worker`,
-    attesterRole: `hx_ci_${suffix}_attester`,
-    commandOwnerRole: `hx_ci_${suffix}_command`,
-    assertionOwnerRole: `hx_ci_${suffix}_assertion`,
-    financeOwnerRole: `hx_ci_${suffix}_finance`,
-    telemetryOwnerRole: `hx_ci_${suffix}_telemetry`,
-  };
-  const environment = {
-    HX_WORK_ORDER_MIGRATION_DATABASE_ROLE: roles.migrationRole,
-    HX_WORK_ORDER_API_DATABASE_ROLE: roles.apiRole,
-    HX_WORK_ORDER_WORKER_DATABASE_ROLE: roles.workerRole,
-    HX_WORK_ORDER_ATTESTER_DATABASE_ROLE: roles.attesterRole,
-    HX_WORK_ORDER_COMMAND_OWNER_DATABASE_ROLE: roles.commandOwnerRole,
-    HX_WORK_ORDER_ASSERTION_OWNER_DATABASE_ROLE: roles.assertionOwnerRole,
-    HX_FINANCE_COMMAND_OWNER_DATABASE_ROLE: roles.financeOwnerRole,
-    HX_TELEMETRY_OWNER_DATABASE_ROLE: roles.telemetryOwnerRole,
-  };
-  const loginKeys = ['migrationRole', 'apiRole', 'workerRole', 'attesterRole'] as const;
-  const clients = new Map<(typeof loginKeys)[number], pg.Client>();
-  const created: string[] = [];
-  const password = `synthetic-${randomUUID()}`;
-  const quote = (name: string): string => {
-    if (!/^hx_ci_[a-f0-9]{20}_[a-z]+$/u.test(name)) throw new Error('UNSAFE_SYNTHETIC_ROLE');
-    return `"${name}"`;
-  };
-  let root: pg.Client;
+  let context: FinancialReadinessDatabase;
+  let authority: FinancialReadinessDatabase['authority'];
+  let fixture: FinancialReadinessDatabase['fixture'];
+  let roles: FinancialReadinessDatabase['roles'];
+  let clients: FinancialReadinessDatabase['clients'];
+  let environment: FinancialReadinessDatabase['environment'];
   beforeAll(async () => {
-    authority = await createLocalFinancialReadinessAuthority();
-    const source = new URL(process.env.DATABASE_URL ?? '');
-    if (
-      source.hostname !== '127.0.0.1' ||
-      source.port !== '5432' ||
-      source.username !== 'hx_ci_runner' ||
-      !/^\/hx_ci_(?:admin|invariant|system)_test$/u.test(source.pathname) ||
-      source.search ||
-      source.hash
-    )
-      throw new Error('EXACT_SYNTHETIC_ADMIN_REQUIRED');
-    source.pathname = '/hx_ci_admin_test';
-    root = new pg.Client({ connectionString: source.toString() });
-    await root.connect();
-    for (const [key, name] of Object.entries(roles)) {
-      const login = (loginKeys as readonly string[]).includes(key);
-      await root.query(`CREATE ROLE ${quote(name)} ${login ? `LOGIN PASSWORD '${password}'` : 'NOLOGIN'}
-        NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS`);
-      created.push(name);
-    }
-    fixture = await createUniversalV1DisposableDatabase({
-      throughFinancialMigration:
-        '20261016_universal_v1_fake_financial_command_outbox_authority_v13',
-      bootstrapOwnerRole: roles.commandOwnerRole,
-      canonicalMigrationLedger: true,
-    });
-    const admin = await fixture.pool.connect();
-    try {
-      await admin.query(
-        `INSERT INTO hx_authority.universal_v1_work_order_target_authority_facts(
-        authority_version,target_database_name,environment,release_manifest_sha256,activation_request_sha256
-      ) VALUES (1,current_database(),'local',$1,$2)`,
-        [authority.release.digest, 'c'.repeat(64)]
-      );
-      await admin.query(
-        `INSERT INTO public.hxos_nonproduction_bootstrap_completion_v1(
-        release_manifest_digest,migration_artifact_digest,release_id,release_environment,
-        required_migration_count,financial_migration_status,completed_at
-      ) VALUES ($1,$2,$4,'local',$3,'applied','2026-09-04T00:00:00Z')`,
-        [
-          authority.release.digest,
-          authority.manifest.components.migration.artifactDigest,
-          REQUIRED_MIGRATION_FILES.length,
-          authority.manifest.releaseId,
-        ]
-      );
-      await provisionUniversalV1SyntheticRoles(
-        admin,
-        new URL(fixture.databaseUrl).pathname.slice(1),
-        roles
-      );
-      await provisionFinancialReadinessCustody(admin, roles);
-      for (const key of loginKeys) {
-        const url = new URL(fixture.databaseUrl);
-        url.username = roles[key];
-        url.password = password;
-        const client = new pg.Client({ connectionString: url.toString() });
-        await client.connect();
-        clients.set(key, client);
-      }
-    } finally {
-      admin.release();
-    }
+    context = await createFinancialReadinessDatabase();
+    ({ authority, fixture, roles, clients, environment } = context);
   }, 120_000);
   afterAll(async () => {
-    for (const client of clients.values()) await client.end();
-    try {
-      if (fixture) await fixture.close();
-    } finally {
-      if (root) {
-        try {
-          for (const name of created) await root.query('DROP ROLE ' + quote(name));
-        } finally {
-          await root.end();
-        }
-      }
-    }
+    await context?.close();
   }, 30_000);
 
   async function readAs(component: 'backend' | 'worker', key: 'apiRole' | 'workerRole') {

@@ -319,7 +319,7 @@ describe('validateConfig boot wiring (supersedes #232)', () => {
   });
 
   it.each(['local', 'preview', 'staging'])(
-    'starts all four financial pollers in %s only after exact bootstrap readiness',
+    'starts supported financial recovery in %s without the retained legacy replay poller',
     async (environment) => {
       vi.stubEnv('HX_ENVIRONMENT', environment);
       const { bootWorkerProcess } = await import('../../src/jobs/workers');
@@ -332,7 +332,7 @@ describe('validateConfig boot wiring (supersedes #232)', () => {
           component: 'worker',
         })
       );
-      expect(startProviderEventReplayWorkerSpy).toHaveBeenCalledTimes(1);
+      expect(startProviderEventReplayWorkerSpy).not.toHaveBeenCalled();
       expect(startPublisherSpy).toHaveBeenCalledOnce();
       expect(startFakeFinancialRecoveryPollerSpy).toHaveBeenCalledTimes(1);
       expect(startWorkOrderCompensationPollerSpy).toHaveBeenCalledTimes(1);
@@ -341,15 +341,12 @@ describe('validateConfig boot wiring (supersedes #232)', () => {
       expect(legacyExpiryCompensationConstructorSpy).not.toHaveBeenCalled();
       expect(fakeFinancialRecoveryWorkerConstructorSpy).not.toHaveBeenCalled();
       expect(financialBootstrapReadinessSpy.mock.invocationCallOrder[0]).toBeLessThan(
-        startProviderEventReplayWorkerSpy.mock.invocationCallOrder[0] ?? Infinity
-      );
-      expect(financialBootstrapReadinessSpy.mock.invocationCallOrder[1]).toBeLessThan(
         startFakeFinancialRecoveryPollerSpy.mock.invocationCallOrder[0] ?? Infinity
       );
-      expect(financialBootstrapReadinessSpy.mock.invocationCallOrder[2]).toBeLessThan(
+      expect(financialBootstrapReadinessSpy.mock.invocationCallOrder[1]).toBeLessThan(
         startWorkOrderCompensationPollerSpy.mock.invocationCallOrder[0] ?? Infinity
       );
-      expect(financialBootstrapReadinessSpy.mock.invocationCallOrder[3]).toBeLessThan(
+      expect(financialBootstrapReadinessSpy.mock.invocationCallOrder[2]).toBeLessThan(
         startChangeOrderRecoveryPollerSpy.mock.invocationCallOrder[0] ?? Infinity
       );
       const compensationDependencies = startWorkOrderCompensationPollerSpy.mock.calls[0]?.[1];
@@ -359,7 +356,7 @@ describe('validateConfig boot wiring (supersedes #232)', () => {
       });
       const healthOptions = startWorkerHealthServerSpy.mock.calls.at(-1)?.[0];
       expect(healthOptions?.fakeFinancialPublisherHealth()).toEqual(publisherHandle.status());
-      expect(healthOptions?.providerEventReplayHealth()).toEqual(replayHandle.health());
+      expect(healthOptions).not.toHaveProperty('providerEventReplayHealth');
       expect(healthOptions?.fakeFinancialCommandRecoveryHealth()).toEqual(recoveryHandle.health());
       expect(healthOptions?.workOrderCompensationHealth()).toEqual(compensationHandle.health());
       expect(healthOptions?.changeOrderRecoveryHealth()).toEqual(
@@ -382,7 +379,7 @@ describe('validateConfig boot wiring (supersedes #232)', () => {
       expect(startWorkOrderCompensationPollerSpy).not.toHaveBeenCalled();
       expect(startChangeOrderRecoveryPollerSpy).not.toHaveBeenCalled();
       const healthOptions = startWorkerHealthServerSpy.mock.calls.at(-1)?.[0];
-      expect(healthOptions?.providerEventReplayHealth()).toBeNull();
+      expect(healthOptions).not.toHaveProperty('providerEventReplayHealth');
       expect(healthOptions?.fakeFinancialCommandRecoveryHealth()).toBeNull();
       expect(healthOptions?.workOrderCompensationHealth()).toBeNull();
       expect(healthOptions?.changeOrderRecoveryHealth()).toBeNull();

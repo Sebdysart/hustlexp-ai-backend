@@ -1,0 +1,142 @@
+{
+  "recordedAt": "2026-09-06T20:18:06.575Z",
+  "publicParent": "1da48aed847099956619763af40aaaaa04bb719d",
+  "sourceChanges": [
+    {
+      "path": "backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts",
+      "beforeSha256": "84f5cce04b882fef4f9541cec562df832d4e8ddb893f598781fa72a13b24c2bb",
+      "sha256": "332edcdcfd45258958b7f15498f6e11752ebe6014b750ecceecf015075936330"
+    },
+    {
+      "path": "backend/tests/system/nonproduction-financial-runtime-authority.pg.test.ts",
+      "beforeSha256": "1da17d00114baa7cbf167b7441c0bdb84af8b6e83da7b08ca8ce164d2e2fec96",
+      "sha256": "7a50d675ef200aea28ced4f4bc336403b06050743b405b86b93c79b48c7f9c8e"
+    },
+    {
+      "path": "backend/tests/system/nonproduction-financial-bootstrap-readiness.pg.test.ts",
+      "beforeSha256": "20768f82af714a46c9949f61228203533d03bb67091b5c1b286284782b9ab808",
+      "sha256": "e90cf790b77d10aaf81421e2ea347b7272884098ca2713e43bdf6eaab9c0bbff"
+    },
+    {
+      "path": "backend/tests/unit/payment-creation-incident-guard.test.ts",
+      "beforeSha256": "42aae0da6a9a5f5791855159fa68a8632cf9cc7c9c7a0e86bd2f46cd977e5887",
+      "sha256": "5c2c2c2e0f9d94d5ee75c6c2d1133f7f8c66ec022427e18f547123415b6ccf20"
+    },
+    {
+      "path": "backend/tests/helpers/universal-v1-financial-readiness-database.ts",
+      "beforeSha256": null,
+      "sha256": "c50cf3d633fbeac0638da5b34322572d0b88993c3be389ec834ff730c98ded81"
+    },
+    {
+      "path": "backend/tests/system/nonproduction-financial-recovery-upgrade.pg.test.ts",
+      "beforeSha256": null,
+      "sha256": "0184fdc93c34b3f6224119d371325cdf5de4b00dc088ea5d3d09313adbdacb8c"
+    }
+  ],
+  "validation": {
+    "currentRuntime": {
+      "passed": 18,
+      "failed": 0,
+      "skipped": 0,
+      "completeFiles": 1,
+      "receipt": {
+        "startedAt": "2026-09-06T20:09:20.060Z",
+        "status": "TERMINAL",
+        "pid": 97444,
+        "identity": {
+          "role": "hx_ci_runner",
+          "database": "hx_ci_admin_test",
+          "version": 160015,
+          "server": "172.17.0.2/32",
+          "port": 5432
+        },
+        "files": [
+          "backend/tests/system/nonproduction-financial-runtime-authority.pg.test.ts"
+        ],
+        "report": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/outputs/runtime-authority-current-verified-vitest.json",
+        "scope": "Focused real PostgreSQL check; does not replace the full required suite.",
+        "endedAt": "2026-09-06T20:10:02.470Z",
+        "code": 0,
+        "signal": null
+      }
+    },
+    "recoveryUpgrade": {
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "completeFiles": 1,
+      "sourceReport": "runtime-authority-split-pg-final-vitest.json"
+    },
+    "priorReadiness": {
+      "passed": 25,
+      "failed": 0,
+      "skipped": 0,
+      "completeFiles": 2,
+      "sourceReport": "readiness-fixture-pg-verified-vitest.json"
+    },
+    "uniqueFocusedPostgres": 44,
+    "expandedTypes": {
+      "status": "PASS",
+      "terminalSession": 63423,
+      "code": 0
+    },
+    "lint": {
+      "status": "PASS_ZERO_WARNINGS",
+      "terminalSession": 41648,
+      "code": 0
+    },
+    "whitespace": "PASS",
+    "fullRequired": {
+      "startedAt": "2026-09-06T20:13:09.302Z",
+      "pid": 30476,
+      "status": "RUNNING",
+      "baselinePath": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/isolated-readiness-validation-baseline.json",
+      "baselineSha256": "aa1190cf729d0c2e01f7d7504463a9d6e5b6a9f7483914ba896292dae29d59e1",
+      "identity": {
+        "database": "hx_ci_admin_test",
+        "role": "hx_ci_runner",
+        "address": "172.17.0.2/32",
+        "port": 5432,
+        "version": 160015
+      },
+      "checkout": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/backend-validation-checkout",
+      "primarySourceFrozen": false
+    }
+  },
+  "fullRunSnapshot": {
+    "sourceEntries": 1808,
+    "inventoryEntries": 1917,
+    "sourceFrozen": "ISOLATED_CHECKOUT_ONLY",
+    "processSession": 85303
+  },
+  "currentDocsEvidence": "backend-readiness-fixture-docs-freshness.json",
+  "artifactHashes": [
+    {
+      "path": "outputs/runtime-authority-current-verified-vitest.json",
+      "sha256": "b5e60a2077294283e6bc957536a6728d9b48d9efba464bcd14ddf9a95070a5d6"
+    },
+    {
+      "path": "outputs/runtime-authority-split-pg-final-vitest.json",
+      "sha256": "fca390d123e7fa59be417f8e1dea390292be3b91b7dc4db6d829f1a5c28df9ff"
+    },
+    {
+      "path": "work/runtime-authority-current-verified.log",
+      "sha256": "84d44447078a7ae955c4ee44962e0b2f1b62e99b506c48c06b62a4c2450a5bce"
+    },
+    {
+      "path": "work/runtime-authority-types-verified.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "work/runtime-authority-lint-verified.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "work/isolated-readiness-validation-baseline.json",
+      "sha256": "aa1190cf729d0c2e01f7d7504463a9d6e5b6a9f7483914ba896292dae29d59e1"
+    }
+  ],
+  "published": false,
+  "releaseEligible": false,
+  "goalComplete": false
+}

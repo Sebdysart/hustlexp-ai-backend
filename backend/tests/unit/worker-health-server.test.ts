@@ -206,12 +206,6 @@ describe('worker deployment health server', () => {
         matchedFakeFinancialMigrationCount: 8,
         completedAt: '2026-08-30T12:00:00.000Z',
       }),
-      providerEventReplayHealth: () => ({
-        status: 'healthy',
-        inFlight: false,
-        consecutiveFailures: 0,
-        lastFailureCode: null,
-      }),
       fakeFinancialCommandRecoveryHealth: () => ({
         status: 'healthy',
         inFlight: false,
@@ -350,7 +344,7 @@ describe('worker deployment health server', () => {
     });
   });
 
-  it('requires the publisher and all four nonproduction financial pollers to report healthy', async () => {
+  it('reports observation replay from sealed recovery and requires every supported financial poller', async () => {
     let publisherState: ReturnType<
       import('../../src/jobs/fake-financial-publisher-runtime.js').FakeFinancialPublisherHandle['status']
     > | null = null;
@@ -373,12 +367,6 @@ describe('worker deployment health server', () => {
         fakeFinancialMigrationCount: 8,
         matchedFakeFinancialMigrationCount: 8,
         completedAt: '2026-08-30T12:00:00.000Z',
-      }),
-      providerEventReplayHealth: () => ({
-        status: 'healthy',
-        inFlight: false,
-        consecutiveFailures: 0,
-        lastFailureCode: null,
       }),
       fakeFinancialPublisherHealth: () => publisherState,
       fakeFinancialCommandRecoveryHealth: () => ({
@@ -409,7 +397,11 @@ describe('worker deployment health server', () => {
     expect(degraded.status).toBe(503);
     expect(await degraded.json()).toMatchObject({
       ready: false,
-      providerEventReplay: { status: 'healthy' },
+      providerEventReplay: {
+        status: 'degraded',
+        processor: 'SEALED_FINANCIAL_COMMAND_RECOVERY',
+        lastFailureCode: 'PERSISTENCE_ERRORS',
+      },
       fakeFinancialCommandRecovery: {
         status: 'degraded',
         lastFailureCode: 'PERSISTENCE_ERRORS',

@@ -1,0 +1,13 @@
+# Provider-observation and runtime checkpoint
+
+Recorded 2026-09-06T21:45:50.727Z. Backend incomplete; release certification remains FAIL.
+
+The completed full required run reports **11,043 passed, 19 failed, 15 skipped and 0 todo across 698 files**, with no snapshot drift. It includes all fifteen readiness, preparation, incident-guard and worker-runtime changes. The five preparation tests and both restricted-worker cases pass in this full run. [Full evidence](backend-required-isolated-worker-runtime-review.md).
+
+Two later provider-observation test files pass all four real PostgreSQL cases. The historical fixture pins the actual pre-v13 migration boundary and calls the genuine original PREPARED/REQUESTED functions. Both original test bodies and all ten original assertions are preserved, with only prerequisite call names and two required timestamp fields adapted. Current coverage uses the actual eight-role installation, migration-owned synthetic HMAC key and API LOGIN. It verifies exact signed bytes, delivery replay, signature rejection after tampering, isolation of caller-VERIFIED historical receipts, worker denial of legacy normalization, and zero financial/normalization effects for unbound observations. Unbound observations retain PENDING processing state; this is not a completed financial journey.
+
+Expanded observation types, repository typecheck and zero-warning lint for all seventeen changed source files pass. The two later files are not part of the completed full snapshot. No SQL files changed. [Focused PostgreSQL report](provider-observation-boundaries-pg-vitest.json). [Assertion preservation](backend-provider-observation-assertion-preservation.json).
+
+Remaining full failures: canonical lifecycle (2), historical observation fixture (1, repaired by the separately verified later pair), contaminated upgrade (1), estimate materialization (13), financial security expiry (2), and fifteen skipped legacy command-port cases after setup failure. Twelve estimate failures stop at a missing fixture-bound work-order history dependency; its synchronous finance factory and provider-account/terminal paths also need current authenticated request/worker integration. Merely injecting a history reader does not complete those journeys. The contamination failure occurs when the actual post-containment migration chain reaches the exact Work Order trigger catalog check (151 triggers); guards and migration bytes remain preserved.
+
+Current Docs product behavior, full participant journeys, signed process startup/restart, restore, clean clone and independently reviewed staging remain open. [Sixty-row matrix](backend-gap-matrix-current.md). Production effects NONE; customer money and hard assignment FROZEN.

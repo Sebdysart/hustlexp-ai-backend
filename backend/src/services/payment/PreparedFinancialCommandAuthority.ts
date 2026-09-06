@@ -527,7 +527,12 @@ export class PostgresUniversalV1PreparedFinancialCommandAuthority implements Uni
       const result = await query(
         'SELECT * FROM public.hxos_prepare_authenticated_fake_financial_command_v13($1,$2)',
         [assertion.actor_assertion_token, payload]
-      );
+      ).catch((error: unknown) => {
+        if (error instanceof Error && error.message === 'HXUV1-FINPREP-13-IDEMPOTENCY_CONFLICT') {
+          throw new PreparedFinancialCommandAuthorityError('IDEMPOTENCY_CONFLICT');
+        }
+        throw error;
+      });
       if (result.rows.length !== 1 || result.rowCount !== 1)
         throw new PreparedFinancialCommandAuthorityError('PERSISTENCE_INCOMPLETE');
       const response = preparedResponseSchema.safeParse(result.rows[0]);

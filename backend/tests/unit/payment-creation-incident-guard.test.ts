@@ -101,8 +101,9 @@ describe('new-payment incident guard', () => {
     const routerIndex = read('backend/src/routers/index.ts');
 
     expect(financeRouter).toContain('export const universalFinanceRouter = router({');
-    expect(financeRouter).toContain('createUniversalV1FakeFinancialApplicationService()');
-    expect(financeRouter).toContain('executeFinancialEvent');
+    expect(financeRouter).toContain('createUniversalV1FinancialRequestService()');
+    expect(financeRouter).toContain('requestFinancialEvent(');
+    expect(financeRouter).not.toMatch(/\bexecuteFinancialEvent\s*\(/u);
     expect(financeRouter).toContain('refreshProviderAccountState');
     expect(financeRouter).toContain('reconcile');
     expect(financeRouter).not.toMatch(/Stripe(?:Service|Connect|Quote|Payment|\.)/u);

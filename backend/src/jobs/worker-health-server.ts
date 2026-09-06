@@ -40,7 +40,6 @@ interface WorkerHealthServerOptions {
   financialReadiness?: () => Promise<NonproductionFinancialBootstrapReadiness>;
   dependencyReadiness?: () => Promise<WorkerDependencyReadiness>;
   fakeFinancialPublisherHealth?: () => ReturnType<FakeFinancialPublisherHandle['status']> | null;
-  providerEventReplayHealth?: () => WorkerProviderEventReplayHealth | null;
   fakeFinancialCommandRecoveryHealth?: () => WorkerFakeFinancialCommandRecoveryHealth | null;
   workOrderCompensationHealth?: () => WorkerWorkOrderCompensationHealth | null;
   changeOrderRecoveryHealth?: () => WorkerChangeOrderRecoveryHealth | null;
@@ -50,13 +49,6 @@ interface WorkerHealthServerOptions {
 export interface WorkerDependencyReadiness {
   readonly database: 'ok' | 'unavailable';
   readonly redis: 'ok' | 'unavailable';
-}
-
-export interface WorkerProviderEventReplayHealth {
-  readonly status: 'healthy' | 'degraded' | 'stopped';
-  readonly inFlight: boolean;
-  readonly consecutiveFailures: number;
-  readonly lastFailureCode: string | null;
 }
 
 export interface WorkerFakeFinancialCommandRecoveryHealth {
@@ -195,7 +187,6 @@ export async function startWorkerHealthServer(
   const nonproductionFinancialPollersRequired = ['local', 'preview', 'staging'].includes(
     environment
   );
-  const providerEventReplayHealth = options.providerEventReplayHealth ?? (() => null);
   const fakeFinancialPublisherHealth = options.fakeFinancialPublisherHealth ?? (() => null);
   const fakeFinancialCommandRecoveryHealth =
     options.fakeFinancialCommandRecoveryHealth ?? (() => null);
@@ -292,25 +283,6 @@ export async function startWorkerHealthServer(
               : 'PUBLICATION_UNCONFIRMED',
         }
       : { status: 'disabled', inFlight: false, consecutiveFailures: 0, lastFailureCode: null };
-    let replayHealth: WorkerProviderEventReplayHealth | null = null;
-    try {
-      replayHealth = providerEventReplayHealth();
-    } catch {
-      replayHealth = null;
-    }
-    const replayReadiness = nonproductionFinancialPollersRequired
-      ? (replayHealth ?? {
-          status: 'degraded' as const,
-          inFlight: false,
-          consecutiveFailures: 1,
-          lastFailureCode: 'WORKER_NOT_STARTED',
-        })
-      : {
-          status: 'disabled' as const,
-          inFlight: false,
-          consecutiveFailures: 0,
-          lastFailureCode: null,
-        };
     let recoveryHealth: WorkerFakeFinancialCommandRecoveryHealth | null = null;
     try {
       recoveryHealth = fakeFinancialCommandRecoveryHealth();
@@ -330,6 +302,12 @@ export async function startWorkerHealthServer(
           consecutiveFailures: 0,
           lastFailureCode: null,
         };
+    // Preserve the health response field, deriving it from the same observed
+    // recovery sweep that processes independently authenticated webhook evidence.
+    const replayReadiness = {
+      ...recoveryReadiness,
+      processor: nonproductionFinancialPollersRequired ? 'SEALED_FINANCIAL_COMMAND_RECOVERY' : null,
+    };
     let compensationHealth: WorkerWorkOrderCompensationHealth | null = null;
     try {
       compensationHealth = workOrderCompensationHealth();
@@ -378,7 +356,6 @@ export async function startWorkerHealthServer(
       dependencies.database === 'ok' &&
       dependencies.redis === 'ok' &&
       (!nonproductionFinancialPollersRequired || publisherHealthy) &&
-      (!nonproductionFinancialPollersRequired || replayReadiness.status === 'healthy') &&
       (!nonproductionFinancialPollersRequired || recoveryReadiness.status === 'healthy') &&
       (!nonproductionFinancialPollersRequired || compensationReadiness.status === 'healthy') &&
       (!nonproductionFinancialPollersRequired || changeOrderRecoveryReadiness.status === 'healthy');

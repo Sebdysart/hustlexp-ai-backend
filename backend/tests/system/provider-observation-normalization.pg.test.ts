@@ -1,33 +1,156 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { db, hasDb } from '../../src/db.js';
+import type { Database, QueryFn } from '../../src/db.js';
+import { createUniversalV1DisposableDatabase } from '../helpers/universal-v1-disposable-database.js';
 import { financialProviderOutcomeProjectionSha256 } from '../../src/jobs/financial-provider-command-recovery-worker.js';
 import {
   canonicalFinancialProviderRequestSha256,
-  PostgresFinancialProviderCommandJournal,
+  prepareFinancialProviderCommand,
+  type RecordFinancialProviderCommandInput,
 } from '../../src/services/payment/FinancialProviderCommandJournal.js';
-import {
-  PostgresFinancialProviderCommandRecoveryRepository,
-} from '../../src/services/payment/FinancialProviderCommandRecovery.js';
+import { PostgresFinancialProviderCommandRecoveryRepository } from '../../src/services/payment/FinancialProviderCommandRecovery.js';
 import type { FinancialOperationResult } from '../../src/services/payment/FinancialProviderPorts.js';
-import {
-  PostgresUniversalV1PreparedFinancialCommandAuthority,
-} from '../../src/services/payment/PreparedFinancialCommandAuthority.js';
+import type { PrepareUniversalV1FinancialCommandInput } from '../../src/services/payment/PreparedFinancialCommandAuthority.js';
 import { PostgresProviderEventInboxRepository } from '../../src/services/payment/ProviderEventInbox.js';
 import {
   PostgresProviderObservationNormalizationRepository,
   ProviderObservationNormalizationError,
 } from '../../src/services/payment/ProviderObservationNormalization.js';
 
-const describePg = describe.sequential.skipIf(!hasDb);
+const describePg = describe.skipIf(!process.env.DATABASE_URL).sequential;
+let fixture: Awaited<ReturnType<typeof createUniversalV1DisposableDatabase>>;
+let db: Database;
+
+// Historical normalization requires the original committed PREPARED/REQUESTED
+// primitives. Current runtime commands require independent v13 actor provenance
+// and are covered separately; this fixture never installs or bypasses that gate.
+async function prepareHistoricalCommand(input: PrepareUniversalV1FinancialCommandInput) {
+  return db.transaction(async (query) => {
+    const result = await query<{ prepared_command_id: string; authority_context_sha256: string }>(
+      `SELECT prepared_command_id,authority_context_sha256
+         FROM public.hxos_prepare_universal_v1_financial_command_v1(
+           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19
+         )`,
+      [
+        randomUUID(),
+        input.operationKind,
+        input.operationId,
+        input.providerKind,
+        input.idempotencyKey,
+        input.providerExpectedVersion,
+        input.lifecycleExpectedVersion,
+        input.providerRequestSha256,
+        input.taskDraftId,
+        input.taskId,
+        input.eligibilityDecisionId,
+        input.scopeVersionId,
+        input.changeOrderId,
+        input.predecessorEventId,
+        input.completionFactId,
+        input.relatedOperationId,
+        input.amountCents,
+        input.currency,
+        input.recordedBy,
+      ]
+    );
+    expect(result.rowCount).toBe(1);
+    const row = result.rows[0]!;
+    expect(row.authority_context_sha256).toMatch(/^[a-f0-9]{64}$/u);
+    return {
+      preparedCommandId: row.prepared_command_id,
+      authorityContextSha256: row.authority_context_sha256,
+    };
+  });
+}
+
+async function requestHistoricalCommand<T>(input: RecordFinancialProviderCommandInput<T>) {
+  const command = prepareFinancialProviderCommand(input);
+  return db.transaction(async (query) => {
+    const result = await query<{ command_id: string }>(
+      `SELECT command_id FROM public.hxos_record_financial_provider_command_v1(
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23
+      )`,
+      [
+        randomUUID(),
+        command.operationKind,
+        command.operationId,
+        command.providerKind,
+        command.idempotencyKey,
+        command.providerExpectedVersion,
+        command.requestSha256,
+        command.commandIdentitySha256,
+        command.evidence.preparedFinancialCommandId,
+        command.evidence.preparedAuthoritySha256,
+        command.evidence.taskDraftId,
+        command.evidence.taskId,
+        command.evidence.workOrderId,
+        command.evidence.relatedOperationId,
+        command.evidence.amountCents,
+        command.evidence.currency,
+        command.actor?.actorId ?? null,
+        command.actor?.actorKind ?? null,
+        command.release?.manifestDigest ?? null,
+        command.release?.releaseId ?? null,
+        command.release?.revision ?? null,
+        command.release?.environment ?? null,
+        command.release?.authenticationStatus ?? null,
+      ]
+    );
+    expect(result.rowCount).toBe(1);
+    return { commandId: result.rows[0]!.command_id };
+  });
+}
 
 function sha256(value: string | Uint8Array): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
-describePg('provider observation normalization PostgreSQL authority', () => {
+describePg('historical pre-v13 provider observation normalization authority', () => {
+  beforeAll(async () => {
+    fixture = await createUniversalV1DisposableDatabase({
+      throughFinancialMigration: '20261015_universal_v1_work_order_bootstrap_seal_v1',
+      canonicalMigrationLedger: true,
+    });
+    const query: QueryFn = async <Row>(sql: string, parameters?: unknown[]) => {
+      const result = await fixture.pool.query(sql, parameters);
+      return { rows: result.rows as Row[], rowCount: result.rowCount ?? 0 };
+    };
+    db = {
+      query,
+      readQuery: query,
+      transaction: async <T>(work: (query: QueryFn) => Promise<T>): Promise<T> => {
+        const client = await fixture.pool.connect();
+        try {
+          await client.query('BEGIN');
+          const result = await work(async <Row>(sql: string, parameters?: unknown[]) => {
+            const reply = await client.query(sql, parameters);
+            return { rows: reply.rows as Row[], rowCount: reply.rowCount ?? 0 };
+          });
+          await client.query('COMMIT');
+          return result;
+        } catch (error) {
+          await client.query('ROLLBACK');
+          throw error;
+        } finally {
+          client.release();
+        }
+      },
+    } as Database;
+    await expect(
+      db.query(
+        `SELECT count(*)::int AS count FROM pg_catalog.pg_proc p
+         JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+        WHERE n.nspname='public' AND p.proname IN (
+          'hxos_prepare_authenticated_fake_financial_command_v13',
+          'hxos_request_fake_financial_command_v13')`
+      )
+    ).resolves.toMatchObject({ rows: [{ count: 0 }] });
+  }, 120_000);
+  afterAll(async () => {
+    await fixture?.close();
+  }, 30_000);
   it('corroborates an exact terminal observation without provider I/O or lifecycle success', async () => {
     const actorId = randomUUID();
     const taskDraftId = randomUUID();
@@ -42,16 +165,16 @@ describePg('provider observation normalization PostgreSQL authority', () => {
     await db.query(
       `INSERT INTO public.users(id, email, full_name)
        VALUES ($1, $2, 'Provider Observation System Actor')`,
-      [actorId, `provider-observation-${actorId}@example.invalid`],
+      [actorId, `provider-observation-${actorId}@example.invalid`]
     );
     await db.query(
       `INSERT INTO public.task_drafts(
          id, submission_id, card_token_hash, raw_input, universal_contract_version
        ) VALUES ($1, $2, $3, 'Provider observation PostgreSQL proof', 1)`,
-      [taskDraftId, randomUUID(), `provider-observation-card-${randomUUID()}`],
+      [taskDraftId, randomUUID(), `provider-observation-card-${randomUUID()}`]
     );
 
-    const prepared = await new PostgresUniversalV1PreparedFinancialCommandAuthority(db).prepare({
+    const prepared = await prepareHistoricalCommand({
       operationKind: 'PREPARE_PAYMENT_METHOD',
       operationId,
       providerKind: 'FAKE',
@@ -71,7 +194,7 @@ describePg('provider observation normalization PostgreSQL authority', () => {
       currency: null,
       recordedBy: actorId,
     });
-    const requested = await new PostgresFinancialProviderCommandJournal(db).recordRequested({
+    const requested = await requestHistoricalCommand({
       operationKind: 'PREPARE_PAYMENT_METHOD',
       operationId,
       providerKind: 'FAKE',
@@ -109,7 +232,7 @@ describePg('provider observation normalization PostgreSQL authority', () => {
       providerEventKind: 'FINANCIAL_OPERATION_OBSERVED',
       operationId,
       ingressIdempotencyKey: `provider-event:${sha256(
-        `FAKE\0${prematurePayload.providerEventReference}`,
+        `FAKE\0${prematurePayload.providerEventReference}`
       )}`,
       rawPayload: prematureRawPayload,
       authentication: {
@@ -142,6 +265,8 @@ describePg('provider observation normalization PostgreSQL authority', () => {
       externalReference,
       idempotencyReplayed: false,
       retryable: false,
+      recordedAt: attempted.attemptedAt,
+      expiresAt: null,
     };
     const expectedProviderResultSha256 = financialProviderOutcomeProjectionSha256(terminalResult);
     const outcome = await recovery.recordOutcome({
@@ -160,42 +285,49 @@ describePg('provider observation normalization PostgreSQL authority', () => {
       retryable: false,
       recoveryDelaySeconds: null,
     });
-    await expect(db.query<{
-      provider_result_sha256: string;
-      provider_result_version: string;
-      amount_cents: number | null;
-      currency: string | null;
-      external_reference_sha256: string;
-    }>(
-      `SELECT provider_result_sha256, provider_result_version,
+    await expect(
+      db.query<{
+        provider_result_sha256: string;
+        provider_result_version: string;
+        amount_cents: number | null;
+        currency: string | null;
+        external_reference_sha256: string;
+      }>(
+        `SELECT provider_result_sha256, provider_result_version,
               amount_cents, currency, external_reference_sha256
          FROM public.financial_provider_command_outcome_facts
         WHERE outcome_fact_id=$1`,
-      [outcome.outcomeFactId],
-    )).resolves.toMatchObject({
-      rows: [{
-        provider_result_sha256: expectedProviderResultSha256,
-        provider_result_version: '1',
-        amount_cents: null,
-        currency: null,
-        external_reference_sha256: sha256(externalReference),
-      }],
+        [outcome.outcomeFactId]
+      )
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          provider_result_sha256: expectedProviderResultSha256,
+          provider_result_version: '1',
+          amount_cents: null,
+          currency: null,
+          external_reference_sha256: sha256(externalReference),
+        },
+      ],
     });
 
-    await expect(db.query(
-      `SELECT public.normalize_financial_provider_observation_v1($1::uuid)`,
-      [prematureReceipt.observationId],
-    )).rejects.toMatchObject({
+    await expect(
+      db.query(`SELECT public.normalize_financial_provider_observation_v1($1::uuid)`, [
+        prematureReceipt.observationId,
+      ])
+    ).rejects.toMatchObject({
       message: expect.stringContaining(
-        'authenticated observation receipt precedes DISPATCH_ATTEMPTED authority',
+        'authenticated observation receipt precedes DISPATCH_ATTEMPTED authority'
       ),
     });
-    await expect(db.query<{ count: number }>(
-      `SELECT count(*)::integer AS count
+    await expect(
+      db.query<{ count: number }>(
+        `SELECT count(*)::integer AS count
          FROM public.provider_financial_observation_normalizations
         WHERE observation_id=$1`,
-      [prematureReceipt.observationId],
-    )).resolves.toMatchObject({ rows: [{ count: 0 }] });
+        [prematureReceipt.observationId]
+      )
+    ).resolves.toMatchObject({ rows: [{ count: 0 }] });
 
     const providerOccurredAt = new Date().toISOString();
     const exactPayload = {
@@ -220,7 +352,7 @@ describePg('provider observation normalization PostgreSQL authority', () => {
       providerEventKind: 'FINANCIAL_OPERATION_OBSERVED',
       operationId,
       ingressIdempotencyKey: `provider-event:${sha256(
-        `FAKE\0${exactPayload.providerEventReference}`,
+        `FAKE\0${exactPayload.providerEventReference}`
       )}`,
       rawPayload: exactRawPayload,
       authentication: {
@@ -231,8 +363,9 @@ describePg('provider observation normalization PostgreSQL authority', () => {
       },
     });
 
-    const normalized = await new PostgresProviderObservationNormalizationRepository(db)
-      .normalizeAuthenticatedObservation(receipt.observationId);
+    const normalized = await new PostgresProviderObservationNormalizationRepository(
+      db
+    ).normalizeAuthenticatedObservation(receipt.observationId);
     expect(normalized).toMatchObject({
       observationId: receipt.observationId,
       commandId: requested.commandId,
@@ -264,7 +397,7 @@ describePg('provider observation normalization PostgreSQL authority', () => {
            WHERE operation_id=$1::uuid) AS fake_operations,
          (SELECT count(*)::integer FROM public.hxos_fake_financial_operation_events_v1
            WHERE operation_id=$1::uuid) AS fake_events`,
-      [operationId],
+      [operationId]
     );
     expect(sideEffects.rows[0]).toEqual({
       lifecycle_operations: 0,
@@ -285,7 +418,7 @@ describePg('provider observation normalization PostgreSQL authority', () => {
       providerEventKind: 'FINANCIAL_OPERATION_OBSERVED',
       operationId,
       ingressIdempotencyKey: `provider-event:${sha256(
-        `FAKE\0${mismatchPayload.providerEventReference}`,
+        `FAKE\0${mismatchPayload.providerEventReference}`
       )}`,
       rawPayload: mismatchRawPayload,
       authentication: {
@@ -296,15 +429,18 @@ describePg('provider observation normalization PostgreSQL authority', () => {
       },
     });
     await expect(
-      new PostgresProviderObservationNormalizationRepository(db)
-        .normalizeAuthenticatedObservation(mismatchReceipt.observationId),
+      new PostgresProviderObservationNormalizationRepository(db).normalizeAuthenticatedObservation(
+        mismatchReceipt.observationId
+      )
     ).rejects.toEqual(new ProviderObservationNormalizationError('AUTHORITY_REFUSED'));
-    await expect(db.query<{ count: number }>(
-      `SELECT count(*)::integer AS count
+    await expect(
+      db.query<{ count: number }>(
+        `SELECT count(*)::integer AS count
          FROM public.provider_financial_observation_normalizations
         WHERE observation_id=$1`,
-      [mismatchReceipt.observationId],
-    )).resolves.toMatchObject({ rows: [{ count: 0 }] });
+        [mismatchReceipt.observationId]
+      )
+    ).resolves.toMatchObject({ rows: [{ count: 0 }] });
   });
 
   it('preserves authenticated raw evidence but refuses normalization before exact command authority', async () => {
@@ -342,8 +478,9 @@ describePg('provider observation normalization PostgreSQL authority', () => {
     });
 
     await expect(
-      new PostgresProviderObservationNormalizationRepository(db)
-        .normalizeAuthenticatedObservation(receipt.observationId),
+      new PostgresProviderObservationNormalizationRepository(db).normalizeAuthenticatedObservation(
+        receipt.observationId
+      )
     ).rejects.toEqual(new ProviderObservationNormalizationError('AUTHORITY_REFUSED'));
 
     const preserved = await db.query<{
@@ -357,7 +494,7 @@ describePg('provider observation normalization PostgreSQL authority', () => {
            ON normalization.observation_id=observation.observation_id
         WHERE observation.observation_id=$1
         GROUP BY observation.raw_payload_sha256`,
-      [receipt.observationId],
+      [receipt.observationId]
     );
     expect(preserved.rows[0]).toEqual({
       raw_payload_sha256: sha256(rawPayload),
