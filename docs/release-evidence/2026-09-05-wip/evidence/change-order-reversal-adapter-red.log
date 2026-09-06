@@ -1,0 +1,26 @@
+
+ RUN  v4.1.10 C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip
+
+
+⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  backend/tests/unit/change-order-reversal-request.test.ts [ backend/tests/unit/change-order-reversal-request.test.ts ]
+Error: Cannot find module '../../src/services/payment/UniversalV1ChangeOrderReversalRequest.js' imported from C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/unit/change-order-reversal-request.test.ts
+ ❯ backend/tests/unit/change-order-reversal-request.test.ts:7:1
+      5| import { prepareFinancialProviderCommand } from '../../src/services/pa…
+      6| import type { ChangeOrderCompensationWinnerReceipt } from '../../src/s…
+      7| import { PostgresUniversalV1ChangeOrderReversalRequests } from '../../…
+       | ^
+      8|
+      9| function fixture() {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+Serialized Error: { code: 'ERR_MODULE_NOT_FOUND' }
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  no tests
+   Start at  20:47:27
+   Duration  1.43s (transform 449ms, setup 77ms, import 0ms, tests 0ms, environment 0ms)
+

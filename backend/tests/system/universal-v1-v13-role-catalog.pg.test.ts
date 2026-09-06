@@ -1,4 +1,6 @@
 import { PostgresUniversalV1ChangeOrderMaterialization } from '../../src/services/UniversalV1ChangeOrderMaterialization.js';
+import { PostgresUniversalV1ChangeOrderRecoveryCompensation } from '../../src/services/UniversalV1ChangeOrderRecoveryCompensation.js';
+import { PostgresUniversalV1ChangeOrderReversalRequests } from '../../src/services/payment/UniversalV1ChangeOrderReversalRequest.js';
 import { UniversalV1WorkOrderApplication } from '../../src/services/UniversalV1WorkOrderApplication.js';
 import { UniversalV1ChangeOrderApplication } from '../../src/services/UniversalV1ChangeOrderApplication.js';
 import { PostgresUniversalV1ChangeOrderCommands } from '../../src/services/UniversalV1ChangeOrderCommands.js';
@@ -3370,6 +3372,305 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
       ).rows[0];
     return { ...f, winner, request, prepareArgs, prepare, journalInput, requested, counts };
   }
+
+  it.each(['PREPARED', 'REQUESTED'] as const)(
+    'worker reversal adapter resumes lost %s acknowledgement through real Redis delivery',
+    async (lostPhase) => {
+      const f = await workerReversalFixture();
+      const workerUrl = new URL(fixture.databaseUrl);
+      workerUrl.username = roles.workerRole;
+      workerUrl.password = password;
+      const workerPool = new pg.Pool({ connectionString: workerUrl.toString(), max: 4 });
+      const workerDatabase = preparationDatabase(workerPool);
+      const release = {
+        manifestDigest: f.lease.release_manifest_digest as string,
+        releaseId: 'synthetic.worker.reversal',
+        revision: 'd'.repeat(40),
+        environment: 'local' as const,
+        authenticationStatus: 'VERIFIED' as const,
+      };
+      const prefix = 'hx-ci-worker-reversal-' + randomUUID();
+      const connection = { host: '127.0.0.1', port: 16379, maxRetriesPerRequest: null };
+      const queue = new Queue('synthetic_finance', { prefix, connection });
+      const events = new QueueEvents('synthetic_finance', { prefix, connection });
+      const processor = new SyntheticFinancialCommandProcessor();
+      const consumer = new Worker('synthetic_finance', (job) => processor.process(job), {
+        prefix,
+        connection,
+        autorun: false,
+        concurrency: 1,
+      });
+      const runtimeErrors: unknown[] = [];
+      const recordError = (error: Error) => {
+        runtimeErrors.push(error);
+      };
+      queue.on('error', recordError);
+      events.on('error', recordError);
+      consumer.on('error', recordError);
+      const processorSql: string[] = [];
+      const spies = [
+        vi.spyOn(runtimeDb, 'transaction').mockImplementation((callback) =>
+          workerDatabase.transaction((query) =>
+            callback(async <Row>(sql: string, params?: unknown[]) => {
+              processorSql.push(sql);
+              return query<Row>(sql, params);
+            })
+          )
+        ),
+        vi
+          .spyOn(financialAuthorization, 'assertNonproductionFakeFinanceAuthorized')
+          .mockReturnValue({
+            releaseId: release.releaseId,
+            environment: 'local',
+            components: {
+              backend: { revision: 'c'.repeat(40) },
+              worker: { revision: release.revision },
+            },
+          } as ReturnType<typeof financialAuthorization.assertNonproductionFakeFinanceAuthorized>),
+        vi
+          .spyOn(manifestAuthority, 'releaseManifestDigest')
+          .mockReturnValue(release.manifestDigest),
+        vi
+          .spyOn(manifestAuthority, 'readReleaseManifest')
+          .mockReturnValue({ digest: release.manifestDigest } as ReturnType<
+            typeof manifestAuthority.readReleaseManifest
+          >),
+        vi.spyOn(manifestAuthority, 'isAuthenticatedReleaseManifest').mockReturnValue(true),
+        vi.spyOn(databaseStartup, 'configuredRuntimeDatabaseStartup').mockReturnValue({
+          expectedTarget: { environment: 'local', databaseName: workerUrl.pathname.slice(1) },
+          target: { serviceLogin: roles.workerRole },
+          targetDigest: 'sha256:' + 'e'.repeat(64),
+        } as ReturnType<typeof databaseStartup.configuredRuntimeDatabaseStartup>),
+      ];
+      let running: Promise<void> | undefined, journeyError: unknown;
+      try {
+        const winner = await new PostgresUniversalV1ChangeOrderRecoveryCompensation(
+          workerDatabase
+        ).claim(
+          {
+            ...f.lease,
+            acquired_at: f.lease.acquired_at.toISOString(),
+            expires_at: f.lease.expires_at.toISOString(),
+          } as Parameters<PostgresUniversalV1ChangeOrderRecoveryCompensation['claim']>[0],
+          f.event.id
+        );
+        if (!winner || winner.resolution.kind !== 'COMPENSATE' || !winner.workerOrigin)
+          throw Error('WORKER_WINNER_MISSING');
+        const originalWinner = structuredClone(winner);
+        let armed = true;
+        const interrupted: Pick<Database, 'transaction'> = {
+          transaction: async (work) => {
+            let phaseCommitted = false;
+            const result = await workerDatabase.transaction((query) =>
+              work(async <Row>(sql: string, params?: unknown[]) => {
+                const reply = await query<Row>(sql, params);
+                if (
+                  sql.includes(
+                    lostPhase === 'PREPARED'
+                      ? 'hxos_prepare_change_order_compensation_reversal_v13'
+                      : 'hxos_request_fake_financial_command_v13'
+                  )
+                )
+                  phaseCommitted = true;
+                return reply;
+              })
+            );
+            // Inject loss after actual COMMIT, never from inside its callback.
+            if (armed && phaseCommitted) {
+              armed = false;
+              throw Error('SYNTHETIC_COMMIT_ACK_LOST');
+            }
+            return result;
+          },
+        };
+        await expect(
+          new PostgresUniversalV1ChangeOrderReversalRequests(interrupted).requestReversal(winner)
+        ).rejects.toThrow('SYNTHETIC_COMMIT_ACK_LOST');
+        expect(await f.counts()).toEqual({
+          preparations: 1,
+          origins: 1,
+          requests: lostPhase === 'REQUESTED' ? 1 : 0,
+          events: 0,
+        });
+        const retainedPreparation = (
+          await fixture.pool.query(
+            'SELECT prepared_command_id,authority_context_sha256 FROM public.universal_v1_prepared_financial_commands WHERE operation_id=$1',
+            [f.winner.reversal_operation_id]
+          )
+        ).rows[0];
+        const port = new PostgresUniversalV1ChangeOrderReversalRequests(workerDatabase);
+        const requested = await port.requestReversal(winner);
+        expect(requested).toMatchObject({
+          requestState: 'REQUESTED',
+          preparationReplayed: true,
+          idempotencyReplayed: lostPhase === 'REQUESTED',
+          preparedCommandId: retainedPreparation.prepared_command_id,
+          preparedAuthoritySha256: retainedPreparation.authority_context_sha256,
+          compensationCommandId: f.winner.compensation_command_id,
+          operationId: f.winner.reversal_operation_id,
+        });
+        expect(await port.requestReversal(winner)).toEqual({
+          ...requested,
+          idempotencyReplayed: true,
+        });
+        const counts = async () =>
+          (
+            await fixture.pool.query(
+              `SELECT
+        (SELECT count(*)::int FROM public.universal_v1_prepared_financial_commands WHERE operation_id=$1) AS preparations,
+        (SELECT count(*)::int FROM hx_authority.fake_financial_change_order_reversal_preparations_v13 WHERE compensation_command_id=$4) AS worker_provenance,
+        (SELECT count(*)::int FROM hx_authority.fake_financial_preparation_authority_v13 WHERE prepared_command_id=$5) AS human_provenance,
+        (SELECT count(*)::int FROM public.financial_provider_command_journal WHERE operation_id=$1) AS requests,
+        (SELECT count(*)::int FROM hx_authority.fake_financial_command_outbox_requests_v13 WHERE command_id=$2) AS outbox,
+        (SELECT count(*)::int FROM hx_authority.fake_financial_dispatch_admissions_v13 WHERE command_id=$2) AS admissions,
+        (SELECT count(*)::int FROM public.financial_provider_command_dispatch_attempts WHERE command_id=$2) AS dispatches,
+        (SELECT count(*)::int FROM public.hxos_fake_financial_operations_v1 WHERE operation_id=$1) AS operations,
+        (SELECT count(*)::int FROM public.hxos_fake_financial_operation_events_v1 WHERE operation_id=$1) AS provider_events,
+        (SELECT count(*)::int FROM public.financial_provider_command_outcome_facts WHERE command_id=$2) AS outcomes,
+        (SELECT count(*)::int FROM public.universal_v1_fake_financial_lifecycle_bridges WHERE command_id=$2) AS bridges,
+        (SELECT count(*)::int FROM public.task_financial_security_events WHERE operation_id=$1::text AND event_kind='REVERSED' AND status='SUCCEEDED') AS reversals,
+        (SELECT count(*)::int FROM public.task_work_order_amendments WHERE change_order_id=$3) AS amendments,
+        (SELECT count(*)::int FROM public.universal_v1_change_order_recovery_terminal_facts WHERE proposal_id=$3) AS terminals`,
+              [
+                f.winner.reversal_operation_id,
+                requested.commandId,
+                f.winner.proposal_id,
+                f.winner.compensation_command_id,
+                requested.preparedCommandId,
+              ]
+            )
+          ).rows[0];
+        const before = {
+          preparations: 1,
+          worker_provenance: 1,
+          human_provenance: 0,
+          requests: 1,
+          outbox: 1,
+          admissions: 0,
+          dispatches: 0,
+          operations: 0,
+          provider_events: 0,
+          outcomes: 0,
+          bridges: 0,
+          reversals: 0,
+          amendments: 0,
+          terminals: 0,
+        };
+        expect(await counts()).toEqual(before);
+        await Promise.all([
+          events.waitUntilReady(),
+          consumer.waitUntilReady(),
+          queue.waitUntilReady(),
+        ]);
+        const publisher = new FakeFinancialOutboxPublisher(
+          new PostgresFakeFinancialOutboxRepository(workerDatabase),
+          createFakeFinancialOutboxTransport({ redisUrl: process.env.REDIS_URL, prefix }),
+          () => {
+            financialAuthorization.assertNonproductionFakeFinanceAuthorized({
+              component: 'worker',
+            });
+          },
+          { publisherId: randomUUID(), batchLimit: 1 }
+        );
+        const outbox = (
+          await fixture.pool.query(
+            'SELECT bullmq_job_id FROM hx_authority.fake_financial_command_outbox_requests_v13 WHERE command_id=$1',
+            [requested.commandId]
+          )
+        ).rows[0];
+        expect(await publisher.runOnce()).toMatchObject({
+          claimed: 1,
+          confirmed: 1,
+          persistenceErrors: 0,
+        });
+        const job = await queue.getJob(outbox.bullmq_job_id);
+        if (!job) throw Error('WORKER_REVERSAL_QUEUE_JOB_MISSING');
+        const finished = job.waitUntilFinished(events, 20_000);
+        running = consumer.run().catch(recordError);
+        await finished;
+        const after = {
+          ...before,
+          admissions: 1,
+          dispatches: 1,
+          operations: 1,
+          provider_events: 1,
+          outcomes: 1,
+          bridges: 1,
+          reversals: 1,
+        };
+        expect(await counts()).toEqual(after);
+        const callCount = (name: string) =>
+          processorSql.filter((sql) => sql.includes(name + '(')).length;
+        const executionPorts = [
+          'record_fake_financial_job_dispatch_evidence_v13',
+          'hxos_read_admitted_fake_financial_request_v13',
+          'hxos_execute_admitted_fake_financial_request_v13',
+          'hxos_record_fake_financial_outcome_v13',
+        ];
+        for (const name of executionPorts) expect(callCount(name), name).toBe(1);
+        expect(callCount('hxos_read_fake_financial_progress_v13')).toBe(1);
+        expect(callCount('hxos_materialize_fake_financial_event_v13')).toBe(1);
+        await consumer.pause();
+        await job.retry('completed');
+        const replay = job.waitUntilFinished(events, 20_000);
+        consumer.resume();
+        await replay;
+        expect(await counts()).toEqual(after);
+        for (const name of executionPorts) expect(callCount(name), name).toBe(1);
+        expect(callCount('hxos_read_fake_financial_progress_v13')).toBe(2);
+        expect(callCount('hxos_materialize_fake_financial_event_v13')).toBe(2);
+        expect(await port.requestReversal(winner)).toEqual({
+          ...requested,
+          idempotencyReplayed: true,
+        });
+        expect(winner).toEqual(originalWinner);
+        expect(
+          (
+            await fixture.pool.query(
+              'SELECT worker_id,universal_payment_posture FROM public.tasks WHERE id=$1',
+              [f.winner.task_id]
+            )
+          ).rows[0]
+        ).toEqual({ worker_id: null, universal_payment_posture: 'PAYMENT_CREATION_FROZEN' });
+        expect(
+          (
+            await fixture.pool.query('SELECT is_banned FROM public.users WHERE id=$1', [
+              f.winner.requested_by,
+            ])
+          ).rows[0].is_banned
+        ).toBe(true);
+        expect(runtimeErrors).toEqual([]);
+      } catch (error) {
+        journeyError = error;
+        throw error;
+      } finally {
+        const cleanupErrors: unknown[] = [];
+        try {
+          for (const close of [
+            () => consumer.close(),
+            async () => {
+              if (running) await running;
+            },
+            () => events.close(),
+            () => queue.obliterate({ force: true }),
+            () => queue.close(),
+            () => workerPool.end(),
+          ]) {
+            try {
+              await close();
+            } catch (error) {
+              cleanupErrors.push(error);
+            }
+          }
+        } finally {
+          for (const spy of spies) spy.mockRestore();
+        }
+        if (!journeyError && cleanupErrors.length)
+          throw new AggregateError(cleanupErrors, 'WORKER_REVERSAL_TRANSPORT_CLEANUP_FAILED');
+      }
+    },
+    60_000
+  );
 
   it('worker change order reversal commits request and admitted effect after origin lease expiry', async () => {
     const f = await workerReversalFixture(5),

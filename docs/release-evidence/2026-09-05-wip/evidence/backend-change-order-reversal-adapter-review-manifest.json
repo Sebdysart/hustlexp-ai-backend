@@ -1,0 +1,134 @@
+{
+  "recordedAt": "2026-09-06T04:11:59.716Z",
+  "repository": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip",
+  "head": "36255e604e718320ccae7d4e3ac269ad09678205",
+  "status": "LOCAL_WORKER_REVERSAL_ADAPTER_AND_REDIS_PASS",
+  "releaseEligible": false,
+  "goalComplete": false,
+  "productionEffects": "NONE",
+  "customerMoney": "FROZEN",
+  "hardAssignment": "FROZEN",
+  "previousGoalTurn": "PROGRESS_PUBLICATION_VERIFIED_ALL_CURRENT_SOURCE",
+  "baseline": {
+    "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/change-order-reversal-adapter-baseline.json",
+    "sha256": "cf45ee27bc1caa15ffb6b93e6ecc88ab334f88d60ee9fdc3dcd84b8b5470f6c3",
+    "sourcePublication": "99954a1b1681abf6a89f213b24369aa60475fb4f"
+  },
+  "files": [
+    {
+      "path": "backend/src/services/payment/FinancialProviderCommandJournal.ts",
+      "change": "modified",
+      "beforeSha256": "dc5212fa0c82fff129a05a3ddd280d169f90218fad7e083a058ac9e368dba941",
+      "afterSha256": "3ec232b2b75ac03048c4355ce7c9da1a9b5e6cf7e2cfdad06120e2e87e69e1da"
+    },
+    {
+      "path": "backend/src/services/payment/UniversalV1ChangeOrderReversalRequest.ts",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "6df549dde73b4553970d10d4b9d5aee5923d92ca2614705ebbed9a6d3878ef0f"
+    },
+    {
+      "path": "backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts",
+      "change": "modified",
+      "beforeSha256": "20435fab527de7f55ac7e78dbde3d6c8b1a80abbcf6c561769059308611061dc",
+      "afterSha256": "4cd15521d31694cc6430a004d0479a994a70ae10aac25d5e3030861a47042985"
+    },
+    {
+      "path": "backend/tests/unit/change-order-reversal-request.test.ts",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "b946ffa9b585d6b452c55be23c93905c47b67bd4d956f58a221e3718016aeb80"
+    }
+  ],
+  "patchSha256": "b6bb74624f764865569c7af5eeaee0683b708e3dd34e7a04b72be1f04ea9697d",
+  "logs": [
+    {
+      "path": "change-order-reversal-adapter-red.log",
+      "sha256": "5bf5ab1519f1510c570db3f8578d5f9d69c1045b285a8199ec4d854d0e807ee7"
+    },
+    {
+      "path": "change-order-reversal-adapter-units-final.log",
+      "sha256": "d5dfb54c182abcb05fc5f2b51d685b9a4117054a198b3a94cf8f77d94599cc94"
+    },
+    {
+      "path": "change-order-reversal-adapter-role-full.log",
+      "sha256": "d955e79150767f01a6892ad62c2b46d1a724febc68b5132be4f294c570aaf5fa"
+    },
+    {
+      "path": "change-order-reversal-adapter-types.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "change-order-reversal-adapter-lint.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "change-order-reversal-adapter-compile.log",
+      "sha256": "0bf0d2e1f1d417532f6d67000fe245a61f41f3f8b0628adbee5df78da874624d"
+    }
+  ],
+  "integrationObservation": {
+    "path": "work/reversal-adapter-integration-observation.json",
+    "sha256": "bda21cfb8644e391eb239e3e3f0e2ee40f9b36d276db5fb9b3ed002cffa40a0c",
+    "sourceUnchangedDuringValidation": true
+  },
+  "validation": {
+    "unitContracts": {
+      "files": 9,
+      "passed": 291,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    "restrictedRolePostgresRedis": {
+      "files": 1,
+      "passed": 129,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    "sourceCompilation": "PASS",
+    "expandedTestTypes": "PASS",
+    "allSourceLintZeroWarnings": "PASS",
+    "gitDiffCheck": "PASS",
+    "patchReverseCheck": "PASS",
+    "patchForwardByteReproduction": "PASS",
+    "unrelatedWorktreePreserved": true,
+    "baselineInventoryEntries": 1795,
+    "currentInventoryEntries": 1797,
+    "fullRequiredGate": {
+      "status": "FAIL",
+      "passed": 10571,
+      "failed": 27,
+      "skipped": 33,
+      "todo": 0,
+      "files": 684,
+      "sourceRelation": "Earlier full required run; not rerun on this checkpoint. Focused passes do not replace it."
+    }
+  },
+  "review": {
+    "kind": "Root and independent read-only agent review; not required human release approval",
+    "resolvedFinding": "Validate raw REQUESTED cardinality and fields before shared journal Number/Date coercion",
+    "evidenceBoundary": "Restricted worker SQL, actual database commits, publisher, Redis/BullMQ, processor and lifecycle materialization are real. Installed release/authentication composition is mocked to synthetic fixtures; scheduler and normal signed process boot are not established."
+  },
+  "behavior": [
+    "Derive exact REVERSAL from immutable worker-origin compensation; retain historical participant attribution",
+    "Commit PREPARED then REQUESTED/outbox through the existing journal in separate transactions with raw receipt and installed-authority checks before commit",
+    "Recover lost PREPARED or REQUESTED commit acknowledgement using identical IDs/hashes, then publish and consume through real Redis",
+    "Completed-job replay adds no admission, provider effect or outcome; exactly one REVERSED lifecycle event; no amendment/terminal/capture/assignment claim"
+  ],
+  "migrations": {
+    "changed": false,
+    "sourceCatalogCheckpoint": "backend-change-order-reversal-request-catalog-capture.json"
+  },
+  "docs": {
+    "checkedAtUtc": "2026-09-06 03:56:29 UTC",
+    "modificationTimesUnchanged": true
+  },
+  "remaining": [
+    "Exact terminal writers and winner/no-effect races",
+    "Scheduled worker orchestration and remaining financial/account callers",
+    "Current-Docs product gaps, thirteen API-worker-web journeys and full required gate",
+    "Clean-clone/restart/restore, signed protected human review and isolated staging"
+  ]
+}

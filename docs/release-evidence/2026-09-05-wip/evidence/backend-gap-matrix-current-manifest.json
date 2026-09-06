@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-06T03:30:09.735Z",
+  "generatedAt": "2026-09-06T04:12:01.235Z",
   "scope": "Source-reference-verified engineering delta against preserved current Docs, not a new visual/deployed audit",
   "head": "36255e604e718320ccae7d4e3ac269ad09678205",
   "baselineMatrix": {
@@ -7,8 +7,8 @@
     "sha256": "372a35ae197386e64eabc5b25c3f7fb2e4811b6a98db56bd83a47b17417828d5"
   },
   "sourceEvidence": {
-    "path": "backend-change-order-reversal-request-review-manifest.json",
-    "sha256": "0305fe8fadca3eb3eee2abea9b280e9262066df3e125609756dd7cffa99cc1a9"
+    "path": "backend-change-order-reversal-adapter-review-manifest.json",
+    "sha256": "94c10ae4c14f531ed31cff7383478b6fbbc37ee45e37f73b73ce06d6472d510e"
   },
   "rows": 60,
   "revisitedRows": [
@@ -27,8 +27,6 @@
     "K12"
   ],
   "changedOriginalReferences": [
-    "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql",
-    "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/jobs/work-order-command-role-authority.ts",
     "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts"
   ],
   "referencedSourceFiles": [
@@ -333,6 +331,10 @@
       "sha256": "551eb04699d7f5b4e22a7726f9426010de78ab19ce23f9d462e34d3fc8eb171c"
     },
     {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/payment/UniversalV1ChangeOrderReversalRequest.ts",
+      "sha256": "6df549dde73b4553970d10d4b9d5aee5923d92ca2614705ebbed9a6d3878ef0f"
+    },
+    {
       "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/payment/UniversalV1FinancialApplicationService.ts",
       "sha256": "8bf82eb93cb73d3dd1fa7817e541e858aabe03b866fd6b31d1d040180b865a67"
     },
@@ -366,7 +368,7 @@
     },
     {
       "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts",
-      "sha256": "20435fab527de7f55ac7e78dbde3d6c8b1a80abbcf6c561769059308611061dc"
+      "sha256": "4cd15521d31694cc6430a004d0479a994a70ae10aac25d5e3030861a47042985"
     },
     {
       "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/unit/build-now-spend-promotion-guardrails-migration.test.ts",
@@ -403,7 +405,7 @@
   ],
   "matrix": {
     "path": "backend-gap-matrix-current.md",
-    "sha256": "3f4945db229e82d71eb368fd9f2051e905488c5f4efe0cea3c170ff2a6c835bf"
+    "sha256": "cd589d1bd0ee391820e878115587fad28fb4d00a3aae3a56693b28ee39b3ec29"
   },
   "releaseEligible": false,
   "goalComplete": false,
@@ -626,153 +628,93 @@
     "releaseEligible": false
   },
   "currentEngineeringCheckpoint": {
-    "recordedAt": "2026-09-06T03:30:09.429Z",
+    "recordedAt": "2026-09-06T04:11:59.716Z",
     "repository": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip",
     "head": "36255e604e718320ccae7d4e3ac269ad09678205",
-    "status": "LOCAL_WORKER_REVERSAL_SQL_BOUNDARY_PASS",
+    "status": "LOCAL_WORKER_REVERSAL_ADAPTER_AND_REDIS_PASS",
     "releaseEligible": false,
     "goalComplete": false,
     "productionEffects": "NONE",
     "customerMoney": "FROZEN",
     "hardAssignment": "FROZEN",
-    "previousGoalTurn": "PROGRESS_VERIFIED_COMPENSATION_AND_PUBLICATION",
+    "previousGoalTurn": "PROGRESS_PUBLICATION_VERIFIED_ALL_CURRENT_SOURCE",
     "baseline": {
-      "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/change-order-reversal-request-baseline.json",
-      "sha256": "74b8c68f4a1f1881056171935cb83238412848f65072a85c81a4155c2fdb90f4",
-      "sequence": "Incremental after published compensation winner checkpoint c06c7bc."
+      "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/change-order-reversal-adapter-baseline.json",
+      "sha256": "cf45ee27bc1caa15ffb6b93e6ecc88ab334f88d60ee9fdc3dcd84b8b5470f6c3",
+      "sourcePublication": "99954a1b1681abf6a89f213b24369aa60475fb4f"
     },
     "files": [
       {
-        "path": "backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql",
+        "path": "backend/src/services/payment/FinancialProviderCommandJournal.ts",
         "change": "modified",
-        "beforeSha256": "d4c8fd24abed5adf887e40601ea97a2e395022e58e524975d9f9ac3f09b83ac2",
-        "afterSha256": "2449f38909588940089f50fa34de4c01b08bf8f449f1840579836fd37e083ff0"
+        "beforeSha256": "dc5212fa0c82fff129a05a3ddd280d169f90218fad7e083a058ac9e368dba941",
+        "afterSha256": "3ec232b2b75ac03048c4355ce7c9da1a9b5e6cf7e2cfdad06120e2e87e69e1da"
       },
       {
-        "path": "backend/src/jobs/change-order-reversal-role-plans.ts",
+        "path": "backend/src/services/payment/UniversalV1ChangeOrderReversalRequest.ts",
         "change": "added",
         "beforeSha256": null,
-        "afterSha256": "6c3c4d8c2f194382bdc8887afa4601860063c169dbb8420fc2c81704c222e4e5"
-      },
-      {
-        "path": "backend/src/jobs/fake-financial-outbox-role-plans.ts",
-        "change": "modified",
-        "beforeSha256": "5aaefb768e5b70d4b9b75f6b47d9facdd3be1ba087ab44e265a421bc8b4671e7",
-        "afterSha256": "e0ba660887ea640b4ef77748f17a874e372982653b0b0eeb19e5812e3e238635"
-      },
-      {
-        "path": "backend/src/jobs/work-order-command-role-authority.ts",
-        "change": "modified",
-        "beforeSha256": "78e3ff8ba72765b8555c63f4a37448065505dcdb31fdedc58e7704f86279994d",
-        "afterSha256": "a97d859f0deabbd7ac9e5433664327e53a5c614cd32d801651e6eece3333c0c5"
-      },
-      {
-        "path": "backend/src/services/payment/NonproductionFinancialBootstrapReadiness.ts",
-        "change": "modified",
-        "beforeSha256": "6e7e430248a4a1b07c874a77f730e66783d8b608df34b354f17f1a95ef752b60",
-        "afterSha256": "682b1d7533996723bb486172ab9ae20e8728136a41e727483b0029ae0aa48f12"
-      },
-      {
-        "path": "backend/tests/helpers/universal-v1-synthetic-role-provisioning.ts",
-        "change": "modified",
-        "beforeSha256": "475dfbcc0210427f93959c8c03f4a8476cfee9cab58e496c1eec314f65581575",
-        "afterSha256": "3a2c1d60b3f517b956ae9e0f8a1fa68ccb3b0f9594bafc4e32ce8978444c5202"
-      },
-      {
-        "path": "backend/tests/system/nonproduction-financial-readiness-v13.pg.test.ts",
-        "change": "modified",
-        "beforeSha256": "46cac6f21d85c1e46b06c3f4db96ff6e72086b8acd8bf2e595d476e4dd8691b2",
-        "afterSha256": "84f5cce04b882fef4f9541cec562df832d4e8ddb893f598781fa72a13b24c2bb"
+        "afterSha256": "6df549dde73b4553970d10d4b9d5aee5923d92ca2614705ebbed9a6d3878ef0f"
       },
       {
         "path": "backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts",
         "change": "modified",
-        "beforeSha256": "b3945ce4a369fd260904b145a20a943b199d6fa2b0b674c2df2b4e2bfe473c55",
-        "afterSha256": "20435fab527de7f55ac7e78dbde3d6c8b1a80abbcf6c561769059308611061dc"
+        "beforeSha256": "20435fab527de7f55ac7e78dbde3d6c8b1a80abbcf6c561769059308611061dc",
+        "afterSha256": "4cd15521d31694cc6430a004d0479a994a70ae10aac25d5e3030861a47042985"
       },
       {
-        "path": "backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts",
-        "change": "modified",
-        "beforeSha256": "27f1a9648ec389d8c49398d302faf1ae4e52dd85b3c2eea979959b7de406d827",
-        "afterSha256": "cca8fab94b8b1c7126451f9646362ff97e8ed9b7bd94775a3c88272afec34503"
-      },
-      {
-        "path": "backend/tests/unit/work-order-command-role-authority.test.ts",
-        "change": "modified",
-        "beforeSha256": "2228598302b4c2ba5d8dba1a927df3354e56c354d5af9472e0a89bea65622b46",
-        "afterSha256": "9035a530d8984f6d2e27fcb47f5e0e181bc28f73efeda3e7ffa3b810038897d0"
+        "path": "backend/tests/unit/change-order-reversal-request.test.ts",
+        "change": "added",
+        "beforeSha256": null,
+        "afterSha256": "b946ffa9b585d6b452c55be23c93905c47b67bd4d956f58a221e3718016aeb80"
       }
     ],
-    "patchSha256": "76e56fb6588839d6d8d27e700351e7f9d2024fd8f40b5f42802d0f15539c933f",
-    "patchBytes": 115915,
+    "patchSha256": "b6bb74624f764865569c7af5eeaee0683b708e3dd34e7a04b72be1f04ea9697d",
     "logs": [
       {
-        "path": "change-order-reversal-request-units-2.log",
-        "sha256": "6eabc123e45fcbc3857539c4dbb8edf83a0d2e8befa8a7ee1aff621b776e0dee"
+        "path": "change-order-reversal-adapter-red.log",
+        "sha256": "5bf5ab1519f1510c570db3f8578d5f9d69c1045b285a8199ec4d854d0e807ee7"
       },
       {
-        "path": "change-order-reversal-request-types-3.log",
+        "path": "change-order-reversal-adapter-units-final.log",
+        "sha256": "d5dfb54c182abcb05fc5f2b51d685b9a4117054a198b3a94cf8f77d94599cc94"
+      },
+      {
+        "path": "change-order-reversal-adapter-role-full.log",
+        "sha256": "d955e79150767f01a6892ad62c2b46d1a724febc68b5132be4f294c570aaf5fa"
+      },
+      {
+        "path": "change-order-reversal-adapter-types.log",
         "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
       },
       {
-        "path": "change-order-reversal-request-compile.log",
+        "path": "change-order-reversal-adapter-lint.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "change-order-reversal-adapter-compile.log",
         "sha256": "0bf0d2e1f1d417532f6d67000fe245a61f41f3f8b0628adbee5df78da874624d"
-      },
-      {
-        "path": "change-order-reversal-request-lint.log",
-        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-      },
-      {
-        "path": "change-order-reversal-request-domain-full.log",
-        "sha256": "2080fa2ebdc5429b84bf0bd9186a72ec253e16b589bc90f73dd1f19d2bf53ef3"
-      },
-      {
-        "path": "change-order-reversal-request-role-full-2.log",
-        "sha256": "6fa617ed8b9abd6aeef76cb0683c61ca0c5aa21d558f68d6aa72985c4fb42ed7"
-      },
-      {
-        "path": "change-order-reversal-request-red.log",
-        "sha256": "eab30c3e269cede0c2b199454e16f5a088df0c110a9c7883a7c1f03fabb8f5a4"
-      },
-      {
-        "path": "change-order-reversal-request-catalog-2.log",
-        "sha256": "7b1a8a617fef0ab6acb5aa8df69be49ed96847f8d0d020155f3f0071be986031"
       }
     ],
     "integrationObservation": {
-      "path": "work/change-order-reversal-request-integration-observation.json",
-      "recordedAt": "2026-09-06T03:18:11.099Z",
-      "sha256": "78709dd7e167e331d9fb76235fd79b9aff1ca2c2ff9383b313e5395c08417d7c",
-      "scope": "Application and three passing cohorts are byte-identical to the initial complete run. The complete role cohort was rerun after the isolated final-case fixture-order correction with exact inverse proof. A separate unit inventory correction was followed by a full seven-file rerun.",
-      "fixtureOrderCorrection": {
-        "recordedAt": "2026-09-06T03:18:10.187Z",
-        "path": "backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts",
-        "beforeSha256": "4a918636d88def89f25db0a4979f93794139b9366d435d8b0ba67be1fed7c004",
-        "afterSha256": "20435fab527de7f55ac7e78dbde3d6c8b1a80abbcf6c561769059308611061dc",
-        "inverseByteProof": true,
-        "scope": "Move only final-case reversal fixture creation after the existing queued-request isolation and committed predecessor outcome. Application, other126cases and other3cohorts unchanged."
-      },
-      "fullRunObservationSha256": "6abd252e0ae7fcf71d5d6fc0dbd49a08f28959e24ed75403277fcf41b2747a5e",
-      "lateUnitInventoryCorrection": {
-        "path": "backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts",
-        "sha256": "cca8fab94b8b1c7126451f9646362ff97e8ed9b7bd94775a3c88272afec34503"
-      }
+      "path": "work/reversal-adapter-integration-observation.json",
+      "sha256": "bda21cfb8644e391eb239e3e3f0e2ee40f9b36d276db5fb9b3ed002cffa40a0c",
+      "sourceUnchangedDuringValidation": true
     },
     "validation": {
       "unitContracts": {
-        "files": 7,
-        "passed": 246,
+        "files": 9,
+        "passed": 291,
         "failed": 0,
         "skipped": 0,
         "todo": 0
       },
-      "financialAndReadinessRegression": {
-        "files": 4,
-        "passed": 273,
+      "restrictedRolePostgresRedis": {
+        "files": 1,
+        "passed": 129,
         "failed": 0,
         "skipped": 0,
-        "todo": 0,
-        "evidenceComposition": "Three unchanged complete passing cohorts (116+22+8) from the first run, plus the complete127-case role-cohort rerun after a final test fixture-order correction. Not one green Vitest invocation."
+        "todo": 0
       },
       "sourceCompilation": "PASS",
       "expandedTestTypes": "PASS",
@@ -781,8 +723,8 @@
       "patchReverseCheck": "PASS",
       "patchForwardByteReproduction": "PASS",
       "unrelatedWorktreePreserved": true,
-      "baselineInventoryEntries": 1794,
-      "currentInventoryEntries": 1795,
+      "baselineInventoryEntries": 1795,
+      "currentInventoryEntries": 1797,
       "fullRequiredGate": {
         "status": "FAIL",
         "passed": 10571,
@@ -790,51 +732,33 @@
         "skipped": 33,
         "todo": 0,
         "files": 684,
-        "sourceRelation": "Prior full required run, not rerun on this checkpoint. Focused passes do not replace it."
-      }
-    },
-    "semanticReview": {
-      "catalogCapture": "backend-change-order-reversal-request-catalog-capture.json",
-      "catalogSha256": "2661624b852c8aa7fc6a1ab12f7dc4c92551c2eea64c0985665912106b346730",
-      "v13MigrationSha256": "2449f38909588940089f50fa34de4c01b08bf8f449f1840579836fd37e083ff0",
-      "functionCatalog": {
-        "function_count": 157,
-        "function_catalog_sha256": "7df21a11505d8269845bd85949b0e86836124fa11106021c2724895fddbf86be"
-      },
-      "triggerCatalog": {
-        "trigger_count": 348,
-        "trigger_catalog_sha256": "93778ce6221d6403acff17c8afef32cd6a15f66dccb47de4719b799cb07f05fd"
-      },
-      "predecessorV13BytesUnchanged": true,
-      "independentFreshCatalogs": 2,
-      "frozenMigrations": {
-        "20261014_universal_v1_work_order_command_ports_v1.sql": "3920ac8d3208b9f573dc331cab60c373d0349611700c6e14a6e4c1dd8c53aac4",
-        "20261015_universal_v1_work_order_fake_financial_authority_hardening_v12.sql": "5bb8ee72b9113146b88c22c6751ebe527ba6246b4463a8611ef9c24b999b7ac5",
-        "20261015_universal_v1_work_order_bootstrap_seal_v1.sql": "c69825589193885d0f6a3b93930880998e95e1c5cd44bb9b5999cb457192b2bd"
+        "sourceRelation": "Earlier full required run; not rerun on this checkpoint. Focused passes do not replace it."
       }
     },
     "review": {
-      "kind": "Root source review and independent read-only agent review; required human review remains outstanding",
-      "evidenceBoundary": "Seven new actual PostgreSQL cases cover preparation/replay, expired-origin lease through request/effect/materialization, API and human adoption denial, input conflicts, rollback, privileged domain corruption and financial/domain lock contention. The existing final target-rollover case also covers successor preparation and retarget rejection. Three new readiness cases cover the private provenance FK, internal FK trigger and timestamp default. New-origin execution uses real restricted SQL ports with synthetic dispatch evidence. Existing cohorts exercise Redis journeys; this checkpoint does not establish scheduled worker-origin transport or a typed request adapter. Privileged corruption is injected by the disposable database owner, not claimed as a legitimate runtime mutation."
+      "kind": "Root and independent read-only agent review; not required human release approval",
+      "resolvedFinding": "Validate raw REQUESTED cardinality and fields before shared journal Number/Date coercion",
+      "evidenceBoundary": "Restricted worker SQL, actual database commits, publisher, Redis/BullMQ, processor and lifecycle materialization are real. Installed release/authentication composition is mocked to synthetic fixtures; scheduler and normal signed process boot are not established."
     },
     "behavior": [
-      "Worker-only sealed REVERSAL preparation derives exact N+2/base-scope/ADJUST identity and historical participant from immutable compensation origin",
-      "Atomic private provenance and deferred PREPARED guard reject missing origin and participant adoption, including after participant authority is restored",
-      "Current installed target/release authority is independent from historical origin lease expiry; successor preparation is allowed and committed preparation never retargets",
-      "Exact REQUESTED/outbox validates worker origin before replay; first request and first execution require current domain state; replay remains historical within existing dispatch lifecycle rules",
-      "Try-locks avoid reverse-order waiting on domain, preparation, ADJUST financial and worker journal keys; finance-owned internal execution check preserves private table custody",
-      "Exact ACL scrub and namespace-aware readiness cover four new functions, three replaced function bodies, one private table, three explicit triggers, three foreign keys and twelve internal RI triggers"
+      "Derive exact REVERSAL from immutable worker-origin compensation; retain historical participant attribution",
+      "Commit PREPARED then REQUESTED/outbox through the existing journal in separate transactions with raw receipt and installed-authority checks before commit",
+      "Recover lost PREPARED or REQUESTED commit acknowledgement using identical IDs/hashes, then publish and consume through real Redis",
+      "Completed-job replay adds no admission, provider effect or outcome; exactly one REVERSED lifecycle event; no amendment/terminal/capture/assignment claim"
     ],
+    "migrations": {
+      "changed": false,
+      "sourceCatalogCheckpoint": "backend-change-order-reversal-request-catalog-capture.json"
+    },
     "docs": {
-      "checkedAtUtc": "2026-09-06 03:07:02 UTC",
+      "checkedAtUtc": "2026-09-06 03:56:29 UTC",
       "modificationTimesUnchanged": true
     },
     "remaining": [
-      "Typed worker reversal request adapter and scheduled-worker composition; no architecture rewrite",
-      "Exact materialized/compensated/no-effect terminal writers and remaining winner/NO_EFFECT races and compensation observation states",
-      "Remaining financial/account callers, current-Docs product work, thirteen end-to-end journeys and full required zero failure/skip/todo gate",
-      "Clean clones, restart/restore evidence, signing, protected independent human review and isolated staging"
-    ],
-    "publicationAuthorization": "User explicitly authorized all work on a public WIP branch, separately from signed release certification."
+      "Exact terminal writers and winner/no-effect races",
+      "Scheduled worker orchestration and remaining financial/account callers",
+      "Current-Docs product gaps, thirteen API-worker-web journeys and full required gate",
+      "Clean-clone/restart/restore, signed protected human review and isolated staging"
+    ]
   }
 }

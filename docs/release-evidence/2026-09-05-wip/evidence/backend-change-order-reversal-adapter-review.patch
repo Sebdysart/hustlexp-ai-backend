@@ -1,0 +1,1305 @@
+diff --git a/backend/src/services/payment/FinancialProviderCommandJournal.ts b/backend/src/services/payment/FinancialProviderCommandJournal.ts
+index 7a4e79b..b243548 100644
+--- a/backend/src/services/payment/FinancialProviderCommandJournal.ts
++++ b/backend/src/services/payment/FinancialProviderCommandJournal.ts
+@@ -443,7 +443,7 @@ const COMMAND_SELECT = `
+  * provider callback cannot race an uncommitted command fact.
+  */
+ export class PostgresFinancialProviderCommandJournal implements FinancialProviderCommandJournal {
+-  constructor(private readonly database: Database = db) {}
++  constructor(private readonly database: Pick<Database, 'transaction'> = db) {}
+ 
+   async recordRequested<TRequest>(
+     input: RecordFinancialProviderCommandInput<TRequest>
+diff --git a/backend/src/services/payment/UniversalV1ChangeOrderReversalRequest.ts b/backend/src/services/payment/UniversalV1ChangeOrderReversalRequest.ts
+new file mode 100644
+index 0000000..d715e60
+--- /dev/null
++++ b/backend/src/services/payment/UniversalV1ChangeOrderReversalRequest.ts
+@@ -0,0 +1,425 @@
++import { z } from 'zod';
++import { db, type Database, type QueryFn } from '../../db.js';
++import { configuredRuntimeDatabaseStartup } from '../../jobs/runtime-database-startup-config.js';
++import {
++  isAuthenticatedReleaseManifest,
++  readReleaseManifest,
++  releaseManifestDigest,
++} from '../../releaseManifest.js';
++import type { ChangeOrderCompensationWinnerReceipt } from '../UniversalV1ChangeOrderRecoveryCompensation.js';
++import { assertNonproductionFakeFinanceAuthorized } from './NonproductionFinancialAuthorization.js';
++import { encodeFakeFinancialDurableRequest } from './FakeFinancialDurableRequest.js';
++import {
++  PostgresFinancialProviderCommandJournal,
++  prepareFinancialProviderCommand,
++} from './FinancialProviderCommandJournal.js';
++import type { RequestedUniversalV1FinancialEvent } from './UniversalV1FinancialRequestService.js';
++
++const uuid = z
++  .string()
++  .regex(/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u);
++const digest = z
++  .string()
++  .regex(/^[a-f0-9]{64}$/u)
++  .refine((value) => value !== '0'.repeat(64));
++const manifestDigest = z
++  .string()
++  .regex(/^sha256:[a-f0-9]{64}$/u)
++  .refine((value) => value !== 'sha256:' + '0'.repeat(64));
++const positive = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
++const timestamp = z.string().datetime({ offset: true });
++const environment = z.enum(['local', 'preview', 'staging']);
++const key = z.string().regex(/^[A-Za-z0-9:_-]{16,128}$/u);
++const authoritySchema = z
++  .object({
++    databaseName: z.string().min(1).max(63),
++    serviceLogin: z.string().min(1).max(63),
++    environment,
++    manifestDigest,
++    targetDigest: manifestDigest,
++    releaseId: z.string().regex(/^[a-z0-9][a-z0-9._-]{7,127}$/u),
++    revision: z
++      .string()
++      .regex(/^[a-f0-9]{40}$/u)
++      .refine((value) => value !== '0'.repeat(40)),
++    authenticationStatus: z.literal('VERIFIED'),
++  })
++  .strict();
++const metadataSchema = z
++  .object({
++    session_database_role: z.string(),
++    target_authority_id: uuid,
++    target_database_name: z.string(),
++    environment,
++    release_manifest_sha256: manifestDigest,
++  })
++  .strict();
++const commandSchema = z
++  .object({
++    compensationCommandId: uuid,
++    proposalId: uuid,
++    witnessRequestSha256: digest,
++    taskDraftId: uuid,
++    taskId: uuid,
++    eligibilityDecisionId: uuid,
++    baseScopeVersionId: uuid,
++    adjustmentEventId: uuid,
++    adjustmentOperationId: uuid,
++    reversalOperationId: uuid,
++    reversalIdempotencyKey: key,
++    lifecycleExpectedVersion: positive,
++    amountCents: positive,
++    currency: z.string().regex(/^[A-Z]{3}$/u),
++    requestedBy: uuid,
++    createdAt: timestamp,
++    semanticLimitation: z.literal('PRIOR_SECURED_STATE_NOT_RESTORED'),
++  })
++  .strict();
++const winnerSchema = z
++  .object({
++    resolution: z.object({ kind: z.literal('COMPENSATE'), command: commandSchema }).strict(),
++    workerOrigin: z
++      .object({
++        compensation_command_id: uuid,
++        proposal_id: uuid,
++        recovery_lease_id: uuid,
++        lease_owner_id: uuid,
++        target_authority_id: uuid,
++        release_environment: environment,
++        release_manifest_digest: manifestDigest,
++        service_database_role: z.string().min(1).max(63),
++        witness_request_sha256: digest,
++        adjustment_event_id: uuid,
++        revocation_reason: z.enum([
++          'PROPOSAL_NOT_APPROVED',
++          'TASK_AUTHORITY_REVOKED',
++          'CUSTOMER_ACTOR_AUTHORITY_REVOKED',
++          'CUSTOMER_APPROVAL_AUTHORITY_REVOKED',
++          'PROVIDER_ACTOR_AUTHORITY_REVOKED',
++          'PROVIDER_APPROVAL_AUTHORITY_REVOKED',
++          'PROVIDER_ELIGIBILITY_REVOKED',
++          'EXECUTION_AUTHORITY_REVOKED',
++          'WORK_ORDER_TERMINALIZED',
++          'FINANCIAL_SECURITY_EXPIRED',
++        ]),
++        recorded_at: timestamp,
++      })
++      .strict(),
++    created: z.boolean(),
++    observedAt: timestamp,
++  })
++  .strict();
++// SQL JSON timestamps and XID8 remain opaque strings; no lossy Date/Number mapping.
++const provenanceSchema = z
++  .object({
++    prepared_command_id: uuid,
++    compensation_command_id: uuid,
++    target_authority_id: uuid,
++    release_manifest_sha256: manifestDigest,
++    service_database_role: z.string().min(1).max(63),
++    provider_request_sha256: digest,
++    prepared_authority_sha256: digest,
++    preparation_transaction_id: z.string().regex(/^[1-9][0-9]*$/u),
++    recorded_at: timestamp,
++  })
++  .strict();
++const preparedSchema = z
++  .object({
++    prepared_command_id: uuid,
++    command_state: z.literal('PREPARED'),
++    operation_kind: z.literal('REVERSAL'),
++    event_kind: z.literal('REVERSED'),
++    operation_id: uuid,
++    provider_kind: z.literal('FAKE'),
++    idempotency_key: key,
++    provider_expected_version: z.literal(0),
++    lifecycle_expected_version: positive,
++    provider_request_sha256: digest,
++    task_draft_id: uuid,
++    task_id: uuid,
++    eligibility_decision_id: uuid,
++    eligibility_decision_version: positive,
++    eligibility_valid_until: timestamp,
++    scope_version_id: uuid,
++    scope_version: positive,
++    scope_hash: digest,
++    work_order_id: uuid,
++    work_order_materialization_version: positive,
++    work_order_execution_contract_version: z.union([z.literal(0), z.literal(1)]),
++    change_order_id: z.null(),
++    change_order_version: z.null(),
++    predecessor_event_id: uuid,
++    predecessor_operation_id: uuid,
++    predecessor_event_kind: z.literal('ADJUSTMENT_AUTHORIZED'),
++    predecessor_status: z.literal('SUCCEEDED'),
++    predecessor_lifecycle_version: positive,
++    completion_fact_id: z.null(),
++    completion_version: z.null(),
++    related_operation_id: uuid,
++    amount_cents: positive,
++    currency: z.string().regex(/^[A-Z]{3}$/u),
++    recorded_by: uuid,
++    occurred_at: timestamp,
++    request_identity_sha256: digest,
++    authority_context_sha256: digest,
++    prepared_at: timestamp,
++  })
++  .strict();
++const preparationSchema = z
++  .object({
++    prepared_command: preparedSchema,
++    idempotency_replayed: z.boolean(),
++    worker_provenance: provenanceSchema,
++    target_authority_id: uuid,
++    release_manifest_digest: manifestDigest,
++  })
++  .strict();
++const requestedSchema = z
++  .object({
++    commandId: uuid,
++    operationKind: z.literal('REVERSAL'),
++    operationId: uuid,
++    providerKind: z.literal('FAKE'),
++    idempotencyKey: key,
++    providerExpectedVersion: z.literal(0),
++    requestSha256: digest,
++    commandIdentitySha256: digest,
++    preparedFinancialCommandId: uuid,
++    preparedAuthoritySha256: digest,
++    recordedAt: timestamp,
++    idempotencyReplayed: z.boolean(),
++  })
++  .strict();
++const rawRequestedSchema = z
++  .object({
++    command_id: uuid,
++    operation_kind: z.literal('REVERSAL'),
++    operation_id: uuid,
++    provider_kind: z.literal('FAKE'),
++    idempotency_key: key,
++    provider_expected_version: z.union([z.literal(0), z.literal('0')]),
++    request_sha256: digest,
++    command_identity_sha256: digest,
++    prepared_financial_command_id: uuid,
++    prepared_authority_sha256: digest,
++    recorded_at: z.union([z.date(), timestamp]),
++    idempotency_replayed: z.boolean(),
++  })
++  .strict();
++
++export type ChangeOrderReversalRequestAuthority = Readonly<z.infer<typeof authoritySchema>>;
++export interface RequestedChangeOrderReversal extends RequestedUniversalV1FinancialEvent {
++  readonly compensationCommandId: string;
++  readonly providerRequestSha256: string;
++  readonly preparedAuthoritySha256: string;
++  readonly commandIdentitySha256: string;
++  readonly preparationReplayed: boolean;
++  readonly preparedAt: string;
++  readonly workerProvenance: Readonly<z.infer<typeof provenanceSchema>>;
++}
++function refuse(reason: string): never {
++  throw Error('CHANGE_ORDER_REVERSAL_REQUEST_' + reason);
++}
++
++export function authorizedChangeOrderReversalRequests(): ChangeOrderReversalRequestAuthority {
++  const manifest = assertNonproductionFakeFinanceAuthorized({ component: 'worker' });
++  const evidence = readReleaseManifest(),
++    manifestHash = releaseManifestDigest(manifest);
++  if (evidence.digest !== manifestHash || !isAuthenticatedReleaseManifest(evidence, process.env))
++    return refuse('AUTHENTICATED_RELEASE_REQUIRED');
++  const runtime = configuredRuntimeDatabaseStartup('worker');
++  if (runtime.expectedTarget.environment !== manifest.environment)
++    return refuse('WORKER_RELEASE_REQUIRED');
++  return Object.freeze(
++    authoritySchema.parse({
++      databaseName: runtime.expectedTarget.databaseName,
++      serviceLogin: runtime.target.serviceLogin,
++      environment: manifest.environment,
++      manifestDigest: manifestHash,
++      targetDigest: runtime.targetDigest,
++      releaseId: manifest.releaseId,
++      revision: manifest.components.worker.revision,
++      authenticationStatus: 'VERIFIED',
++    })
++  );
++}
++
++/** Commit worker PREPARED, then REQUESTED/outbox through the existing journal.
++ * This port does not dispatch, execute, terminalize recovery, or clear holds.
++ * Uncertain commits and lock contention require exact idempotent retries. */
++export class PostgresUniversalV1ChangeOrderReversalRequests {
++  constructor(
++    private readonly database: Pick<Database, 'transaction'> = db,
++    private readonly authorize: () => ChangeOrderReversalRequestAuthority = authorizedChangeOrderReversalRequests
++  ) {}
++
++  async requestReversal(
++    raw: ChangeOrderCompensationWinnerReceipt
++  ): Promise<RequestedChangeOrderReversal> {
++    const parsed = winnerSchema.safeParse(raw);
++    if (!parsed.success) return refuse('WORKER_WINNER_REQUIRED');
++    const {
++      resolution: { command },
++      workerOrigin,
++    } = parsed.data;
++    if (
++      workerOrigin.compensation_command_id !== command.compensationCommandId ||
++      workerOrigin.proposal_id !== command.proposalId ||
++      workerOrigin.witness_request_sha256 !== command.witnessRequestSha256 ||
++      workerOrigin.adjustment_event_id !== command.adjustmentEventId
++    )
++      return refuse('WINNER_BINDING_MISMATCH');
++    const authority = Object.freeze(authoritySchema.parse(this.authorize()));
++    const stableAuthority = () => {
++      if (JSON.stringify(authoritySchema.parse(this.authorize())) !== JSON.stringify(authority))
++        return refuse('RELEASE_AUTHORITY_CHANGED');
++    };
++    const readTarget = async (query: QueryFn, expectedTargetId?: string) => {
++      stableAuthority();
++      const result = await query(
++        'SELECT session_database_role,target_authority_id,target_database_name,environment,release_manifest_sha256 FROM public.hxos_read_universal_v1_fake_financial_runtime_authority_v13()'
++      );
++      if (result.rowCount !== 1 || result.rows.length !== 1) return refuse('TARGET_CARDINALITY');
++      const target = metadataSchema.parse(result.rows[0]);
++      if (
++        target.session_database_role !== authority.serviceLogin ||
++        target.target_database_name !== authority.databaseName ||
++        target.environment !== authority.environment ||
++        target.release_manifest_sha256 !== authority.manifestDigest ||
++        (expectedTargetId !== undefined && target.target_authority_id !== expectedTargetId)
++      )
++        return refuse('TARGET_BINDING_MISMATCH');
++      return target;
++    };
++    const durable = encodeFakeFinancialDurableRequest('REVERSAL', {
++      operationId: command.reversalOperationId,
++      idempotencyKey: command.reversalIdempotencyKey,
++      expectedVersion: 0,
++      relatedOperationId: command.adjustmentOperationId,
++      amountCents: command.amountCents,
++      currency: command.currency.toLowerCase(),
++      scenario: 'REVERSAL',
++    });
++    const preparation = await this.database.transaction(async (query) => {
++      const target = await readTarget(query);
++      const result = await query(
++        'SELECT * FROM public.hxos_prepare_change_order_compensation_reversal_v13($1,$2,$3,$4,$5,$6)',
++        [
++          target.target_authority_id,
++          authority.databaseName,
++          authority.environment,
++          authority.manifestDigest,
++          command.compensationCommandId,
++          durable.canonicalRequestJson,
++        ]
++      );
++      if (result.rowCount !== 1 || result.rows.length !== 1) return refuse('RECEIPT_CARDINALITY');
++      const receipt = preparationSchema.parse(result.rows[0]);
++      const p = receipt.prepared_command,
++        origin = receipt.worker_provenance;
++      if (
++        receipt.target_authority_id !== target.target_authority_id ||
++        receipt.release_manifest_digest !== authority.manifestDigest ||
++        p.operation_id !== command.reversalOperationId ||
++        p.idempotency_key !== command.reversalIdempotencyKey ||
++        p.lifecycle_expected_version !== command.lifecycleExpectedVersion ||
++        p.provider_request_sha256 !== durable.providerRequestSha256 ||
++        p.task_draft_id !== command.taskDraftId ||
++        p.task_id !== command.taskId ||
++        p.eligibility_decision_id !== command.eligibilityDecisionId ||
++        p.scope_version_id !== command.baseScopeVersionId ||
++        p.predecessor_event_id !== command.adjustmentEventId ||
++        p.predecessor_operation_id !== command.adjustmentOperationId ||
++        p.predecessor_lifecycle_version !== command.lifecycleExpectedVersion - 1 ||
++        p.related_operation_id !== command.adjustmentOperationId ||
++        p.amount_cents !== command.amountCents ||
++        p.currency !== command.currency ||
++        p.recorded_by !== command.requestedBy ||
++        origin.prepared_command_id !== p.prepared_command_id ||
++        origin.compensation_command_id !== command.compensationCommandId ||
++        origin.target_authority_id !== target.target_authority_id ||
++        origin.release_manifest_sha256 !== authority.manifestDigest ||
++        origin.service_database_role !== authority.serviceLogin ||
++        origin.provider_request_sha256 !== durable.providerRequestSha256 ||
++        origin.prepared_authority_sha256 !== p.authority_context_sha256
++      )
++        return refuse('PREPARATION_BINDING_MISMATCH');
++      stableAuthority();
++      return receipt;
++    });
++    const p = preparation.prepared_command;
++    const input = {
++      operationKind: 'REVERSAL' as const,
++      operationId: command.reversalOperationId,
++      providerKind: 'FAKE' as const,
++      idempotencyKey: command.reversalIdempotencyKey,
++      providerExpectedVersion: 0,
++      exactRequest: durable.request,
++      evidence: {
++        preparedFinancialCommandId: p.prepared_command_id,
++        preparedAuthoritySha256: p.authority_context_sha256,
++        taskDraftId: command.taskDraftId,
++        taskId: command.taskId,
++        workOrderId: p.work_order_id,
++        relatedOperationId: command.adjustmentOperationId,
++        amountCents: command.amountCents,
++        currency: command.currency,
++      },
++      actor: { actorId: command.requestedBy, actorKind: 'PARTICIPANT' as const },
++      release: {
++        manifestDigest: authority.manifestDigest,
++        releaseId: authority.releaseId,
++        revision: authority.revision,
++        environment: authority.environment,
++        authenticationStatus: authority.authenticationStatus,
++      },
++    };
++    const expected = prepareFinancialProviderCommand(input);
++    // The journal still owns a separate transaction. Its delegated transaction
++    // runner validates the receipt and installed authority before that commit.
++    const journal = new PostgresFinancialProviderCommandJournal({
++      transaction: (work) =>
++        this.database.transaction(async (query) => {
++          await readTarget(query, preparation.target_authority_id);
++          const guardedQuery: QueryFn = async <Row>(sql: string, params?: unknown[]) => {
++            const result = await query<Row>(sql, params);
++            if (result.rowCount !== 1 || result.rows.length !== 1)
++              return refuse('REQUEST_CARDINALITY');
++            // Validate before the shared journal's Number/Date receipt mapping.
++            rawRequestedSchema.parse(result.rows[0]);
++            return result;
++          };
++          const result = await work(guardedQuery),
++            receipt = requestedSchema.parse(result);
++          if (
++            receipt.operationId !== command.reversalOperationId ||
++            receipt.idempotencyKey !== command.reversalIdempotencyKey ||
++            receipt.requestSha256 !== durable.providerRequestSha256 ||
++            receipt.commandIdentitySha256 !== expected.commandIdentitySha256 ||
++            receipt.preparedFinancialCommandId !== p.prepared_command_id ||
++            receipt.preparedAuthoritySha256 !== p.authority_context_sha256
++          )
++            return refuse('REQUEST_BINDING_MISMATCH');
++          stableAuthority();
++          return result;
++        }),
++    });
++    const requested = await journal.recordRequested(input);
++    stableAuthority();
++    return Object.freeze({
++      requestState: 'REQUESTED' as const,
++      commandId: requested.commandId,
++      preparedCommandId: p.prepared_command_id,
++      compensationCommandId: command.compensationCommandId,
++      operationId: command.reversalOperationId,
++      requestedAt: requested.recordedAt,
++      preparedAt: p.prepared_at,
++      providerRequestSha256: durable.providerRequestSha256,
++      preparedAuthoritySha256: p.authority_context_sha256,
++      commandIdentitySha256: expected.commandIdentitySha256,
++      preparationReplayed: preparation.idempotency_replayed,
++      idempotencyReplayed: requested.idempotencyReplayed,
++      workerProvenance: Object.freeze(preparation.worker_provenance),
++    });
++  }
++}
+diff --git a/backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts b/backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts
+index 979c4cc..8e59a24 100644
+--- a/backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts
++++ b/backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts
+@@ -1,4 +1,6 @@
+ import { PostgresUniversalV1ChangeOrderMaterialization } from '../../src/services/UniversalV1ChangeOrderMaterialization.js';
++import { PostgresUniversalV1ChangeOrderRecoveryCompensation } from '../../src/services/UniversalV1ChangeOrderRecoveryCompensation.js';
++import { PostgresUniversalV1ChangeOrderReversalRequests } from '../../src/services/payment/UniversalV1ChangeOrderReversalRequest.js';
+ import { UniversalV1WorkOrderApplication } from '../../src/services/UniversalV1WorkOrderApplication.js';
+ import { UniversalV1ChangeOrderApplication } from '../../src/services/UniversalV1ChangeOrderApplication.js';
+ import { PostgresUniversalV1ChangeOrderCommands } from '../../src/services/UniversalV1ChangeOrderCommands.js';
+@@ -3371,6 +3373,305 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
+     return { ...f, winner, request, prepareArgs, prepare, journalInput, requested, counts };
+   }
+ 
++  it.each(['PREPARED', 'REQUESTED'] as const)(
++    'worker reversal adapter resumes lost %s acknowledgement through real Redis delivery',
++    async (lostPhase) => {
++      const f = await workerReversalFixture();
++      const workerUrl = new URL(fixture.databaseUrl);
++      workerUrl.username = roles.workerRole;
++      workerUrl.password = password;
++      const workerPool = new pg.Pool({ connectionString: workerUrl.toString(), max: 4 });
++      const workerDatabase = preparationDatabase(workerPool);
++      const release = {
++        manifestDigest: f.lease.release_manifest_digest as string,
++        releaseId: 'synthetic.worker.reversal',
++        revision: 'd'.repeat(40),
++        environment: 'local' as const,
++        authenticationStatus: 'VERIFIED' as const,
++      };
++      const prefix = 'hx-ci-worker-reversal-' + randomUUID();
++      const connection = { host: '127.0.0.1', port: 16379, maxRetriesPerRequest: null };
++      const queue = new Queue('synthetic_finance', { prefix, connection });
++      const events = new QueueEvents('synthetic_finance', { prefix, connection });
++      const processor = new SyntheticFinancialCommandProcessor();
++      const consumer = new Worker('synthetic_finance', (job) => processor.process(job), {
++        prefix,
++        connection,
++        autorun: false,
++        concurrency: 1,
++      });
++      const runtimeErrors: unknown[] = [];
++      const recordError = (error: Error) => {
++        runtimeErrors.push(error);
++      };
++      queue.on('error', recordError);
++      events.on('error', recordError);
++      consumer.on('error', recordError);
++      const processorSql: string[] = [];
++      const spies = [
++        vi.spyOn(runtimeDb, 'transaction').mockImplementation((callback) =>
++          workerDatabase.transaction((query) =>
++            callback(async <Row>(sql: string, params?: unknown[]) => {
++              processorSql.push(sql);
++              return query<Row>(sql, params);
++            })
++          )
++        ),
++        vi
++          .spyOn(financialAuthorization, 'assertNonproductionFakeFinanceAuthorized')
++          .mockReturnValue({
++            releaseId: release.releaseId,
++            environment: 'local',
++            components: {
++              backend: { revision: 'c'.repeat(40) },
++              worker: { revision: release.revision },
++            },
++          } as ReturnType<typeof financialAuthorization.assertNonproductionFakeFinanceAuthorized>),
++        vi
++          .spyOn(manifestAuthority, 'releaseManifestDigest')
++          .mockReturnValue(release.manifestDigest),
++        vi
++          .spyOn(manifestAuthority, 'readReleaseManifest')
++          .mockReturnValue({ digest: release.manifestDigest } as ReturnType<
++            typeof manifestAuthority.readReleaseManifest
++          >),
++        vi.spyOn(manifestAuthority, 'isAuthenticatedReleaseManifest').mockReturnValue(true),
++        vi.spyOn(databaseStartup, 'configuredRuntimeDatabaseStartup').mockReturnValue({
++          expectedTarget: { environment: 'local', databaseName: workerUrl.pathname.slice(1) },
++          target: { serviceLogin: roles.workerRole },
++          targetDigest: 'sha256:' + 'e'.repeat(64),
++        } as ReturnType<typeof databaseStartup.configuredRuntimeDatabaseStartup>),
++      ];
++      let running: Promise<void> | undefined, journeyError: unknown;
++      try {
++        const winner = await new PostgresUniversalV1ChangeOrderRecoveryCompensation(
++          workerDatabase
++        ).claim(
++          {
++            ...f.lease,
++            acquired_at: f.lease.acquired_at.toISOString(),
++            expires_at: f.lease.expires_at.toISOString(),
++          } as Parameters<PostgresUniversalV1ChangeOrderRecoveryCompensation['claim']>[0],
++          f.event.id
++        );
++        if (!winner || winner.resolution.kind !== 'COMPENSATE' || !winner.workerOrigin)
++          throw Error('WORKER_WINNER_MISSING');
++        const originalWinner = structuredClone(winner);
++        let armed = true;
++        const interrupted: Pick<Database, 'transaction'> = {
++          transaction: async (work) => {
++            let phaseCommitted = false;
++            const result = await workerDatabase.transaction((query) =>
++              work(async <Row>(sql: string, params?: unknown[]) => {
++                const reply = await query<Row>(sql, params);
++                if (
++                  sql.includes(
++                    lostPhase === 'PREPARED'
++                      ? 'hxos_prepare_change_order_compensation_reversal_v13'
++                      : 'hxos_request_fake_financial_command_v13'
++                  )
++                )
++                  phaseCommitted = true;
++                return reply;
++              })
++            );
++            // Inject loss after actual COMMIT, never from inside its callback.
++            if (armed && phaseCommitted) {
++              armed = false;
++              throw Error('SYNTHETIC_COMMIT_ACK_LOST');
++            }
++            return result;
++          },
++        };
++        await expect(
++          new PostgresUniversalV1ChangeOrderReversalRequests(interrupted).requestReversal(winner)
++        ).rejects.toThrow('SYNTHETIC_COMMIT_ACK_LOST');
++        expect(await f.counts()).toEqual({
++          preparations: 1,
++          origins: 1,
++          requests: lostPhase === 'REQUESTED' ? 1 : 0,
++          events: 0,
++        });
++        const retainedPreparation = (
++          await fixture.pool.query(
++            'SELECT prepared_command_id,authority_context_sha256 FROM public.universal_v1_prepared_financial_commands WHERE operation_id=$1',
++            [f.winner.reversal_operation_id]
++          )
++        ).rows[0];
++        const port = new PostgresUniversalV1ChangeOrderReversalRequests(workerDatabase);
++        const requested = await port.requestReversal(winner);
++        expect(requested).toMatchObject({
++          requestState: 'REQUESTED',
++          preparationReplayed: true,
++          idempotencyReplayed: lostPhase === 'REQUESTED',
++          preparedCommandId: retainedPreparation.prepared_command_id,
++          preparedAuthoritySha256: retainedPreparation.authority_context_sha256,
++          compensationCommandId: f.winner.compensation_command_id,
++          operationId: f.winner.reversal_operation_id,
++        });
++        expect(await port.requestReversal(winner)).toEqual({
++          ...requested,
++          idempotencyReplayed: true,
++        });
++        const counts = async () =>
++          (
++            await fixture.pool.query(
++              `SELECT
++        (SELECT count(*)::int FROM public.universal_v1_prepared_financial_commands WHERE operation_id=$1) AS preparations,
++        (SELECT count(*)::int FROM hx_authority.fake_financial_change_order_reversal_preparations_v13 WHERE compensation_command_id=$4) AS worker_provenance,
++        (SELECT count(*)::int FROM hx_authority.fake_financial_preparation_authority_v13 WHERE prepared_command_id=$5) AS human_provenance,
++        (SELECT count(*)::int FROM public.financial_provider_command_journal WHERE operation_id=$1) AS requests,
++        (SELECT count(*)::int FROM hx_authority.fake_financial_command_outbox_requests_v13 WHERE command_id=$2) AS outbox,
++        (SELECT count(*)::int FROM hx_authority.fake_financial_dispatch_admissions_v13 WHERE command_id=$2) AS admissions,
++        (SELECT count(*)::int FROM public.financial_provider_command_dispatch_attempts WHERE command_id=$2) AS dispatches,
++        (SELECT count(*)::int FROM public.hxos_fake_financial_operations_v1 WHERE operation_id=$1) AS operations,
++        (SELECT count(*)::int FROM public.hxos_fake_financial_operation_events_v1 WHERE operation_id=$1) AS provider_events,
++        (SELECT count(*)::int FROM public.financial_provider_command_outcome_facts WHERE command_id=$2) AS outcomes,
++        (SELECT count(*)::int FROM public.universal_v1_fake_financial_lifecycle_bridges WHERE command_id=$2) AS bridges,
++        (SELECT count(*)::int FROM public.task_financial_security_events WHERE operation_id=$1::text AND event_kind='REVERSED' AND status='SUCCEEDED') AS reversals,
++        (SELECT count(*)::int FROM public.task_work_order_amendments WHERE change_order_id=$3) AS amendments,
++        (SELECT count(*)::int FROM public.universal_v1_change_order_recovery_terminal_facts WHERE proposal_id=$3) AS terminals`,
++              [
++                f.winner.reversal_operation_id,
++                requested.commandId,
++                f.winner.proposal_id,
++                f.winner.compensation_command_id,
++                requested.preparedCommandId,
++              ]
++            )
++          ).rows[0];
++        const before = {
++          preparations: 1,
++          worker_provenance: 1,
++          human_provenance: 0,
++          requests: 1,
++          outbox: 1,
++          admissions: 0,
++          dispatches: 0,
++          operations: 0,
++          provider_events: 0,
++          outcomes: 0,
++          bridges: 0,
++          reversals: 0,
++          amendments: 0,
++          terminals: 0,
++        };
++        expect(await counts()).toEqual(before);
++        await Promise.all([
++          events.waitUntilReady(),
++          consumer.waitUntilReady(),
++          queue.waitUntilReady(),
++        ]);
++        const publisher = new FakeFinancialOutboxPublisher(
++          new PostgresFakeFinancialOutboxRepository(workerDatabase),
++          createFakeFinancialOutboxTransport({ redisUrl: process.env.REDIS_URL, prefix }),
++          () => {
++            financialAuthorization.assertNonproductionFakeFinanceAuthorized({
++              component: 'worker',
++            });
++          },
++          { publisherId: randomUUID(), batchLimit: 1 }
++        );
++        const outbox = (
++          await fixture.pool.query(
++            'SELECT bullmq_job_id FROM hx_authority.fake_financial_command_outbox_requests_v13 WHERE command_id=$1',
++            [requested.commandId]
++          )
++        ).rows[0];
++        expect(await publisher.runOnce()).toMatchObject({
++          claimed: 1,
++          confirmed: 1,
++          persistenceErrors: 0,
++        });
++        const job = await queue.getJob(outbox.bullmq_job_id);
++        if (!job) throw Error('WORKER_REVERSAL_QUEUE_JOB_MISSING');
++        const finished = job.waitUntilFinished(events, 20_000);
++        running = consumer.run().catch(recordError);
++        await finished;
++        const after = {
++          ...before,
++          admissions: 1,
++          dispatches: 1,
++          operations: 1,
++          provider_events: 1,
++          outcomes: 1,
++          bridges: 1,
++          reversals: 1,
++        };
++        expect(await counts()).toEqual(after);
++        const callCount = (name: string) =>
++          processorSql.filter((sql) => sql.includes(name + '(')).length;
++        const executionPorts = [
++          'record_fake_financial_job_dispatch_evidence_v13',
++          'hxos_read_admitted_fake_financial_request_v13',
++          'hxos_execute_admitted_fake_financial_request_v13',
++          'hxos_record_fake_financial_outcome_v13',
++        ];
++        for (const name of executionPorts) expect(callCount(name), name).toBe(1);
++        expect(callCount('hxos_read_fake_financial_progress_v13')).toBe(1);
++        expect(callCount('hxos_materialize_fake_financial_event_v13')).toBe(1);
++        await consumer.pause();
++        await job.retry('completed');
++        const replay = job.waitUntilFinished(events, 20_000);
++        consumer.resume();
++        await replay;
++        expect(await counts()).toEqual(after);
++        for (const name of executionPorts) expect(callCount(name), name).toBe(1);
++        expect(callCount('hxos_read_fake_financial_progress_v13')).toBe(2);
++        expect(callCount('hxos_materialize_fake_financial_event_v13')).toBe(2);
++        expect(await port.requestReversal(winner)).toEqual({
++          ...requested,
++          idempotencyReplayed: true,
++        });
++        expect(winner).toEqual(originalWinner);
++        expect(
++          (
++            await fixture.pool.query(
++              'SELECT worker_id,universal_payment_posture FROM public.tasks WHERE id=$1',
++              [f.winner.task_id]
++            )
++          ).rows[0]
++        ).toEqual({ worker_id: null, universal_payment_posture: 'PAYMENT_CREATION_FROZEN' });
++        expect(
++          (
++            await fixture.pool.query('SELECT is_banned FROM public.users WHERE id=$1', [
++              f.winner.requested_by,
++            ])
++          ).rows[0].is_banned
++        ).toBe(true);
++        expect(runtimeErrors).toEqual([]);
++      } catch (error) {
++        journeyError = error;
++        throw error;
++      } finally {
++        const cleanupErrors: unknown[] = [];
++        try {
++          for (const close of [
++            () => consumer.close(),
++            async () => {
++              if (running) await running;
++            },
++            () => events.close(),
++            () => queue.obliterate({ force: true }),
++            () => queue.close(),
++            () => workerPool.end(),
++          ]) {
++            try {
++              await close();
++            } catch (error) {
++              cleanupErrors.push(error);
++            }
++          }
++        } finally {
++          for (const spy of spies) spy.mockRestore();
++        }
++        if (!journeyError && cleanupErrors.length)
++          throw new AggregateError(cleanupErrors, 'WORKER_REVERSAL_TRANSPORT_CLEANUP_FAILED');
++      }
++    },
++    60_000
++  );
++
+   it('worker change order reversal commits request and admitted effect after origin lease expiry', async () => {
+     const f = await workerReversalFixture(5),
+       worker = clients.get('workerRole')!;
+diff --git a/backend/tests/unit/change-order-reversal-request.test.ts b/backend/tests/unit/change-order-reversal-request.test.ts
+new file mode 100644
+index 0000000..5c22b0d
+--- /dev/null
++++ b/backend/tests/unit/change-order-reversal-request.test.ts
+@@ -0,0 +1,538 @@
++import { randomUUID } from 'node:crypto';
++import { describe, expect, it, vi } from 'vitest';
++import type { Database, QueryFn } from '../../src/db.js';
++import { encodeFakeFinancialDurableRequest } from '../../src/services/payment/FakeFinancialDurableRequest.js';
++import { prepareFinancialProviderCommand } from '../../src/services/payment/FinancialProviderCommandJournal.js';
++import type { ChangeOrderCompensationWinnerReceipt } from '../../src/services/UniversalV1ChangeOrderRecoveryCompensation.js';
++import {
++  PostgresUniversalV1ChangeOrderReversalRequests,
++  authorizedChangeOrderReversalRequests,
++} from '../../src/services/payment/UniversalV1ChangeOrderReversalRequest.js';
++import * as financialAuthorization from '../../src/services/payment/NonproductionFinancialAuthorization.js';
++import * as manifestAuthority from '../../src/releaseManifest.js';
++import * as databaseStartup from '../../src/jobs/runtime-database-startup-config.js';
++
++function fixture() {
++  const authority = {
++    databaseName: 'hx_ci_reversal',
++    serviceLogin: 'hx_ci_worker',
++    environment: 'local' as const,
++    manifestDigest: 'sha256:' + 'a'.repeat(64),
++    targetDigest: 'sha256:' + 'b'.repeat(64),
++    releaseId: 'synthetic.worker.reversal',
++    revision: 'd'.repeat(40),
++    authenticationStatus: 'VERIFIED' as const,
++  };
++  const command = {
++    compensationCommandId: randomUUID(),
++    proposalId: randomUUID(),
++    witnessRequestSha256: 'c'.repeat(64),
++    taskDraftId: randomUUID(),
++    taskId: randomUUID(),
++    eligibilityDecisionId: randomUUID(),
++    baseScopeVersionId: randomUUID(),
++    adjustmentEventId: randomUUID(),
++    adjustmentOperationId: randomUUID(),
++    reversalOperationId: randomUUID(),
++    reversalIdempotencyKey: 'compensation:worker:reversal',
++    lifecycleExpectedVersion: 4,
++    amountCents: 8000,
++    currency: 'USD',
++    requestedBy: randomUUID(),
++    createdAt: '2026-09-05T00:00:01.123456+00:00',
++    semanticLimitation: 'PRIOR_SECURED_STATE_NOT_RESTORED' as const,
++  };
++  const origin = {
++    compensation_command_id: command.compensationCommandId,
++    proposal_id: command.proposalId,
++    recovery_lease_id: randomUUID(),
++    lease_owner_id: randomUUID(),
++    target_authority_id: randomUUID(),
++    release_environment: 'local' as const,
++    release_manifest_digest: 'sha256:' + 'e'.repeat(64),
++    service_database_role: 'hx_previous_worker',
++    witness_request_sha256: command.witnessRequestSha256,
++    adjustment_event_id: command.adjustmentEventId,
++    revocation_reason: 'CUSTOMER_ACTOR_AUTHORITY_REVOKED' as const,
++    recorded_at: '2026-09-05T00:00:01.123789+00:00',
++  };
++  const winner = {
++    resolution: { kind: 'COMPENSATE' as const, command },
++    workerOrigin: origin,
++    created: true,
++    observedAt: '2026-09-05T00:00:02.123456+00:00',
++  };
++  const metadata = {
++    session_database_role: authority.serviceLogin,
++    target_authority_id: randomUUID(),
++    target_database_name: authority.databaseName,
++    environment: authority.environment,
++    release_manifest_sha256: authority.manifestDigest,
++  };
++  const durable = encodeFakeFinancialDurableRequest('REVERSAL', {
++    operationId: command.reversalOperationId,
++    idempotencyKey: command.reversalIdempotencyKey,
++    expectedVersion: 0,
++    relatedOperationId: command.adjustmentOperationId,
++    amountCents: command.amountCents,
++    currency: 'usd',
++    scenario: 'REVERSAL',
++  });
++  const prepared = {
++    prepared_command_id: randomUUID(),
++    command_state: 'PREPARED',
++    operation_kind: 'REVERSAL',
++    event_kind: 'REVERSED',
++    operation_id: command.reversalOperationId,
++    provider_kind: 'FAKE',
++    idempotency_key: command.reversalIdempotencyKey,
++    provider_expected_version: 0,
++    lifecycle_expected_version: command.lifecycleExpectedVersion,
++    provider_request_sha256: durable.providerRequestSha256,
++    task_draft_id: command.taskDraftId,
++    task_id: command.taskId,
++    eligibility_decision_id: command.eligibilityDecisionId,
++    eligibility_decision_version: 1,
++    eligibility_valid_until: '2026-09-05T00:01:00+00:00',
++    scope_version_id: command.baseScopeVersionId,
++    scope_version: 1,
++    scope_hash: 'f'.repeat(64),
++    work_order_id: randomUUID(),
++    work_order_materialization_version: 1,
++    work_order_execution_contract_version: 1,
++    change_order_id: null,
++    change_order_version: null,
++    predecessor_event_id: command.adjustmentEventId,
++    predecessor_operation_id: command.adjustmentOperationId,
++    predecessor_event_kind: 'ADJUSTMENT_AUTHORIZED',
++    predecessor_status: 'SUCCEEDED',
++    predecessor_lifecycle_version: command.lifecycleExpectedVersion - 1,
++    completion_fact_id: null,
++    completion_version: null,
++    related_operation_id: command.adjustmentOperationId,
++    amount_cents: command.amountCents,
++    currency: 'USD',
++    recorded_by: command.requestedBy,
++    occurred_at: '2026-09-05T00:00:03.123456+00:00',
++    request_identity_sha256: '1'.repeat(64),
++    authority_context_sha256: '2'.repeat(64),
++    prepared_at: '2026-09-05T00:00:03.123789+00:00',
++  };
++  const provenance = {
++    prepared_command_id: prepared.prepared_command_id,
++    compensation_command_id: command.compensationCommandId,
++    target_authority_id: metadata.target_authority_id,
++    release_manifest_sha256: authority.manifestDigest,
++    service_database_role: authority.serviceLogin,
++    provider_request_sha256: durable.providerRequestSha256,
++    prepared_authority_sha256: prepared.authority_context_sha256,
++    preparation_transaction_id: '18446744073709551614',
++    recorded_at: '2026-09-05T00:00:03.123999+00:00',
++  };
++  const preparation = {
++    prepared_command: prepared,
++    worker_provenance: provenance,
++    idempotency_replayed: false,
++    target_authority_id: metadata.target_authority_id,
++    release_manifest_digest: authority.manifestDigest,
++  };
++  const expected = prepareFinancialProviderCommand({
++    operationKind: 'REVERSAL',
++    operationId: command.reversalOperationId,
++    providerKind: 'FAKE',
++    idempotencyKey: command.reversalIdempotencyKey,
++    providerExpectedVersion: 0,
++    exactRequest: durable.request,
++    evidence: {
++      preparedFinancialCommandId: prepared.prepared_command_id,
++      preparedAuthoritySha256: prepared.authority_context_sha256,
++      taskDraftId: command.taskDraftId,
++      taskId: command.taskId,
++      workOrderId: prepared.work_order_id,
++      relatedOperationId: command.adjustmentOperationId,
++      amountCents: command.amountCents,
++      currency: 'USD',
++    },
++    actor: { actorId: command.requestedBy, actorKind: 'PARTICIPANT' },
++    release: {
++      manifestDigest: authority.manifestDigest,
++      releaseId: authority.releaseId,
++      revision: authority.revision,
++      environment: authority.environment,
++      authenticationStatus: 'VERIFIED',
++    },
++  });
++  const requested = {
++    command_id: randomUUID(),
++    operation_kind: 'REVERSAL',
++    operation_id: command.reversalOperationId,
++    provider_kind: 'FAKE',
++    idempotency_key: command.reversalIdempotencyKey,
++    provider_expected_version: '0',
++    request_sha256: durable.providerRequestSha256,
++    command_identity_sha256: expected.commandIdentitySha256,
++    prepared_financial_command_id: prepared.prepared_command_id,
++    prepared_authority_sha256: prepared.authority_context_sha256,
++    recorded_at: new Date('2026-09-05T00:00:04Z'),
++    idempotency_replayed: false,
++  };
++  const row = (value: unknown) => ({ rows: [value], rowCount: 1 });
++  const responses = [row(metadata), row(preparation), row({ ...metadata }), row(requested)];
++  const events: string[] = [];
++  let depth = 0,
++    commits = 0,
++    rollbacks = 0;
++  const query = vi.fn(async (sql: string, _params?: unknown[]) => {
++    events.push(
++      sql.includes('hxos_request_fake_financial_command')
++        ? 'REQUESTED'
++        : sql.includes('hxos_prepare_change_order')
++          ? 'PREPARED'
++          : 'METADATA'
++    );
++    const response = responses.shift();
++    if (!response) throw Error('UNEXPECTED_QUERY');
++    return response;
++  });
++  const transaction: Database['transaction'] = async (work) => {
++    if (depth) throw Error('NESTED_TRANSACTION');
++    depth++;
++    events.push('BEGIN');
++    try {
++      const result = await work(query as QueryFn);
++      commits++;
++      events.push('COMMIT');
++      return result;
++    } catch (error) {
++      rollbacks++;
++      events.push('ROLLBACK');
++      throw error;
++    } finally {
++      depth--;
++    }
++  };
++  const authorize = vi.fn(() => ({ ...authority }));
++  const port = new PostgresUniversalV1ChangeOrderReversalRequests({ transaction }, authorize);
++  return {
++    authority,
++    command,
++    origin,
++    winner,
++    metadata,
++    durable,
++    prepared,
++    provenance,
++    preparation,
++    expected,
++    requested,
++    responses,
++    query,
++    events,
++    authorize,
++    port,
++    transaction,
++    state: () => ({ commits, rollbacks }),
++  };
++}
++
++describe('committed worker-origin reversal requests', () => {
++  it('derives exact canonical bytes, commits PREPARED before REQUESTED, and preserves historical attribution', async () => {
++    const f = fixture();
++    const result = await f.port.requestReversal(f.winner);
++    expect(f.events).toEqual([
++      'BEGIN',
++      'METADATA',
++      'PREPARED',
++      'COMMIT',
++      'BEGIN',
++      'METADATA',
++      'REQUESTED',
++      'COMMIT',
++    ]);
++    expect(f.query).toHaveBeenNthCalledWith(
++      2,
++      expect.stringContaining('hxos_prepare_change_order_compensation_reversal_v13'),
++      [
++        f.metadata.target_authority_id,
++        f.authority.databaseName,
++        'local',
++        f.authority.manifestDigest,
++        f.command.compensationCommandId,
++        f.durable.canonicalRequestJson,
++      ]
++    );
++    expect(f.query).toHaveBeenNthCalledWith(
++      4,
++      expect.stringContaining('hxos_request_fake_financial_command_v13'),
++      [f.durable.canonicalRequestJson, f.expected.canonicalCommandIdentityJson]
++    );
++    expect(result).toEqual({
++      requestState: 'REQUESTED',
++      commandId: f.requested.command_id,
++      preparedCommandId: f.prepared.prepared_command_id,
++      compensationCommandId: f.command.compensationCommandId,
++      operationId: f.command.reversalOperationId,
++      requestedAt: f.requested.recorded_at.toISOString(),
++      preparedAt: f.prepared.prepared_at,
++      providerRequestSha256: f.durable.providerRequestSha256,
++      preparedAuthoritySha256: f.prepared.authority_context_sha256,
++      commandIdentitySha256: f.expected.commandIdentitySha256,
++      preparationReplayed: false,
++      idempotencyReplayed: false,
++      workerProvenance: f.provenance,
++    });
++    expect(Object.isFrozen(result)).toBe(true);
++    expect(Object.isFrozen(result.workerProvenance)).toBe(true);
++    expect(f.state()).toEqual({ commits: 2, rollbacks: 0 });
++  });
++
++  it.each(['legacy winner', 'amendment winner', 'caller fields', 'unbound origin'])(
++    'rejects %s before opening a transaction',
++    async (fault) => {
++      const f = fixture();
++      const input: unknown =
++        fault === 'legacy winner'
++          ? { ...f.winner, workerOrigin: null }
++          : fault === 'amendment winner'
++            ? {
++                ...f.winner,
++                resolution: {
++                  kind: 'AMENDMENT_MATERIALIZED',
++                  amendmentId: randomUUID(),
++                  adjustmentEventId: f.command.adjustmentEventId,
++                },
++              }
++            : fault === 'caller fields'
++              ? { ...f.winner, scenario: 'DECLINED' }
++              : {
++                  ...f.winner,
++                  workerOrigin: { ...f.origin, compensation_command_id: randomUUID() },
++                };
++      await expect(
++        f.port.requestReversal(input as ChangeOrderCompensationWinnerReceipt)
++      ).rejects.toThrow();
++      expect(f.events).toEqual([]);
++      expect(f.query).not.toHaveBeenCalled();
++    }
++  );
++
++  it.each([
++    ['operation_kind', 'REFUND'],
++    ['event_kind', 'CAPTURED'],
++    ['provider_kind', 'STRIPE'],
++    ['operation_id', randomUUID()],
++    ['provider_expected_version', 1],
++    ['lifecycle_expected_version', 5],
++    ['provider_request_sha256', '9'.repeat(64)],
++    ['task_draft_id', randomUUID()],
++    ['task_id', randomUUID()],
++    ['eligibility_decision_id', randomUUID()],
++    ['scope_version_id', randomUUID()],
++    ['scope_hash', null],
++    ['work_order_id', null],
++    ['work_order_execution_contract_version', 2],
++    ['change_order_id', randomUUID()],
++    ['predecessor_event_id', randomUUID()],
++    ['predecessor_operation_id', randomUUID()],
++    ['predecessor_status', 'DECLINED'],
++    ['predecessor_lifecycle_version', 4],
++    ['completion_fact_id', randomUUID()],
++    ['related_operation_id', randomUUID()],
++    ['amount_cents', 7999],
++    ['currency', 'usd'],
++    ['recorded_by', randomUUID()],
++    ['authority_context_sha256', '3'.repeat(64)],
++    ['unexpected', true],
++  ])('rolls back substituted PREPARED %s', async (field, value) => {
++    const f = fixture();
++    Object.assign(f.prepared, { [field]: value });
++    await expect(f.port.requestReversal(f.winner)).rejects.toThrow();
++    expect(f.state()).toEqual({ commits: 0, rollbacks: 1 });
++    expect(f.events).not.toContain('REQUESTED');
++  });
++
++  it.each([
++    ['prepared_command_id', randomUUID()],
++    ['compensation_command_id', randomUUID()],
++    ['target_authority_id', randomUUID()],
++    ['release_manifest_sha256', 'sha256:' + '9'.repeat(64)],
++    ['service_database_role', 'hx_api'],
++    ['provider_request_sha256', '3'.repeat(64)],
++    ['prepared_authority_sha256', '3'.repeat(64)],
++    ['preparation_transaction_id', 123],
++    ['unexpected', true],
++  ])('rolls back substituted worker preparation provenance %s', async (field, value) => {
++    const f = fixture();
++    Object.assign(f.provenance, { [field]: value });
++    await expect(f.port.requestReversal(f.winner)).rejects.toThrow();
++    expect(f.state()).toEqual({ commits: 0, rollbacks: 1 });
++  });
++
++  it.each([0, 1, 2])(
++    'rejects incorrect preparation cardinality variant %s before commit',
++    async (variant) => {
++      const f = fixture();
++      if (variant === 0) f.responses[1] = { rows: [], rowCount: 0 };
++      if (variant === 1) f.responses[1].rowCount = 0;
++      if (variant === 2) f.responses[1] = { rows: [f.preparation, f.preparation], rowCount: 2 };
++      await expect(f.port.requestReversal(f.winner)).rejects.toThrow('RECEIPT_CARDINALITY');
++      expect(f.state()).toEqual({ commits: 0, rollbacks: 1 });
++    }
++  );
++
++  it.each([
++    'session_database_role',
++    'target_database_name',
++    'environment',
++    'release_manifest_sha256',
++  ])('rejects mismatched runtime %s before PREPARED', async (field) => {
++    const f = fixture();
++    Object.assign(f.metadata, { [field]: field === 'environment' ? 'staging' : 'different' });
++    await expect(f.port.requestReversal(f.winner)).rejects.toThrow();
++    expect(f.events).not.toContain('PREPARED');
++    expect(f.state()).toEqual({ commits: 0, rollbacks: 1 });
++  });
++
++  it('refuses a database target rollover between the two commits', async () => {
++    const f = fixture();
++    f.responses[2].rows = [{ ...f.metadata, target_authority_id: randomUUID() }];
++    await expect(f.port.requestReversal(f.winner)).rejects.toThrow('TARGET_BINDING_MISMATCH');
++    expect(f.state()).toEqual({ commits: 1, rollbacks: 1 });
++    expect(f.events).not.toContain('REQUESTED');
++  });
++
++  it.each(['PREPARED', 'REQUESTED'])(
++    'rolls back %s when installed authority changes during SQL',
++    async (phase) => {
++      const f = fixture();
++      const original = f.query.getMockImplementation()!;
++      f.query.mockImplementation(async (sql, params) => {
++        const result = await original(sql, params);
++        if (
++          sql.includes(
++            phase === 'PREPARED'
++              ? 'hxos_prepare_change_order'
++              : 'hxos_request_fake_financial_command'
++          )
++        ) {
++          f.authority.targetDigest = 'sha256:' + '9'.repeat(64);
++        }
++        return result;
++      });
++      await expect(f.port.requestReversal(f.winner)).rejects.toThrow('RELEASE_AUTHORITY_CHANGED');
++      expect(f.state()).toEqual({ commits: phase === 'PREPARED' ? 0 : 1, rollbacks: 1 });
++    }
++  );
++
++  it.each([
++    ['operation_kind', 'REFUND'],
++    ['operation_id', randomUUID()],
++    ['provider_kind', 'STRIPE'],
++    ['idempotency_key', 'another:valid:operation'],
++    ['provider_expected_version', '1'],
++    ['prepared_financial_command_id', randomUUID()],
++    ['prepared_authority_sha256', '9'.repeat(64)],
++    ['command_id', 'invalid'],
++    ['idempotency_replayed', 'true'],
++    ['provider_expected_version', null],
++    ['provider_expected_version', false],
++    ['provider_expected_version', ''],
++    ['recorded_at', null],
++    ['recorded_at', 0],
++    ['unexpected', true],
++  ])('validates REQUESTED %s before its commit', async (field, value) => {
++    const f = fixture();
++    Object.assign(f.requested, { [field]: value });
++    await expect(f.port.requestReversal(f.winner)).rejects.toThrow();
++    expect(f.state()).toEqual({ commits: 1, rollbacks: 1 });
++  });
++
++  it('rolls back a REQUESTED cardinality mismatch before the journal maps its row', async () => {
++    const f = fixture();
++    f.responses[3].rowCount = 0;
++    await expect(f.port.requestReversal(f.winner)).rejects.toThrow('REQUEST_CARDINALITY');
++    expect(f.state()).toEqual({ commits: 1, rollbacks: 1 });
++  });
++
++  it('retains preparation and request replay flags independently', async () => {
++    const f = fixture();
++    f.preparation.idempotency_replayed = true;
++    f.requested.idempotency_replayed = true;
++    expect(await f.port.requestReversal(f.winner)).toMatchObject({
++      preparationReplayed: true,
++      idempotencyReplayed: true,
++    });
++  });
++
++  it('leaves committed PREPARED resumable when REQUESTED fails without inventing a financial effect', async () => {
++    const f = fixture();
++    const original = f.query.getMockImplementation()!;
++    f.query.mockImplementation(async (sql, params) => {
++      if (sql.includes('hxos_request_fake_financial_command'))
++        throw Error('HXUV1-COREVERSAL-13-REQUEST_LOCK_BUSY');
++      return original(sql, params);
++    });
++    await expect(f.port.requestReversal(f.winner)).rejects.toThrow('REQUEST_LOCK_BUSY');
++    expect(f.state()).toEqual({ commits: 1, rollbacks: 1 });
++    expect(f.events).not.toContain('REQUESTED');
++  });
++});
++
++describe('installed worker reversal request authority', () => {
++  it.each(['valid', 'unsigned', 'different digest', 'different environment'] as const)(
++    'validates %s installed release before any database work',
++    (fault) => {
++      const f = fixture();
++      const spies = [
++        vi
++          .spyOn(financialAuthorization, 'assertNonproductionFakeFinanceAuthorized')
++          .mockReturnValue({
++            releaseId: f.authority.releaseId,
++            environment: f.authority.environment,
++            components: {
++              backend: { revision: 'c'.repeat(40) },
++              worker: { revision: f.authority.revision },
++            },
++          } as ReturnType<typeof financialAuthorization.assertNonproductionFakeFinanceAuthorized>),
++        vi
++          .spyOn(manifestAuthority, 'releaseManifestDigest')
++          .mockReturnValue(f.authority.manifestDigest),
++        vi.spyOn(manifestAuthority, 'readReleaseManifest').mockReturnValue({
++          digest:
++            fault === 'different digest' ? 'sha256:' + '9'.repeat(64) : f.authority.manifestDigest,
++        } as ReturnType<typeof manifestAuthority.readReleaseManifest>),
++        vi
++          .spyOn(manifestAuthority, 'isAuthenticatedReleaseManifest')
++          .mockReturnValue(fault !== 'unsigned'),
++        vi.spyOn(databaseStartup, 'configuredRuntimeDatabaseStartup').mockReturnValue({
++          expectedTarget: {
++            databaseName: f.authority.databaseName,
++            environment: fault === 'different environment' ? 'staging' : 'local',
++          },
++          target: { serviceLogin: f.authority.serviceLogin },
++          targetDigest: f.authority.targetDigest,
++        } as ReturnType<typeof databaseStartup.configuredRuntimeDatabaseStartup>),
++      ];
++      try {
++        if (fault === 'valid') {
++          const result = authorizedChangeOrderReversalRequests();
++          expect(result).toEqual(f.authority);
++          expect(Object.isFrozen(result)).toBe(true);
++          expect(
++            financialAuthorization.assertNonproductionFakeFinanceAuthorized
++          ).toHaveBeenCalledWith({ component: 'worker' });
++          expect(databaseStartup.configuredRuntimeDatabaseStartup).toHaveBeenCalledWith('worker');
++        } else {
++          expect(authorizedChangeOrderReversalRequests).toThrow(
++            fault === 'different environment'
++              ? 'WORKER_RELEASE_REQUIRED'
++              : 'AUTHENTICATED_RELEASE_REQUIRED'
++          );
++        }
++        expect(f.query).not.toHaveBeenCalled();
++      } finally {
++        for (const spy of spies) spy.mockRestore();
++      }
++    }
++  );
++});

@@ -443,7 +443,7 @@ const COMMAND_SELECT = `
  * provider callback cannot race an uncommitted command fact.
  */
 export class PostgresFinancialProviderCommandJournal implements FinancialProviderCommandJournal {
-  constructor(private readonly database: Database = db) {}
+  constructor(private readonly database: Pick<Database, 'transaction'> = db) {}
 
   async recordRequested<TRequest>(
     input: RecordFinancialProviderCommandInput<TRequest>
