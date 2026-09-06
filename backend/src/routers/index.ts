@@ -81,6 +81,7 @@ import { universalContractRouter } from './universalContract.js';
 import { universalV1DisputeRecoveryRouter } from './universalV1DisputeRecovery.js';
 import { universalOccurrenceRouter } from './universalOccurrence.js';
 import { universalV1TaskOpportunitiesRouter } from './universalV1TaskOpportunities.js';
+import { universalV1StandardizedQuotesRouter } from './universalV1StandardizedQuotes.js';
 
 // ── ADMIN DOMAIN ────────────────────────────────────────────────────────
 // Requires admin_roles table entry. Platform operations.
@@ -168,6 +169,7 @@ export const appRouter = router({
   universalV1DisputeRecovery: universalV1DisputeRecoveryRouter,
   universalOccurrence: universalOccurrenceRouter,
   universalV1TaskOpportunities: universalV1TaskOpportunitiesRouter,
+  universalV1StandardizedQuotes: universalV1StandardizedQuotesRouter,
   finance: universalFinanceRouter,
   syntheticFinance: syntheticFinanceRouter,
 

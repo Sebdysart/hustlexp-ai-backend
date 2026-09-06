@@ -1,13 +1,13 @@
 /**
  * GDPRService v1.0.0
- * 
+ *
  * CONSTITUTIONAL: PRODUCT_SPEC §16, GDPR_COMPLIANCE_SPEC.md
- * 
+ *
  * Implements GDPR compliance: data export, deletion, consent management.
  * Core Principle: User data belongs to users. They control it.
- * 
+ *
  * CRITICAL: Legal requirement. Non-negotiable.
- * 
+ *
  * @see backend/database/constitutional-schema.sql §11.9 (gdpr_data_requests, user_consents tables)
  * @see PRODUCT_SPEC.md §16
  * @see staging/GDPR_COMPLIANCE_SPEC.md
@@ -27,6 +27,7 @@ import { invalidateAuthCacheForUser } from '../auth-cache.js';
 import { forceDisconnectUser } from '../realtime/connection-registry.js';
 import { revokeUserSessions } from '../auth/middleware.js';
 import { stripeBreaker } from '../middleware/circuit-breaker.js'; // AUDIT FIX M3
+import { canonicalTaskVersion } from './TaskVersion.js';
 
 // Module-level Stripe singleton — only instantiated when a real key is present.
 // Matches the pattern used in TippingService.ts.
@@ -40,7 +41,7 @@ if (config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder'))
 // ============================================================================
 // Cooldown periods (milliseconds)
 const GDPR_DELETION_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours
-const GDPR_EXPORT_COOLDOWN_MS = 60 * 60 * 1000;         // 1 hour
+const GDPR_EXPORT_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
 
 // Map key: `${userId}:${requestType}` → timestamp of last allowed request
 const gdprRateLimitMap = new Map<string, number>();
@@ -57,9 +58,8 @@ export function checkGDPRRateLimit(
   userId: string,
   requestType: 'deletion' | 'export' | string
 ): { allowed: boolean; retryAfterMs?: number } {
-  const cooldownMs = requestType === 'deletion'
-    ? GDPR_DELETION_COOLDOWN_MS
-    : GDPR_EXPORT_COOLDOWN_MS;
+  const cooldownMs =
+    requestType === 'deletion' ? GDPR_DELETION_COOLDOWN_MS : GDPR_EXPORT_COOLDOWN_MS;
 
   const key = `${userId}:${requestType}`;
   const now = Date.now();
@@ -89,6 +89,12 @@ export function _resetGDPRRateLimitMapForTesting(): void {
 
 const log = logger.child({ service: 'GDPRService' });
 
+const GDPR_IMMUTABLE_APPLICATION_HOLD_CODE = 'GDPR_IMMUTABLE_APPLICATION_AUTHORITY_HELD';
+const GDPR_IMMUTABLE_APPLICATION_HOLD_AUTHORITY =
+  'UNIVERSAL_V1_PRIVACY_RETENTION_DECISION_REQUIRED';
+const GDPR_IMMUTABLE_APPLICATION_HOLD_MESSAGE =
+  'Erasure is held because canonical application or opportunity facts require an approved retention decision.';
+
 // ============================================================================
 // TYPES
 // ============================================================================
@@ -98,7 +104,15 @@ export type GDPRRequestType = 'export' | 'deletion' | 'rectification' | 'restric
 // Schema uses lowercase for status: 'pending', 'processing', 'completed', 'rejected', 'cancelled'
 export type GDPRRequestStatus = 'pending' | 'processing' | 'completed' | 'rejected' | 'cancelled';
 // Schema uses lowercase for consent_type
-export type ConsentType = 'marketing' | 'analytics' | 'location' | 'notifications' | 'profiling' | 'account_creation' | 'email_notifications' | 'biometric_data';
+export type ConsentType =
+  | 'marketing'
+  | 'analytics'
+  | 'location'
+  | 'notifications'
+  | 'profiling'
+  | 'account_creation'
+  | 'email_notifications'
+  | 'biometric_data';
 // Schema uses boolean 'granted' (not status enum)
 export type ConsentStatus = 'GRANTED' | 'REVOKED'; // Internal type, maps to boolean granted
 
@@ -156,10 +170,10 @@ export const GDPRService = {
   // --------------------------------------------------------------------------
   // GDPR REQUESTS
   // --------------------------------------------------------------------------
-  
+
   /**
    * Create a GDPR data request (export, deletion, access, rectification)
-   * 
+   *
    * GDPR_COMPLIANCE_SPEC.md §2.3, §3.2
    */
   createRequest: async (
@@ -201,7 +215,7 @@ export const GDPRService = {
          LIMIT 1`,
         [userId, requestType]
       );
-      
+
       if (existingResult.rows.length > 0) {
         return {
           success: false,
@@ -211,11 +225,11 @@ export const GDPRService = {
           },
         };
       }
-      
+
       // Calculate deadline (30 days for export, 7 days for deletion, 30 days default)
       const deadlineDays = requestType === 'deletion' ? 7 : 30;
       const deadline = new Date(Date.now() + deadlineDays * 24 * 60 * 60 * 1000);
-      
+
       // Build request_details JSONB
       const requestDetails: Record<string, unknown> = params.requestDetails || {};
       if (exportFormat) {
@@ -224,7 +238,7 @@ export const GDPRService = {
       if (params.scope) {
         requestDetails.scope = params.scope;
       }
-      
+
       // Create request
       const result = await db.query<GDPRDataRequest>(
         `INSERT INTO gdpr_data_requests (
@@ -234,20 +248,26 @@ export const GDPRService = {
         RETURNING *`,
         [userId, requestType, JSON.stringify(requestDetails), deadline]
       );
-      
+
       // Queue background job to process request via BullMQ outbox pattern
       const requestId = result.rows[0].id;
 
       if (requestType === 'export') {
         // Immediately trigger export generation (writes outbox event → BullMQ)
-        GDPRService.generateExport(requestId).catch(err => {
-          log.error({ err: err instanceof Error ? err.message : String(err), requestId }, 'Failed to trigger export');
+        GDPRService.generateExport(requestId).catch((err) => {
+          log.error(
+            { err: err instanceof Error ? err.message : String(err), requestId },
+            'Failed to trigger export'
+          );
         });
       } else if (requestType === 'deletion') {
         // Deletion has a grace period — schedule via outbox for deadline processing
         // For now, deletion requests remain 'pending' until grace period expires
         // Admin or cron job will call executeDeletion after deadline
-        log.info({ requestId, deadline: deadline.toISOString() }, 'Deletion request created with grace period');
+        log.info(
+          { requestId, deadline: deadline.toISOString() },
+          'Deletion request created with grace period'
+        );
       }
       // rectification requests are handled via UI/API — no background job needed
 
@@ -265,7 +285,7 @@ export const GDPRService = {
           },
         };
       }
-      
+
       return {
         success: false,
         error: {
@@ -275,7 +295,7 @@ export const GDPRService = {
       };
     }
   },
-  
+
   /**
    * Get GDPR request by ID
    */
@@ -289,7 +309,7 @@ export const GDPRService = {
          WHERE id = $1 AND user_id = $2`,
         [requestId, userId]
       );
-      
+
       if (result.rows.length === 0) {
         return {
           success: false,
@@ -299,7 +319,7 @@ export const GDPRService = {
           },
         };
       }
-      
+
       return {
         success: true,
         data: result.rows[0],
@@ -314,13 +334,11 @@ export const GDPRService = {
       };
     }
   },
-  
+
   /**
    * Get all GDPR requests for a user
    */
-  getUserRequests: async (
-    userId: string
-  ): Promise<ServiceResult<GDPRDataRequest[]>> => {
+  getUserRequests: async (userId: string): Promise<ServiceResult<GDPRDataRequest[]>> => {
     try {
       const result = await db.query<GDPRDataRequest>(
         `SELECT * FROM gdpr_data_requests
@@ -328,7 +346,7 @@ export const GDPRService = {
          ORDER BY requested_at DESC`,
         [userId]
       );
-      
+
       return {
         success: true,
         data: result.rows,
@@ -343,10 +361,10 @@ export const GDPRService = {
       };
     }
   },
-  
+
   /**
    * Cancel a pending GDPR request (within grace period for deletion)
-   * 
+   *
    * GDPR_COMPLIANCE_SPEC.md §3.2: 7-day grace period for deletion
    */
   cancelRequest: async (
@@ -366,7 +384,7 @@ export const GDPRService = {
          WHERE id = $1 AND user_id = $2`,
         [requestId, userId]
       );
-      
+
       if (verifyResult.rows.length === 0) {
         return {
           success: false,
@@ -376,9 +394,9 @@ export const GDPRService = {
           },
         };
       }
-      
+
       const request = verifyResult.rows[0];
-      
+
       // Can only cancel pending or processing requests
       if (request.status !== 'pending' && request.status !== 'processing') {
         return {
@@ -389,23 +407,24 @@ export const GDPRService = {
           },
         };
       }
-      
+
       // For deletion requests, can only cancel within grace period (before deadline)
       if (request.request_type === 'deletion') {
         const now = new Date();
         const deadline = new Date(request.deadline);
-        
+
         if (now >= deadline) {
           return {
             success: false,
             error: {
               code: ErrorCodes.INVALID_STATE,
-              message: 'Cannot cancel deletion: grace period has expired. Deletion will proceed as scheduled',
+              message:
+                'Cannot cancel deletion: grace period has expired. Deletion will proceed as scheduled',
             },
           };
         }
       }
-      
+
       // Cancel request (schema uses 'cancelled', lowercase)
       // CAS guard: only cancel if still in a cancellable state. This prevents a race
       // where a concurrent export completion transitions the row to 'completed' between
@@ -424,7 +443,8 @@ export const GDPRService = {
           success: false,
           error: {
             code: ErrorCodes.INVALID_STATE,
-            message: 'Cannot cancel request: status has already changed (request may have completed concurrently)',
+            message:
+              'Cannot cancel request: status has already changed (request may have completed concurrently)',
           },
         };
       }
@@ -443,34 +463,32 @@ export const GDPRService = {
       };
     }
   },
-  
+
   // --------------------------------------------------------------------------
   // DATA EXPORT
   // --------------------------------------------------------------------------
-  
+
   /**
    * Generate data export for a user (background job via outbox pattern)
-   * 
+   *
    * GDPR_COMPLIANCE_SPEC.md §2.1, §2.2
-   * 
+   *
    * PHASE B: Exports End-to-End (via outbox pattern)
-   * 
+   *
    * Pattern:
    * 1. Create exports table row (status='queued')
    * 2. Write outbox_event (event_type='export.requested')
    * 3. Return export_id immediately (no file generation inline)
-   * 
+   *
    * Worker then processes the job:
    * - marks 'generating'
    * - generates file
    * - uploads to R2
    * - marks 'ready' with object_key, sha256, signed_url_expires_at
-   * 
+   *
    * Hard rule: No file generation inline - must be async via worker
    */
-  generateExport: async (
-    requestId: string
-  ): Promise<ServiceResult<{ exportId: string }>> => {
+  generateExport: async (requestId: string): Promise<ServiceResult<{ exportId: string }>> => {
     try {
       // Get request (including request_details which contains format)
       const requestResult = await db.query<{
@@ -478,11 +496,10 @@ export const GDPRService = {
         user_id: string;
         status: GDPRRequestStatus;
         request_details: Record<string, unknown>;
-      }>(
-        'SELECT id, user_id, status, request_details FROM gdpr_data_requests WHERE id = $1',
-        [requestId]
-      );
-      
+      }>('SELECT id, user_id, status, request_details FROM gdpr_data_requests WHERE id = $1', [
+        requestId,
+      ]);
+
       if (requestResult.rows.length === 0) {
         return {
           success: false,
@@ -492,9 +509,9 @@ export const GDPRService = {
           },
         };
       }
-      
+
       const request = requestResult.rows[0];
-      
+
       if (request.status !== 'pending' && request.status !== 'processing') {
         return {
           success: false,
@@ -504,7 +521,7 @@ export const GDPRService = {
           },
         };
       }
-      
+
       // Get export format from request_details (default to 'json')
       const exportFormat = (request.request_details?.format as string) || 'json';
       if (!['json', 'csv', 'pdf'].includes(exportFormat)) {
@@ -516,9 +533,9 @@ export const GDPRService = {
           },
         };
       }
-      
+
       const userId = request.user_id;
-      
+
       // Determine content type based on format
       const contentTypeMap: Record<string, string> = {
         json: 'application/json',
@@ -526,10 +543,10 @@ export const GDPRService = {
         pdf: 'application/pdf',
       };
       const contentType = contentTypeMap[exportFormat] || 'application/json';
-      
+
       // Use transaction to create export and outbox event atomically
       const { generateIdempotencyKey } = await import('../jobs/queues.js');
-      
+
       const result = await db.transaction(async (query) => {
         // Update GDPR request status to processing
         await query(
@@ -538,7 +555,7 @@ export const GDPRService = {
            WHERE id = $1`,
           [requestId]
         );
-        
+
         // Create exports table row (status='queued')
         const exportResult = await query<{ id: string }>(
           `INSERT INTO exports (
@@ -551,19 +568,18 @@ export const GDPRService = {
           RETURNING id`,
           [requestId, userId, exportFormat, contentType]
         );
-        
+
         const exportId = exportResult.rows[0].id;
-        
+
         // Write outbox_event (event_type='export.requested') within same transaction
         // This will be picked up by outbox worker and enqueued to BullMQ
         const idempotencyKey = generateIdempotencyKey('export.requested', exportId, 1);
-        
+
         // Check for duplicate (idempotency key must be unique)
-        const existing = await query(
-          `SELECT id FROM outbox_events WHERE idempotency_key = $1`,
-          [idempotencyKey]
-        );
-        
+        const existing = await query(`SELECT id FROM outbox_events WHERE idempotency_key = $1`, [
+          idempotencyKey,
+        ]);
+
         if (existing.rows.length === 0) {
           // Insert new outbox event within transaction
           await query(
@@ -596,10 +612,10 @@ export const GDPRService = {
           // Event already exists - idempotent write (shouldn't happen, but handle gracefully)
           log.info({ exportId, idempotencyKey }, 'Outbox event already exists for export');
         }
-        
+
         return { exportId };
       });
-      
+
       // Return export_id immediately (no file generation inline)
       return {
         success: true,
@@ -609,16 +625,21 @@ export const GDPRService = {
       };
     } catch (error) {
       // Mark request as rejected (schema uses 'rejected', not 'failed')
-      await db.query(
-        `UPDATE gdpr_data_requests
+      await db
+        .query(
+          `UPDATE gdpr_data_requests
          SET status = 'rejected',
              processed_at = NOW()
          WHERE id = $1`,
-        [requestId]
-      ).catch(dbError => {
-        log.error({ err: dbError instanceof Error ? dbError.message : String(dbError), requestId }, 'Failed to update GDPR request status');
-      });
-      
+          [requestId]
+        )
+        .catch((dbError) => {
+          log.error(
+            { err: dbError instanceof Error ? dbError.message : String(dbError), requestId },
+            'Failed to update GDPR request status'
+          );
+        });
+
       return {
         success: false,
         error: {
@@ -628,21 +649,19 @@ export const GDPRService = {
       };
     }
   },
-  
+
   // --------------------------------------------------------------------------
   // DATA DELETION
   // --------------------------------------------------------------------------
-  
+
   /**
    * Execute data deletion (background job)
-   * 
+   *
    * GDPR_COMPLIANCE_SPEC.md §3.1, §3.2, §3.3
-   * 
+   *
    * This should be called by a background job processor after grace period
    */
-  executeDeletion: async (
-    requestId: string
-  ): Promise<ServiceResult<{ deletedAt: Date }>> => {
+  executeDeletion: async (requestId: string): Promise<ServiceResult<{ deletedAt: Date }>> => {
     try {
       // Get request
       const requestResult = await db.query<{
@@ -651,11 +670,23 @@ export const GDPRService = {
         status: GDPRRequestStatus;
         request_type: GDPRRequestType;
         deadline: Date;
+        immutable_application_facts_present?: boolean;
       }>(
-        'SELECT id, user_id, status, request_type, deadline FROM gdpr_data_requests WHERE id = $1',
+        `SELECT request.id, request.user_id, request.status, request.request_type, request.deadline,
+                EXISTS (
+                  SELECT 1
+                    FROM task_applications application
+                   WHERE application.hustler_id = request.user_id
+                     AND (
+                       application.universal_contract_version = 1
+                       OR application.opportunity_contract_version = 1
+                     )
+                ) AS immutable_application_facts_present
+           FROM gdpr_data_requests request
+          WHERE request.id = $1`,
         [requestId]
       );
-      
+
       if (requestResult.rows.length === 0) {
         return {
           success: false,
@@ -665,9 +696,9 @@ export const GDPRService = {
           },
         };
       }
-      
+
       const request = requestResult.rows[0];
-      
+
       if (request.status === 'cancelled') {
         return {
           success: false,
@@ -704,7 +735,7 @@ export const GDPRService = {
       // Verify deadline has passed (grace period expired)
       const now = new Date();
       const deadline = new Date(request.deadline);
-      
+
       if (now < deadline) {
         return {
           success: false,
@@ -714,7 +745,54 @@ export const GDPRService = {
           },
         };
       }
-      
+
+      if (request.immutable_application_facts_present === true) {
+        await db.query(
+          `UPDATE gdpr_data_requests
+              SET request_details = jsonb_set(
+                    COALESCE(request_details, '{}'::jsonb),
+                    '{executionHold}',
+                    COALESCE(
+                      request_details->'executionHold',
+                      jsonb_build_object(
+                        'code', $2::text,
+                        'authority', $3::text,
+                        'recordedAt', clock_timestamp()
+                      )
+                    ),
+                    true
+                  ),
+                  error_message = $4
+            WHERE id = $1 AND status IN ('pending', 'rejected')`,
+          [
+            requestId,
+            GDPR_IMMUTABLE_APPLICATION_HOLD_CODE,
+            GDPR_IMMUTABLE_APPLICATION_HOLD_AUTHORITY,
+            GDPR_IMMUTABLE_APPLICATION_HOLD_MESSAGE,
+          ]
+        );
+        log.warn(
+          {
+            requestId,
+            userId: request.user_id,
+            code: GDPR_IMMUTABLE_APPLICATION_HOLD_CODE,
+            authority: GDPR_IMMUTABLE_APPLICATION_HOLD_AUTHORITY,
+          },
+          'GDPR erasure held before partial mutation of canonical application facts'
+        );
+        return {
+          success: false,
+          error: {
+            code: GDPR_IMMUTABLE_APPLICATION_HOLD_CODE,
+            message: GDPR_IMMUTABLE_APPLICATION_HOLD_MESSAGE,
+            details: {
+              requestId,
+              authority: GDPR_IMMUTABLE_APPLICATION_HOLD_AUTHORITY,
+            },
+          },
+        };
+      }
+
       // CAS update: atomically transition from 'pending'/'rejected' → 'processing'.
       // 'pending' = initial state, 'rejected' = prior attempt failed (retryable).
       // If another worker already started processing, rowCount will be 0 and we bail
@@ -736,7 +814,7 @@ export const GDPRService = {
           },
         };
       }
-      
+
       // Execute data deletion/anonymization (GDPR_COMPLIANCE_SPEC.md §3.1, §3.2, §3.3)
       const userId = request.user_id;
 
@@ -778,8 +856,11 @@ export const GDPRService = {
       // marker for the Hono middleware path.  This was never called on GDPR deletion,
       // meaning deleted users could re-authenticate immediately.
       if (firebaseUid) {
-        await revokeUserSessions(firebaseUid).catch(err => {
-          log.error({ err: err instanceof Error ? err.message : String(err), userId }, 'revokeUserSessions failed during GDPR deletion — user may be able to re-authenticate');
+        await revokeUserSessions(firebaseUid).catch((err) => {
+          log.error(
+            { err: err instanceof Error ? err.message : String(err), userId },
+            'revokeUserSessions failed during GDPR deletion — user may be able to re-authenticate'
+          );
         });
       }
 
@@ -796,7 +877,7 @@ export const GDPRService = {
          RETURNING *`,
         [completedAt, requestId]
       );
-      
+
       // Send final confirmation email to user via NotificationService (outbox pattern)
       await NotificationService.createNotification({
         userId: request.user_id,
@@ -807,11 +888,18 @@ export const GDPRService = {
         channels: ['email'], // D51-8: no in_app channel — user is deleted and cannot log in to see it
         priority: 'HIGH',
         metadata: { requestId, deletedAt: deletedAt.toISOString() },
-      }).catch(err => {
+      }).catch((err) => {
         // Log but don't fail — user data is already deleted, notification is best-effort
-        log.error({ err: err instanceof Error ? err.message : String(err), userId: request.user_id, requestId }, 'Failed to send deletion confirmation');
+        log.error(
+          {
+            err: err instanceof Error ? err.message : String(err),
+            userId: request.user_id,
+            requestId,
+          },
+          'Failed to send deletion confirmation'
+        );
       });
-      
+
       return {
         success: true,
         data: { deletedAt },
@@ -826,7 +914,7 @@ export const GDPRService = {
          WHERE id = $2`,
         [error instanceof Error ? error.message : 'Unknown error', requestId]
       );
-      
+
       return {
         success: false,
         error: {
@@ -836,26 +924,24 @@ export const GDPRService = {
       };
     }
   },
-  
+
   // --------------------------------------------------------------------------
   // CONSENT MANAGEMENT
   // --------------------------------------------------------------------------
-  
+
   /**
    * Grant or revoke consent
-   * 
+   *
    * GDPR_COMPLIANCE_SPEC.md §4
    */
-  updateConsent: async (
-    params: CreateConsentParams
-  ): Promise<ServiceResult<UserConsent>> => {
+  updateConsent: async (params: CreateConsentParams): Promise<ServiceResult<UserConsent>> => {
     const { userId, consentType, ipAddress, userAgent } = params;
-    
+
     try {
       // Schema has UNIQUE(user_id, consent_type) constraint, so use UPSERT
       const now = new Date();
       const granted = params.granted;
-      
+
       // Upsert consent (update if exists, insert if not)
       const result = await db.query<UserConsent>(
         `INSERT INTO user_consents (
@@ -882,7 +968,7 @@ export const GDPRService = {
           userAgent || null,
         ]
       );
-      
+
       return {
         success: true,
         data: result.rows[0],
@@ -897,7 +983,7 @@ export const GDPRService = {
       };
     }
   },
-  
+
   /**
    * Get current consent status for a user
    */
@@ -908,16 +994,16 @@ export const GDPRService = {
     try {
       let sql = `SELECT * FROM user_consents WHERE user_id = $1`;
       const params: unknown[] = [userId];
-      
+
       if (consentType) {
         sql += ` AND consent_type = $2`;
         params.push(consentType);
       }
-      
+
       sql += ` ORDER BY created_at DESC`;
-      
+
       const result = await db.query<UserConsent>(sql, params);
-      
+
       // Schema has UNIQUE(user_id, consent_type), so we should only get one per type
       // But return all for history if needed
       return {
@@ -956,7 +1042,10 @@ export const GDPRService = {
       );
       return result.rows.length > 0;
     } catch (error) {
-      log.error({ err: error instanceof Error ? error.message : String(error), userId }, 'Failed to check biometric consent');
+      log.error(
+        { err: error instanceof Error ? error.message : String(error), userId },
+        'Failed to check biometric consent'
+      );
       // Fail closed: if we can't verify consent, deny access
       return false;
     }
@@ -974,14 +1063,14 @@ export const GDPRService = {
 /**
  * Collect all user data for GDPR export
  * GDPR_COMPLIANCE_SPEC.md §2: Data export requirements
- * 
+ *
  * Collects all user data from all tables for export in requested format.
  * This function can be called synchronously or by a background job.
  */
 /**
  * Collects all user data from all tables for export in requested format.
  * This function can be called synchronously or by a background job.
- * 
+ *
  * Exported for use by export worker (export-worker.ts)
  */
 export async function collectUserDataForExport(userId: string): Promise<Record<string, unknown>> {
@@ -1004,9 +1093,9 @@ export async function collectUserDataForExport(userId: string): Promise<Record<s
        FROM users WHERE id = $1`,
       [userId]
     );
-    
+
     const user = userResult.rows[0] || {};
-    
+
     // 2. Task history (posted)
     const postedTasksResult = await db.query(
       `SELECT id, title, description, price, state, category, location, 
@@ -1015,7 +1104,7 @@ export async function collectUserDataForExport(userId: string): Promise<Record<s
        ORDER BY created_at DESC`,
       [userId]
     );
-    
+
     // 3. Task history (accepted/completed as worker)
     const workerTasksResult = await db.query(
       `SELECT id, title, description, price, state, category, location,
@@ -1024,7 +1113,7 @@ export async function collectUserDataForExport(userId: string): Promise<Record<s
        ORDER BY accepted_at DESC`,
       [userId]
     );
-    
+
     // 4. Transaction history (escrows)
     const escrowsResult = await db.query(
       `SELECT id, task_id, amount_cents, state, funded_at, released_at, refunded_at
@@ -1034,7 +1123,7 @@ export async function collectUserDataForExport(userId: string): Promise<Record<s
        ORDER BY created_at DESC`,
       [userId]
     );
-    
+
     // 5. Message history (last 90 days)
     const messagesResult = await db.query(
       `SELECT id, task_id, sender_id, receiver_id, message_type, content,
@@ -1046,7 +1135,7 @@ export async function collectUserDataForExport(userId: string): Promise<Record<s
        ORDER BY created_at DESC`,
       [userId]
     );
-    
+
     // 6. Rating history (given and received)
     const ratingsGivenResult = await db.query(
       `SELECT id, ratee_id, task_id, rating, comment, is_public, created_at
@@ -1054,14 +1143,14 @@ export async function collectUserDataForExport(userId: string): Promise<Record<s
        ORDER BY created_at DESC`,
       [userId]
     );
-    
+
     const ratingsReceivedResult = await db.query(
       `SELECT id, rater_id, task_id, rating, comment, is_public, created_at
        FROM task_ratings WHERE ratee_id = $1
        ORDER BY created_at DESC`,
       [userId]
     );
-    
+
     // 7. Trust tier history (trust_ledger)
     const trustLedgerResult = await db.query(
       `SELECT id, task_id, old_tier, new_tier, reason, created_at
@@ -1069,7 +1158,7 @@ export async function collectUserDataForExport(userId: string): Promise<Record<s
        ORDER BY created_at DESC`,
       [userId]
     );
-    
+
     // 8. XP history (xp_ledger)
     const xpLedgerResult = await db.query(
       `SELECT id, task_id, escrow_id, base_xp, effective_xp, reason, awarded_at
@@ -1077,7 +1166,7 @@ export async function collectUserDataForExport(userId: string): Promise<Record<s
        ORDER BY awarded_at DESC`,
       [userId]
     );
-    
+
     // 9. Analytics events (last 90 days)
     const analyticsResult = await db.query(
       `SELECT id, event_type, properties, session_id, created_at
@@ -1087,7 +1176,7 @@ export async function collectUserDataForExport(userId: string): Promise<Record<s
        ORDER BY created_at DESC`,
       [userId]
     );
-    
+
     // 10. Notification preferences
     const notificationPrefsResult = await db.query(
       `SELECT push_enabled, email_enabled, sms_enabled,
@@ -1096,7 +1185,7 @@ export async function collectUserDataForExport(userId: string): Promise<Record<s
        FROM notification_preferences WHERE user_id = $1`,
       [userId]
     );
-    
+
     // 11. GDPR consent history
     const consentHistoryResult = await db.query(
       `SELECT consent_type, purpose, granted, granted_at, withdrawn_at,
@@ -1105,7 +1194,7 @@ export async function collectUserDataForExport(userId: string): Promise<Record<s
        ORDER BY created_at DESC`,
       [userId]
     );
-    
+
     // 12. Saved searches
     const savedSearchesResult = await db.query(
       `SELECT id, name, query, filters, sort_by, created_at
@@ -1142,10 +1231,13 @@ export async function collectUserDataForExport(userId: string): Promise<Record<s
       saved_searches: savedSearchesResult.rows,
       task_applications: taskApplicationsResult.rows,
     };
-    
+
     return exportData;
   } catch (error) {
-    log.error({ err: error instanceof Error ? error.message : String(error), userId }, 'Failed to collect user data for export');
+    log.error(
+      { err: error instanceof Error ? error.message : String(error), userId },
+      'Failed to collect user data for export'
+    );
     throw error;
   }
 }
@@ -1153,15 +1245,17 @@ export async function collectUserDataForExport(userId: string): Promise<Record<s
 /**
  * Delete and anonymize user data according to GDPR requirements
  * GDPR_COMPLIANCE_SPEC.md §3.1, §3.2, §3.3: Data deletion and anonymization
- * 
+ *
  * This function:
  * 1. Immediately deletes/anonymizes account and profile data
  * 2. Anonymizes transaction/task/dispute data (7-year retention)
  * 3. Deletes analytics and location data
- * 
+ *
  * This should be called by a background job processor after grace period.
  */
-async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult<{ deletedAt: Date }>> {
+async function deleteAndAnonymizeUserData(
+  userId: string
+): Promise<ServiceResult<{ deletedAt: Date }>> {
   try {
     // D53-1 FIX: Use randomUUID() for the anonymizedId instead of a deterministic
     // ID derived from the real userId. The old approach embedded the last 12 hex
@@ -1183,9 +1277,8 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       return { success: true, data: { deletedAt: new Date() } };
     }
 
-    // Generate a cryptographically random UUID for the anonymizedId. This is safe
-    // for UUID-typed FK columns (proofs.submitter_id, task_applications.hustler_id,
-    // fraud_risk_scores.entity_id) and carries zero information about the real userId.
+    // Generate a cryptographically random identifier only for non-FK retained
+    // analytics. Actor FKs remain attached to the already-anonymized users row.
     const anonymizedId = randomUUID();
     const anonymizedEmail = `deleted-${randomUUID().split('-')[0]}@deleted.hustlexp.app`;
     const deletedAt = new Date();
@@ -1196,14 +1289,18 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
     // anonymization transaction so that TaskService/EscrowService can still
     // locate the task by poster_id and the escrow by task FK.
     // -------------------------------------------------------------------------
-    const openPosterTasksResult = await db.query<{ id: string }>(
-      `SELECT t.id FROM tasks t WHERE t.poster_id = $1
+    const openPosterTasksResult = await db.query<{ id: string; version: number | string | bigint }>(
+      `SELECT t.id, t.version FROM tasks t WHERE t.poster_id = $1
        AND t.state NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED')`,
       [userId]
     );
     for (const row of openPosterTasksResult.rows) {
       try {
-        const cancelResult = await TaskService.cancel(row.id);
+        const cancelResult = await TaskService.cancelForInternalPurpose({
+          taskId: row.id,
+          expectedVersion: canonicalTaskVersion(row.version),
+          purpose: 'GDPR_ERASURE',
+        });
         if (!cancelResult.success) {
           const errMsg = cancelResult.error?.message ?? '';
           return {
@@ -1232,7 +1329,11 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       // Also handle LOCKED_DISPUTE escrows where the poster is the deleted
       // user — return the full amount to the poster (100%) since the worker
       // cannot be paid to a deleted account's task.
-      const escrowResult = await db.query<{ id: string; state: string; stripe_payment_intent_id: string | null }>(
+      const escrowResult = await db.query<{
+        id: string;
+        state: string;
+        stripe_payment_intent_id: string | null;
+      }>(
         `SELECT id, state, stripe_payment_intent_id FROM escrows WHERE task_id = $1 AND state IN ('FUNDED', 'PENDING', 'LOCKED_DISPUTE')`,
         [row.id]
       );
@@ -1250,7 +1351,9 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
           try {
             // AUDIT FIX M3: via stripeBreaker — GDPR deletion must not hold
             // open calls against a failing Stripe.
-            await stripeBreaker.execute(() => stripe!.paymentIntents.cancel(escrow.stripe_payment_intent_id!));
+            await stripeBreaker.execute(() =>
+              stripe!.paymentIntents.cancel(escrow.stripe_payment_intent_id!)
+            );
           } catch {
             return {
               success: false,
@@ -1265,7 +1368,11 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
           // Poster is being deleted — return full amount to poster account
           // (100% poster, 0% worker) since the poster's task is being cleaned up.
           try {
-            const refundResult = await EscrowService.partialRefund({ escrowId: escrow.id, workerPercent: 0, posterPercent: 100 });
+            const refundResult = await EscrowService.partialRefund({
+              escrowId: escrow.id,
+              workerPercent: 0,
+              posterPercent: 100,
+            });
             if (!refundResult.success) {
               const errMsg = refundResult.error?.message ?? '';
               return {
@@ -1352,7 +1459,11 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       } else if (row.state === 'LOCKED_DISPUTE') {
         // Return full amount to poster (0% to deleted worker)
         try {
-          const refundResult = await EscrowService.partialRefund({ escrowId: row.id, workerPercent: 0, posterPercent: 100 });
+          const refundResult = await EscrowService.partialRefund({
+            escrowId: row.id,
+            workerPercent: 0,
+            posterPercent: 100,
+          });
           if (!refundResult.success) {
             const errMsg = refundResult.error?.message ?? '';
             return {
@@ -1393,7 +1504,11 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
         await stripeBreaker.execute(() => stripe!.customers.del(stripeCustomerId));
       } catch (stripeErr) {
         log.warn(
-          { userId, stripeCustomerId, err: stripeErr instanceof Error ? stripeErr.message : String(stripeErr) },
+          {
+            userId,
+            stripeCustomerId,
+            err: stripeErr instanceof Error ? stripeErr.message : String(stripeErr),
+          },
           'GDPR: could not delete Stripe customer via API — continuing with DB anonymization (best-effort)'
         );
       }
@@ -1434,9 +1549,9 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       // Column is NOT NULL so rows cannot be updated; must DELETE for GDPR compliance.
       await query('DELETE FROM transactions WHERE user_id = $1', [userId]);
 
-      // D62-7: Delete legacy task_assignments table — user_id UUID NOT NULL REFERENCES users(id).
-      // Column is NOT NULL so rows cannot be updated; must DELETE for GDPR compliance.
-      await query('DELETE FROM task_assignments WHERE user_id = $1', [userId]);
+      // task_assignments is not part of the converged engine schema. Do not issue
+      // deletion SQL for an absent legacy relation; canonical assignment facts are
+      // handled by the preflight retention hold above.
       await query('DELETE FROM insurance_contributions WHERE hustler_id = $1', [userId]);
       // D62-1: insurance_claims.hustler_id is the correct column (not user_id).
       // Using user_id caused "column user_id does not exist" → transaction rollback.
@@ -1483,7 +1598,9 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       // actor_user_id and subject_user_id are both nullable UUIDs. The AI decision
       // payload JSONB may contain PII. UUID references must be cleared for GDPR erasure.
       await query('UPDATE ai_events SET actor_user_id = NULL WHERE actor_user_id = $1', [userId]);
-      await query('UPDATE ai_events SET subject_user_id = NULL WHERE subject_user_id = $1', [userId]);
+      await query('UPDATE ai_events SET subject_user_id = NULL WHERE subject_user_id = $1', [
+        userId,
+      ]);
 
       // D54-1: Delete tax_forms — contains PII (name_on_file, address_line1, city,
       // state, zip, tax_id_last4, stripe_connect_id, foreign_tax_id, signature_on_file).
@@ -1494,10 +1611,7 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       // squad_members.user_id FK references users(id).
       await query('DELETE FROM squad_members WHERE user_id = $1', [userId]);
       // squad_invites has two user FK columns — delete rows where user is either party.
-      await query(
-        'DELETE FROM squad_invites WHERE inviter_id = $1 OR invitee_id = $1',
-        [userId]
-      );
+      await query('DELETE FROM squad_invites WHERE inviter_id = $1 OR invitee_id = $1', [userId]);
       // squad_task_workers.worker_id FK references users(id).
       await query('DELETE FROM squad_task_workers WHERE worker_id = $1', [userId]);
 
@@ -1509,16 +1623,10 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       // daily_challenge_completions — contains progress and completion status linked to user.
       await query('DELETE FROM daily_challenge_completions WHERE user_id = $1', [userId]);
       // tips — poster_id and worker_id both reference users(id); both sides must be covered.
-      await query(
-        'DELETE FROM tips WHERE poster_id = $1 OR worker_id = $1',
-        [userId]
-      );
+      await query('DELETE FROM tips WHERE poster_id = $1 OR worker_id = $1', [userId]);
       // D55-2: Delete poster_ratings where user is the rated poster or the rater.
       // Both poster_id and rated_by are NOT NULL and reference users(id).
-      await query(
-        'DELETE FROM poster_ratings WHERE poster_id = $1 OR rated_by = $1',
-        [userId]
-      );
+      await query('DELETE FROM poster_ratings WHERE poster_id = $1 OR rated_by = $1', [userId]);
       // D55-3: Delete live_sessions for this user (user_id NOT NULL, contains
       // earnings_cents and behavioural session data).
       await query('DELETE FROM live_sessions WHERE user_id = $1', [userId]);
@@ -1573,20 +1681,14 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       await query('DELETE FROM squads WHERE organizer_id = $1', [userId]);
 
       // Delete notification preferences
-      await query(
-        `DELETE FROM notification_preferences WHERE user_id = $1`,
-        [userId]
-      );
+      await query(`DELETE FROM notification_preferences WHERE user_id = $1`, [userId]);
 
       // D50-2: Delete queued outbound emails containing PII (subject/body/recipient)
       await query('DELETE FROM email_outbox WHERE user_id = $1', [userId]);
 
       // D51-3: Delete outbox_events whose payload carries the deleted user's email
       // (outbox_events has no user_id column; identify rows via payload JSONB).
-      await query(
-        `DELETE FROM outbox_events WHERE payload->>'userId' = $1::text`,
-        [userId]
-      );
+      await query(`DELETE FROM outbox_events WHERE payload->>'userId' = $1::text`, [userId]);
 
       // D51-4: Delete queued SMS rows (sms_outbox has a user_id column).
       await query('DELETE FROM sms_outbox WHERE user_id = $1', [userId]);
@@ -1626,25 +1728,16 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
            )`,
         [userId]
       );
-      
+
       // Delete saved searches
-      await query(
-        `DELETE FROM saved_searches WHERE user_id = $1`,
-        [userId]
-      );
-      
+      await query(`DELETE FROM saved_searches WHERE user_id = $1`, [userId]);
+
       // Delete analytics events (all records — GDPR Art. 17 requires full erasure)
-      await query(
-        `DELETE FROM analytics_events WHERE user_id = $1`,
-        [userId]
-      );
-      
+      await query(`DELETE FROM analytics_events WHERE user_id = $1`, [userId]);
+
       // Delete consent history (no longer needed after account deletion)
-      await query(
-        `DELETE FROM user_consents WHERE user_id = $1`,
-        [userId]
-      );
-      
+      await query(`DELETE FROM user_consents WHERE user_id = $1`, [userId]);
+
       // 2. Anonymize account data (email, name, phone, and PII-linked Stripe IDs)
       // FIX 6: stripe_customer_id and stripe_connect_id are PII-linked identifiers
       // (Stripe stores name/email behind them). They must be cleared to satisfy GDPR
@@ -1670,7 +1763,7 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
          WHERE id = $3`,
         [anonymizedEmail, deletedAt, userId, randomUUID()]
       );
-      
+
       // 3. Retention (7 years): Anonymize transaction/task/dispute data
       // Note: poster_id is NOT NULL, so we cannot set it to NULL
       // Instead, we anonymize task content while keeping the user_id reference
@@ -1684,7 +1777,7 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
          WHERE poster_id = $1`,
         [userId]
       );
-      
+
       // Anonymize tasks where user is worker
       // worker_id is nullable, so we can set it to NULL for additional privacy
       await query(
@@ -1693,26 +1786,27 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
          WHERE worker_id = $1`,
         [userId]
       );
-      
+
       // Anonymize proofs where the user was the submitter
-      // Only SET columns that actually exist on the proofs table
+      // Keep the valid FK actor attached to the already-anonymized users row.
       await query(
         `UPDATE proofs
-         SET submitter_id = $1,
-             description = '[deleted]'
-         WHERE submitter_id = $2`,
-        [anonymizedId, userId]
+         SET description = '[deleted]'
+         WHERE submitter_id = $1`,
+        [userId]
       );
 
-      // D52-1: Anonymize task_applications where user was the hustler.
-      // hustler_id is NOT NULL UUID FK — replace with anonymizedId (valid UUID).
-      // message TEXT may contain PII — overwrite with GDPR notice.
+      // Scrub only exact legacy application content. Keep hustler_id attached to
+      // the already-anonymized users row so the NOT NULL FK never points at a
+      // fabricated actor. Canonical application/opportunity facts were held above.
       await query(
         `UPDATE task_applications
          SET message = '[Application removed per GDPR request]',
-             hustler_id = $2
-         WHERE hustler_id = $1`,
-        [userId, anonymizedId]
+             rejection_reason = NULL
+         WHERE hustler_id = $1
+           AND universal_contract_version = 0
+           AND opportunity_contract_version = 0`,
+        [userId]
       );
 
       // Anonymize proof_submissions for the same user — GPS, biometric, and photo fields
@@ -1760,7 +1854,7 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
          WHERE sender_id = $1 OR receiver_id = $1`,
         [userId]
       );
-      
+
       // Anonymize task ratings (rater_id and ratee_id are NOT NULL in schema)
       // Since user record is anonymized (not deleted), foreign keys remain valid
       // We remove comments for privacy (ratings themselves may be kept for aggregate stats)
@@ -1771,7 +1865,7 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
          WHERE rater_id = $1 OR ratee_id = $1`,
         [userId]
       );
-      
+
       // NOTE: xp_ledger and trust_ledger rows are financial audit records.
       // Their user_id columns are UUID FKs referencing users(id).
       // We do NOT update user_id here — the users row itself is already anonymized
@@ -1790,7 +1884,7 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
          WHERE poster_id = $1 OR worker_id = $1 OR initiated_by = $1`,
         [userId]
       );
-      
+
       // Anonymize fraud patterns (keep pattern data but remove user references)
       await query(
         `UPDATE fraud_patterns
@@ -1798,7 +1892,7 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
          WHERE $1::UUID = ANY(user_ids)`,
         [userId]
       );
-      
+
       // Anonymize fraud risk scores
       await query(
         `UPDATE fraud_risk_scores
@@ -1806,19 +1900,15 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
          WHERE entity_type = 'user' AND entity_id = $2`,
         [anonymizedId, userId]
       );
-      
+
       // Bug 3: Remove referral_codes linkage
-      await query(
-        `DELETE FROM referral_codes WHERE user_id = $1`,
-        [userId]
-      );
+      await query(`DELETE FROM referral_codes WHERE user_id = $1`, [userId]);
 
       // D60-B: referral_redemptions.referrer_id and referred_id are both NOT NULL —
       // cannot SET NULL. DELETE rows where user appears as either referrer or referred.
-      await query(
-        'DELETE FROM referral_redemptions WHERE referrer_id = $1 OR referred_id = $1',
-        [userId]
-      );
+      await query('DELETE FROM referral_redemptions WHERE referrer_id = $1 OR referred_id = $1', [
+        userId,
+      ]);
 
       // D61-2: content_moderation_queue.user_id is NOT NULL — DELETE rows instead of SET NULL.
       await query('DELETE FROM content_moderation_queue WHERE user_id = $1', [userId]);
@@ -1892,31 +1982,21 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       // prevent_revenue_ledger_update() (user_id → NULL, no other column changed) —
       // see migrations/revenue_ledger_gdpr_user_id_exemption.sql. Any other ledger
       // UPDATE still raises HX701 (INV-4 append-only).
-      await query(
-        `UPDATE revenue_ledger SET user_id = NULL WHERE user_id = $1`,
-        [userId]
-      );
+      await query(`UPDATE revenue_ledger SET user_id = NULL WHERE user_id = $1`, [userId]);
 
       // D63-2: ai_cost_logs.user_id is nullable FK with ON DELETE SET NULL, but
       // cascade never fires because users is UPDATEd not DELETEd. NULL it manually.
-      await query(
-        `UPDATE ai_cost_logs SET user_id = NULL WHERE user_id = $1`,
-        [userId]
-      );
+      await query(`UPDATE ai_cost_logs SET user_id = NULL WHERE user_id = $1`, [userId]);
 
       // D63-3: payment_disputes.user_id is nullable FK with ON DELETE SET NULL, but
       // cascade never fires because users is UPDATEd not DELETEd. NULL it manually.
-      await query(
-        `UPDATE payment_disputes SET user_id = NULL WHERE user_id = $1`,
-        [userId]
-      );
+      await query(`UPDATE payment_disputes SET user_id = NULL WHERE user_id = $1`, [userId]);
 
       // D63-6: recurring_task_occurrences.worker_id is nullable FK (ON DELETE SET NULL)
       // but cascade never fires because users is UPDATEd not DELETEd. NULL it manually.
-      await query(
-        `UPDATE recurring_task_occurrences SET worker_id = NULL WHERE worker_id = $1`,
-        [userId]
-      );
+      await query(`UPDATE recurring_task_occurrences SET worker_id = NULL WHERE worker_id = $1`, [
+        userId,
+      ]);
 
       // D63-7: recurring_task_series.preferred_worker_id is nullable FK (ON DELETE SET NULL)
       // but cascade never fires because users is UPDATEd not DELETEd. NULL it manually.
@@ -1925,13 +2005,16 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
         [userId]
       );
     });
-    
+
     return {
       success: true,
       data: { deletedAt },
     };
   } catch (error) {
-    log.error({ err: error instanceof Error ? error.message : String(error), userId }, 'Failed to delete/anonymize user data');
+    log.error(
+      { err: error instanceof Error ? error.message : String(error), userId },
+      'Failed to delete/anonymize user data'
+    );
     return {
       success: false,
       error: {

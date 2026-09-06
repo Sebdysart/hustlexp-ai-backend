@@ -9,6 +9,10 @@ import {
 } from '../../src/routers/web/taskDrafts.js';
 import { taskDraftCardTokenHash } from '../../src/services/UniversalV1TaskDraftIngress.js';
 import {
+  UNIVERSAL_V1_ASSEMBLY_SCOPE_CLASS,
+  UNIVERSAL_V1_ITEM_COUNT_CLASS,
+} from '../../src/services/UniversalV1StandardizedScopePolicy.js';
+import {
   ensureUniversalV1SyntheticServiceCell,
   SYNTHETIC_SERVICE_CELL_AUTHORITY_ID,
   SYNTHETIC_SERVICE_CELL_POSTAL_CODE,
@@ -43,10 +47,18 @@ function assertDisposableDatabase(value: string): void {
   }
 }
 
-function completeFurnitureAnswers(item: string): Record<string, string | string[] | boolean> {
+function completeFurnitureAnswers(
+  item: string,
+  assemblyScopeClass = UNIVERSAL_V1_ASSEMBLY_SCOPE_CLASS,
+  itemCountClass: string = UNIVERSAL_V1_ITEM_COUNT_CLASS
+): Record<string, string | string[] | boolean> {
   return {
+    assembly_scope_class: assemblyScopeClass,
+    item_count_class: itemCountClass,
     item,
     new_in_box: true,
+    tools_included: true,
+    old_item_removal: false,
     timing: 'Flexible weekday afternoon',
     scope_confirmed_at: new Date(now).toISOString(),
     risk_level: 'green',
@@ -289,7 +301,11 @@ describePg('Universal V1 TaskDraft public ingress PostgreSQL concurrency', () =>
       action: 'update',
       expected_version: 1,
       raw_input: 'Assemble a six drawer dresser and matching nightstand from sealed boxes',
-      answers: completeFurnitureAnswers('Six drawer dresser and matching nightstand'),
+      answers: completeFurnitureAnswers(
+        'Six drawer dresser and matching nightstand',
+        'OTHER_OR_CUSTOM',
+        'MULTIPLE'
+      ),
       turnstile_token: undefined,
     };
 

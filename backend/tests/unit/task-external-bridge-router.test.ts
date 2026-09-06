@@ -60,6 +60,7 @@ const task = {
   late_cancel_pct: 25,
   cancellation_window_hours: 24,
   trust_tier_required: 2,
+  universal_contract_version: 0,
   payout_cents: 8000,
   expires_at: '2099-07-20T20:00:00.000Z',
   revoked_at: null,
@@ -165,6 +166,28 @@ describe('external task bridge router', () => {
     expect(mockDb.query.mock.calls.every(([sql]) => !/INSERT|UPDATE|DELETE/i.test(String(sql)))).toBe(true);
   });
 
+  it.each([
+    ['Universal V1', { ...task, universal_contract_version: 1 }],
+    ['unknown authority', (() => {
+      const { universal_contract_version: _version, ...withoutAuthority } = task;
+      return withoutAuthority;
+    })()],
+  ])('makes %s bridge reads unavailable before exposing legacy offer data', async (_label, heldTask) => {
+    mockDb.query.mockResolvedValueOnce(row(heldTask));
+
+    await expect(publicCaller().getShareCard({ token: TOKEN }))
+      .rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(mockDb.query).toHaveBeenCalledTimes(1);
+
+    mockDb.query.mockClear();
+    mockDb.query.mockResolvedValueOnce(row(heldTask));
+
+    await expect(workerCaller().getCandidateOffer({ token: TOKEN }))
+      .rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(mockDb.query).toHaveBeenCalledTimes(1);
+    expect(String(mockDb.query.mock.calls[0]?.[0])).toContain('universal_contract_version');
+  });
+
   it('blocks an unverified external provider before an application exists', async () => {
     mockDb.query
       .mockResolvedValueOnce(row(task))
@@ -198,6 +221,57 @@ describe('external task bridge router', () => {
     )).toBe(true);
     expect(sql).not.toMatch(/UPDATE tasks SET state|worker_id\s*=/i);
     expect(lifecycleMocks.notifyApplicationReceived).toHaveBeenCalledWith(POSTER_ID, TASK_ID, task.title);
+  });
+
+  it.each([
+    ['Universal V1', { ...task, universal_contract_version: 1 }],
+    ['unknown authority', (() => {
+      const { universal_contract_version: _version, ...withoutAuthority } = task;
+      return withoutAuthority;
+    })()],
+  ])('holds %s external offers before any bridge or application mutation', async (_label, heldTask) => {
+    mockDb.query
+      .mockResolvedValueOnce(row(heldTask))
+      .mockResolvedValueOnce(row({
+        id: WORKER_ID,
+        trust_tier: 2,
+        trust_hold: false,
+        is_verified: true,
+        ...productionIdentity,
+      }));
+
+    await expect(workerCaller().submitExternalOffer({
+      token: TOKEN,
+      availableFrom: '2099-07-20T17:00:00.000Z',
+      availableUntil: '2099-07-20T19:00:00.000Z',
+      message: 'I can bring a hand truck and arrive at 5 PM.',
+      acknowledgedScopeHash: SCOPE_HASH,
+      acknowledgedPayoutCents: 8000,
+    })).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      cause: { applicationCode: 'UNIVERSAL_V1_LEGACY_EXTERNAL_BRIDGE_HELD' },
+    });
+
+    expect(mockDb.query.mock.calls.every(([statement]) =>
+      !/^\s*(?:INSERT|UPDATE|DELETE)\b/iu.test(String(statement))
+    )).toBe(true);
+    expect(lifecycleMocks.notifyApplicationReceived).not.toHaveBeenCalled();
+  });
+
+  it('holds Universal V1 share-link creation before rotating or inserting bridge state', async () => {
+    mockDb.query.mockResolvedValueOnce(row({ ...task, universal_contract_version: 1 }));
+
+    await expect(posterCaller().createShareLink({
+      taskId: TASK_ID,
+      sourceChannel: 'nextdoor',
+      expiresInHours: 72,
+    })).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      cause: { applicationCode: 'UNIVERSAL_V1_LEGACY_EXTERNAL_BRIDGE_HELD' },
+    });
+
+    expect(mockDb.query).toHaveBeenCalledTimes(1);
+    expect(String(mockDb.query.mock.calls[0][0])).toMatch(/^\s*SELECT/iu);
   });
 
   it('binds a direct invitation to one verified Hustler and records scope acceptance without assigning', async () => {

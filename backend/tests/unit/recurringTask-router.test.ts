@@ -195,13 +195,28 @@ function makePosterCaller(userId = 'poster-abc') {
   });
 }
 
-function makeEngineBridgeCaller(actorId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa') {
+function makeForgedEngineBridgeCaller(actorId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa') {
   return recurringTaskRouter.createCaller({
     user: null,
     firebaseUid: null,
     engineBridgeAuthorized: true,
     engineBridgeActorId: actorId,
   } as any);
+}
+
+function makePlatformAdminCaller(actorId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa') {
+  return recurringTaskRouter.createCaller({
+    user: {
+      id: actorId,
+      email: 'operator@hustlexp.com',
+      full_name: 'Named Operator',
+      firebase_uid: 'firebase-operator',
+      default_mode: 'poster',
+      account_status: 'ACTIVE',
+      is_admin: true,
+    } as any,
+    firebaseUid: 'firebase-operator',
+  });
 }
 
 const CONTROLLED_INPUT = {
@@ -383,31 +398,55 @@ describe('recurringTask.createControlled — server-owned economics', () => {
   });
 });
 
-describe('recurringTask.generateControlled — frozen legacy materialization', () => {
-  beforeEach(() => vi.clearAllMocks());
-
-  it('maps the legacy task-materialization freeze through controlledResult', async () => {
-    controlledMocks.generate.mockResolvedValue({
-      success: false,
-      error: {
-        code: 'LEGACY_TASK_MATERIALIZATION_FROZEN',
-        message: 'Legacy task creation is frozen.',
+describe('recurringTask retired engine-bridge mutations', () => {
+  const seriesId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const heldMutations = [
+    {
+      route: 'generateControlled',
+      input: { seriesId, lookaheadHours: 24 },
+      handler: controlledMocks.generate,
+    },
+    {
+      route: 'recordControlledSafeguard',
+      input: {
+        seriesId,
+        signal: 'BUDGET_SPEND',
+        evidence: { amountCents: 5_000, referenceId: 'budget-evidence-0001' },
       },
-    });
+      handler: controlledMocks.record,
+    },
+    {
+      route: 'recoverControlled',
+      input: {
+        seriesId,
+        reason: 'Verified recovery conditions are satisfied.',
+        evidence: { conditionsResolved: true, referenceId: 'recovery-evidence-0001' },
+      },
+      handler: controlledMocks.recover,
+    },
+  ] as const;
 
-    await expect(makeEngineBridgeCaller().generateControlled({
-      seriesId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-      lookaheadHours: 24,
-    })).rejects.toMatchObject({
-      code: 'PRECONDITION_FAILED',
-      message: 'Legacy task creation is frozen.',
-      cause: { applicationCode: 'LEGACY_TASK_MATERIALIZATION_FROZEN' },
-    });
-    expect(controlledMocks.generate).toHaveBeenCalledWith({
-      seriesId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-      actorId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-      lookaheadHours: 24,
-    });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDb.query.mockResolvedValue({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
+  });
+
+  it.each(heldMutations)('terminally holds named platform-admin mutation $route', async ({ route, input }) => {
+    const caller = makePlatformAdminCaller() as any;
+    await expect(caller[route](input)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect(controlledMocks.generate).not.toHaveBeenCalled();
+    expect(controlledMocks.record).not.toHaveBeenCalled();
+    expect(controlledMocks.recover).not.toHaveBeenCalled();
+    expect(mockDb.query).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(heldMutations)('does not trust forged bridge context for mutation $route', async ({ route, input }) => {
+    const caller = makeForgedEngineBridgeCaller() as any;
+    await expect(caller[route](input)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    expect(controlledMocks.generate).not.toHaveBeenCalled();
+    expect(controlledMocks.record).not.toHaveBeenCalled();
+    expect(controlledMocks.recover).not.toHaveBeenCalled();
+    expect(mockDb.query).not.toHaveBeenCalled();
   });
 });
 

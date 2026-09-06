@@ -1,158 +1,276 @@
 import { readFileSync } from 'node:fs';
-import { describe,expect,it,vi } from 'vitest';
-import type { ProviderInterestContext } from '../../src/services/UniversalV1WorkOrderContracts.js';
-import { PostgresUniversalV1WorkOrderRepository } from '../../src/services/UniversalV1WorkOrderPostgresRepository.js';
 
-const source=readFileSync(new URL('../../src/services/UniversalV1WorkOrderPostgresRepository.ts',import.meta.url),'utf8');
-const applicationSource=readFileSync(new URL('../../src/services/UniversalV1WorkOrderApplication.ts',import.meta.url),'utf8');
-const publicFactsSource=readFileSync(new URL('../../src/services/UniversalV1WorkOrderPublicFacts.ts',import.meta.url),'utf8');
+import { describe, expect, it, vi } from 'vitest';
 
-function methodBody(name:string,next:string):string {
- const start=source.indexOf(`async ${name}`),end=source.indexOf(`async ${next}`,start+1);
- expect(start).toBeGreaterThanOrEqual(0);
- expect(end).toBeGreaterThan(start);
- return source.slice(start,end);
+import type {
+  ProviderInterestContext,
+  WorkOrderContext,
+} from '../../src/services/UniversalV1WorkOrderContracts.js';
+import {
+  PostgresUniversalV1WorkOrderRepository,
+  type WorkOrderMaterializationPhase,
+} from '../../src/services/UniversalV1WorkOrderPostgresRepository.js';
+
+const source = readFileSync(
+  new URL('../../src/services/UniversalV1WorkOrderPostgresRepository.ts', import.meta.url),
+  'utf8'
+);
+const token = 'a'.repeat(64);
+const clientTimestamp = '2026-09-01T12:00:00.000Z';
+const ids = {
+  draft: '20000000-0000-4000-8000-000000000001',
+  task: '20000000-0000-4000-8000-000000000002',
+  scope: '20000000-0000-4000-8000-000000000003',
+  route: '20000000-0000-4000-8000-000000000004',
+  provider: '20000000-0000-4000-8000-000000000005',
+  predecessor: '20000000-0000-4000-8000-000000000006',
+  interest: '20000000-0000-4000-8000-000000000007',
+  eligibility: '20000000-0000-4000-8000-000000000008',
+  hold: '20000000-0000-4000-8000-000000000009',
+  estimate: '20000000-0000-4000-8000-000000000010',
+  poster: '20000000-0000-4000-8000-000000000011',
+  workOrder: '20000000-0000-4000-8000-000000000012',
+  secured: '20000000-0000-4000-8000-000000000013',
+  compensation: '20000000-0000-4000-8000-000000000014',
+  securedOperation: '20000000-0000-4000-8000-000000000015',
+  voidOperation: '20000000-0000-4000-8000-000000000016',
+};
+const interestContext: ProviderInterestContext = {
+  task_id: ids.task,
+  task_draft_id: ids.draft,
+  scope_version_id: ids.scope,
+  scope_version: 3,
+  routing_decision_id: ids.route,
+  provider_user_id: ids.provider,
+  provider_organization_id: null,
+  provider_class: 'GENERAL_SERVICE_PROVIDER',
+  trade_credential_id: null,
+  predecessor_eligibility_id: ids.predecessor,
+  predecessor_eligibility_version: 2,
+  predecessor_valid_until: '2026-09-01T12:05:00.000Z',
+};
+const workOrderContext: WorkOrderContext = {
+  ...interestContext,
+  poster_user_id: ids.poster,
+  interest_application_id: ids.interest,
+  eligibility_decision_id: ids.eligibility,
+  eligibility_version: 3,
+  eligibility_valid_until: '2026-09-01T12:05:00.000Z',
+  conditional_hold_id: ids.hold,
+  hold_reserved_at: clientTimestamp,
+  hold_expires_at: '2026-09-01T12:05:00.000Z',
+  provider_estimate_submission_id: ids.estimate,
+  customer_total_cents: 12_500,
+  currency: 'USD',
+};
+const idempotencyKey = 'work-order:sealed-port:0001';
+const requestSha256 = 'b'.repeat(64);
+
+function repositoryWith(rows: readonly Record<string, unknown>[]) {
+  const query = vi.fn().mockResolvedValue({ rows, rowCount: rows.length });
+  const serializableTransaction = vi.fn(async (run: (queryFn: typeof query) => Promise<unknown>) =>
+    run(query)
+  );
+  return {
+    query,
+    serializableTransaction,
+    repository: new PostgresUniversalV1WorkOrderRepository({ serializableTransaction } as never),
+  };
 }
 
-const ids={
- draft:'20000000-0000-4000-8000-000000000001',
- task:'20000000-0000-4000-8000-000000000002',
- scope:'20000000-0000-4000-8000-000000000003',
- route:'20000000-0000-4000-8000-000000000004',
- provider:'20000000-0000-4000-8000-000000000005',
- predecessor:'20000000-0000-4000-8000-000000000006',
- interest:'20000000-0000-4000-8000-000000000007',
- eligibility:'20000000-0000-4000-8000-000000000008',
-};
-const interestContext:ProviderInterestContext={
- task_id:ids.task,task_draft_id:ids.draft,scope_version_id:ids.scope,scope_version:1,
- routing_decision_id:ids.route,provider_user_id:ids.provider,provider_organization_id:null,
- provider_class:'GENERAL_SERVICE_PROVIDER',trade_credential_id:null,
- predecessor_eligibility_id:ids.predecessor,predecessor_eligibility_version:1,
- predecessor_valid_until:new Date(Date.now()+60_000).toISOString(),
-};
-
-describe('Universal V1 Work Order repository transaction contract',()=>{
- it('uses the 20260907 fixed authority lock before each revalidation',()=>{
-  expect(source.match(/lock_universal_v1_estimate_authority/g)).toHaveLength(4);
-  const bodies=[
-   methodBody('express','hold'),
-   methodBody('hold','prepareMaterialization'),
-   methodBody('prepareMaterialization','finalizeMaterialization'),
-   source.slice(source.indexOf('async finalizeMaterialization'),source.indexOf('export function deterministicUuid')),
-  ];
-  for(const body of bodies){
-   expect(body.indexOf('lock_universal_v1_estimate_authority')).toBeGreaterThanOrEqual(0);
-   expect(body.indexOf('lock_universal_v1_estimate_authority')).toBeLessThan(body.indexOf('universal_v1_invited_provider_authority_is_current'));
-  }
- });
- it('commits the witness before independent finance and verifies exact bridge proof before terminal facts',()=>{
-  const prepare=applicationSource.indexOf('prepareMaterialization');
-  const paymentMethod=applicationSource.indexOf("operationKind:'PREPARE_PAYMENT_METHOD'",prepare);
-  const authorize=applicationSource.indexOf("operationKind:'AUTHORIZE'",paymentMethod);
-  const secure=applicationSource.indexOf("operationKind:'SECURE'",authorize);
-  const finalize=applicationSource.indexOf('finalizeMaterialization',secure);
-  expect(prepare).toBeGreaterThanOrEqual(0);
-  expect(paymentMethod).toBeGreaterThan(prepare);
-  expect(authorize).toBeGreaterThan(paymentMethod);
-  expect(secure).toBeGreaterThan(authorize);
-  expect(finalize).toBeGreaterThan(secure);
-  expect(source).toContain('universal_v1_fake_financial_lifecycle_bridges');
-  expect(source).toContain("bridge.fake_operation_kind='SECURE'");
-  expect(source).toContain('event.operation_id=bridge.fake_operation_id::text');
-  expect(source).toContain("outcome.outcome_kind='OUTCOME_OBSERVED'");
-  expect(source).toContain('outcome.retryable=FALSE');
-  expect(source).toContain('released.rowCount!==1');
-  expect(source).toContain('closed.rowCount!==1');
- });
- it('uses typed errors for every repository Work Order failure',()=>{expect(source).not.toMatch(/throw new Error\(['"](?:WORK_ORDER_|HARD_ASSIGNMENT)/);expect(source).toContain("'WORK_ORDER_HARD_ASSIGNMENT_FORBIDDEN'");});
- it('lets the public fact reader recover only the exact committed post-estimate successor for replay',()=>{
-  expect(publicFactsSource).toContain('AND NOT (n.supersedes_decision_id=e.id');
-  expect(publicFactsSource).toContain('n.decision_version=e.decision_version+1');
-  expect(publicFactsSource).toContain('n.task_id=t.id AND n.scope_version_id=s.id');
-  expect(publicFactsSource).toContain('n.routing_decision_id=r.id AND n.interest_application_id IS NOT NULL');
-  expect(publicFactsSource).toContain("n.policy_version='universal-v1-post-estimate-1.2.0'");
- });
- it('revalidates the complete locked post-estimate chain and copies the seven eligibility dimensions',async()=>{
-  const query=vi.fn()
-   .mockResolvedValueOnce({rows:[],rowCount:1})
-   .mockResolvedValueOnce({rows:[],rowCount:0})
-   .mockResolvedValueOnce({rows:[{id:ids.predecessor,decision_version:7,valid_until:new Date(Date.now()+60_000)}],rowCount:1})
-   .mockResolvedValueOnce({rows:[{id:ids.interest}],rowCount:1})
-   .mockResolvedValueOnce({rows:[{id:ids.eligibility}],rowCount:1});
-  const database={serializableTransaction:vi.fn(async(run:(q:typeof query)=>Promise<unknown>)=>run(query))};
-  const repository=new PostgresUniversalV1WorkOrderRepository(database as never);
-  await expect(repository.express(interestContext,ids.provider,'interest:authority:0001','a'.repeat(64))).resolves.toEqual({
-   interest_application_id:ids.interest,eligibility_decision_id:ids.eligibility,eligibility_version:8,replayed:false,
+describe('Universal V1 Work Order sealed repository ports', () => {
+  it('contains no protected direct DML, actor setting, or legacy lock path', () => {
+    expect(source).not.toMatch(
+      /\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM|TRUNCATE)\s+(?:public\.)?(?:task_work_order_command_requests|task_provider_eligibility_decisions|task_work_orders|task_work_order_execution_facts|task_reservations|task_applications)\b/iu
+    );
+    expect(source).not.toContain('set_config(');
+    expect(source).not.toContain('lock_universal_v1_estimate_authority');
+    for (const port of [
+      'hxos_express_universal_v1_post_estimate_interest_v1',
+      'hxos_place_universal_v1_conditional_hold_v1',
+      'hxos_prepare_universal_v1_fake_work_order_v1',
+      'hxos_materialize_universal_v1_fake_work_order_v1',
+      'hxos_request_universal_v1_fake_work_order_recovery_v1',
+    ]) {
+      expect(source).toContain(`public.${port}`);
+    }
   });
 
-  const authoritySql=String(query.mock.calls[2]![0]);
-  expect(authoritySql).toContain('m.resulting_routing_decision_id=r.id');
-  expect(authoritySql).toContain('e.routing_decision_id=m.prior_routing_decision_id');
-  expect(authoritySql).toContain('r.supersedes_decision_id=e.routing_decision_id');
-  expect(authoritySql).toContain('predecessor_route.service_cell_authority_id=r.service_cell_authority_id');
-  expect(authoritySql).toContain("cell.routing_availability='ACTIVE'");
-  expect(authoritySql).toContain('successor.supersedes_authority_id=cell.id');
-  expect(authoritySql).toContain('p.scope_hash=s.scope_hash');
-  expect(authoritySql).toContain("e.evidence->>'work_category_code'=t.category");
-  expect(authoritySql).toContain("e.evidence->>'region_code'=t.region_code");
-  expect(authoritySql).toContain('profile.provider_class=e.provider_class');
-  expect(authoritySql).toContain('organization.provider_class=e.provider_class');
-  expect(authoritySql).toContain("provider.account_status='ACTIVE'");
-  expect(authoritySql).toContain('provider.is_minor IS FALSE');
-  expect(authoritySql).toContain('COALESCE(provider.is_banned,false)=false');
-  expect(authoritySql).toContain('COALESCE(provider.trust_hold,false)');
-  expect(authoritySql).toContain('universal_v1_invited_provider_authority_is_current');
-  expect(authoritySql).toContain('n.decision_version>e.decision_version');
-  expect(query.mock.calls[2]![1]).toEqual([
-   ids.predecessor,ids.task,ids.scope,ids.route,ids.provider,ids.provider,null,
-   'GENERAL_SERVICE_PROVIDER',null,
-  ]);
+  it('routes interest and hold through exact token, version, idempotency, and timestamp bindings', async () => {
+    const interest = repositoryWith([
+      {
+        interest_application_id: ids.interest,
+        eligibility_decision_id: ids.eligibility,
+        eligibility_version: 3,
+        replayed: false,
+        hard_assignment_created: false,
+        payment_creation_performed: false,
+      },
+    ]);
+    await expect(
+      interest.repository.express(interestContext, token, idempotencyKey, clientTimestamp)
+    ).resolves.toEqual({
+      interest_application_id: ids.interest,
+      eligibility_decision_id: ids.eligibility,
+      eligibility_version: 3,
+      replayed: false,
+    });
+    expect(interest.query.mock.calls[0]![1]).toEqual([
+      token,
+      ids.task,
+      3,
+      idempotencyKey,
+      clientTimestamp,
+    ]);
 
-  const eligibilitySql=String(query.mock.calls[4]![0]);
-  const eligibilityParameters=query.mock.calls[4]![1] as unknown[];
-  expect(eligibilityParameters[5]).toBe(8);
-  for(const dimension of ['profile','identity','category','credential','geography','availability'] as const){
-   expect(eligibilitySql).toContain(`source.${dimension}_eligible`);
-  }
-  expect(eligibilitySql).toContain('source.restriction_clear');
-  expect(eligibilitySql).toContain('false,false,source.trust_tier,source.blocker_codes');
-  expect(eligibilitySql).toContain("'final_availability_confirmation_required',true");
-  expect(eligibilitySql).toContain("'interest_is_not_assignment',true");
-  expect(eligibilitySql).not.toContain("'SERVER_DERIVED',ARRAY[]::text[]");
-  expect(methodBody('express','hold')).not.toMatch(/UPDATE\s+tasks[\s\S]*worker_id/iu);
- });
- it('returns the exact committed interest before predecessor freshness rejects a second write',async()=>{
-  const requestSha256='c'.repeat(64);
-  const query=vi.fn()
-   .mockResolvedValueOnce({rows:[],rowCount:1})
-   .mockResolvedValueOnce({rows:[{
-    interest_application_id:ids.interest,
-    eligibility_decision_id:ids.eligibility,
-    eligibility_version:2,
-    request_sha256:requestSha256,
-   }],rowCount:1});
-  const database={serializableTransaction:vi.fn(async(run:(q:typeof query)=>Promise<unknown>)=>run(query))};
-  const repository=new PostgresUniversalV1WorkOrderRepository(database as never);
-  await expect(repository.express(interestContext,ids.provider,'interest:authority:replay',requestSha256)).resolves.toEqual({
-   interest_application_id:ids.interest,
-   eligibility_decision_id:ids.eligibility,
-   eligibility_version:2,
-   replayed:true,
+    const hold = repositoryWith([
+      {
+        conditional_hold_id: ids.hold,
+        expires_at: '2026-09-01T12:05:00.000Z',
+        replayed: true,
+        hard_assignment_created: false,
+        payment_creation_performed: false,
+      },
+    ]);
+    await expect(
+      hold.repository.hold(workOrderContext, token, idempotencyKey, clientTimestamp)
+    ).resolves.toEqual({
+      conditional_hold_id: ids.hold,
+      expires_at: '2026-09-01T12:05:00.000Z',
+      replayed: true,
+    });
+    expect(hold.query.mock.calls[0]![1]).toEqual([
+      token,
+      ids.interest,
+      3,
+      idempotencyKey,
+      clientTimestamp,
+    ]);
   });
-  expect(query).toHaveBeenCalledTimes(2);
-  expect(String(query.mock.calls[1]![0])).toContain("e.policy_version='universal-v1-post-estimate-1.2.0'");
- });
- it('fails closed before interest insertion when current predecessor authority is unavailable',async()=>{
-  const query=vi.fn()
-   .mockResolvedValueOnce({rows:[],rowCount:1})
-   .mockResolvedValueOnce({rows:[],rowCount:0})
-   .mockResolvedValueOnce({rows:[],rowCount:0});
-  const database={serializableTransaction:vi.fn(async(run:(q:typeof query)=>Promise<unknown>)=>run(query))};
-  const repository=new PostgresUniversalV1WorkOrderRepository(database as never);
-  await expect(repository.express(interestContext,ids.provider,'interest:authority:0002','b'.repeat(64))).rejects.toMatchObject({
-   code:'WORK_ORDER_AUTHORITY_REVOKED',
+
+  it('maps one sealed Phase-A witness without trusting caller-supplied domain context', async () => {
+    const setup = repositoryWith([
+      {
+        completed: false,
+        work_order_id: null,
+        financial_security_event_id: null,
+        ...workOrderContext,
+        idempotency_key: idempotencyKey,
+        request_sha256: requestSha256,
+        occurred_at: clientTimestamp,
+        replayed: false,
+        hard_assignment_created: false,
+        payment_creation_performed: false,
+      },
+    ]);
+    await expect(
+      setup.repository.prepareMaterialization(
+        workOrderContext,
+        idempotencyKey,
+        token,
+        clientTimestamp
+      )
+    ).resolves.toEqual({
+      completed: false,
+      context: workOrderContext,
+      idempotencyKey,
+      requestSha256,
+      occurredAt: clientTimestamp,
+    });
+    expect(setup.query.mock.calls[0]![1]).toEqual([
+      token,
+      ids.hold,
+      3,
+      idempotencyKey,
+      clientTimestamp,
+    ]);
   });
-  expect(query.mock.calls.some(([sql])=>/^INSERT\s+/iu.test(String(sql).trim()))).toBe(false);
- });
+
+  it('routes materialization and recovery through separate one-time assertions', async () => {
+    const phase: Extract<WorkOrderMaterializationPhase, { completed: false }> = {
+      completed: false,
+      context: workOrderContext,
+      idempotencyKey,
+      requestSha256,
+      occurredAt: clientTimestamp,
+    };
+    const materialize = repositoryWith([
+      {
+        work_order_id: ids.workOrder,
+        financial_security_event_id: ids.secured,
+        replayed: false,
+        hard_assignment_created: false,
+        payment_creation_performed: false,
+      },
+    ]);
+    await expect(
+      materialize.repository.finalizeMaterialization(phase, ids.secured, token)
+    ).resolves.toEqual({
+      work_order_id: ids.workOrder,
+      financial_security_event_id: ids.secured,
+      replayed: false,
+      hard_assignment_created: false,
+      payment_creation_performed: false,
+    });
+    expect(materialize.query.mock.calls[0]![1]).toEqual([
+      token,
+      idempotencyKey,
+      requestSha256,
+      ids.secured,
+    ]);
+
+    const recovery = repositoryWith([
+      {
+        completed: false,
+        work_order_id: null,
+        financial_security_event_id: null,
+        compensation_command_id: ids.compensation,
+        work_order_idempotency_key: idempotencyKey,
+        task_draft_id: ids.draft,
+        task_id: ids.task,
+        scope_version_id: ids.scope,
+        eligibility_decision_id: ids.eligibility,
+        compensation_secured_event_id: ids.secured,
+        secured_operation_id: ids.securedOperation,
+        void_operation_id: ids.voidOperation,
+        void_idempotency_key: `${idempotencyKey}:void`,
+        amount_cents: '12500',
+        currency: 'USD',
+        requested_by: ids.poster,
+        created_at: clientTimestamp,
+        replayed: false,
+        hard_assignment_created: false,
+        payment_creation_performed: false,
+      },
+    ]);
+    await expect(
+      recovery.repository.claimMaterializationCompensation(phase, ids.secured, token)
+    ).resolves.toEqual({
+      completed: false,
+      command: {
+        compensation_command_id: ids.compensation,
+        work_order_idempotency_key: idempotencyKey,
+        task_draft_id: ids.draft,
+        task_id: ids.task,
+        scope_version_id: ids.scope,
+        eligibility_decision_id: ids.eligibility,
+        secured_event_id: ids.secured,
+        secured_operation_id: ids.securedOperation,
+        void_operation_id: ids.voidOperation,
+        void_idempotency_key: `${idempotencyKey}:void`,
+        amount_cents: 12_500,
+        currency: 'USD',
+        requested_by: ids.poster,
+        created_at: clientTimestamp,
+      },
+    });
+  });
+
+  it('fails before PostgreSQL for a caller UUID masquerading as an assertion', async () => {
+    const setup = repositoryWith([]);
+    await expect(
+      setup.repository.express(interestContext, ids.provider, idempotencyKey, clientTimestamp)
+    ).rejects.toMatchObject({ code: 'WORK_ORDER_AUTHORITY_REVOKED' });
+    expect(setup.query).not.toHaveBeenCalled();
+  });
 });

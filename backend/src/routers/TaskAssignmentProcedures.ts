@@ -14,16 +14,34 @@ interface TaskRow {
   id: string;
   state: string;
   poster_id: string;
+  universal_contract_version: number | string | bigint | null;
   trust_tier_required: number | null;
   template_slug: string | null;
   mutual_consent_required: boolean;
   title: string;
 }
 
+const LEGACY_ASSIGNMENT_AUTHORITY_HELD = 'UNIVERSAL_V1_LEGACY_ASSIGNMENT_HELD';
+
+function assertExactLegacyAssignmentAuthority(
+  universalContractVersion: number | string | bigint | null | undefined,
+  mutation: string,
+): void {
+  const isLegacy = universalContractVersion === 0
+    || universalContractVersion === '0'
+    || universalContractVersion === 0n;
+  if (isLegacy) return;
+  throw new TRPCError({
+    code: 'PRECONDITION_FAILED',
+    message: 'Legacy application and assignment mutations are held unless exact legacy-only authority is proven.',
+    cause: { applicationCode: LEGACY_ASSIGNMENT_AUTHORITY_HELD, mutation },
+  });
+}
+
 async function ownedOpenTask(txn: QueryFn, taskId: string, posterId: string): Promise<TaskRow> {
   const result = await txn<TaskRow>(
     `SELECT id, state, poster_id, trust_tier_required, template_slug,
-            mutual_consent_required, title
+            mutual_consent_required, title, universal_contract_version
        FROM tasks WHERE id = $1 FOR UPDATE`,
     [taskId],
   );
@@ -31,6 +49,7 @@ async function ownedOpenTask(txn: QueryFn, taskId: string, posterId: string): Pr
   if (!task || task.poster_id !== posterId) {
     throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the task poster can assign workers' });
   }
+  assertExactLegacyAssignmentAuthority(task.universal_contract_version, 'assign_worker');
   if (task.state !== 'OPEN') {
     throw new TRPCError({ code: 'PRECONDITION_FAILED', message: `Task must be OPEN to assign a worker, current: ${task.state}` });
   }
@@ -134,14 +153,21 @@ async function shortlistApplicant(ctx: AuthedContext, input: AssignmentInput) {
     throw new TRPCError({ code: 'BAD_REQUEST', message: 'Cannot shortlist yourself' });
   }
   const shortlist = await db.transaction(async (query) => {
-    const task = await query<{ id: string; poster_id: string; worker_id: string | null; state: string }>(
-      'SELECT id,poster_id,worker_id,state FROM tasks WHERE id=$1 FOR UPDATE',
+    const task = await query<{
+      id: string;
+      poster_id: string;
+      worker_id: string | null;
+      state: string;
+      universal_contract_version: number | string | bigint | null;
+    }>(
+      'SELECT id,poster_id,worker_id,state,universal_contract_version FROM tasks WHERE id=$1 FOR UPDATE',
       [input.taskId],
     );
     const currentTask = task.rows[0];
     if (!currentTask || currentTask.poster_id !== ctx.user.id) {
       throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the task poster can shortlist a provider' });
     }
+    assertExactLegacyAssignmentAuthority(currentTask.universal_contract_version, 'shortlist_applicant');
     if (!['OPEN', 'MATCHING'].includes(currentTask.state) || currentTask.worker_id) {
       throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Quote shortlisting requires an unassigned open task' });
     }
@@ -189,13 +215,18 @@ async function shortlistApplicant(ctx: AuthedContext, input: AssignmentInput) {
 
 async function revokeShortlist(ctx: AuthedContext, input: AssignmentInput) {
   const result = await db.transaction(async (query) => {
-    const task = await query<{ poster_id: string; state: string }>(
-      'SELECT poster_id,state FROM tasks WHERE id=$1 FOR UPDATE',
+    const task = await query<{
+      poster_id: string;
+      state: string;
+      universal_contract_version: number | string | bigint | null;
+    }>(
+      'SELECT poster_id,state,universal_contract_version FROM tasks WHERE id=$1 FOR UPDATE',
       [input.taskId],
     );
     if (!task.rows[0] || task.rows[0].poster_id !== ctx.user.id) {
       throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the task poster can close quote chat' });
     }
+    assertExactLegacyAssignmentAuthority(task.rows[0].universal_contract_version, 'revoke_shortlist');
     const revoked = await query<{ id: string }>(
       `UPDATE task_quote_shortlists
           SET status='REVOKED',closed_at=NOW(),updated_at=NOW()
@@ -213,30 +244,50 @@ async function revokeShortlist(ctx: AuthedContext, input: AssignmentInput) {
 }
 
 async function rejectApplicant(ctx: AuthedContext, input: AssignmentInput & { reason?: string }) {
-  const task = await db.query<{ poster_id: string; state: string }>('SELECT poster_id, state FROM tasks WHERE id = $1', [input.taskId]);
-  if (!task.rows[0]) throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
-  if (task.rows[0].poster_id !== ctx.user.id) {
-    throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the task poster can reject applicants' });
-  }
-  const invalidStates = ['IN_PROGRESS', 'PROOF_SUBMITTED', 'COMPLETED', 'CANCELLED', 'DISPUTED'];
-  if (invalidStates.includes(task.rows[0].state)) {
-    throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Cannot manage applicants once the task is in progress or finalised' });
-  }
-  const result = await db.query(
-    "UPDATE task_applications SET status = 'rejected', rejection_reason = $3, updated_at = NOW() WHERE task_id = $1 AND hustler_id = $2 AND status = 'pending' RETURNING id",
-    [input.taskId, input.workerId, input.reason || null],
-  );
-  if (!result.rows[0]) throw new TRPCError({ code: 'NOT_FOUND', message: 'No pending application found for this worker' });
+  await db.transaction(async (query) => {
+    const task = await query<{
+      poster_id: string;
+      state: string;
+      universal_contract_version: number | string | bigint | null;
+    }>(
+      'SELECT poster_id, state, universal_contract_version FROM tasks WHERE id = $1 FOR UPDATE',
+      [input.taskId],
+    );
+    if (!task.rows[0]) throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
+    if (task.rows[0].poster_id !== ctx.user.id) {
+      throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the task poster can reject applicants' });
+    }
+    assertExactLegacyAssignmentAuthority(task.rows[0].universal_contract_version, 'reject_applicant');
+    const invalidStates = ['IN_PROGRESS', 'PROOF_SUBMITTED', 'COMPLETED', 'CANCELLED', 'DISPUTED'];
+    if (invalidStates.includes(task.rows[0].state)) {
+      throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Cannot manage applicants once the task is in progress or finalised' });
+    }
+    const result = await query(
+      "UPDATE task_applications SET status = 'rejected', rejection_reason = $3, updated_at = NOW() WHERE task_id = $1 AND hustler_id = $2 AND status = 'pending' RETURNING id",
+      [input.taskId, input.workerId, input.reason || null],
+    );
+    if (!result.rows[0]) throw new TRPCError({ code: 'NOT_FOUND', message: 'No pending application found for this worker' });
+  });
   await invalidateTask(input.taskId);
   return { success: true };
 }
 
 async function withdrawApplication(ctx: AuthedContext, taskId: string) {
-  const result = await db.query(
-    "UPDATE task_applications SET status = 'withdrawn', updated_at = NOW() WHERE task_id = $1 AND hustler_id = $2 AND status IN ('pending', 'countered') RETURNING id",
-    [taskId, ctx.user.id],
-  );
-  if (!result.rows[0]) throw new TRPCError({ code: 'NOT_FOUND', message: 'No active application found to withdraw' });
+  await db.transaction(async (query) => {
+    const task = await query<{ universal_contract_version: number | string | bigint | null }>(
+      'SELECT universal_contract_version FROM tasks WHERE id = $1 FOR UPDATE',
+      [taskId],
+    );
+    if (!task.rows[0]) {
+      throw new TRPCError({ code: 'NOT_FOUND', message: 'No active application found to withdraw' });
+    }
+    assertExactLegacyAssignmentAuthority(task.rows[0].universal_contract_version, 'withdraw_application');
+    const result = await query(
+      "UPDATE task_applications SET status = 'withdrawn', updated_at = NOW() WHERE task_id = $1 AND hustler_id = $2 AND status IN ('pending', 'countered') RETURNING id",
+      [taskId, ctx.user.id],
+    );
+    if (!result.rows[0]) throw new TRPCError({ code: 'NOT_FOUND', message: 'No active application found to withdraw' });
+  });
   return { success: true };
 }
 

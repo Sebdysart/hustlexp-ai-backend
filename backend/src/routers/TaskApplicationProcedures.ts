@@ -8,6 +8,26 @@ import { assertTaskMutationEligibility } from '../services/TaskEligibilityPolicy
 import { hustlerProcedure, posterProcedure, Schemas } from '../trpc.js';
 import { ErrorCodes } from '../types.js';
 import { detectForbiddenPatterns } from '../services/MessagingPolicy.js';
+import {
+  TASK_ABANDON_UNIVERSAL_AUTHORITY_REQUIRED_CODE,
+  TASK_ABANDON_WORK_ORDER_AUTHORITY_REQUIRED_CODE,
+} from '../services/TaskAbandonService.js';
+
+const LEGACY_APPLICATION_AUTHORITY_HELD = 'UNIVERSAL_V1_LEGACY_APPLICATION_HELD';
+
+function assertExactLegacyApplicationAuthority(
+  universalContractVersion: number | string | bigint | null | undefined,
+): void {
+  const isLegacy = universalContractVersion === 0
+    || universalContractVersion === '0'
+    || universalContractVersion === 0n;
+  if (isLegacy) return;
+  throw new TRPCError({
+    code: 'PRECONDITION_FAILED',
+    message: 'Legacy task applications are held unless exact legacy-only authority is proven.',
+    cause: { applicationCode: LEGACY_APPLICATION_AUTHORITY_HELD },
+  });
+}
 
 export const TaskApplicationProcedures = {
 applyForTask: hustlerProcedure
@@ -30,14 +50,21 @@ applyForTask: hustlerProcedure
       // The FOR UPDATE lock serializes concurrent callers: the second caller blocks
       // until the first transaction commits, then sees the updated task state.
       const appRow = await db.transaction(async (query) => {
-        const taskResult = await query<{ state: string; poster_id: string; title: string }>(
-          `SELECT state, poster_id, title FROM tasks WHERE id = $1 FOR UPDATE`,
+        const taskResult = await query<{
+          state: string;
+          poster_id: string;
+          title: string;
+          universal_contract_version: number | string | bigint | null;
+        }>(
+          `SELECT state, poster_id, title, universal_contract_version
+             FROM tasks WHERE id = $1 FOR UPDATE`,
           [input.taskId]
         );
         if (taskResult.rows.length === 0) {
           throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found' });
         }
         const task = taskResult.rows[0];
+        assertExactLegacyApplicationAuthority(task.universal_contract_version);
         if (task.state !== 'OPEN') {
           throw new TRPCError({
             code: 'PRECONDITION_FAILED',
@@ -155,6 +182,11 @@ workerCancel: hustlerProcedure
         } else if (errCode === ErrorCodes.FORBIDDEN) {
           code = 'FORBIDDEN';
         } else if (errCode === ErrorCodes.INVALID_STATE) {
+          code = 'PRECONDITION_FAILED';
+        } else if (
+          errCode === TASK_ABANDON_UNIVERSAL_AUTHORITY_REQUIRED_CODE
+          || errCode === TASK_ABANDON_WORK_ORDER_AUTHORITY_REQUIRED_CODE
+        ) {
           code = 'PRECONDITION_FAILED';
         } else {
           code = 'BAD_REQUEST';

@@ -35,23 +35,39 @@ vi.mock('../../src/services/NotificationService', () => ({
 }));
 vi.mock('../../src/jobs/queues', () => ({ createWorker: mocks.createWorker }));
 vi.mock('../../src/jobs/email-worker', () => ({ processEmailJob: mocks.email }));
-vi.mock('../../src/jobs/biometric-analyzer-worker', () => ({ processBiometricAnalysisJob: mocks.biometric }));
-vi.mock('../../src/jobs/expertise-recalc-worker', () => ({ processExpertiseRecalcJob: mocks.expertise }));
+vi.mock('../../src/jobs/biometric-analyzer-worker', () => ({
+  processBiometricAnalysisJob: mocks.biometric,
+}));
+vi.mock('../../src/jobs/expertise-recalc-worker', () => ({
+  processExpertiseRecalcJob: mocks.expertise,
+}));
 vi.mock('../../src/jobs/export-worker', () => ({ processExportJob: vi.fn() }));
 vi.mock('../../src/jobs/xp-tax-reminder-worker', () => ({ processXPTaxReminderJob: mocks.xpTax }));
 vi.mock('../../src/jobs/push-worker', () => ({ processPushJob: mocks.pushJob }));
 vi.mock('../../src/jobs/sms-worker', () => ({ processSMSJob: mocks.smsJob }));
-vi.mock('../../src/jobs/instant-notification-worker', () => ({ processInstantNotificationJob: mocks.instantNotification }));
+vi.mock('../../src/jobs/instant-notification-worker', () => ({
+  processInstantNotificationJob: mocks.instantNotification,
+}));
 vi.mock('../../src/jobs/realtime-worker', () => ({ processRealtimeJob: mocks.realtime }));
-vi.mock('../../src/jobs/escrow-action-worker', () => ({ processEscrowActionJob: mocks.escrowAction }));
+vi.mock('../../src/jobs/escrow-action-worker', () => ({
+  processEscrowActionJob: mocks.escrowAction,
+}));
 vi.mock('../../src/jobs/dispatch-expiry-payment-cancel-worker', () => ({
   processDispatchExpiryPaymentCancelJob: mocks.pendingPaymentCancel,
 }));
-vi.mock('../../src/jobs/completion-release-worker', () => ({ processCompletionReleaseJob: mocks.completionRelease }));
+vi.mock('../../src/jobs/completion-release-worker', () => ({
+  processCompletionReleaseJob: mocks.completionRelease,
+}));
 vi.mock('../../src/jobs/stripe-event-worker', () => ({ processStripeEventJob: mocks.stripeEvent }));
-vi.mock('../../src/jobs/stripe-event-dispatcher', () => ({ processStripeEventDispatchJob: mocks.stripeEvent }));
-vi.mock('../../src/jobs/instant-matching-worker', () => ({ processInstantMatchingJob: mocks.instantMatching }));
-vi.mock('../../src/jobs/instant-surge-worker', () => ({ processInstantSurgeJob: mocks.instantSurge }));
+vi.mock('../../src/jobs/stripe-event-dispatcher', () => ({
+  processStripeEventDispatchJob: mocks.stripeEvent,
+}));
+vi.mock('../../src/jobs/instant-matching-worker', () => ({
+  processInstantMatchingJob: mocks.instantMatching,
+}));
+vi.mock('../../src/jobs/instant-surge-worker', () => ({
+  processInstantSurgeJob: mocks.instantSurge,
+}));
 vi.mock('../../src/jobs/payment-worker', () => ({ processPaymentJob: mocks.payment }));
 vi.mock('../../src/jobs/trust-worker', () => ({ processTrustJob: mocks.trust }));
 vi.mock('../../src/jobs/fraud-detection-worker', () => ({ processFraudDetectionJob: mocks.fraud }));
@@ -100,7 +116,9 @@ describe('worker registration executable routing', () => {
     await handler(job('task.progress_updated'));
     await handler(job('escrow.funded', { escrowId: 'esc-1' }));
     await handler(job('escrow.refunded', { escrowId: 'esc-2' }));
-    await handler(job('escrow.payment_failed', { escrowId: 'esc-3', posterId: 'poster-1', taskId: 'task-1' }));
+    await handler(
+      job('escrow.payment_failed', { escrowId: 'esc-3', posterId: 'poster-1', taskId: 'task-1' })
+    );
     await handler(job('legacy.email', { emailId: 'email-1' }));
     await handler(job('legacy.sms', { smsId: 'sms-1' }));
     await handler(job('legacy.push', { notificationId: 'notification-1' }));
@@ -114,7 +132,7 @@ describe('worker registration executable routing', () => {
     expect(mocks.notification).toHaveBeenCalledTimes(3);
     expect(mocks.info).toHaveBeenCalledWith(
       { eventType: 'unimplemented' },
-      'Notification type not yet implemented',
+      'Notification type not yet implemented'
     );
   });
 
@@ -122,7 +140,9 @@ describe('worker registration executable routing', () => {
     const handler = registeredHandlers().get('user_notifications')!;
     mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
     await handler(job('escrow.funded', { escrowId: 'esc-1' }));
-    await handler(job('escrow.payment_failed', { escrowId: 'esc-2', posterId: null, taskId: 'task-1' }));
+    await handler(
+      job('escrow.payment_failed', { escrowId: 'esc-2', posterId: null, taskId: 'task-1' })
+    );
     expect(mocks.notification).not.toHaveBeenCalled();
   });
 
@@ -132,10 +152,13 @@ describe('worker registration executable routing', () => {
       'escrow.release_requested',
       'escrow.refund_requested',
       'escrow.partial_refund_requested',
-    ]) await handler(job(name));
-    await handler(job('escrow.refund_requested', {
-      financial_action: 'cancel_pending_payment_intent',
-    }));
+    ])
+      await handler(job(name));
+    await handler(
+      job('escrow.refund_requested', {
+        financial_action: 'cancel_pending_payment_intent',
+      })
+    );
     await handler(job('escrow.completion_release_requested'));
     await handler(job('stripe.event_received'));
     await handler(job('task.instant_matching_started'));
@@ -174,7 +197,18 @@ describe('worker registration executable routing', () => {
 
   it('isolates synthetic finance work in its dedicated queue', async () => {
     const handler = registeredHandlers().get('synthetic_finance')!;
-    await handler(job('synthetic_finance.event'));
+    expect(mocks.createWorker).toHaveBeenCalledWith(
+      'synthetic_finance',
+      expect.any(Function),
+      expect.objectContaining({ removeOnComplete: { count: -1 }, removeOnFail: { count: -1 } })
+    );
+    const receipt = {
+      commandId: 'synthetic-command',
+      state: 'MATERIALIZED',
+      financialEventId: 'synthetic-event',
+    };
+    mocks.syntheticFinance.mockResolvedValueOnce(receipt);
+    expect(await handler(job('synthetic_finance.command.v13'))).toEqual(receipt);
     expect(mocks.syntheticFinance).toHaveBeenCalledOnce();
   });
 });

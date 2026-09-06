@@ -408,7 +408,7 @@ describe('StripeSubscriptionProcessor', () => {
     expect(updateCall[1]).toContain('premium');
   });
 
-  it('sets plan_expires_at on cancelled subscription (S-2 monotonic rule)', async () => {
+  it('can only shorten an existing expiry for a cancelled subscription (S-2 monotonic rule)', async () => {
     const cancelledSub = { ...baseSubscription, status: 'canceled' };
 
     mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_event_id: 'evt_cancel' }], rowCount: 1 } as never);
@@ -417,9 +417,18 @@ describe('StripeSubscriptionProcessor', () => {
     await expect(processSubscriptionEvent(cancelledSub, 'evt_cancel')).resolves.toBeUndefined();
 
     const updateCall = mockDb.query.mock.calls[1];
-    expect(updateCall[0]).toContain('SET plan_expires_at = $1');
+    const updateSql = String(updateCall[0]).replace(/\s+/g, ' ');
+    expect(updateSql).toMatch(
+      /SET plan_expires_at = LEAST\( COALESCE\(plan_expires_at, NOW\(\)\), \$1, NOW\(\) \)/,
+    );
+    expect(updateSql).not.toContain('SET plan_expires_at = $1');
     // Does NOT set plan = $1 (downgrade is deferred)
-    expect(updateCall[0]).not.toContain('plan = $1');
+    expect(updateSql).not.toContain('plan = $1');
+    expect(updateCall[1]).toEqual([
+      new Date(cancelledSub.current_period_end * 1000),
+      'user-1',
+      'premium',
+    ]);
   });
 
   it('treats unpaid status same as cancelled', async () => {
@@ -431,7 +440,10 @@ describe('StripeSubscriptionProcessor', () => {
     await expect(processSubscriptionEvent(unpaidSub, 'evt_unpaid')).resolves.toBeUndefined();
 
     const updateCall = mockDb.query.mock.calls[1];
-    expect(updateCall[0]).toContain('SET plan_expires_at = $1');
+    const updateSql = String(updateCall[0]).replace(/\s+/g, ' ');
+    expect(updateSql).toContain('SET plan_expires_at = LEAST(');
+    expect(updateSql).toContain('COALESCE(plan_expires_at, NOW())');
+    expect(updateSql).not.toContain('SET plan_expires_at = $1');
   });
 
   it('handles pro plan correctly', async () => {

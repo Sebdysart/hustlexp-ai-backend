@@ -19,19 +19,20 @@
  *  - db.close() — no-op when pool is null
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // ---------------------------------------------------------------------------
 // Use vi.hoisted so mock factory closures can reference these variables
 // ---------------------------------------------------------------------------
 
-const { mockClientQuery, mockClientRelease, mockPoolConnect, mockPoolEnd, mockPoolOn } = vi.hoisted(() => {
+const { mockClientQuery, mockClientRelease, mockPoolConnect, mockPoolEnd, mockPoolOn, mockPoolQuery } = vi.hoisted(() => {
   const mockClientQuery = vi.fn();
   const mockClientRelease = vi.fn();
   const mockPoolConnect = vi.fn().mockResolvedValue({ query: mockClientQuery, release: mockClientRelease });
   const mockPoolEnd = vi.fn().mockResolvedValue(undefined);
   const mockPoolOn = vi.fn();
-  return { mockClientQuery, mockClientRelease, mockPoolConnect, mockPoolEnd, mockPoolOn };
+  const mockPoolQuery = vi.fn();
+  return { mockClientQuery, mockClientRelease, mockPoolConnect, mockPoolEnd, mockPoolOn, mockPoolQuery };
 });
 
 // ---------------------------------------------------------------------------
@@ -44,6 +45,7 @@ vi.mock('pg', () => {
   // constructable. Model the pg surface with a real test-only constructor.
   class MockPool {
     connect = mockPoolConnect;
+    query = mockPoolQuery;
     end = mockPoolEnd;
     on = mockPoolOn;
     totalCount = 3;
@@ -78,7 +80,6 @@ vi.mock('../../src/logger', () => ({
 
 import {
   hasDb,
-  getPoolStats,
   HX_ERROR_CODES,
   isInvariantViolation,
   getHXErrorCode,
@@ -91,8 +92,6 @@ import {
   isLiveModeViolation,
   isUniqueViolation,
   getErrorMessage,
-  checkHealth,
-  db,
 } from '../../src/db';
 
 // ---------------------------------------------------------------------------
@@ -110,11 +109,36 @@ function makeDbError(code: string, message = 'DB Error'): Error & { code: string
 // beforeEach — reset all mocks between tests
 // ---------------------------------------------------------------------------
 
-beforeEach(() => {
+type DatabaseModule = typeof import('../../src/db');
+let db: DatabaseModule['db'];
+let getPoolStats: DatabaseModule['getPoolStats'];
+let checkHealth: DatabaseModule['checkHealth'];
+
+beforeEach(async () => {
+  vi.resetModules();
   vi.clearAllMocks();
+  mockClientQuery.mockReset();
+  mockPoolQuery.mockReset();
   mockPoolConnect.mockResolvedValue({ query: mockClientQuery, release: mockClientRelease });
   mockClientRelease.mockReturnValue(undefined);
+  ({ db, getPoolStats, checkHealth } = await import('../../src/db'));
 });
+
+afterEach(async () => {
+  await db.close();
+  vi.unstubAllEnvs();
+});
+
+async function installMockDisposableRuntime(): Promise<void> {
+  vi.stubEnv('NODE_ENV', 'test');
+  vi.stubEnv('VITEST', 'true');
+  vi.stubEnv('HX_ALLOW_CI_DB_RECREATE', 'true');
+  vi.stubEnv('DATABASE_URL', 'postgresql://hx_ci_runner:synthetic@127.0.0.1:5432/hx_ci_invariant_test');
+  vi.stubEnv('DATABASE_REPLICA_URL', '');
+  vi.stubEnv('DB_POOL_MAX', '20');
+  const { installDisposableVitestDatabaseRuntime } = await import('../../src/test/disposable-database-runtime');
+  installDisposableVitestDatabaseRuntime();
+}
 
 // ===========================================================================
 // hasDb
@@ -344,255 +368,162 @@ describe('getErrorMessage', () => {
 
 describe('getPoolStats', () => {
   it('returns an object with the expected shape', () => {
-    const stats = getPoolStats();
-    expect(stats).toHaveProperty('totalConnections');
-    expect(stats).toHaveProperty('idleConnections');
-    expect(stats).toHaveProperty('waitingRequests');
-    expect(stats).toHaveProperty('maxConnections');
-    expect(stats).toHaveProperty('utilizationPercent');
-    expect(stats).toHaveProperty('replicaConnections');
-    expect(stats).toHaveProperty('replicaIdle');
-    expect(stats).toHaveProperty('replicaConfigured');
+    expect(Object.keys(getPoolStats())).toEqual([
+      'totalConnections', 'idleConnections', 'waitingRequests', 'maxConnections',
+      'utilizationPercent', 'replicaConnections', 'replicaIdle', 'replicaConfigured',
+    ]);
   });
 
   it('utilizationPercent is a number', () => {
-    const stats = getPoolStats();
-    expect(typeof stats.utilizationPercent).toBe('number');
+    expect(typeof getPoolStats().utilizationPercent).toBe('number');
   });
 
-  it('maxConnections is a positive number', () => {
-    const stats = getPoolStats();
-    expect(stats.maxConnections).toBeGreaterThan(0);
+  it('reports exact zero capacity before installation regardless of DATABASE_URL presence', () => {
+    expect(getPoolStats()).toEqual({
+      totalConnections: 0, idleConnections: 0, waitingRequests: 0, maxConnections: 0,
+      utilizationPercent: 0, replicaConnections: null, replicaIdle: null, replicaConfigured: false,
+    });
+    expect(mockPoolConnect).not.toHaveBeenCalled();
+    expect(mockPoolQuery).not.toHaveBeenCalled();
+  });
+
+  it('reports the explicitly installed runtime capacity', async () => {
+    await installMockDisposableRuntime();
+    expect(getPoolStats()).toEqual({
+      totalConnections: 3, idleConnections: 1, waitingRequests: 0, maxConnections: 20,
+      utilizationPercent: 15, replicaConnections: null, replicaIdle: null, replicaConfigured: false,
+    });
   });
 });
-
-// ===========================================================================
-// db.query — depends on whether pool is available
-// ===========================================================================
 
 describe('db.query', () => {
-  it('throws when pool is null (no DATABASE_URL)', async () => {
-    if (!hasDb) {
-      await expect(db.query('SELECT 1')).rejects.toThrow('DATABASE_URL');
-    } else {
-      // Pool exists — mock queries
-      mockClientQuery
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // DEALLOCATE ALL
-        .mockResolvedValueOnce({ rows: [{ val: 1 }], rowCount: 1 });
-      const result = await db.query('SELECT 1');
-      expect(result).toHaveProperty('rows');
-    }
+  it('refuses SQL before runtime installation even when a URL is configured', async () => {
+    await expect(db.query('SELECT 1')).rejects.toThrow('DATABASE_RUNTIME_AUTHORITY_NOT_INSTALLED');
+    expect(mockPoolQuery).not.toHaveBeenCalled();
+  });
+
+  it('passes exact SQL and parameters to the installed runtime', async () => {
+    await installMockDisposableRuntime();
+    mockPoolQuery.mockResolvedValueOnce({ rows: [{ val: 1 }], rowCount: 1 });
+    await expect(db.query('SELECT $1::int AS val', [1])).resolves.toEqual({ rows: [{ val: 1 }], rowCount: 1 });
+    expect(mockPoolQuery).toHaveBeenCalledExactlyOnceWith('SELECT $1::int AS val', [1]);
   });
 });
-
-// ===========================================================================
-// db.readQuery — depends on pool availability
-// ===========================================================================
 
 describe('db.readQuery', () => {
-  it('throws when pool is null (no DATABASE_URL)', async () => {
-    if (!hasDb) {
-      await expect(db.readQuery('SELECT 1')).rejects.toThrow('DATABASE_URL');
-    } else {
-      mockClientQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-      const result = await db.readQuery('SELECT 1');
-      expect(result).toHaveProperty('rows');
-    }
+  it('refuses SQL before runtime installation', async () => {
+    await expect(db.readQuery('SELECT 1')).rejects.toThrow('DATABASE_RUNTIME_AUTHORITY_NOT_INSTALLED');
+    expect(mockPoolQuery).not.toHaveBeenCalled();
+  });
+
+  it('returns the installed runtime result and preserves parameters', async () => {
+    await installMockDisposableRuntime();
+    mockPoolQuery.mockResolvedValueOnce({ rows: [{ val: 2 }], rowCount: 1 });
+    await expect(db.readQuery('SELECT $1::int AS val', [2])).resolves.toEqual({ rows: [{ val: 2 }], rowCount: 1 });
+    expect(mockPoolQuery).toHaveBeenCalledExactlyOnceWith('SELECT $1::int AS val', [2]);
   });
 });
 
-// ===========================================================================
-// db.transaction — depends on pool availability
-// ===========================================================================
-
-describe('db.transaction', () => {
-  it('throws when pool is null (no DATABASE_URL)', async () => {
-    if (!hasDb) {
-      await expect(db.transaction(async () => 'result')).rejects.toThrow('DATABASE_URL');
-    } else {
-      mockClientQuery
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // BEGIN
-        .mockResolvedValueOnce({ rows: [{ x: 1 }], rowCount: 1 }) // user query
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 }); // COMMIT
-      const result = await db.transaction(async (q) => {
-        const r = await q('SELECT 1');
-        return r.rows[0];
-      });
-      expect(result).toEqual({ x: 1 });
-    }
+describe.each([
+  ['transaction', 'BEGIN'],
+  ['serializableTransaction', 'BEGIN ISOLATION LEVEL SERIALIZABLE'],
+] as const)('db.%s', (mode, beginStatement) => {
+  it('refuses entry before runtime installation without calling the callback', async () => {
+    const callback = vi.fn();
+    await expect(db[mode](callback)).rejects.toThrow('DATABASE_RUNTIME_AUTHORITY_NOT_INSTALLED');
+    expect(callback).not.toHaveBeenCalled();
+    expect(mockPoolConnect).not.toHaveBeenCalled();
   });
 
-  it('rolls back and rethrows on error (when pool exists)', async () => {
-    if (!hasDb) return;
-
-    const boom = new Error('tx-error');
+  it('commits the result on the same bound client', async () => {
+    await installMockDisposableRuntime();
     mockClientQuery
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // BEGIN
-      .mockRejectedValueOnce(boom) // user fn throws
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 }); // ROLLBACK
-
-    await expect(
-      db.transaction(async (q) => {
-        await q('BLOW UP');
-      }),
-    ).rejects.toThrow('tx-error');
-  });
-});
-
-// ===========================================================================
-// db.serializableTransaction — depends on pool availability
-// ===========================================================================
-
-describe('db.serializableTransaction', () => {
-  it('throws when pool is null (no DATABASE_URL)', async () => {
-    if (!hasDb) {
-      await expect(db.serializableTransaction(async () => 'r')).rejects.toThrow('DATABASE_URL');
-    } else {
-      mockClientQuery
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // BEGIN ISOLATION LEVEL SERIALIZABLE
-        .mockResolvedValueOnce({ rows: [{ v: 42 }], rowCount: 1 })
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 }); // COMMIT
-      const result = await db.serializableTransaction(async (q) => {
-        const r = await q('SELECT 42');
-        return r.rows[0];
-      });
-      expect(result).toEqual({ v: 42 });
-    }
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      .mockResolvedValueOnce({ rows: [{ x: 1 }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    await expect(db[mode](async (query) => (await query('SELECT $1::int AS x', [1])).rows[0]))
+      .resolves.toEqual({ x: 1 });
+    expect(mockClientQuery.mock.calls.map(([sql]) => sql)).toEqual([beginStatement, 'SELECT $1::int AS x', 'COMMIT']);
+    expect(mockClientQuery).toHaveBeenNthCalledWith(2, 'SELECT $1::int AS x', [1]);
+    expect(mockClientRelease).toHaveBeenCalledExactlyOnceWith(false);
   });
 
-  it('rolls back and rethrows on serializable tx error (when pool exists)', async () => {
-    if (!hasDb) return;
-
-    const boom = new Error('serializable-tx-error');
+  it('rolls back and preserves the original error', async () => {
+    await installMockDisposableRuntime();
+    const failure = new Error(mode + '-error');
     mockClientQuery
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // BEGIN ISOLATION...
-      .mockRejectedValueOnce(boom)
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 }); // ROLLBACK
-
-    await expect(
-      db.serializableTransaction(async (q) => {
-        await q('BLOW UP');
-      }),
-    ).rejects.toThrow('serializable-tx-error');
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      .mockRejectedValueOnce(failure)
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    await expect(db[mode](async (query) => { await query('BLOW UP'); })).rejects.toBe(failure);
+    expect(mockClientQuery.mock.calls.map(([sql]) => sql)).toEqual([beginStatement, 'BLOW UP', 'ROLLBACK']);
+    expect(mockClientRelease).toHaveBeenCalledExactlyOnceWith(false);
   });
 });
 
-// ===========================================================================
-// db.getPool
-// ===========================================================================
-
-describe('db.getPool', () => {
-  it('throws when pool is null (no DATABASE_URL)', () => {
-    if (!hasDb) {
-      expect(() => db.getPool()).toThrow('DATABASE_URL');
-    } else {
-      expect(db.getPool()).toBeDefined();
-    }
+describe('db raw-pool containment', () => {
+  it('does not expose a Pool or physical client', () => {
+    expect(db).not.toHaveProperty('getPool');
   });
 });
-
-// ===========================================================================
-// db.healthCheck — uses db.query internally
-// ===========================================================================
 
 describe('db.healthCheck', () => {
-  it('returns connected:false when no pool (no DATABASE_URL)', async () => {
-    if (!hasDb) {
-      const result = await db.healthCheck();
-      expect(result.connected).toBe(false);
-      expect(result.schemaVersion).toBeNull();
-      expect(typeof result.latencyMs).toBe('number');
-    }
+  it('reports disconnected before runtime installation', async () => {
+    expect(await db.healthCheck()).toEqual({ connected: false, schemaVersion: null, latencyMs: expect.any(Number) });
   });
 
-  it('returns connected:true with schema version on success (when pool exists)', async () => {
-    if (!hasDb) return;
-
-    mockClientQuery
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // DEALLOCATE ALL
-      .mockResolvedValueOnce({ rows: [{ version: 'v1.0.0' }], rowCount: 1 });
-
-    const result = await db.healthCheck();
-    expect(result.connected).toBe(true);
-    expect(result.schemaVersion).toBe('v1.0.0');
-    expect(typeof result.latencyMs).toBe('number');
+  it('returns the installed runtime schema version', async () => {
+    await installMockDisposableRuntime();
+    mockPoolQuery.mockResolvedValueOnce({ rows: [{ version: 'v1.0.0' }], rowCount: 1 });
+    expect(await db.healthCheck()).toEqual({ connected: true, schemaVersion: 'v1.0.0', latencyMs: expect.any(Number) });
+    expect(mockPoolQuery).toHaveBeenCalledOnce();
   });
 
-  it('returns connected:false on query error (when pool exists)', async () => {
-    if (!hasDb) return;
-
-    mockClientQuery
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // DEALLOCATE ALL
-      .mockRejectedValueOnce(new Error('connection refused'));
-
-    const result = await db.healthCheck();
-    expect(result.connected).toBe(false);
-    expect(result.schemaVersion).toBeNull();
+  it('reports disconnected on installed runtime query failure', async () => {
+    await installMockDisposableRuntime();
+    mockPoolQuery.mockRejectedValueOnce(new Error('connection refused'));
+    expect(await db.healthCheck()).toEqual({ connected: false, schemaVersion: null, latencyMs: expect.any(Number) });
+    expect(mockPoolQuery).toHaveBeenCalledOnce();
   });
 
-  it('returns null schemaVersion when no rows returned (when pool exists)', async () => {
-    if (!hasDb) return;
-
-    mockClientQuery
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // DEALLOCATE ALL
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 }); // no schema version rows
-
-    const result = await db.healthCheck();
-    expect(result.connected).toBe(true);
-    expect(result.schemaVersion).toBeNull();
+  it('returns a null schema version when the installed runtime returns no rows', async () => {
+    await installMockDisposableRuntime();
+    mockPoolQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    expect(await db.healthCheck()).toEqual({ connected: true, schemaVersion: null, latencyMs: expect.any(Number) });
   });
 });
-
-// ===========================================================================
-// checkHealth (extended health check)
-// ===========================================================================
 
 describe('checkHealth', () => {
-  it('returns database:false when no pool', async () => {
-    if (!hasDb) {
-      const result = await checkHealth();
-      expect(result.database).toBe(false);
-      expect(result.schemaVersion).toBeNull();
-      expect(result.triggers).toBe(0);
-    }
+  it('reports no database before runtime installation', async () => {
+    expect(await checkHealth()).toEqual({ database: false, schemaVersion: null, triggers: 0, latencyMs: expect.any(Number) });
   });
 
-  it('returns database:true with trigger count on success (when pool exists)', async () => {
-    if (!hasDb) return;
-
-    mockClientQuery
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // DEALLOCATE ALL (version query)
-      .mockResolvedValueOnce({ rows: [{ version: 'v1.0.0' }], rowCount: 1 }) // version query
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // DEALLOCATE ALL (trigger query)
-      .mockResolvedValueOnce({ rows: [{ count: '12' }], rowCount: 1 }); // trigger count
-
-    const result = await checkHealth();
-    expect(result.database).toBe(true);
-    expect(result.schemaVersion).toBe('v1.0.0');
-    expect(result.triggers).toBe(12);
-    expect(typeof result.latencyMs).toBe('number');
+  it('reports the installed schema version and trigger count', async () => {
+    await installMockDisposableRuntime();
+    mockPoolQuery
+      .mockResolvedValueOnce({ rows: [{ version: 'v1.0.0' }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ count: '12' }], rowCount: 1 });
+    expect(await checkHealth()).toEqual({ database: true, schemaVersion: 'v1.0.0', triggers: 12, latencyMs: expect.any(Number) });
+    expect(mockPoolQuery).toHaveBeenCalledTimes(2);
   });
 
-  it('returns database:false on error (when pool exists)', async () => {
-    if (!hasDb) return;
-
-    mockClientQuery
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // DEALLOCATE ALL
-      .mockRejectedValueOnce(new Error('db down'));
-
-    const result = await checkHealth();
-    expect(result.database).toBe(false);
-    expect(result.schemaVersion).toBeNull();
-    expect(result.triggers).toBe(0);
+  it('reports no database on installed runtime failure', async () => {
+    await installMockDisposableRuntime();
+    mockPoolQuery.mockRejectedValueOnce(new Error('db down'));
+    expect(await checkHealth()).toEqual({ database: false, schemaVersion: null, triggers: 0, latencyMs: expect.any(Number) });
+    expect(mockPoolQuery).toHaveBeenCalledOnce();
   });
 });
 
-// ===========================================================================
-// db.close
-// ===========================================================================
-
 describe('db.close', () => {
-  it('resolves without throwing (regardless of pool state)', async () => {
-    await expect(db.close()).resolves.not.toThrow();
+  it('is inert before runtime installation', async () => {
+    await expect(db.close()).resolves.toBeUndefined();
+    expect(mockPoolEnd).not.toHaveBeenCalled();
+  });
+
+  it('closes the explicitly installed runtime', async () => {
+    await installMockDisposableRuntime();
+    await expect(db.close()).resolves.toBeUndefined();
+    expect(mockPoolEnd).toHaveBeenCalledOnce();
   });
 });

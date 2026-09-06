@@ -1,18 +1,18 @@
 /**
  * StripeSubscriptionProcessor v1.0.0
- * 
+ *
  * Step 9-D - Stripe Integration: Process subscription lifecycle events
- * 
+ *
  * Responsibility:
  * - Update user plans based on subscription events
  * - Create entitlements for subscriptions
  * - Enforce invariants S-2, S-3, S-5
- * 
+ *
  * Hard rules:
  * - All mutations are idempotent
  * - Time authority: DB NOW()
  * - Entitlements require validated Stripe event (S-5)
- * 
+ *
  * @see STEP_9D_STRIPE_INTEGRATION.md
  */
 
@@ -57,14 +57,14 @@ interface StripeEventEnvelope {
 
 /**
  * Process subscription event (created/updated/deleted)
- * 
+ *
  * Invariant S-2: Plan changes are monotonic
  * - Downgrades only allowed when plan_expires_at < NOW()
  * - Time authority: DB NOW()
- * 
+ *
  * Invariant S-3: Entitlements are idempotent
  * - UNIQUE(source_event_id) prevents duplicates
- * 
+ *
  * Invariant S-5: Entitlements must reference validated Stripe event
  * - Verifies event exists before creating entitlement
  */
@@ -101,12 +101,17 @@ export async function processSubscriptionEvent(
   const periodEnd = new Date(subscription.current_period_end * 1000);
 
   if (isDeleted) {
-    // Subscription cancelled - set expiry but don't downgrade yet (S-2)
-    // Downgrade happens when plan_expires_at < NOW() (enforced by PlanService)
+    // A cancellation observation is monotonic-negative. Processor-supplied
+    // period_end may shorten existing authority but can never extend it or
+    // create a new future entitlement when no local expiry exists.
     await db.query(
       `
       UPDATE users
-      SET plan_expires_at = $1
+      SET plan_expires_at = LEAST(
+        COALESCE(plan_expires_at, NOW()),
+        $1,
+        NOW()
+      )
       WHERE id = $2
         AND plan = $3
       `,

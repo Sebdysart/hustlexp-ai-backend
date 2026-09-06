@@ -24,7 +24,7 @@ vi.mock('../../../src/services/TaskService', () => ({
     accept: vi.fn(),
     submitProof: vi.fn(),
     complete: vi.fn(),
-    cancel: vi.fn(),
+    cancelByPoster: vi.fn(),
     listOpen: vi.fn(),
   },
 }));
@@ -168,12 +168,16 @@ describe('Task Router', () => {
     });
 
     it('should cancel task (OPEN → CANCELLED)', async () => {
-      (TaskService.cancel as any).mockResolvedValue({
+      (TaskService.cancelByPoster as any).mockResolvedValue({
         success: true,
         data: { id: 'task-1', state: 'CANCELLED' },
       });
 
-      const result = await TaskService.cancel('task-1');
+      const result = await TaskService.cancelByPoster({
+        taskId: 'task-1',
+        posterId: 'poster-1',
+        expectedVersion: 1,
+      });
       expect(result.data.state).toBe('CANCELLED');
     });
   });

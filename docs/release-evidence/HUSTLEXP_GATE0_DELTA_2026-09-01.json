@@ -1,0 +1,171 @@
+{
+  "schema_version": "hustlexp.gate0-delta-evidence.v1",
+  "observed_at": "2026-09-01T06:19:43.3909160-07:00",
+  "repository": "Sebdysart/hustlexp-ai-backend",
+  "repository_url": "https://github.com/Sebdysart/hustlexp-ai-backend",
+  "observation_posture": "POINT_IN_TIME_EVIDENCE_REVERIFY_BEFORE_RELEASE",
+  "protected_default_branch": {
+    "name": "main",
+    "remote_sha": "d42975be9691c6dbe99f7580fac1b0d8258a3f7a",
+    "remote_ref_read_method": "anonymous git ls-remote",
+    "commit_verification": {
+      "verified": false,
+      "reason": "unsigned"
+    },
+    "commit_api_url": "https://api.github.com/repos/Sebdysart/hustlexp-ai-backend/commits/d42975be9691c6dbe99f7580fac1b0d8258a3f7a"
+  },
+  "local_reconstruction": {
+    "branch": "codex/universal-v1-backend-security-expiry-wip-20260831",
+    "head_sha": "36255e604e718320ccae7d4e3ac269ad09678205",
+    "parent_sha": "d42975be9691c6dbe99f7580fac1b0d8258a3f7a",
+    "head_is_signed": false,
+    "dirty": true,
+    "promotion_status": "NOT_A_RELEASE_CANDIDATE",
+    "bundled_local_tools_present": false,
+    "exact_exposed_pat_present_in_worktree": false
+  },
+  "ruleset": {
+    "id": 20840525,
+    "name": "Main Branch Protection Ruleset",
+    "enforcement": "active",
+    "target": "DEFAULT_BRANCH",
+    "updated_at": "2026-08-30T00:55:46.069-07:00",
+    "bypass_actors": [],
+    "bypass_actor_252866125_present": false,
+    "current_user_can_bypass": "never",
+    "ruleset_api_url": "https://api.github.com/repos/Sebdysart/hustlexp-ai-backend/rulesets/20840525",
+    "requirements": {
+      "deletion_denied": true,
+      "non_fast_forward_denied": true,
+      "signed_commits": true,
+      "linear_history": true,
+      "independent_approvals": 1,
+      "dismiss_stale_reviews_on_push": true,
+      "last_push_approval": true,
+      "conversation_resolution": true,
+      "strict_required_status_checks": true,
+      "required_status_checks": [
+        "TypeScript — zero errors",
+        "Lint — zero warnings (backend/src/)",
+        "Security audit — no high/critical production vulnerabilities",
+        "Tests — zero failures",
+        "Build Validation",
+        "audit",
+        "dependency-review",
+        "codeql"
+      ]
+    }
+  },
+  "current_main_hosted_check_evidence": {
+    "sha": "d42975be9691c6dbe99f7580fac1b0d8258a3f7a",
+    "observed_required_checks": [
+      { "context": "TypeScript — zero errors", "conclusion": "success" },
+      { "context": "Lint — zero warnings (backend/src/)", "conclusion": "failure" },
+      {
+        "context": "Security audit — no high/critical production vulnerabilities",
+        "conclusion": "success"
+      },
+      { "context": "Tests — zero failures", "conclusion": "failure" },
+      { "context": "Build Validation", "conclusion": "skipped" },
+      { "context": "audit", "conclusion": "success" },
+      { "context": "dependency-review", "conclusion": "skipped" },
+      { "context": "codeql", "conclusion": "success" }
+    ],
+    "summary": {
+      "success": 4,
+      "failure": 2,
+      "skipped": 2,
+      "green": false
+    },
+    "ci_run_url": "https://github.com/Sebdysart/hustlexp-ai-backend/actions/runs/33179723404"
+  },
+  "current_main_hard_assignment_source_evidence": {
+    "sha": "d42975be9691c6dbe99f7580fac1b0d8258a3f7a",
+    "hard_assignment_guard_present": false,
+    "active_writers_observed": [
+      "assignment.reserve invokes TaskReservationService.reserve",
+      "TaskAcceptProcedures.acceptWithConsent writes worker_id and state=ACCEPTED",
+      "TaskAcceptProcedures.accept invokes TaskService.accept"
+    ],
+    "production_inference": "Production runtime provenance is stale, so these source paths cannot prove the deployed behavior. They do prove that exact current main is not structurally hard-assignment-frozen.",
+    "verification_posture": "DO_NOT_INVOKE_MUTATING_PRODUCTION_ENDPOINTS_TO_TEST_THIS_HOLD"
+  },
+  "railway_historical_deployment_evidence": {
+    "deployment_id": 6142799813,
+    "sha": "d42975be9691c6dbe99f7580fac1b0d8258a3f7a",
+    "creator": "railway-app[bot]",
+    "environment": "authentic-compassion / production",
+    "created_at": "2026-08-28T14:21:15Z",
+    "succeeded_at": "2026-08-28T14:22:28Z",
+    "deployment_description": "Deployed to Railway",
+    "github_production_environment_flag": false,
+    "inference": "The current main SHA was automatically submitted to Railway at push time and completed before failing CI was resolved. Current detachment cannot be inferred from historical evidence and must be reread from Railway before merge.",
+    "deployment_api_url": "https://api.github.com/repos/Sebdysart/hustlexp-ai-backend/deployments/6142799813"
+  },
+  "production_public_health_evidence": {
+    "observed_at": "2026-09-01T13:35:55.551Z",
+    "url": "https://hustlexp-ai-backend-production.up.railway.app/health",
+    "http_status": 200,
+    "service_status": "healthy",
+    "reported_environment": "production",
+    "reported_revision": "140ce19f4f77926249b1e7c0e5d2aac29bd4c9ef",
+    "reported_built_at": "2026-07-23T04:37:52Z",
+    "reported_clean_source": true,
+    "payment_creation_mode": "frozen",
+    "accepts_new_customer_money": false,
+    "provenance_matches_latest_recorded_railway_source": false,
+    "provenance_mismatch": {
+      "health_revision": "140ce19f4f77926249b1e7c0e5d2aac29bd4c9ef",
+      "latest_recorded_railway_deployment_sha": "d42975be9691c6dbe99f7580fac1b0d8258a3f7a"
+    }
+  },
+  "local_release_authentication_evidence": {
+    "github_cli_authenticated": false,
+    "github_cli_observation": "Both ambient GITHUB_TOKEN authentication and the stored Sebdysart account credential are reported invalid; no token value was read or used.",
+    "commit_signing_enabled": false,
+    "signing_key_configured": false,
+    "allowed_signers_file_configured": false,
+    "effect": "No signed commit or push is currently possible from this workspace. This does not independently prove revocation of the exact exposed credential."
+  },
+  "release_holds": {
+    "exposed_credential_revoked": "UNKNOWN_REQUIRES_INDEPENDENT_PROOF",
+    "railway_production_git_autodeploy_detached": "UNKNOWN_REQUIRES_INDEPENDENT_PROOF",
+    "production_runtime_provenance_exact": "FALSE_PUBLIC_HEALTH_REPORTS_STALE_REVISION",
+    "production_payment_creation": "VERIFIED_FROZEN_AT_2026-09-01T13:35:55.551Z_AND_MUST_REMAIN_FROZEN",
+    "production_hard_assignment": "UNPROVED_AND_CURRENT_MAIN_IS_NOT_STRUCTURALLY_FROZEN_REQUIRES_EXTERNAL_CONTAINMENT_PROOF",
+    "main_merge": "BLOCKED_WHILE_ANY_RELEASE_HOLD_IS_UNKNOWN_OR_FALSE",
+    "production_deployment": "PROHIBITED_BY_ACTIVE_V1A_GOAL"
+  },
+  "preserved_incident_evidence": {
+    "stage_1_merge": "c2754ad37ffddf2ea75d22ba48517a9c3c7bf3a4",
+    "documentation_commit": "5a8675b37473d626efbf4bff8635797ba29db7af",
+    "historic_main": "73c44eee22fa79c2957583217e69aa972291776f",
+    "documentation_commit_is_ancestor_of_current_main": true,
+    "stage_1_merge_is_ancestor_of_current_main": true,
+    "pull_requests": [
+      {
+        "number": 274,
+        "state": "open",
+        "merged": false,
+        "head_sha": "714e111efa7ae8615313b79338f4a65f71f1df41",
+        "url": "https://github.com/Sebdysart/hustlexp-ai-backend/pull/274"
+      },
+      {
+        "number": 276,
+        "state": "closed",
+        "merged": true,
+        "head_sha": "73c1a3752d7d6d49295ef8601f875be8d1824e7d",
+        "merge_commit_sha": "c2754ad37ffddf2ea75d22ba48517a9c3c7bf3a4",
+        "url": "https://github.com/Sebdysart/hustlexp-ai-backend/pull/276"
+      },
+      {
+        "number": 277,
+        "state": "open",
+        "merged": false,
+        "head_sha": "e5361d3ae96f52fb9c1c633bfc412c50026a1f2f",
+        "url": "https://github.com/Sebdysart/hustlexp-ai-backend/pull/277"
+      }
+    ],
+    "preservation_policy": "NO_RESET_FORCE_PUSH_HISTORY_REWRITE_OR_EVIDENCE_DELETION"
+  }
+}

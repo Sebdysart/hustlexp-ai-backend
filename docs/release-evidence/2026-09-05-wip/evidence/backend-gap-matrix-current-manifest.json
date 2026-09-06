@@ -1,0 +1,832 @@
+{
+  "generatedAt": "2026-09-06T01:11:49.286Z",
+  "scope": "Source-reference-verified engineering delta against preserved current Docs, not a new visual/deployed audit",
+  "head": "36255e604e718320ccae7d4e3ac269ad09678205",
+  "baselineMatrix": {
+    "path": "backend-gap-matrix-latest.md",
+    "sha256": "372a35ae197386e64eabc5b25c3f7fb2e4811b6a98db56bd83a47b17417828d5"
+  },
+  "sourceEvidence": {
+    "path": "backend-change-order-recovery-observation-review-manifest.json",
+    "sha256": "8fa17b11fc5a68453675782b671639fd47011cc7bcaca17cb9ef6de5f182ab03"
+  },
+  "rows": 60,
+  "revisitedRows": [
+    "K01",
+    "K03",
+    "K04",
+    "K05",
+    "K06",
+    "K07",
+    "K08",
+    "K11",
+    "R02",
+    "R03",
+    "I10",
+    "I12",
+    "K12"
+  ],
+  "changedOriginalReferences": [
+    "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql",
+    "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/jobs/change-order-recovery-role-plans.ts",
+    "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/jobs/work-order-command-role-authority.ts",
+    "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1ChangeOrderRecovery.ts",
+    "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts"
+  ],
+  "referencedSourceFiles": [
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/CLAUDE.md",
+      "sha256": "8a1d3f171d20c673ade3c14b7587b54146f5c76c3ff99e336f9a1f7b331e5840"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/README.md",
+      "sha256": "f25d9f7ffebca9d07097dae1b180055cbd86747d5e91ed06cf773067e0e9ac77"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/database/migrations/20260718_revenue_audit_rail.sql",
+      "sha256": "f11a5eb964f2c09b9e9592533fd32b35c24c9de8511e79b6096f2cf7627134a0"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/database/migrations/20260721_build_now_spend_promotion_guardrails.sql",
+      "sha256": "eff21cecd9f2d714168e989e9bb712ac7b30286f8b0de724f4ca7a7cef8a661d"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/database/migrations/20260827_universal_v1_lifecycle_contract.sql",
+      "sha256": "43224cc43d132d1dfa517f5150f28457fc27fda3fb85641d5c836f40406cf513"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/database/migrations/20260929_universal_v1_double_entry_ledger_v1.sql",
+      "sha256": "1ad5d75901ad4de964ca821ca8a78bf37bfdb7322b2a2a2119c7bc60325f3102"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/database/migrations/20261001_universal_v1_relationship_origin_v1.sql",
+      "sha256": "099372b9a542f268661d61d4ac618a11170fe81a26ae13af0512a82c2405e077"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/database/migrations/20261009_universal_v1_standardized_quote_readiness_v1.sql",
+      "sha256": "e088ec77e6dde547c5125807b6b6a83a318cc31a3c23a60233a87040a4ae8a2a"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql",
+      "sha256": "ef8faf0f0b753c51f02d4578f6dfd2da05d83dc282dc19e514187c403f669735"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/auth/financial-preparation-command-contract.ts",
+      "sha256": "e978e1013c430a6a51fc6414a6ccac85dddf12062d882d907062bc2eae9a1bad"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/jobs/change-order-recovery-role-plans.ts",
+      "sha256": "5854c081ed2b50067e40ce552e1b9fe38041d26b02db91cb7b89f18f4db76412"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/jobs/email-worker.ts",
+      "sha256": "d5da44d79781b754595c2149d5a260e539e01f653e97c07cb93501d67acf4a68"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/jobs/fake-financial-durable-recovery.ts",
+      "sha256": "9a2032c56f7d6df3aa66b30e93f0d3686a98ef4325e02a26173f9a9507f705a5"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/jobs/fake-financial-materialization.ts",
+      "sha256": "43bf2a74efacf517da44cbfe513eb75fa7078fcb68b82d45751f64e4fd3fc5b1"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/jobs/push-worker.ts",
+      "sha256": "22a110735611af26db3c40e9cb1de1c4461a834744a06c2ea336cebf7ff287d0"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/jobs/synthetic-financial-worker.ts",
+      "sha256": "a6935c108ee0d8bc2181d47aaa0e6301c03863d7de1e37c75567bcbf77912426"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/jobs/work-order-command-role-authority.ts",
+      "sha256": "2aa0fc3fd9546355ac83e4c9220aa2226815131320c7cbfdf22c9ba2b261c661"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/lib/task-lifecycle-notifications.ts",
+      "sha256": "6cebe4c7c2b18a4fa33d7da9d84be4263691f4116d98673ca4cb8a918caaf96c"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/releaseManifest.ts",
+      "sha256": "8d0d027e52a836cecf6dff4b3fad9a90ebcccc6a1041980f4a411131ce0f6feb"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/routers/health.ts",
+      "sha256": "c82b641e179d2ae65ac34943edba07c2aa15da462e85b43143e13d65b6f82137"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/routers/operations.ts",
+      "sha256": "70fd5154538ca37affd6a509e7d9f44e6a98b5801efbe62322d43c7c18aa2a62"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/routers/taskExternalBridge.ts",
+      "sha256": "32ca557e6c4311088771181f092b0f50ee8903b1763fbd21114d317bb457f0f7"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/routers/universalContract.ts",
+      "sha256": "ea7723bd95478c13faa72bcc90130ca4ebf8ab5d737fdffaa65f4bc7e151f960"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/routers/universalOccurrence.ts",
+      "sha256": "eb2e0f001f47ab262fb951cd0ad4aec45aee6186564f90ce562b63b0b2560d27"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/routers/web/actionLinks.ts",
+      "sha256": "b48655860c767cc394763250ca4d96acd96c6222949aefb15973342088363ca7"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/routers/web/ops.ts",
+      "sha256": "d12f109f7de36c87f921fb95619eccd9feba38ddabef454a2a86b8459db1c628"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/routers/web/taskDrafts.ts",
+      "sha256": "f96b0a34eeab01836246cdc3ff2c46ed08f399f5978773fcdeca750ebd032845"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/serverSyntheticFinancialWebhook.ts",
+      "sha256": "613ab8aee2edbc9ee5d13754602920e6c1d1b0476ce641bb340b9e08aca89064"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/AIObservabilityPolicy.ts",
+      "sha256": "4c299abc4ac20a7cb2c045dbbff7a7e0a9ab1c3fd5516fdcb996f2142a0288d3"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/AIObservabilityService.ts",
+      "sha256": "84437bfdacdea44e6b39b1b3f50a1a8a50328312b3e82f444e867b33bd267761"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/AnalyticsService.ts",
+      "sha256": "15b83359d0cebebb27cca16b5e93607967edbd9ec5f2786760737b9f784452f0"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/CompletionRetentionService.ts",
+      "sha256": "e67a90a99e9db01f5f1e198b37f052b30459e50b966882cf29bf683cd2274366"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/LiquidityCellPolicy.ts",
+      "sha256": "d5bcd5ab71894e80997a83dcfe60b92f8a7c3e88b30d81a9eb9ec6c2f7e36b94"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/LiquidityCellService.ts",
+      "sha256": "68fed2c8fd32332b64f2648752f4f87ae3716bcaa53a94ea3fe9e2b9aedaf964"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/MajorActionTelemetryService.ts",
+      "sha256": "e763ad49bab4d7e6c458a64584d8427371e7be9ed71683a3f838b0c4914cc8fb"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/MajorActionTelemetryTypes.ts",
+      "sha256": "79da69753e84c9576aa0c6ad05482692aa77b39d3d20713bea591ceae75d398b"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/MarketplaceReputationPolicy.ts",
+      "sha256": "f5291b6feeebe5343ec4c68fd8140cf6ddaafce2b33d28d221bf0f17dcf9fd1e"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/MessagingPolicy.ts",
+      "sha256": "b8cd6cf719b382a42a7f614ac7dd333828c7ddcf52d101434d05ff4e3b88a3a4"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/NotificationDeliveryRecoveryService.ts",
+      "sha256": "80d6c981513cb4a02bb23f96ac696809540ec17697acec05abbf61f655cbf1f3"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/NotificationDeliveryState.ts",
+      "sha256": "9059ee7d2c60c681d1842b237f6435b875a66f96836ae93bcbc5d06a67a90747"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/NotificationService.ts",
+      "sha256": "48f620f5dc413fd6e2d1f6b2c41af4fef39698997492ae69ff691b5d5838d2f6"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/OperationsExceptionService.ts",
+      "sha256": "33f0fdfef27ee94fe1dc6a7857773938590d4de646468f2cde1ec9ba4989e249"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/OperatorAuthorityService.ts",
+      "sha256": "49119d5c7197e2be2ec5f54d69f7707df185afce1ee756916d50c5239518e0b2"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/PushNotificationService.ts",
+      "sha256": "8bf95bfa9eb29d8188ca7969d36ab711372a6c5036238c958273d28716490b7d"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/RecurringOccurrenceService.ts",
+      "sha256": "89c4fffd03431574eef2e8bddbca3d6d12bd5834ed54bbfaf3d1471e5c5252b6"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/RecurringUniversalV1BridgeContainment.ts",
+      "sha256": "7242bfc0dd399d69f8919d62e3b11d0bd9952c1b6ee9a3fcf7ec2a6b7eeac146"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/RegionPolicyService.ts",
+      "sha256": "a2ab4a8b890cb162b1046a6de9f28e749904339b45c87335256945e3f7fd8d1f"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/RevenueService.ts",
+      "sha256": "3bfd44ae06042a8fc1076c6fa771491ed5248f50854358b4da82c27d48519a5f"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/TaskCreateService.ts",
+      "sha256": "f1692affa7ae758a7aa622c16ceb56f5bd10eb87f712899c84d32ae70c24787c"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/TaskLocationService.ts",
+      "sha256": "ccd7180c210c97898204a91aa2c8daa12e1c3bf2c0baabb5c3d115bd46d80d95"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1ChangeOrderApplication.ts",
+      "sha256": "494d36132a79fcad695a5b49926d8faa71026b6adfbe61e781e0cdd590f8227f"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1ChangeOrderRecovery.ts",
+      "sha256": "bf4f089fbe047d799196c04fc99e415ea2b513db787b596f5fc2db1611878abf"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1ChangeOrderRecoveryClaims.ts",
+      "sha256": "a96e59efa847d4b967ce12da269a9f1929287a15f051fe5b7b5590e251e3f710"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1ChangeOrderRecoveryObservation.ts",
+      "sha256": "953760736223b1b3389b9034e6c4fe976ff46b912e3f4aeef54e4cc87d35712f"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1ChangeOrderResume.ts",
+      "sha256": "1f707573258bd0c4f87269facb9b0eb4ca3168ab83d3a62016d6ddc9fb982938"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1EstimateContracts.ts",
+      "sha256": "dd262e246b677eb49aeacbda097a09b2fa8b3946cd50233c69dcae7a840e96ab"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1EstimatePublicFacts.ts",
+      "sha256": "5c0e992940aa2cb6944b61103e44428e1fbbbaa9d8c7180b14b16de5b7e22f0b"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1ExecutionContracts.ts",
+      "sha256": "ff848635050a01080d890613f3a941f40d55765122ff59662f1107ae73286d00"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1FulfillmentContracts.ts",
+      "sha256": "3c7208b99a542fe6b153499f68b430a34e410fa9901a3e36d7cc42ba6fe1f7c7"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1FulfillmentPostgresRepository.ts",
+      "sha256": "303252f5e66fee9a00703dff744bf63ade31764f389ae7e569ce130469a51e27"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1OccurrenceReadModel.ts",
+      "sha256": "c14f5b1171fded88361ecf0e98d827085171a519335320cd823dbbfb12beee84"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1OpsCaseService.ts",
+      "sha256": "7187d4e5e46e5448352601b8807351dc4f3d411606ddf7c72f10f8e216f1dfdd"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1StandardizedQuoteContracts.ts",
+      "sha256": "f0d28cd39887982ad14aa4d153a49dd79cae0006385690fdbe51877c9715ee3d"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1StandardizedScopePolicy.ts",
+      "sha256": "18799d1cd3491c4707153b56ce39b137e65bbe26311a16bf2d426b5b3c73baf5"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1TaskDraftClaim.ts",
+      "sha256": "8db57f63d809def03c74837be352e7f70b8467f7d0dd2ff51ba55dd371e8e995"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1TaskDraftContracts.ts",
+      "sha256": "555000883d52131a5510d0cbc22379acb5f079000fcac58fe35611f8be303880"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1TaskDraftRoutingPolicy.ts",
+      "sha256": "37169ac273f6a5356f1f5105501aa036fda6405eb0433707e36e20a1090a3d04"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1TaskOpportunityProjection.ts",
+      "sha256": "f3582454d4e746a8de5c88070b4ca1e30567693d804f91a1ead4e871f80f3e5f"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1TaskOpportunityProviderAuthority.ts",
+      "sha256": "39e6762aaa41a3218edb4a39a6dc5662a4c4dd617374efb4e2184fec846d5ee9"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1TaskOpportunityReads.ts",
+      "sha256": "b6e5e214d14d09ffde1e47964dff3a1eb2a47cadfe4431a411145bb2041b9012"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderApplication.ts",
+      "sha256": "3c0a137e82c3a1a20d8cc4fd1082402091e6c78fb17544e53cf713334f5d9f07"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderPostgresRepository.ts",
+      "sha256": "85ae4e5c0e243729d67e68dd12eac2dd1b57a17977596a9e17b5f1816e18a283"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/WorkerOfferDecisionPolicy.ts",
+      "sha256": "4b6e204e102765c93ea1e486d5a123736ab64b846dc7bcca4eb3771de87c5abd"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/payment/FinancialProviderPorts.ts",
+      "sha256": "893d0db10127ba3c699676f853b9e6daede48db6dac3966dfe53ebc5574cbe6e"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/payment/NonproductionFinancialAuthorization.ts",
+      "sha256": "551eb04699d7f5b4e22a7726f9426010de78ab19ce23f9d462e34d3fc8eb171c"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/payment/UniversalV1FinancialApplicationService.ts",
+      "sha256": "8bf82eb93cb73d3dd1fa7817e541e858aabe03b866fd6b31d1d040180b865a67"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/payment/UniversalV1FinancialRequestService.ts",
+      "sha256": "fc6215e800691161218dce335a6a3aea8d0ef117ec0e732fd2b02031aaf56be8"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/notification-delivery-contract.pg.test.ts",
+      "sha256": "1b199f21edccfb946adb046158eeb539cc271bbf8bab1fa88ca610d3e96203f9"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/recurring-universal-v1-containment.pg.test.ts",
+      "sha256": "cb8dc87598c4cd542c57c337e94653f14b54dc75892c32837852dacdd599b58f"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-double-entry-ledger.pg.test.ts",
+      "sha256": "b0b6031339af6c127fc23f4980ebaa64ed0187dbf3ba373360a55588b3c1ab41"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-ops-cases.pg.test.ts",
+      "sha256": "e7c773c0088e458eebf4cfebc66e8e1b4e67344cbd40afd1d0e9a3dd20dd05f0"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-task-draft-public.pg.test.ts",
+      "sha256": "00de03347ae802d73d6930c44b1f1bf51d7ceb22b007960883a36dbcad98f38e"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-task-opportunities.pg.test.ts",
+      "sha256": "3e307280efc00c5d2491f5cf9fb3ee62a523ab899c9edb41e5c351999129bf4f"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts",
+      "sha256": "93a7a18ffbc5154259d7ea505496547787d9350e33cf5a458dc397abfd8b6a38"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/unit/build-now-spend-promotion-guardrails-migration.test.ts",
+      "sha256": "f6d87b6d5c8f5d0e73a1e07b25b9e2aa8e27a3841e0d2acdd86871fe535dee28"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/unit/liquidity-cell-policy.test.ts",
+      "sha256": "10ff97950301c553e03f329b53a8aee979924c2bdcdc62a5f8eada9ecd9a76e5"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/unit/operator-authority-service.test.ts",
+      "sha256": "a3d090c2b4f70622a2af3f7f3de385020b6dac325237bff170f7bf0dbee8c714"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/unit/revenue-service.test.ts",
+      "sha256": "d3e504beb9f5225a77d1dc65db6bf1f5e10b4db9c3f225fa0a159229cf50c81d"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/unit/task-location-service.test.ts",
+      "sha256": "8f109216149e4a0569c7f7a4be7113663bc02df647395d4fd45b8bff292ac26a"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/unit/universal-v1-task-draft-ingress.test.ts",
+      "sha256": "cba9afbae8c4f100c76ed592309d0fb0a6564cab9fc1d48cf04e1a0b84a92bd1"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/unit/web-action-links-authority.test.ts",
+      "sha256": "2b760fb0ba216502c9ad9dbc64cbe9dc6a7ef2ec89f86ab19d322e1ce8f88383"
+    },
+    {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/unit/worker-offer-decision-policy.test.ts",
+      "sha256": "a541ca051d794b3ece80a02152a0cc59d34016e0b3c050df7c765f954653ff1b"
+    }
+  ],
+  "matrix": {
+    "path": "backend-gap-matrix-current.md",
+    "sha256": "6c29df9bf53f9b1472baa28ab9e7d7ed9d25bb55009746a24f08a33cb890b13d"
+  },
+  "releaseEligible": false,
+  "goalComplete": false,
+  "incrementalDelta": {
+    "priorMatrix": "backend-gap-matrix-before-work-order-resume.md",
+    "sha256": "6b07df3ac95d85c193f7edee83f4509a9d568afb18f90360df57dab313559e7e",
+    "changedReferencedFiles": [
+      "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql",
+      "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/auth/universal-v1-actor-attestation-contracts.ts",
+      "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/jobs/work-order-command-role-authority.ts",
+      "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1ActorAttesterClient.ts",
+      "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderApplication.ts",
+      "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderPostgresRepository.ts",
+      "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/payment/UniversalV1FinancialRequestService.ts",
+      "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/helpers/universal-v1-synthetic-role-provisioning.ts",
+      "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts",
+      "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/unit/work-order-command-role-authority.test.ts"
+    ],
+    "affectedRows": [
+      "I10",
+      "I12",
+      "K01",
+      "K03",
+      "K05",
+      "K06",
+      "K08",
+      "K11",
+      "R02"
+    ],
+    "reviewedRows": [
+      "I10",
+      "I12",
+      "K01",
+      "K03",
+      "K04",
+      "K05",
+      "K06",
+      "K07",
+      "K08",
+      "K11",
+      "R02",
+      "R03"
+    ],
+    "editorialCorrection": "K08 updated explicitly to the verified foreground endpoint implementation; first-call/HTTP/expiry/client/assignment gaps retained."
+  },
+  "regressionDelta": {
+    "checkpoint": {
+      "path": "backend-post-regression-fixtures-review-manifest.json",
+      "sha256": "926576f59c70db2c582f7931297d3527aac6dff9248f203c162486fa5845d4e4"
+    },
+    "fullRun": {
+      "path": "backend-required-after-work-order-failures.json",
+      "sha256": "1e057e1647b7a2a717741fe6ddf7cf2647b87d1698b0b509f1fd7d67af33d46f"
+    },
+    "docs": {
+      "path": "backend-post-regression-docs-freshness.json",
+      "sha256": "b0cf1a47f919dbafc3d1a11f9fc5bb4678b6fba261178a66d13059be40e29b05"
+    },
+    "reviewedRows": [
+      "R02",
+      "R03"
+    ],
+    "changedReferencedFiles": [],
+    "readinessRepair": "OPEN; obsolete positive privilege requirements plus residual security coverage must be reconciled"
+  },
+  "readinessBindingDelta": {
+    "path": "backend-readiness-binding-review-manifest.json",
+    "sha256": "2727a4c0c7dc2160ffa97be8ff8ebbc35410daa4890b98b3bbbbcdf21983debd",
+    "changedReferencedFiles": [
+      {
+        "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/payment/NonproductionFinancialBootstrapReadiness.ts",
+        "sha256": "60e6075f1d577aa456fe28d888e2992499ebfd495a2619f4aeb817fd493752fd"
+      }
+    ],
+    "reviewedRows": [
+      "R02",
+      "R03"
+    ],
+    "ready": false,
+    "editorialCorrection": "R03 explicitly distinguishes the earlier test-only checkpoint from the later runtime readiness source correction."
+  },
+  "readinessCustodyDelta": {
+    "path": "backend-readiness-custody-review-manifest.json",
+    "sha256": "6bac647bef19a6635c331363ef19f92b088b2860f13e7dc42c1b8203977a5418",
+    "changedReferencedFiles": [
+      {
+        "path": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/payment/NonproductionFinancialBootstrapReadiness.ts",
+        "sha256": "da537274d8d5055dc59218502bd25e63c2b1b71a4eadbdfad2c30ea95903eb1c"
+      }
+    ],
+    "reviewedRows": [
+      "R02",
+      "R03"
+    ],
+    "localApiWorkerReadiness": true,
+    "releaseEligible": false
+  },
+  "guardedReadinessDelta": {
+    "path": "backend-guarded-readiness-review-manifest.json",
+    "sha256": "a0a67e9a57ac89b726f1f4fd8ac82ce98d887147b8b6fa95940494aa51876978",
+    "reviewedRows": [
+      "K03",
+      "K09",
+      "K10",
+      "R02",
+      "R03"
+    ],
+    "actualGuardedReadiness": true,
+    "normalPositiveProcessComposition": false,
+    "osRestart": false,
+    "releaseEligible": false,
+    "fullRegression": {
+      "startedAt": "2026-09-05T18:30:02.152Z",
+      "statusAtRefresh": "TERMINAL_FAIL",
+      "baselinePath": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/required-after-readiness-baseline.json",
+      "receiptPath": "backend-required-after-readiness-failures.json"
+    }
+  },
+  "adjustmentDomainDelta": {
+    "path": "backend-adjustment-domain-review-manifest.json",
+    "sha256": "faa22140edc9a432e27c159f3bdbde627416796527966af6461b6565b6058376",
+    "reviewedRows": [
+      "K05",
+      "K10",
+      "R03"
+    ],
+    "changedReferences": [
+      "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql",
+      "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts"
+    ],
+    "fullRequiredGate": {
+      "status": "FAIL",
+      "endedAt": "2026-09-05T18:43:25.361Z",
+      "passed": 10571,
+      "failed": 27,
+      "skipped": 33,
+      "todo": 0,
+      "files": 684,
+      "sourceRelation": "BEFORE_THIS_ADJUST_CHANGE; not rerun on these bytes"
+    },
+    "releaseEligible": false
+  },
+  "changeOrderHistoryDelta": {
+    "path": "backend-change-order-history-review-manifest.json",
+    "sha256": "41986125e1846c9690cfc310493924c15d6e20472b9a8bb72063e277ce45fae6",
+    "reviewedRows": [
+      "K05",
+      "K10",
+      "R02",
+      "R03"
+    ],
+    "changedReferences": [
+      "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql",
+      "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/payment/NonproductionFinancialBootstrapReadiness.ts",
+      "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts"
+    ],
+    "fullRequiredGate": {
+      "status": "FAIL",
+      "endedAt": "2026-09-05T18:43:25.361Z",
+      "passed": 10571,
+      "failed": 27,
+      "skipped": 33,
+      "todo": 0,
+      "files": 684,
+      "sourceRelation": "BEFORE_ADJUST_AND_HISTORY_CHANGES; not rerun on these bytes"
+    },
+    "releaseEligible": false
+  },
+  "changeOrderWritesDelta": {
+    "path": "backend-change-order-writes-review-manifest.json",
+    "sha256": "1d39d7a01f2aeb149166b9a45258e31e40b728c6b668a8853963c2e903b69416",
+    "reviewedRows": [
+      "K05",
+      "K10",
+      "R02",
+      "R03"
+    ],
+    "changedReferences": [
+      "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql",
+      "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1ChangeOrderApplication.ts",
+      "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/payment/NonproductionFinancialBootstrapReadiness.ts",
+      "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts"
+    ],
+    "fullRequiredGate": {
+      "status": "FAIL",
+      "endedAt": "2026-09-05T18:43:25.361Z",
+      "passed": 10571,
+      "failed": 27,
+      "skipped": 33,
+      "todo": 0,
+      "files": 684,
+      "sourceRelation": "BEFORE_ADJUST_HISTORY_AND_PROPOSE_DECIDE_CHANGES; not rerun on these bytes"
+    },
+    "releaseEligible": false
+  },
+  "changeOrderDelegateDelta": {
+    "path": "backend-change-order-delegate-review-manifest.json",
+    "sha256": "826d8a737f8438b04720afbf0c9156d3a2c764fcbba964f3def4ff20feb55743",
+    "reviewedRows": [
+      "K05",
+      "K10",
+      "R02",
+      "R03"
+    ],
+    "changedReferences": [
+      "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql",
+      "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/payment/NonproductionFinancialBootstrapReadiness.ts",
+      "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts"
+    ],
+    "fullRequiredGate": {
+      "status": "FAIL",
+      "endedAt": "2026-09-05T18:43:25.361Z",
+      "passed": 10571,
+      "failed": 27,
+      "skipped": 33,
+      "todo": 0,
+      "files": 684,
+      "sourceRelation": "BEFORE_ADJUST_HISTORY_PROPOSE_DECIDE_AND_DELEGATE_CHANGES; not rerun on these bytes"
+    },
+    "releaseEligible": false
+  },
+  "currentEngineeringCheckpoint": {
+    "recordedAt": "2026-09-06T01:11:40.352Z",
+    "repository": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip",
+    "head": "36255e604e718320ccae7d4e3ac269ad09678205",
+    "status": "LOCAL_SCOPED_WORKER_RECOVERY_OBSERVATION_PASS",
+    "releaseEligible": false,
+    "goalComplete": false,
+    "productionEffects": "NONE",
+    "customerMoney": "FROZEN",
+    "hardAssignment": "FROZEN",
+    "previousGoalTurn": "PROGRESS_VERIFIED_LEASE_CHECKPOINT_AND_MATRIX",
+    "baseline": {
+      "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/change-order-recovery-observation-baseline.json",
+      "sha256": "d599a4891fab1bdcd7c49b3f8b0b9cfe1712748019d501d1174264010a2d5fc8",
+      "sequence": "Incremental after the worker recovery lease checkpoint."
+    },
+    "files": [
+      {
+        "path": "backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql",
+        "change": "modified",
+        "beforeSha256": "a7a65b9761c6f5e969940e66792d52aa2bbe3ecbe13e6d7685126f7dd2482ce8",
+        "afterSha256": "ef8faf0f0b753c51f02d4578f6dfd2da05d83dc282dc19e514187c403f669735"
+      },
+      {
+        "path": "backend/src/jobs/change-order-recovery-role-plans.ts",
+        "change": "modified",
+        "beforeSha256": "e6eaf553637834ea2325ab0f167d5091f533600eabba25f1d5e716bf60d9376b",
+        "afterSha256": "5854c081ed2b50067e40ce552e1b9fe38041d26b02db91cb7b89f18f4db76412"
+      },
+      {
+        "path": "backend/src/jobs/fake-financial-outbox-role-plans.ts",
+        "change": "modified",
+        "beforeSha256": "3e67aa4054d041003060dbec67f46b0409046f3e18b97c6d43661ac6325d24c6",
+        "afterSha256": "1e6217311367698c45db79059a46bf8cac1dc272616b20999c917a18792fcb3e"
+      },
+      {
+        "path": "backend/src/jobs/financial-readiness-custody.ts",
+        "change": "modified",
+        "beforeSha256": "e6966d074a9c149c49749e4e04ae3f7dac2242723530bdd750577caa2e3c3986",
+        "afterSha256": "d609d7e15f1263cfc343fba8d50770480c4f5292283ced8d538535d5671082e0"
+      },
+      {
+        "path": "backend/src/jobs/work-order-command-role-authority.ts",
+        "change": "modified",
+        "beforeSha256": "bcd3e224d34d8743200de40a14919ab3a9b553db7cab9a0733b0ec4e0932fdf2",
+        "afterSha256": "2aa0fc3fd9546355ac83e4c9220aa2226815131320c7cbfdf22c9ba2b261c661"
+      },
+      {
+        "path": "backend/src/services/UniversalV1ChangeOrderRecovery.ts",
+        "change": "modified",
+        "beforeSha256": "bc32df00123cc57c4068228174a387485027a47aa58589c45b45a971783e3db1",
+        "afterSha256": "bf4f089fbe047d799196c04fc99e415ea2b513db787b596f5fc2db1611878abf"
+      },
+      {
+        "path": "backend/src/services/UniversalV1ChangeOrderRecoveryObservation.ts",
+        "change": "added",
+        "beforeSha256": null,
+        "afterSha256": "953760736223b1b3389b9034e6c4fe976ff46b912e3f4aeef54e4cc87d35712f"
+      },
+      {
+        "path": "backend/src/services/payment/NonproductionFinancialBootstrapReadiness.ts",
+        "change": "modified",
+        "beforeSha256": "cb9ec34192789e5f147fb08376b0826cf274c54df78bfb8412d2876c49d45cee",
+        "afterSha256": "530cc25ca467fe69bb5c3d4edfb3b9160f46d258087958b64ff582e1f440e2db"
+      },
+      {
+        "path": "backend/tests/helpers/universal-v1-synthetic-role-provisioning.ts",
+        "change": "modified",
+        "beforeSha256": "73b1aae81fb2538d0f374fccb0ecfeec9bf9ea74a4e15db3be03c461f6e0a6fa",
+        "afterSha256": "b7da655808ee03e6a0edeb559c1e3ec1b8db12f756727ec7ccb180914bf2f98e"
+      },
+      {
+        "path": "backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts",
+        "change": "modified",
+        "beforeSha256": "ad8b2148176adae6bf1ec4599ecc07d2831333fca4d9b78d135228f71b45a856",
+        "afterSha256": "93a7a18ffbc5154259d7ea505496547787d9350e33cf5a458dc397abfd8b6a38"
+      },
+      {
+        "path": "backend/tests/unit/change-order-recovery-observation.test.ts",
+        "change": "added",
+        "beforeSha256": null,
+        "afterSha256": "be40f2836911cca123cc7df2d3da49c7d3aaff0a2c99523178c348500a88ad02"
+      },
+      {
+        "path": "backend/tests/unit/work-order-command-role-authority.test.ts",
+        "change": "modified",
+        "beforeSha256": "3f45ad2f859b9dfb5490102e437693eb00ca93c176703302b688e475a0e36af6",
+        "afterSha256": "d629435334f292b3aad0925cc040aac7b3fe0fcb2c99d1cfd59228d9f31e09a9"
+      }
+    ],
+    "patchSha256": "3eaea2bb38b969c7095da01c2e8010a4e3d3a802389d6199fc7a1511cbfa0e46",
+    "patchBytes": 58242,
+    "logs": [
+      {
+        "path": "change-order-recovery-observation-units-3.log",
+        "sha256": "09e99f2418797c853bf0e3b20493727da763b14301b47c79558d19e4ebda3993"
+      },
+      {
+        "path": "change-order-recovery-observation-types-3.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "change-order-recovery-observation-compile-2.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "change-order-recovery-observation-lint-2.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "change-order-recovery-observation-domain-full-2.log",
+        "sha256": "46c699f2114332e8ca3870401cb36fdbc20fb957b7cd24999fc53d4b49cee6f9"
+      },
+      {
+        "path": "change-order-recovery-observation-red.log",
+        "sha256": "f1ececdc53f9838d6566055ea544ef0ccfb8d758ba789ac362bf911bac938a37"
+      }
+    ],
+    "integrationObservation": {
+      "path": "work/change-order-recovery-observation-integration-observation.json",
+      "recordedAt": "2026-09-06T00:58:10.597Z",
+      "sha256": "a21469c5c810707033bf1f360821f1fd56baf3cb874b158ae3d92da8c2cfb1fa",
+      "scope": "Exact source observed before four complete financial/readiness cohorts; bytes unchanged through packaging."
+    },
+    "validation": {
+      "unitContracts": {
+        "files": 6,
+        "passed": 210,
+        "failed": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "financialAndReadinessRegression": {
+        "files": 4,
+        "passed": 251,
+        "failed": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "sourceCompilation": "PASS",
+      "expandedTestTypes": "PASS",
+      "allSourceLintZeroWarnings": "PASS",
+      "gitDiffCheck": "PASS",
+      "patchReverseCheck": "PASS",
+      "patchForwardByteReproduction": "PASS",
+      "unrelatedWorktreePreserved": true,
+      "baselineInventoryEntries": 1790,
+      "currentInventoryEntries": 1792,
+      "fullRequiredGate": {
+        "status": "FAIL",
+        "passed": 10571,
+        "failed": 27,
+        "skipped": 33,
+        "todo": 0,
+        "files": 684,
+        "sourceRelation": "Prior full required run. Not rerun on these bytes; focused successes do not replace it."
+      }
+    },
+    "semanticReview": {
+      "catalogCapture": "backend-change-order-recovery-observation-catalog-capture-2.json",
+      "catalogSha256": "102960cac05b22b73e92fca263ca2bc0c21bb6462fd394b22a914629f6cff581",
+      "v13MigrationSha256": "ef8faf0f0b753c51f02d4578f6dfd2da05d83dc282dc19e514187c403f669735",
+      "functionCatalog": {
+        "function_count": 152,
+        "function_catalog_sha256": "19e7c6d624bb4391a1824cb8fb9692ffe9eec8f56cb5933e40cdfd8d2b4ea634"
+      },
+      "triggerCatalog": {
+        "trigger_count": 343,
+        "trigger_catalog_sha256": "b23def6b0513e6951e9730233fa33f36997b0fce34de782479e9f497395dc34b"
+      },
+      "predecessorV13TextUnchanged": true,
+      "independentFreshCatalogs": 2,
+      "frozenMigrations": {
+        "20261014_universal_v1_work_order_command_ports_v1.sql": "3920ac8d3208b9f573dc331cab60c373d0349611700c6e14a6e4c1dd8c53aac4",
+        "20261015_universal_v1_work_order_fake_financial_authority_hardening_v12.sql": "5bb8ee72b9113146b88c22c6751ebe527ba6246b4463a8611ef9c24b999b7ac5",
+        "20261015_universal_v1_work_order_bootstrap_seal_v1.sql": "c69825589193885d0f6a3b93930880998e95e1c5cd44bb9b5999cb457192b2bd"
+      },
+      "criticalFunctionsSha256": "69475967edb0c64491291d494452af0437154370323744815b8138db9291d141"
+    },
+    "review": {
+      "kind": "Root source and integration review; independent human review remains required",
+      "evidenceBoundary": "Actual restricted worker observes exact live leases, revoked customers and adjustment-to-amendment progression. Provider execution precedes recovery age and remains within its original admission window. Preparation and historical amendment setup use existing fixtures. Adapter installed-authority identity is synthetic. Decoder unit cases preserve all thirteen observation states; PostgreSQL does not yet cover every compensation observation state."
+    },
+    "behavior": [
+      "Worker-only sealed observation validates current target/release and exact proposal, lease, owner, witness and Work Order",
+      "Proposal/witness/fulfillment coordination refuses contention without dispatch or terminal authority",
+      "Latest-attempt outcome correlation; existing amendment and compensation precedence preserved",
+      "Revocation after admission stays reconcile-only; unrelated revocation evidence is excluded from the typed causal claim",
+      "Strict immutable receipts and installed-authority recheck before commit; exact named dependency reads and retained classifier custody"
+    ],
+    "docs": {
+      "checkedAtUtc": "2026-09-06 00:42:41 UTC",
+      "modificationTimesUnchanged": true
+    },
+    "remaining": [
+      "Compensation winner creation with locked current authority, worker-claim provenance for durable reversal, and exact terminal writers",
+      "Remaining compensation observation states and expired/terminal lease integration cases, NO_EFFECT versus request/first-admission races, scheduled-worker integration",
+      "Remaining financial/account callers, current-Docs product work, all thirteen end-to-end journeys and full zero-failure/skip/todo required gate",
+      "Clean clones, signatures, protected independent human review and isolated staging"
+    ],
+    "publicationAuthorization": "User explicitly requested publication of all work to a public branch. This WIP publication is separate from release certification."
+  }
+}

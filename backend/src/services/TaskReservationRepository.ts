@@ -14,6 +14,34 @@ import {
 interface ExistingRequestRow {
   request_hash: string;
   reservation_id: string;
+  request_task_id: string;
+  request_hustler_id: string;
+  requested_by: string;
+  reservation_task_id: string;
+  reservation_hustler_id: string;
+  reservation_status: string;
+}
+
+type LegacyTaskReservationRow = TaskReservationRow & {
+  universal_contract_version: number | string | bigint | null;
+};
+
+const LEGACY_RESERVATION_AUTHORITY_HELD = 'LEGACY_RESERVATION_AUTHORITY_HELD';
+
+function exactLegacyReservationAuthority(
+  universalContractVersion: number | string | bigint | null | undefined,
+): boolean {
+  return universalContractVersion === 0
+    || universalContractVersion === '0'
+    || universalContractVersion === 0n;
+}
+
+function legacyReservationAuthorityError(): ReservationError {
+  return reservationError(
+    LEGACY_RESERVATION_AUTHORITY_HELD,
+    'Legacy reservations are held unless exact legacy-only task authority is proven.',
+    { authority: 'UNIVERSAL_V1_RESERVATION_COMMAND_PORT_REQUIRED' },
+  );
 }
 
 export function buildReservationRequestHash(params: ReserveTaskParams): string {
@@ -21,10 +49,33 @@ export function buildReservationRequestHash(params: ReserveTaskParams): string {
     ? {
         engineTaskId: params.engineTaskId,
         hustlerRef: params.hustlerRef,
+        actorId: params.actorId,
         serviceBusiness: params.serviceBusiness,
       }
-    : { engineTaskId: params.engineTaskId, hustlerRef: params.hustlerRef };
+    : {
+        engineTaskId: params.engineTaskId,
+        hustlerRef: params.hustlerRef,
+        actorId: params.actorId,
+      };
   return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+}
+
+export async function lockLegacyReservationTaskAuthority(
+  query: QueryFn,
+  engineTaskId: string,
+): Promise<ReservationError | null> {
+  const result = await query<{
+    universal_contract_version: number | string | bigint | null;
+  }>(
+    'SELECT universal_contract_version FROM tasks WHERE id=$1 FOR UPDATE',
+    [engineTaskId],
+  );
+  if (!result.rows[0]) {
+    return reservationError('NOT_FOUND', 'Engine task not found.');
+  }
+  return exactLegacyReservationAuthority(result.rows[0].universal_contract_version)
+    ? null
+    : legacyReservationAuthorityError();
 }
 
 export async function findExistingReservation(
@@ -33,7 +84,14 @@ export async function findExistingReservation(
   requestHash: string,
 ): Promise<ReservationError | ReservationSuccess | null> {
   const result = await query<ExistingRequestRow>(
-    `SELECT rr.request_hash,rr.reservation_id
+    `SELECT rr.request_hash,
+            rr.reservation_id,
+            rr.task_id AS request_task_id,
+            rr.hustler_id AS request_hustler_id,
+            rr.requested_by,
+            reservation.task_id AS reservation_task_id,
+            reservation.hustler_id AS reservation_hustler_id,
+            reservation.status AS reservation_status
        FROM task_reservation_requests rr
        JOIN task_reservations reservation ON reservation.id=rr.reservation_id
       WHERE rr.idempotency_key=$1`,
@@ -41,11 +99,18 @@ export async function findExistingReservation(
   );
   const existing = result.rows[0];
   if (!existing) return null;
-  return existing.request_hash === requestHash
+  const exactReplay = existing.request_hash === requestHash
+    && existing.request_task_id === params.engineTaskId
+    && existing.request_hustler_id === params.hustlerRef
+    && existing.requested_by === params.actorId
+    && existing.reservation_task_id === params.engineTaskId
+    && existing.reservation_hustler_id === params.hustlerRef
+    && existing.reservation_status === 'ACTIVE';
+  return exactReplay
     ? { kind: 'success', reservationId: existing.reservation_id, replayed: true }
     : reservationError(
         'IDEMPOTENCY_CONFLICT',
-        'Idempotency key was already used for a different reservation.',
+        'Idempotency key was already used for a different or inactive reservation.',
         { reservationId: existing.reservation_id },
       );
 }
@@ -53,17 +118,17 @@ export async function findExistingReservation(
 async function fetchTaskForReservation(
   query: QueryFn,
   params: ReserveTaskParams,
-): Promise<TaskReservationRow | undefined> {
+): Promise<LegacyTaskReservationRow | undefined> {
   const business = params.serviceBusiness ?? {
     offerDecisionId: null,
     organizationId: null,
     serviceProfileId: null,
     crewAssignmentId: null,
   };
-  const result = await query<TaskReservationRow>(
+  const result = await query<LegacyTaskReservationRow>(
     `SELECT task.id,task.state,task.worker_id,task.poster_id,task.risk_level,task.price,
             task.sensitive,task.trust_tier_required,task.automation_classification,
-            task.background_check_required,task.liquidity_cell_id,
+            task.background_check_required,task.liquidity_cell_id,task.universal_contract_version,
             (SELECT cell.environment FROM zone_category_cells cell
               WHERE cell.id=task.liquidity_cell_id) AS liquidity_environment,
             (SELECT cell.is_test FROM zone_category_cells cell
@@ -97,10 +162,13 @@ async function fetchTaskForReservation(
 }
 
 function validateTaskForReservation(
-  task: TaskReservationRow | undefined,
+  task: LegacyTaskReservationRow | undefined,
   params: ReserveTaskParams,
 ): TaskReservationRow | ReservationError {
   if (!task) return reservationError('NOT_FOUND', 'Engine task not found.');
+  if (!exactLegacyReservationAuthority(task.universal_contract_version)) {
+    return legacyReservationAuthorityError();
+  }
   const availableState = ['OPEN','MATCHING'].includes(task.state);
   if (!availableState || task.worker_id) {
     return reservationError('RESERVATION_CONFLICT', 'Task is no longer available for reservation.', {
@@ -269,6 +337,8 @@ export async function commitReservation(
   if (frozen) {
     return reservationError(frozen.error.code, frozen.error.message, frozen.error.details);
   }
+  const authorityError = await lockLegacyReservationTaskAuthority(query, params.engineTaskId);
+  if (authorityError) return authorityError;
   if (business) {
     const assignment = await query<{ assignment_id: string; fulfiller_user_id: string }>(
       `SELECT assignment_id,fulfiller_user_id,payout_recipient_user_id

@@ -155,12 +155,23 @@ export async function verifyProductionRoleReadiness(options) {
 export async function verifyWithReadOnlyClient(client) {
   if (typeof client?.query !== 'function') throw new Error('A database client is required');
   await client.query('BEGIN READ ONLY');
+  let rollbackAllowed = true;
   try {
     const report = await verifyProductionRoleReadiness({ query: (sql) => client.query(sql) });
+    // Once COMMIT is sent, its outcome is ambiguous if transport fails. Never
+    // issue another SQL command on that physical session in that state.
+    rollbackAllowed = false;
     await client.query('COMMIT');
     return report;
   } catch (error) {
-    await client.query('ROLLBACK');
+    if (rollbackAllowed) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // Preserve the original readiness failure; the caller closes this
+        // dedicated client in its finally block.
+      }
+    }
     throw error;
   }
 }

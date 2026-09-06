@@ -27,6 +27,8 @@ import {
   taskDraftCardTokenHash,
   taskDraftMutationIdempotencyKey,
   universalTaskDraftRequestHash,
+  UNIVERSAL_V1_ASSEMBLY_SCOPE_CLASS,
+  UNIVERSAL_V1_ITEM_COUNT_CLASS,
   UNIVERSAL_V1_ROUTING_OUTCOMES,
   type UniversalV1TaskDraftRouteContext,
 } from '../../src/services/UniversalV1TaskDraftIngress';
@@ -139,6 +141,17 @@ function routingInput(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function standardizedFurnitureAnswers(scopeConfirmedAt = '2026-08-26T00:00:00Z') {
+  return {
+    assembly_scope_class: UNIVERSAL_V1_ASSEMBLY_SCOPE_CLASS,
+    item_count_class: UNIVERSAL_V1_ITEM_COUNT_CLASS,
+    new_in_box: true,
+    tools_included: true,
+    old_item_removal: false,
+    scope_confirmed_at: scopeConfirmedAt,
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.transaction.mockImplementation(async (fn: (query: typeof mocks.query) => Promise<unknown>) => fn(mocks.query));
@@ -161,7 +174,7 @@ describe('Universal V1 deterministic routing', () => {
       evaluateUniversalV1TaskDraftRouting({
         ...routingInput({
           category: 'furniture_assembly', rawInput: 'Assemble dresser',
-          answers: { scope_confirmed_at: '2026-08-26T00:00:00Z' },
+          answers: standardizedFurnitureAnswers(),
           scopeEvidenceComplete: true,
         }),
       }).outcome,
@@ -178,6 +191,22 @@ describe('Universal V1 deterministic routing', () => {
     ];
     expect(cases).toEqual(UNIVERSAL_V1_ROUTING_OUTCOMES);
   });
+
+  it.each(['errands', 'tech', 'cleaning', 'handyman'] as const)(
+    'does not emit a fixed-price route for unsupported %s economics',
+    (category) => {
+      expect(evaluateUniversalV1TaskDraftRouting(routingInput({
+        category,
+        rawInput: `Complete a reviewed ${category} scope`,
+        answers: { scope_confirmed_at: '2026-08-26T00:00:00Z' },
+        scopeEvidenceComplete: true,
+        routeContext: activeRouteContext({ workCategoryCode: category }),
+      }))).toMatchObject({
+        outcome: 'MANUAL_SOURCING',
+        reasonCodes: ['SCOPE_OR_SUPPLY_REVIEW_REQUIRED'],
+      });
+    }
+  );
 
   it('uses sanitized answer evidence to prevent a hidden licensed-trade scope from becoming a candidate', () => {
     const routeContext = buildUniversalV1TaskDraftRouteContext({
@@ -384,24 +413,112 @@ describe('Universal V1 deterministic routing', () => {
     const base = {
       category: 'furniture_assembly',
       rawInput: 'Assemble dresser',
-      answers: { scope_confirmed_at: '2026-08-26T00:00:00Z' },
+      answers: standardizedFurnitureAnswers(),
     };
     expect(evaluateUniversalV1TaskDraftRouting(routingInput(base)).outcome)
-      .toBe('MANUAL_SOURCING');
+      .toBe('ESTIMATE_REQUIRED');
     expect(evaluateUniversalV1TaskDraftRouting(routingInput({
       ...base,
       scopeEvidenceComplete: true,
-      answers: { scope_confirmed_at: 'yes' },
-    })).outcome).toBe('MANUAL_SOURCING');
+      answers: standardizedFurnitureAnswers('yes'),
+    })).outcome).toBe('ESTIMATE_REQUIRED');
     expect(evaluateUniversalV1TaskDraftRouting(routingInput({
       ...base,
       scopeEvidenceComplete: true,
-      answers: { scope_confirmed_at: '2026-08-25T00:00:00Z' },
-    })).outcome).toBe('MANUAL_SOURCING');
+      answers: standardizedFurnitureAnswers('2026-08-25T00:00:00Z'),
+    })).outcome).toBe('ESTIMATE_REQUIRED');
     expect(evaluateUniversalV1TaskDraftRouting(routingInput({
       ...base,
       scopeEvidenceComplete: true,
     })).outcome).toBe('FULFILLMENT_CANDIDATE');
+  });
+
+  it('routes every non-base standardized scope to an estimate', () => {
+    const fixedFurniture = {
+      category: 'furniture_assembly' as const,
+      rawInput: 'Assemble one standard flat-pack item',
+      answers: standardizedFurnitureAnswers(),
+      scopeEvidenceComplete: true,
+    };
+    expect(evaluateUniversalV1TaskDraftRouting(routingInput({
+      ...fixedFurniture,
+      answers: { ...fixedFurniture.answers, old_item_removal: true },
+    }))).toMatchObject({
+      outcome: 'ESTIMATE_REQUIRED',
+      reasonCodes: ['STANDARDIZED_SCOPE_REQUIRES_ESTIMATE'],
+    });
+    for (const answers of [
+      { ...fixedFurniture.answers, assembly_scope_class: 'OTHER_OR_CUSTOM' },
+      { ...fixedFurniture.answers, item_count_class: 'MULTIPLE' },
+      { ...fixedFurniture.answers, tools_included: false },
+    ]) {
+      expect(evaluateUniversalV1TaskDraftRouting(routingInput({
+        ...fixedFurniture,
+        answers,
+      }))).toMatchObject({
+        outcome: 'ESTIMATE_REQUIRED',
+        reasonCodes: ['STANDARDIZED_SCOPE_REQUIRES_ESTIMATE'],
+      });
+    }
+
+    const fixedMoving = {
+      category: 'moving' as const,
+      rawInput: 'Move one light item on the same property',
+      answers: {
+        size_weight: 'light',
+        access: 'ground',
+        move_type: 'same',
+        workers_needed: 'one',
+        fragile: false,
+        scope_confirmed_at: '2026-08-26T00:00:00Z',
+      },
+      scopeEvidenceComplete: true,
+    };
+    expect(evaluateUniversalV1TaskDraftRouting(routingInput(fixedMoving))).toMatchObject({
+      outcome: 'FULFILLMENT_CANDIDATE',
+    });
+    for (const answers of [
+      { ...fixedMoving.answers, size_weight: 'medium' },
+      { ...fixedMoving.answers, access: 'stairs' },
+      { ...fixedMoving.answers, access: undefined },
+      { ...fixedMoving.answers, access: ['ground'] },
+      { ...fixedMoving.answers, move_type: 'transport' },
+      { ...fixedMoving.answers, workers_needed: 'two' },
+      { ...fixedMoving.answers, fragile: true },
+      { ...fixedMoving.answers, workers_needed: undefined },
+    ]) {
+      expect(evaluateUniversalV1TaskDraftRouting(routingInput({
+        ...fixedMoving,
+        answers,
+      }))).toMatchObject({
+        outcome: 'ESTIMATE_REQUIRED',
+        reasonCodes: ['STANDARDIZED_SCOPE_REQUIRES_ESTIMATE'],
+      });
+    }
+
+    for (const candidate of [
+      {
+        ...fixedFurniture,
+        answers: { ...fixedFurniture.answers, preferred_window: 'rush' },
+      },
+      {
+        ...fixedFurniture,
+        answers: { ...fixedFurniture.answers, required_tools: ['power drill'] },
+      },
+      {
+        ...fixedFurniture,
+        answers: { ...fixedFurniture.answers, scope_addon: 'wall mounting' },
+      },
+      {
+        ...fixedMoving,
+        answers: { ...fixedMoving.answers, required_vehicle: 'box truck' },
+      },
+    ]) {
+      expect(evaluateUniversalV1TaskDraftRouting(routingInput(candidate))).toMatchObject({
+        outcome: 'ESTIMATE_REQUIRED',
+        reasonCodes: ['STANDARDIZED_SCOPE_REQUIRES_ESTIMATE'],
+      });
+    }
   });
 
   it('strips contact PII and exact street addresses from draft facts', () => {
@@ -409,11 +526,47 @@ describe('Universal V1 deterministic routing', () => {
       .toBe('Assemble at , call');
     expect(sanitizeTaskDraftText('Repair trim at 456 N Main St Apt 2, DOB 01/02/1990'))
       .toBe('Repair trim at , DOB');
+    expect(sanitizeTaskDraftText('Meet at 123 Cedar Parkway before assembly'))
+      .toBe('Meet at before assembly');
     expect(sanitizeTaskDraftAnswers({
       phone: '4255550100', customer_name: 'Person', ssn: '123-45-6789',
       notes: 'email a@b.co then assemble',
     }))
       .toEqual({ notes: 'email then assemble' });
+    const adversarialLocationText = sanitizeTaskDraftText(
+      'PO Box 91; 1600 Pennsylvania Avenue NW; 123 Broadway; Highway 99; '
+      + '47.6062, -122.3321; door code is 2468',
+    );
+    expect(adversarialLocationText).not.toMatch(
+      /PO Box|Pennsylvania|Broadway|Highway|47\.6062|122\.3321|2468/iu,
+    );
+    expect(adversarialLocationText).toContain('[access detail redacted]');
+
+    const providerFacingAnswers = sanitizeTaskDraftAnswers({
+      timing: 'Tomorrow after 4; call 425/555/0100',
+      item: 'Six-drawer dresser; code for the door is 2468',
+    });
+    expect(providerFacingAnswers).toEqual({
+      timing: 'Tomorrow after 4; call',
+      item: 'Six-drawer dresser; [access detail redacted]',
+    });
+    expect(JSON.stringify(providerFacingAnswers)).not.toMatch(/425|555|0100|2468/iu);
+
+    expect(sanitizeTaskDraftText('case 12345678-1234-1234-1234-123456789012'))
+      .toBe('case 12345678-1234-1234-1234-123456789012');
+    expect(sanitizeTaskDraftText('Call 425_555_0100 or +1 (425) 555-0101'))
+      .toBe('Call or');
+    const namedContactVariants = sanitizeTaskDraftAnswers({
+      item: 'Dresser; door combo 2468',
+      timing: 'buzz 1357 at the gate; Signal @task_contact',
+    });
+    expect(namedContactVariants).toEqual({
+      item: 'Dresser; [access detail redacted]',
+      timing: '[access detail redacted]; [contact detail redacted]',
+    });
+    expect(JSON.stringify(namedContactVariants)).not.toMatch(
+      /2468|1357|task_contact/iu,
+    );
   });
 
   it('derives one stable idempotency key per expected aggregate version', () => {

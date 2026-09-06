@@ -1,0 +1,461 @@
+{
+  "recordedAt": "2026-09-05T18:45:35.089Z",
+  "processReceipt": {
+    "endedAt": "2026-09-05T18:43:25.361Z",
+    "pid": 55436,
+    "status": "TERMINAL",
+    "code": 1,
+    "signal": null
+  },
+  "head": "36255e604e718320ccae7d4e3ac269ad09678205",
+  "baselinePath": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/required-after-readiness-baseline.json",
+  "baselineSha256": "4e37fbbbc6733c30cb46b69da17a3bb000a23738af83068066cc977452effaa4",
+  "reportSha256": "4fb70323ef38399ea9e42101087429d975722ef26bbaf078eca8bd3d22c14717",
+  "logSha256": "6ed079f4abb1bd58ce36dabd0b194008b7b4cd63f5488fb58fa96380008e35fc",
+  "worktreePreserved": true,
+  "changes": [],
+  "additions": [],
+  "summary": {
+    "numTotalTestSuites": 3259,
+    "numPassedTestSuites": 3239,
+    "numFailedTestSuites": 20,
+    "numPendingTestSuites": 0,
+    "numTotalTests": 10631,
+    "numPassedTests": 10571,
+    "numFailedTests": 27,
+    "numPendingTests": 33,
+    "numTodoTests": 0,
+    "startTime": 1788633058606,
+    "success": false
+  },
+  "files": {
+    "total": 684,
+    "failed": 10
+  },
+  "failures": [
+    {
+      "file": "backend/tests/system/hxos-canonical-lifecycle.pg.test.ts",
+      "status": "failed",
+      "message": "",
+      "assertions": [
+        {
+          "name": "HX/OS canonical PostgreSQL lifecycle proves intent through bank payout with replay, concurrency, and failure evidence",
+          "status": "failed",
+          "messages": [
+            "Error: NONPRODUCTION_FAKE_FINANCE_REFUSED:LIVE_FAKE_FINANCE_SEALED_AUTHORITY_REQUIRED\n    at issueLiveFakeFinancialDatabaseCapability (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/payment/FakeFinancialProvider.ts:1116:11)\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/hxos-canonical-lifecycle.pg.test.ts:351:28\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+          ]
+        },
+        {
+          "name": "HX/OS canonical PostgreSQL lifecycle persists provider-account refresh with replay, conflict, concurrency, and no external effect",
+          "status": "failed",
+          "messages": [
+            "Error: NONPRODUCTION_FAKE_FINANCE_REFUSED:LIVE_FAKE_FINANCE_SEALED_AUTHORITY_REQUIRED\n    at issueLiveFakeFinancialDatabaseCapability (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/payment/FakeFinancialProvider.ts:1116:11)\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/hxos-canonical-lifecycle.pg.test.ts:1263:7\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+          ]
+        }
+      ]
+    },
+    {
+      "file": "backend/tests/system/nonproduction-financial-bootstrap-readiness.pg.test.ts",
+      "status": "failed",
+      "message": "",
+      "assertions": [
+        {
+          "name": "nonproduction financial bootstrap PostgreSQL authority policy executes the exact snapshot authority query and rejects the overprivileged runner",
+          "status": "failed",
+          "messages": [
+            "AssertionError: expected { schemaVersion: 1, …(11) } to match object { required: true, ready: false, …(3) }\n(7 matching properties omitted from actual)\n    at Proxy.<anonymous> (file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/expect/dist/index.js:1283:10)\n    at Proxy.<anonymous> (file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/expect/dist/index.js:1156:15)\n    at Proxy.methodWrapper (file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/chai/index.js:1700:25)\n    at C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/nonproduction-financial-bootstrap-readiness.pg.test.ts:261:20\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+          ]
+        },
+        {
+          "name": "nonproduction financial bootstrap PostgreSQL authority policy executes live authority and identity SQL without activating held schema evidence",
+          "status": "failed",
+          "messages": [
+            "AssertionError: expected 'attestation_unavailable' to be 'schema_evidence_mismatch' // Object.is equality\n    at C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/nonproduction-financial-bootstrap-readiness.pg.test.ts:392:32\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+          ]
+        }
+      ]
+    },
+    {
+      "file": "backend/tests/system/nonproduction-financial-runtime-authority.pg.test.ts",
+      "status": "failed",
+      "message": "",
+      "assertions": [
+        {
+          "name": "nonproduction financial runtime PostgreSQL authority attests one NOLOGIN owner and one distinct non-elevated LOGIN runtime as ready",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "nonproduction financial runtime PostgreSQL authority keeps primitive bridge helpers and all deferred integrity guards owner-only",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "nonproduction financial runtime PostgreSQL authority fails closed if runtime can execute an owner-only deferred guard",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "nonproduction financial runtime PostgreSQL authority fails closed if runtime can execute an owner-only primitive bridge helper",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "nonproduction financial runtime PostgreSQL authority fails closed on a live database-identity mutation and recovers after restoration",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "nonproduction financial runtime PostgreSQL authority detects a same-column critical view replacement through rewrite-rule identity",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "nonproduction financial runtime PostgreSQL authority detects an added INSTEAD rewrite rule on a critical table",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "nonproduction financial runtime PostgreSQL authority detects body drift in a trigger function omitted from the former static list",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "nonproduction financial runtime PostgreSQL authority detects body drift in a transitive helper that is not itself a trigger",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "nonproduction financial runtime PostgreSQL authority detects an elevated LOGIN owner on a derived critical trigger function",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "nonproduction financial runtime PostgreSQL authority detects pgcrypto dependency membership, safety, and owner drift",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "nonproduction financial runtime PostgreSQL authority denies direct INSERT, UPDATE, and DELETE on v9-v12 and lifecycle authority tables",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "nonproduction financial runtime PostgreSQL authority allows only the exact sealed ports plus safe expression dependencies and makes recovery wrappers idempotent",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "nonproduction financial runtime PostgreSQL authority fails closed when the runtime receives one forbidden relation privilege",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "nonproduction financial runtime PostgreSQL authority fails closed when the common sealed-function owner loses either exact digest dependency",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "nonproduction financial runtime PostgreSQL authority fails closed when runtime loses either exact expression dependency",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "nonproduction financial runtime PostgreSQL authority fails closed when one required sealed-wrapper grant is absent",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "nonproduction financial runtime PostgreSQL authority fails closed when runtime is made a member of an elevated role",
+          "status": "skipped",
+          "messages": []
+        }
+      ]
+    },
+    {
+      "file": "backend/tests/system/prepared-financial-command-authority.pg.test.ts",
+      "status": "failed",
+      "message": "",
+      "assertions": [
+        {
+          "name": "Universal V1 PREPARED financial command PostgreSQL authority serializes concurrent exact preparation into one committed immutable fact",
+          "status": "failed",
+          "messages": [
+            "AssertionError: expected [] to have a length of 6 but got +0\n    at Proxy.<anonymous> (file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/expect/dist/index.js:1389:20)\n    at Proxy.<anonymous> (file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/expect/dist/index.js:1156:15)\n    at Proxy.methodWrapper (file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/chai/index.js:1700:25)\n    at C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/prepared-financial-command-authority.pg.test.ts:85:22\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+          ]
+        },
+        {
+          "name": "Universal V1 PREPARED financial command PostgreSQL authority replays an exact request and rejects changed-key, changed-context, and occupied lifecycle identities",
+          "status": "failed",
+          "messages": [
+            "PreparedFinancialCommandAuthorityError: UNIVERSAL_V1_PREPARED_FINANCIAL_COMMAND_ACTOR_ATTESTATION_REQUIRED\n    at PostgresUniversalV1PreparedFinancialCommandAuthority.prepare (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/payment/PreparedFinancialCommandAuthority.ts:508:13)\n    at C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/prepared-financial-command-authority.pg.test.ts:113:39\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:2305:20\n    at new Promise (<anonymous>)\n    at runWithTimeout (file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:2272:10)"
+          ]
+        },
+        {
+          "name": "Universal V1 PREPARED financial command PostgreSQL authority commits PREPARED and REQUESTED but refuses adapter entry without DISPATCH_ATTEMPTED",
+          "status": "failed",
+          "messages": [
+            "PreparedFinancialCommandAuthorityError: UNIVERSAL_V1_PREPARED_FINANCIAL_COMMAND_ACTOR_ATTESTATION_REQUIRED\n    at PostgresUniversalV1PreparedFinancialCommandAuthority.prepare (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/payment/PreparedFinancialCommandAuthority.ts:508:13)\n    at C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/prepared-financial-command-authority.pg.test.ts:136:38\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:2305:20\n    at new Promise (<anonymous>)\n    at runWithTimeout (file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:2272:10)"
+          ]
+        },
+        {
+          "name": "Universal V1 PREPARED financial command PostgreSQL authority owns occurrence time in PostgreSQL rather than accepting caller wall clock",
+          "status": "failed",
+          "messages": [
+            "PreparedFinancialCommandAuthorityError: UNIVERSAL_V1_PREPARED_FINANCIAL_COMMAND_ACTOR_ATTESTATION_REQUIRED\n    at PostgresUniversalV1PreparedFinancialCommandAuthority.prepare (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/payment/PreparedFinancialCommandAuthority.ts:508:13)\n    at C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/prepared-financial-command-authority.pg.test.ts:196:38\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:2305:20\n    at new Promise (<anonymous>)\n    at runWithTimeout (file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:2272:10)"
+          ]
+        },
+        {
+          "name": "Universal V1 PREPARED financial command PostgreSQL authority rejects approved-provider preparation and UPDATE, DELETE, and TRUNCATE",
+          "status": "failed",
+          "messages": [
+            "PreparedFinancialCommandAuthorityError: UNIVERSAL_V1_PREPARED_FINANCIAL_COMMAND_ACTOR_ATTESTATION_REQUIRED\n    at PostgresUniversalV1PreparedFinancialCommandAuthority.prepare (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/payment/PreparedFinancialCommandAuthority.ts:508:13)\n    at C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/prepared-financial-command-authority.pg.test.ts:207:38\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+          ]
+        }
+      ]
+    },
+    {
+      "file": "backend/tests/system/provider-observation-normalization.pg.test.ts",
+      "status": "failed",
+      "message": "",
+      "assertions": [
+        {
+          "name": "provider observation normalization PostgreSQL authority corroborates an exact terminal observation without provider I/O or lifecycle success",
+          "status": "failed",
+          "messages": [
+            "PreparedFinancialCommandAuthorityError: UNIVERSAL_V1_PREPARED_FINANCIAL_COMMAND_ACTOR_ATTESTATION_REQUIRED\n    at PostgresUniversalV1PreparedFinancialCommandAuthority.prepare (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/payment/PreparedFinancialCommandAuthority.ts:508:13)\n    at C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/provider-observation-normalization.pg.test.ts:54:89\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+          ]
+        }
+      ]
+    },
+    {
+      "file": "backend/tests/system/stage1-legacy-authority-containment.pg.test.ts",
+      "status": "failed",
+      "message": "",
+      "assertions": [
+        {
+          "name": "Stage-1 contaminated-main PostgreSQL upgrade containment preserves legacy rows and receipts while making every retired writer and bypass inert",
+          "status": "failed",
+          "messages": [
+            "error: HXUV1-WOCMD-0A: Work Order trigger catalog mismatch (151 / f82f820234a2fd838b14d49734b3a29f2fce3b0ed1b9cf782a8ac874ab2941c4)\n    at C:\\Users\\Manfish\\Documents\\Codex\\2026-08-25\\files-mentioned-by-the-user-hustlexp\\work\\repos\\backend-security-expiry-wip\\node_modules\\pg\\lib\\client.js:545:17\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at applyEngineAutomationMigration (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/jobs/engine-automation-migration.ts:600:5)\n    at runEngineAutomationMigrationsOnConnectedClientWithReceipt (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/jobs/engine-automation-migration.ts:662:21)\n    at runEngineAutomationMigrationWithReceipt (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/jobs/engine-automation-migration.ts:706:12)\n    at runEngineAutomationMigration (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/jobs/engine-automation-migration.ts:722:11)\n    at C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/stage1-legacy-authority-containment.pg.test.ts:646:38\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+          ]
+        }
+      ]
+    },
+    {
+      "file": "backend/tests/system/universal-v1-estimate-materialization.pg.test.ts",
+      "status": "failed",
+      "message": "",
+      "assertions": [
+        {
+          "name": "Universal V1 provider estimate PostgreSQL golden path materializes one fake-secured unassigned Work Order, replays exactly, and rejects changed-context reuse",
+          "status": "failed",
+          "messages": [
+            "Error: WORK_ORDER_HISTORY_UNAVAILABLE\n    at refuse (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderHistory.ts:35:9)\n    at PostgresUniversalV1WorkOrderHistoryReader.read (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderHistory.ts:116:14)\n    at readHistory (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderResume.ts:120:43)\n    at resumeUniversalV1WorkOrder (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderResume.ts:163:23)\n    at UniversalV1WorkOrderApplication.secureAndMaterializeFakeWorkOrder (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderApplication.ts:124:12)\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-estimate-materialization.pg.test.ts:2942:26\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+          ]
+        },
+        {
+          "name": "Universal V1 provider estimate PostgreSQL golden path preserves committed fake-finance evidence when terminal Work Order insertion fails",
+          "status": "failed",
+          "messages": [
+            "Error: expected Error: WORK_ORDER_HISTORY_UNAVAILABLE to match object { code: 'XX999', …(1) }\n    at _Assertion.__VITEST_REJECTS__ (file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/expect/dist/index.js:1747:17)\n    at _Assertion.propertyGetter (file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/chai/index.js:1570:27)\n    at Object.proxyGetter [as get] (file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/chai/index.js:1659:22)\n    at C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-estimate-materialization.pg.test.ts:3093:7\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+          ]
+        },
+        {
+          "name": "Universal V1 provider estimate PostgreSQL golden path uses only the exact compensation claim when eligibility changes after SECURE",
+          "status": "failed",
+          "messages": [
+            "Error: expected Error: WORK_ORDER_HISTORY_UNAVAILABLE to match object { Object (code) }\n    at _Assertion.__VITEST_REJECTS__ (file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/expect/dist/index.js:1747:17)\n    at _Assertion.propertyGetter (file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/chai/index.js:1570:27)\n    at Object.proxyGetter [as get] (file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/chai/index.js:1659:22)\n    at C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-estimate-materialization.pg.test.ts:3280:5\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+          ]
+        },
+        {
+          "name": "Universal V1 provider estimate PostgreSQL golden path voids the exact fake security event when legacy task state changes after SECURE",
+          "status": "failed",
+          "messages": [
+            "Error: expected Error: WORK_ORDER_HISTORY_UNAVAILABLE to match object { Object (code) }\n    at _Assertion.__VITEST_REJECTS__ (file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/expect/dist/index.js:1747:17)\n    at _Assertion.propertyGetter (file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/chai/index.js:1570:27)\n    at Object.proxyGetter [as get] (file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/chai/index.js:1659:22)\n    at C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-estimate-materialization.pg.test.ts:3417:5\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+          ]
+        },
+        {
+          "name": "Universal V1 provider estimate PostgreSQL golden path freezes the legacy task lifecycle projection after exact Work Order binding",
+          "status": "failed",
+          "messages": [
+            "Error: WORK_ORDER_HISTORY_UNAVAILABLE\n    at refuse (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderHistory.ts:35:9)\n    at PostgresUniversalV1WorkOrderHistoryReader.read (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderHistory.ts:116:14)\n    at readHistory (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderResume.ts:120:43)\n    at resumeUniversalV1WorkOrder (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderResume.ts:163:23)\n    at UniversalV1WorkOrderApplication.secureAndMaterializeFakeWorkOrder (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderApplication.ts:124:12)\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-estimate-materialization.pg.test.ts:3478:26\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+          ]
+        },
+        {
+          "name": "Universal V1 provider estimate PostgreSQL golden path rejects Work Order materialization after provider authority is revoked with zero financial effects",
+          "status": "failed",
+          "messages": [
+            "Error: expected Error: WORK_ORDER_HISTORY_UNAVAILABLE to match object { Object (code) }\n    at _Assertion.__VITEST_REJECTS__ (file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/expect/dist/index.js:1747:17)\n    at _Assertion.propertyGetter (file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/chai/index.js:1570:27)\n    at Object.proxyGetter [as get] (file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/chai/index.js:1659:22)\n    at C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-estimate-materialization.pg.test.ts:3561:5\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+          ]
+        },
+        {
+          "name": "Universal V1 provider estimate PostgreSQL golden path materializes and replays one dual-approved scope-only change on the exact execution chain",
+          "status": "failed",
+          "messages": [
+            "Error: WORK_ORDER_HISTORY_UNAVAILABLE\n    at refuse (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderHistory.ts:35:9)\n    at PostgresUniversalV1WorkOrderHistoryReader.read (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderHistory.ts:116:14)\n    at readHistory (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderResume.ts:120:43)\n    at resumeUniversalV1WorkOrder (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderResume.ts:163:23)\n    at UniversalV1WorkOrderApplication.secureAndMaterializeFakeWorkOrder (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderApplication.ts:124:12)\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-estimate-materialization.pg.test.ts:3654:23\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+          ]
+        },
+        {
+          "name": "Universal V1 provider estimate PostgreSQL golden path commits, fake-authorizes, materializes, and exactly replays one price-and-scope change",
+          "status": "failed",
+          "messages": [
+            "Error: WORK_ORDER_HISTORY_UNAVAILABLE\n    at refuse (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderHistory.ts:35:9)\n    at PostgresUniversalV1WorkOrderHistoryReader.read (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderHistory.ts:116:14)\n    at readHistory (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderResume.ts:120:43)\n    at resumeUniversalV1WorkOrder (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderResume.ts:163:23)\n    at UniversalV1WorkOrderApplication.secureAndMaterializeFakeWorkOrder (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderApplication.ts:124:12)\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-estimate-materialization.pg.test.ts:3890:23\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+          ]
+        },
+        {
+          "name": "Universal V1 provider estimate PostgreSQL golden path recovers every price-change crash boundary and terminally seals revoked authority",
+          "status": "failed",
+          "messages": [
+            "Error: WORK_ORDER_HISTORY_UNAVAILABLE\n    at refuse (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderHistory.ts:35:9)\n    at PostgresUniversalV1WorkOrderHistoryReader.read (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderHistory.ts:116:14)\n    at readHistory (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderResume.ts:120:43)\n    at resumeUniversalV1WorkOrder (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderResume.ts:163:23)\n    at UniversalV1WorkOrderApplication.secureAndMaterializeFakeWorkOrder (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderApplication.ts:124:12)\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at approvedPriceAndScopeRecoveryLane (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-estimate-materialization.pg.test.ts:1524:23)\n    at preparedPriceAndScopeRecoveryLane (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-estimate-materialization.pg.test.ts:1646:18)\n    at C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-estimate-materialization.pg.test.ts:4135:25\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+          ]
+        },
+        {
+          "name": "Universal V1 provider estimate PostgreSQL golden path serializes one organization account across owner/admin actors and rejects forged or out-of-order authority",
+          "status": "failed",
+          "messages": [
+            "error: HXFPCREC1-V13: DISPATCH requires one same-transaction sealed v13 admission\n    at C:\\Users\\Manfish\\Documents\\Codex\\2026-08-25\\files-mentioned-by-the-user-hustlexp\\work\\repos\\backend-security-expiry-wip\\node_modules\\pg\\lib\\client.js:545:17\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at query (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-estimate-materialization.pg.test.ts:334:24)\n    at PostgresFinancialProviderCommandRecoveryRepository.insertLease (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/payment/FinancialProviderCommandRecovery.ts:1064:22)\n    at runTransaction (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-estimate-materialization.pg.test.ts:337:21)\n    at DurableFakeFinancialProviderCommandCoordinator.dispatch (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/payment/FinancialProviderCommandRecovery.ts:1380:19)\n    at JournaledFinancialProviderInvoker.invokeAfterCommit (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/payment/FinancialProviderCommandJournal.ts:665:27)\n    at UniversalV1FakeFinancialApplicationService.onboardProvider (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/payment/UniversalV1FinancialApplicationService.ts:1689:34)\n    at UniversalV1FakeFinancialApplicationService.onboardProvider (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/payment/UniversalV1FinancialApplicationService.ts:2011:20)\n    at evidence (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-estimate-materialization.pg.test.ts:4673:23)"
+          ]
+        },
+        {
+          "name": "Universal V1 provider estimate PostgreSQL golden path delivers one completion notice through the real worker and loopback SMTP sink",
+          "status": "failed",
+          "messages": [
+            "Error: WORK_ORDER_HISTORY_UNAVAILABLE\n    at refuse (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderHistory.ts:35:9)\n    at PostgresUniversalV1WorkOrderHistoryReader.read (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderHistory.ts:116:14)\n    at readHistory (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderResume.ts:120:43)\n    at resumeUniversalV1WorkOrder (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderResume.ts:163:23)\n    at UniversalV1WorkOrderApplication.secureAndMaterializeFakeWorkOrder (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderApplication.ts:124:12)\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-estimate-materialization.pg.test.ts:4996:26\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+          ]
+        },
+        {
+          "name": "Universal V1 provider estimate PostgreSQL golden path continues an unassigned Work Order through evidence, completion, fake capture, 'settlement and reconciliation'",
+          "status": "failed",
+          "messages": [
+            "Error: WORK_ORDER_HISTORY_UNAVAILABLE\n    at refuse (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderHistory.ts:35:9)\n    at PostgresUniversalV1WorkOrderHistoryReader.read (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderHistory.ts:116:14)\n    at readHistory (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderResume.ts:120:43)\n    at resumeUniversalV1WorkOrder (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderResume.ts:163:23)\n    at UniversalV1WorkOrderApplication.secureAndMaterializeFakeWorkOrder (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderApplication.ts:124:12)\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-estimate-materialization.pg.test.ts:5238:28\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+          ]
+        },
+        {
+          "name": "Universal V1 provider estimate PostgreSQL golden path continues an unassigned Work Order through evidence, completion, fake capture, 'full refund and closed reconciliation'",
+          "status": "failed",
+          "messages": [
+            "Error: WORK_ORDER_HISTORY_UNAVAILABLE\n    at refuse (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderHistory.ts:35:9)\n    at PostgresUniversalV1WorkOrderHistoryReader.read (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderHistory.ts:116:14)\n    at readHistory (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderResume.ts:120:43)\n    at resumeUniversalV1WorkOrder (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderResume.ts:163:23)\n    at UniversalV1WorkOrderApplication.secureAndMaterializeFakeWorkOrder (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/UniversalV1WorkOrderApplication.ts:124:12)\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-estimate-materialization.pg.test.ts:5238:28\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+          ]
+        }
+      ]
+    },
+    {
+      "file": "backend/tests/system/universal-v1-financial-security-expiry.pg.test.ts",
+      "status": "failed",
+      "message": "",
+      "assertions": [
+        {
+          "name": "Universal V1 financial-security expiry PostgreSQL authority carries one millisecond provider observation through the real repository, application, lifecycle, and bridge path",
+          "status": "failed",
+          "messages": [
+            "PreparedFinancialCommandAuthorityError: UNIVERSAL_V1_PREPARED_FINANCIAL_COMMAND_ACTOR_ATTESTATION_REQUIRED\n    at PostgresUniversalV1PreparedFinancialCommandAuthority.prepare (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/payment/PreparedFinancialCommandAuthority.ts:508:13)\n    at UniversalV1FakeFinancialApplicationService.executeFinancialEvent (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/payment/UniversalV1FinancialApplicationService.ts:1616:51)\n    at C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-financial-security-expiry.pg.test.ts:1610:41\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+          ]
+        },
+        {
+          "name": "Universal V1 financial-security expiry PostgreSQL authority compensates a raw-only pre-v9 null-expiry success without an UNKNOWN loop or new positive authority",
+          "status": "failed",
+          "messages": [
+            "PreparedFinancialCommandAuthorityError: UNIVERSAL_V1_PREPARED_FINANCIAL_COMMAND_ACTOR_ATTESTATION_REQUIRED\n    at PostgresUniversalV1PreparedFinancialCommandAuthority.prepare (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/payment/PreparedFinancialCommandAuthority.ts:508:13)\n    at UniversalV1FakeFinancialApplicationService.executeFinancialEvent (C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/src/services/payment/UniversalV1FinancialApplicationService.ts:1616:51)\n    at C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/system/universal-v1-financial-security-expiry.pg.test.ts:1704:41\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+          ]
+        }
+      ]
+    },
+    {
+      "file": "backend/tests/system/universal-v1-work-order-command-ports-v1.pg.test.ts",
+      "status": "failed",
+      "message": "",
+      "assertions": [
+        {
+          "name": "Universal V1 PostgreSQL Work Order command ports v1 fresh-installs exact engine ordinal 146, fake-finance v1-v12, and the bootstrap seal",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "Universal V1 PostgreSQL Work Order command ports v1 fails closed for absent, wrong-database, uppercase, and duplicate current target authority",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "Universal V1 PostgreSQL Work Order command ports v1 runs the bounded fake-only worker port with zero effects and immutable audit",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "Universal V1 PostgreSQL Work Order command ports v1 provisions exact NOLOGIN owners and least-privilege runtime and telemetry ACLs",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "Universal V1 PostgreSQL Work Order command ports v1 proves the separately seeded fake-finance v1-v11 chain without API finance grants",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "Universal V1 PostgreSQL Work Order command ports v1 allows attestation only through the attester and consumes it inside the human port",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "Universal V1 PostgreSQL Work Order command ports v1 rejects duplicate active canonical subjects before assertion consumption or domain writes",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "Universal V1 PostgreSQL Work Order command ports v1 requires writable SERIALIZABLE admission and exact millisecond timestamps before any write",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "Universal V1 PostgreSQL Work Order command ports v1 fails live readback for rogue LOGIN, membership, schema, relation, and grant-option authority",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "Universal V1 PostgreSQL Work Order command ports v1 runs exact-role interest, hold, full fake v1-v11 materialization, replay, and conflict",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "Universal V1 PostgreSQL Work Order command ports v1 rejects a real non-SUCCEEDED SECURE provider chain with zero Work Order effects",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "Universal V1 PostgreSQL Work Order command ports v1 claims and replays one exact fake VOID after post-SECURE eligibility revocation",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "Universal V1 PostgreSQL Work Order command ports v1 serializes a concurrent provider-capability revoke and leaves zero command writes",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "Universal V1 PostgreSQL Work Order command ports v1 activates a post-provision target through the sealed migrator port and rejects an old-tip assertion",
+          "status": "skipped",
+          "messages": []
+        },
+        {
+          "name": "Universal V1 PostgreSQL Work Order command ports v1 serializes the first runtime snapshot with target activation in both lock schedules",
+          "status": "skipped",
+          "messages": []
+        }
+      ]
+    },
+    {
+      "file": "backend/tests/unit/engine-migration-manifest.test.ts",
+      "status": "failed",
+      "message": "",
+      "assertions": [
+        {
+          "name": "engine migration manifest matches the reviewed artifact digest used by Build Validation",
+          "status": "failed",
+          "messages": [
+            "AssertionError: expected '5b97ad64033c3d2b5320d28b28e2cc398e915…' to be 'f888ee9b2872e73b90428bb3922d45a61108b…' // Object.is equality\n    at C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/backend/tests/unit/engine-migration-manifest.test.ts:81:20\n    at file:///C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,7 +1,20 @@
 import { createHash } from 'node:crypto';
 import { Socket } from 'node:net';
 import { connect as connectTls } from 'node:tls';
-import type { OutboundEmailMessage } from './OutboundCommunicationService.js';
+
+/**
+ * Transport-local message shape. Keep the SMTP sink independent from the
+ * higher-level outbound-port factory so the adapter can be imported by that
+ * factory without creating a runtime/module cycle.
+ */
+interface SmtpSinkEmailMessage {
+  idempotencyKey: string;
+  to: string;
+  from: string;
+  subject: string;
+  text: string;
+  html: string;
+}
 
 interface SmtpResponse {
   code: number;
@@ -96,7 +109,7 @@ function safeHeader(value: string, name: string): string {
   return value;
 }
 
-function smtpMessage(message: OutboundEmailMessage): string {
+function smtpMessage(message: SmtpSinkEmailMessage): string {
   const digest = stableMessageId(message.idempotencyKey);
   const boundary = `hustlexp-${digest.slice(0, 24)}`;
   const subject = Buffer.from(safeHeader(message.subject, 'subject'), 'utf8').toString('base64');
@@ -139,7 +152,7 @@ async function expectSmtp(
 
 export async function sendEmailToSmtpSink(
   url: URL,
-  message: OutboundEmailMessage,
+  message: SmtpSinkEmailMessage,
   options: { timeoutMs?: number } = {}
 ): Promise<string> {
   const timeoutMs = options.timeoutMs ?? 5_000;
@@ -148,6 +161,7 @@ export async function sendEmailToSmtpSink(
   }
   const { socket, connected } = openSmtpConnection(url, timeoutMs);
   const reader = new SmtpResponseReader(socket);
+  let messageAccepted = false;
   try {
     await connected;
     await expectSmtp(reader, 220);
@@ -156,13 +170,20 @@ export async function sendEmailToSmtpSink(
     await expectSmtp(reader, 250, socket, `RCPT TO:<${safeHeader(message.to, 'to')}>`);
     await expectSmtp(reader, 354, socket, 'DATA');
     await expectSmtp(reader, 250, socket, `${smtpMessage(message)}\r\n.`);
+    messageAccepted = true;
     // The final DATA 250 is the provider acceptance boundary. QUIT is only a
     // best-effort session courtesy: a sink may close immediately after it has
     // durably accepted the message, and that close must not erase the known
     // deterministic receipt or invite a duplicate send.
-    socket.write('QUIT\r\n');
+    // Gracefully half-close after QUIT so the peer can deliver its final reply.
+    // Destroying the socket immediately after writing QUIT resets loopback SMTP
+    // peers on Windows and can surface an unrelated ECONNRESET after success.
+    socket.end('QUIT\r\n');
   } finally {
-    socket.destroy();
+    // Before the DATA acceptance boundary, fail fast and release the socket.
+    // After acceptance, preserve the known result and let the graceful SMTP
+    // shutdown above finish independently of the deterministic receipt.
+    if (!messageAccepted) socket.destroy();
   }
   return `smtp-sink-${stableMessageId(message.idempotencyKey)}`;
 }

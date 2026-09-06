@@ -841,11 +841,17 @@ describe('remaining task service fail-closed edges', () => {
     await expect(TaskAbandonService.workerAbandon(TASK_ID, WORKER_ID)).resolves.toMatchObject({
       success: false, error: { code: 'NOT_FOUND' },
     });
-    query.mockResolvedValueOnce(rows([{ state: 'ACCEPTED', worker_id: 'other', poster_id: POSTER_ID }]));
+    query.mockResolvedValueOnce(rows([{
+      state: 'ACCEPTED', worker_id: 'other', poster_id: POSTER_ID,
+      universal_contract_version: 0, work_order_id: null,
+    }]));
     await expect(TaskAbandonService.workerAbandon(TASK_ID, WORKER_ID)).resolves.toMatchObject({
       success: false, error: { code: 'FORBIDDEN' },
     });
-    query.mockResolvedValueOnce(rows([{ state: 'ACCEPTED', worker_id: WORKER_ID, poster_id: POSTER_ID }]))
+    query.mockResolvedValueOnce(rows([{
+      state: 'ACCEPTED', worker_id: WORKER_ID, poster_id: POSTER_ID,
+      universal_contract_version: 0, work_order_id: null,
+    }]))
       .mockResolvedValueOnce(rows([], 0));
     await expect(TaskAbandonService.workerAbandon(TASK_ID, WORKER_ID)).resolves.toMatchObject({
       success: false, error: { code: 'INVALID_STATE' },
@@ -853,7 +859,10 @@ describe('remaining task service fail-closed edges', () => {
   });
 
   it('logs a best-effort abandonment event failure and still requests the refund', async () => {
-    query.mockResolvedValueOnce(rows([{ state: 'ACCEPTED', worker_id: WORKER_ID, poster_id: POSTER_ID }]))
+    query.mockResolvedValueOnce(rows([{
+      state: 'ACCEPTED', worker_id: WORKER_ID, poster_id: POSTER_ID,
+      universal_contract_version: 0, work_order_id: null,
+    }]))
       .mockResolvedValueOnce(rows([{ id: TASK_ID, state: 'CANCELLED' }]))
       .mockRejectedValueOnce(new Error('task_events absent'))
       .mockResolvedValueOnce(rows([{ id: 'esc-1' }]));
@@ -875,18 +884,31 @@ describe('remaining task service fail-closed edges', () => {
 
   it('covers cancel missing-task, update-race, and unexpected DB failures', async () => {
     query.mockResolvedValueOnce(rows());
-    await expect(TaskCloseService.cancel(TASK_ID, POSTER_ID)).resolves.toMatchObject({
+    await expect(TaskCloseService.cancelForInternalPurpose({
+      taskId: TASK_ID,
+      expectedVersion: 1,
+      purpose: 'GDPR_ERASURE',
+    })).resolves.toMatchObject({
       success: false, error: { code: 'NOT_FOUND' },
     });
     query.mockResolvedValueOnce(rows([{
       state: 'OPEN', poster_id: POSTER_ID, late_cancel_pct: 0,
-      cancellation_window_hours: 0, accepted_at: null,
+      cancellation_window_hours: 0, accepted_at: null, version: 1,
+      work_order_id: null, universal_contract_version: 0,
     }])).mockResolvedValueOnce(rows());
-    await expect(TaskCloseService.cancel(TASK_ID, POSTER_ID)).resolves.toMatchObject({
-      success: false, error: { code: 'INVALID_STATE' },
+    await expect(TaskCloseService.cancelForInternalPurpose({
+      taskId: TASK_ID,
+      expectedVersion: 1,
+      purpose: 'GDPR_ERASURE',
+    })).resolves.toMatchObject({
+      success: false, error: { code: 'TASK_CANCEL_VERSION_CONFLICT' },
     });
     mocks.transaction.mockRejectedValueOnce(new Error('cancel database error'));
-    await expect(TaskCloseService.cancel(TASK_ID, POSTER_ID)).resolves.toMatchObject({
+    await expect(TaskCloseService.cancelForInternalPurpose({
+      taskId: TASK_ID,
+      expectedVersion: 1,
+      purpose: 'GDPR_ERASURE',
+    })).resolves.toMatchObject({
       success: false, error: { code: 'DB_ERROR' },
     });
   });

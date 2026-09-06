@@ -1,8 +1,9 @@
-import { buildIdentity, type BuildIdentity } from '../../buildIdentity.js';
-import type { Database } from '../../db.js';
-import { readReleaseManifest, type ReleaseManifestEvidence } from '../../releaseManifest.js';
 import type { FinancialProviderPorts } from './FinancialProviderPorts.js';
-import { createDatabaseBackedFakeFinancialProvider } from './FakeFinancialProvider.js';
+import {
+  createDatabaseBackedFakeFinancialProvider,
+  issueLiveFakeFinancialDatabaseCapability,
+} from './FakeFinancialProvider.js';
+import type { NonproductionFinancialAuthorizationOptions } from './NonproductionFinancialAuthorization.js';
 
 export type FinancialProviderName = 'fake';
 
@@ -13,15 +14,13 @@ export type FinancialProviderName = 'fake';
  * reviewed adapter and certification suite; it cannot be selected by an
  * environment variable before that code exists.
  */
-export function resolveFinancialProvider(
+export async function resolveFinancialProvider(
   provider: FinancialProviderName,
-  database?: Database,
-  environment: NodeJS.ProcessEnv = process.env,
-  release: ReleaseManifestEvidence = readReleaseManifest(),
-  identity: BuildIdentity = buildIdentity,
-): FinancialProviderPorts {
+  options: NonproductionFinancialAuthorizationOptions = {}
+): Promise<FinancialProviderPorts> {
   if (provider === 'fake') {
-    return createDatabaseBackedFakeFinancialProvider(database, environment, release, identity);
+    const capability = await issueLiveFakeFinancialDatabaseCapability(options);
+    return createDatabaseBackedFakeFinancialProvider(capability);
   }
   throw new Error(`UNSUPPORTED_FINANCIAL_PROVIDER:${String(provider)}`);
 }

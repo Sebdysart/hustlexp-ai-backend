@@ -34,14 +34,27 @@ const retiredMigrationPaths = [
 
 describe('Stage-1 legacy authority forward containment migration', () => {
   it('is append-only ordinal 140 after byte-frozen migration 139', () => {
-    expect(REQUIRED_MIGRATION_FILES).toHaveLength(140);
-    expect(REQUIRED_MIGRATION_FILES.at(-2)).toEqual({
+    expect(REQUIRED_MIGRATION_FILES).toHaveLength(146);
+    expect(REQUIRED_MIGRATION_FILES[138]).toEqual({
       name: '20261005_universal_v1_occurrence_access_audit_v1',
       fileName: '20261005_universal_v1_occurrence_access_audit_v1.sql',
     });
-    expect(REQUIRED_MIGRATION_FILES.at(-1)).toEqual({
+    expect(REQUIRED_MIGRATION_FILES[139]).toEqual({
       name: '20261006_stage1_legacy_authority_containment_v1',
       fileName: '20261006_stage1_legacy_authority_containment_v1.sql',
+    });
+    expect(REQUIRED_MIGRATION_FILES[140]).toEqual({
+      name: '20261007_subscription_cancellation_recovery_v1',
+      fileName: '20261007_subscription_cancellation_recovery_v1.sql',
+    });
+    expect(REQUIRED_MIGRATION_FILES[141]).toEqual({
+      name: '20261008_universal_v1_work_order_task_state_containment_v1',
+      fileName:
+        '20261008_universal_v1_work_order_task_state_containment_v1.sql',
+    });
+    expect(REQUIRED_MIGRATION_FILES[142]).toEqual({
+      name: '20261009_universal_v1_standardized_quote_readiness_v1',
+      fileName: '20261009_universal_v1_standardized_quote_readiness_v1.sql',
     });
     expect(createHash('sha256').update(occurrenceAudit).digest('hex')).toBe(
       'd805ce946b7aba804be55aea9f131cff99047adaa7d46cd3d21242ac492ec364'

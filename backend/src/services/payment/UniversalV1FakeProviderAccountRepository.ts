@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { db, type Database, type QueryFn } from '../../db.js';
 import type { ProviderAccountState } from './FinancialProviderPorts.js';
@@ -548,22 +548,12 @@ export class PostgresUniversalV1FakeProviderAccountRepository implements Univers
         }
 
         const inserted = await query<{ provider_account_fact_id: string }>(
-          `INSERT INTO public.universal_v1_fake_provider_account_facts (
-           provider_subject_kind,
-           provider_user_id,
-           provider_organization_id,
-           onboard_command_id,
-           onboard_dispatch_attempt_id,
-           onboard_outcome_fact_id,
-           onboard_fake_event_id,
-           refresh_command_id,
-           refresh_dispatch_attempt_id,
-           refresh_outcome_fact_id,
-           refresh_fake_event_id,
-           recorded_by
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-         RETURNING provider_account_fact_id`,
+          `SELECT provider_account_fact_id
+             FROM public.hxos_record_fake_provider_account_fact_v1(
+               $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13
+             )`,
           [
+            randomUUID(),
             subject.kind,
             subject.userId,
             subject.organizationId,

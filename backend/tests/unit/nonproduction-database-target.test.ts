@@ -24,6 +24,7 @@ const stagingEnv = {
 const localIdentity = {
   database_name: 'hx_ci_system_test',
   role_name: 'hx_ci_runner',
+  session_role_name: 'hx_ci_runner',
   server_address: '127.0.0.1',
   server_port: 5432,
   schema_name: 'public',
@@ -34,6 +35,7 @@ const localIdentity = {
 const stagingIdentity = {
   database_name: 'hustlexp_nonprod',
   role_name: 'synthetic',
+  session_role_name: 'synthetic',
   server_address: '10.42.0.8',
   server_port: 5432,
   schema_name: 'public',
@@ -94,6 +96,7 @@ describe('configured nonproduction database target', () => {
       roleName: 'hx_ci_runner',
       hostname: '127.0.0.1',
       port: 5432,
+      allowLocalContainerAddress: false,
     }));
   });
 
@@ -159,6 +162,10 @@ describe('connected nonproduction database identity', () => {
     const mismatches: Array<[Record<string, unknown>, string]> = [
       [{ ...stagingIdentity, database_name: 'wrong_nonprod' }, 'LIVE_DATABASE_NAME_MISMATCH'],
       [{ ...stagingIdentity, role_name: 'wrong_role' }, 'LIVE_DATABASE_ROLE_MISMATCH'],
+      [
+        { ...stagingIdentity, session_role_name: 'wrong_session_role' },
+        'LIVE_DATABASE_SESSION_ROLE_MISMATCH',
+      ],
       [{ ...stagingIdentity, server_port: 6432 }, 'LIVE_DATABASE_PORT_MISMATCH'],
       [{ ...stagingIdentity, server_address: 'local_socket' }, 'LIVE_NONPRODUCTION_DATABASE_ADDRESS_INVALID'],
       [{ ...stagingIdentity, server_address: '127.0.0.1' }, 'LIVE_NONPRODUCTION_DATABASE_ADDRESS_INVALID'],
@@ -218,5 +225,40 @@ describe('connected nonproduction database identity', () => {
       serverAddress: '::1',
       serverPort: 5432,
     }));
+  });
+
+  it('accepts an RFC1918 service-container address only for an exact flagged CI target', async () => {
+    const flaggedTarget = assertConfiguredNonproductionDatabaseTarget(
+      { ...localEnv, HX_ALLOW_CI_DB_RECREATE: 'true' },
+      'postgresql://hx_ci_runner@127.0.0.1:5432/hx_ci_system_test',
+    );
+    expect(flaggedTarget.allowLocalContainerAddress).toBe(true);
+    await expect(assertConnectedNonproductionDatabaseTarget(identityClient([{
+      ...localIdentity,
+      server_address: '172.18.0.2',
+    }]), flaggedTarget)).resolves.toEqual(expect.objectContaining({
+      serverAddress: '172.18.0.2',
+    }));
+
+    const unflaggedTarget = assertConfiguredNonproductionDatabaseTarget(
+      localEnv,
+      'postgresql://hx_ci_runner@127.0.0.1:5432/hx_ci_system_test',
+    );
+    await expect(assertConnectedNonproductionDatabaseTarget(identityClient([{
+      ...localIdentity,
+      server_address: '172.18.0.2',
+    }]), unflaggedTarget)).rejects.toThrow(
+      'NONPRODUCTION_DATABASE_TARGET_REFUSED:LIVE_LOCAL_DATABASE_ADDRESS_MISMATCH',
+    );
+
+    const arbitraryTarget = assertConfiguredNonproductionDatabaseTarget(
+      {
+        ...localEnv,
+        HX_ALLOW_CI_DB_RECREATE: 'true',
+        HXOS_LOCAL_TEST_DATABASE_NAME: 'hx_ci_other_test',
+      },
+      'postgresql://hx_ci_runner@127.0.0.1:5432/hx_ci_other_test',
+    );
+    expect(arbitraryTarget.allowLocalContainerAddress).toBe(false);
   });
 });

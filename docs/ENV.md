@@ -40,20 +40,63 @@ Classification-only production inspection on `2026-08-25` found `NODE_ENV=produc
 | `HX_MIGRATION_ENVIRONMENT_APPROVAL_DIGEST` | Migration role only | Must equal the authenticated exact manifest digest; cannot replace its signature |
 | `ALLOWED_ORIGINS` | Required in production | Comma-separated HTTPS website origins; wildcards are rejected |
 
+## Work Order actor-attestation role plan
+
+Status: `AUTHORIZED_LOCAL_NONPROD_IMPLEMENTATION_PENDING /
+RELEASE_BLOCKED_PENDING_IMPLEMENTATION_AND_INDEPENDENT_REVIEW`
+
+Option A authorizes an isolated one-time attester design for synthetic local,
+preview, and staging implementation only. It does not authorize setting any
+variable on a persistent target, and the current runtime does not yet implement
+or certify these bindings.
+
+| Planned variable | Logical role | Required shape |
+|---|---|---|
+| `HX_WORK_ORDER_MIGRATION_DATABASE_ROLE` | Migrator | Pairwise-distinct one-shot login; never supplied to API, worker, or attester |
+| `HX_WORK_ORDER_API_DATABASE_ROLE` | API | Login; command `EXECUTE` plus required reads only; no protected direct DML |
+| `HX_WORK_ORDER_WORKER_DATABASE_ROLE` | Worker | Login; bounded worker/recovery `EXECUTE` plus required reads only; no protected direct DML |
+| `HX_WORK_ORDER_ATTESTER_DATABASE_ROLE` | Attester | Login; sealed assertion issuance only; cannot consume assertions or execute Work Order commands |
+| `HX_WORK_ORDER_COMMAND_OWNER_DATABASE_ROLE` | Command owner | Unprivileged `NOLOGIN` owner of sealed Work Order commands |
+| `HX_WORK_ORDER_ASSERTION_OWNER_DATABASE_ROLE` | Assertion owner | Unprivileged `NOLOGIN` owner of assertion relations and functions |
+| `HX_FINANCE_COMMAND_OWNER_DATABASE_ROLE` | Finance owner | Unprivileged `NOLOGIN` owner for the separately certified provider-neutral financial boundary |
+| `HX_TELEMETRY_OWNER_DATABASE_ROLE` | Telemetry owner | Unprivileged `NOLOGIN` owner of the exact sealed major-action telemetry surface |
+
+All eight configured identifiers must be pairwise distinct and have no
+cross-membership or elevated PostgreSQL attributes. Each service continues to
+receive its own secret-referenced connection string through its service-local
+`DATABASE_URL`; role names are nonsecret identifiers and never substitute for
+credentials or live role readback.
+
+The assertion lifetime is database-owned and fixed at a maximum of 60 seconds;
+there is deliberately no environment-variable override. Only the SHA-256 digest
+of a random 256-bit opaque token may be persisted. Plaintext assertion tokens,
+bearer tokens, and database passwords must never appear in source, manifests,
+logs, health output, or agent prompts. See the
+[actor-attestation decision packet](architecture/HUSTLEXP_V1A_ACTOR_ATTESTATION_DECISION_PACKET.md)
+and machine-readable HOLD for the exact non-authorizing plan.
+
+Production effects remain `NONE`; production payment creation and real hard
+assignment remain `FROZEN`. Owner authorization of this design is not
+independent security or release approval.
+
 ## Migration and synthetic-bootstrap inventory
 
-The current ordered engine registry contains exactly 140 migrations through
-`20261006_stage1_legacy_authority_containment_v1`. Application startup remains
+The current dirty-local review registry contains exactly 144 migrations through
+`20261010_universal_v1_financial_security_event_expiry_v1`; the migration directory
+contains exactly 199 SQL files. Application startup remains
 read-only: no environment variable may append, skip, reorder, or apply that
 chain. The explicit migration role must still satisfy the signed-manifest and
 environment-approval boundary above.
 
-Local, preview, and staging fake-finance readiness requires exactly eight
+Local, preview, and staging fake-finance readiness requires exactly nine
 ordered nonproduction fixtures, ending with
-`20261002_universal_v1_dispute_fake_release_gate_v8`. That v8 fixture remains
-outside the engine registry and may install only after the registered dispute
-engine and fake-finance v7 evidence exist. Its presence grants no refund,
-reversal, release, payout, provider call, or real-money authority. Production
+`20261010_universal_v1_fake_financial_expiry_v9`. That v9 fixture remains outside
+the engine registry and may install only after the registered Financial Security
+Event expiry contract and fake-finance v8 evidence exist. It binds raw fake-provider
+observation and expiry to the canonical lifecycle fact and denies stale positive
+security use; it does not block bounded void, refund, reversal, reconciliation,
+or recovery. Its presence grants no refund, reversal, release, payout, provider
+call, or real-money authority. Production
 does not enable this synthetic bootstrap; `HX_PAYMENT_CREATION_MODE` remains
 `frozen`, and configuration cannot turn either migration inventory into a
 capability.
@@ -82,6 +125,40 @@ closed on a partial legacy task or quote shape. It enables no assignment,
 provider call, payment, payout, deployment, or production effect. Production
 money remains frozen, and no configuration value can reverse this containment.
 
+Migration 141 adds no runtime enablement variable. It installs append-only
+evidence for subscription-cancellation operations so a pending attempt,
+provider failure, sticky `CANCELLATION_UNCERTAIN` state, and provider-confirmed
+cancellation can be distinguished and recovered without fabricating success.
+`CANCELLATION_UNCERTAIN` permits retry-only recovery; it is never confirmation
+and never authority to clear the provider reference. Migration 141 grants
+cancellation and recovery semantics only: no payment creation, capture,
+settlement, payout, assignment, deployment, production, or other positive-money
+capability.
+
+Migration 142 adds no runtime enablement variable. It installs fail-closed
+PostgreSQL containment so only an `OPEN`, unassigned, unbound Universal V1
+controlled-test task may receive a Work Order, and then prevents the legacy
+task state, worker, Work Order pointer, or row deletion from competing with
+append-only Work Order execution facts. It grants no assignment, provider call,
+payment, payout, deployment, production effect, role, or actor authority. On
+`2026-08-31`, the complete verifier ran against disposable, loopback-only
+PostgreSQL and emitted `HXOS_ENGINE_MIGRATIONS_POSTGRES_OK 142` for the current
+dirty local source. The earlier `HXOS_ENGINE_MIGRATIONS_POSTGRES_OK 141` receipt
+remains historical evidence for its predecessor bytes. Neither receipt grants
+signed-candidate, hosted, staging, deployment, persistent-target, or production
+authority.
+
+Migration 143 adds no runtime enablement variable. It supplies standardized-quote
+readiness truth without granting assignment, provider, financial, or production
+authority.
+
+Migration 144 adds no runtime enablement variable. It records provider-authored
+expiry for successful Financial Security Events and denies stale positive
+consumers using database-owned observation time while preserving bounded void,
+refund, reversal, reconciliation, and recovery. Current 144-entry verifier proof
+remains pending; the named 142-entry receipt above is historical predecessor
+evidence and does not certify these bytes.
+
 ## Public intake verification and privacy
 
 | Variable | Requirement | Purpose |
@@ -102,6 +179,8 @@ the last legacy rate-limit window has elapsed.
 |---|---|
 | `FIREBASE_PROJECT_ID`, `FIREBASE_PRIVATE_KEY`, `FIREBASE_CLIENT_EMAIL` | Required for authenticated production traffic |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_CONNECT_WEBHOOK_SECRET` | Legacy/recovery and webhook compatibility in the current runtime; presence does not authorize new payment creation; webhook secrets must differ |
+| `HX_PAYMENT_CREATION_MODE` | Must be `frozen` in every deployed environment | Explicit customer-money creation posture; never sufficient authority to enable an effect |
+| `HX_HARD_ASSIGNMENT_MODE` | Must be `frozen` in every deployed environment | Independent provider-assignment posture; never sufficient authority to enable an effect |
 | `REDIS_URL` | Canonical provider-neutral `redis://` or `rediss://` TCP connection for cache, rate limits, BullMQ, and realtime |
 | `UPSTASH_REDIS_URL` | Legacy TCP alias accepted only when `REDIS_URL` is absent |
 | `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | Optional legacy HTTP alternate; configure both or neither; never inferred from TCP variables and never overrides `REDIS_URL` |
@@ -121,6 +200,8 @@ locks, counters, revocation markers, and rate windows. Local and staging do not
 require this alternate.
 
 `HX_PAYMENT_CREATION_MODE` must remain `frozen` in every deployed environment. The public recovery base historically accepted both `enabled` and `frozen`; this working recovery candidate no longer treats configuration alone as authority. Its payment-creation guard can return `enabled` only inside an isolated Vitest worker with `NODE_ENV=test`, `ENGINE_API_MODE=test`, `STRIPE_MODE=test`, and an `sk_test_` credential. A normal deployed process remains frozen even if every variable is spoofed. That test-only seam is not an enablement mechanism, signed release evidence, processor approval, or production customer-money authority.
+
+`HX_HARD_ASSIGNMENT_MODE` is a separate deny-by-default control and must also remain `frozen` in every deployed environment. The local candidate permits its enabled result only in an isolated Vitest worker with `NODE_ENV=test`; production and ordinary development remain frozen even if the variable is set to `enabled`. Health exposes payment creation and hard assignment separately so one green posture cannot conceal the other. This local implementation does not prove the stale-provenance production runtime is enforcing the guard.
 
 Direct legacy Task and `PENDING`-escrow materialization has no runtime enablement mechanism. Shipped code returns `LEGACY_TASK_MATERIALIZATION_FROZEN` in every environment, including processes that spoof test or Vitest metadata. Historical compatibility mechanics are characterized only through an explicit Vitest module mock under `backend/tests`; that test adapter is not imported by production code. Exact idempotent read-only replay and negative refund, void, reversal, dispute, and reconciliation paths remain available. New business flow must enter the Universal V1 TaskDraft-to-Work-Order lifecycle.
 
@@ -143,6 +224,43 @@ Use independent secrets; never reuse one key for multiple fields.
 Generate TIN/session keys with `openssl rand -hex 32` and location keys with `openssl rand -base64 32`. Follow validation errors for exact formats.
 
 ## Optional integrations
+
+### Isolated fake-provider webhook verification
+
+The v13 HTTP route `/webhooks/fake-financial` and `finance.ingestWebhook` use a
+database-held verifier key. API, worker and actor-attester credentials cannot
+read or provision this key. `HX_FAKE_FINANCIAL_WEBHOOK_SECRET` does not authenticate
+these routes. Keep the isolated fake provider's signing key outside those runtimes.
+
+Provision a randomly generated 32–128-byte key using the migration role and a
+parameterized `INSERT` into `hx_authority.fake_financial_webhook_keys_v13`
+(`key_id`, `target_authority_id`, `key_material`, `expires_at`). Commit provisioning
+before accepting deliveries. Key IDs are UUIDs; the target must be the current
+enrolled local, preview or staging database/release. Never place key bytes in SQL
+migration source, shell arguments, logs or review manifests. The synthetic tests
+provision disposable random keys in memory; a deployment provisioner and actual
+staging custody remain release work.
+
+The HTTP sender supplies `x-hustlexp-fake-finance-key-id` and a lowercase hex
+`x-hustlexp-fake-finance-signature`; tRPC supplies `keyId`, `rawBody`, `signature`.
+The signature is HMAC-SHA256 over the exact UTF-8 signing format exported by
+`FakeFinancialWebhookAuthentication.ts`: the `HUSTLEXP_FAKE_FINANCIAL_WEBHOOK_V13`
+domain, key UUID, target UUID, target version, database name, environment and
+release-manifest digest, each terminated by one zero byte, followed by the exact
+raw JSON bytes. The closed observation envelope and 16-KiB limit still apply.
+
+Use READ COMMITTED transactions for ingestion. The database commits the immutable
+observation, delivery receipt, verification provenance and pending processing row
+together. An acknowledgement means durable receipt only; it does not mean a
+financial operation completed. Exact active-key redelivery preserves original
+receipt identities and times. Expired, revoked or superseded-target keys cannot
+authenticate fresh deliveries or reauthenticate old ones. Stored historical
+evidence remains immutable for separately authorized reconciliation.
+
+Revoke a key by committing a parameterized `INSERT` of its `key_id` into
+`hx_authority.fake_financial_webhook_key_revocations_v13` using the migration role.
+Provision a new key ID for rotation. No production keys, live providers or
+production value are enabled by this setup.
 
 The template groups optional variables for object storage, maps, AI providers, Twilio, SendGrid, Sentry, feature flags, and operator-only certification tooling. Configure only integrations that are enabled. AWS credentials used by Rekognition or S3-compatible storage are service credentials; they do not imply AWS hosts the backend.
 

@@ -61,7 +61,7 @@ test('prepared test URLs remain fixed to the isolated user and database names', 
 test('pins the required-test fake-finance fixture to the append-only nonproduction migration', async () => {
   assert.equal(
     NONPRODUCTION_TEST_FINANCIAL_MIGRATION,
-    '20261002_universal_v1_dispute_fake_release_gate_v8'
+    '20261016_universal_v1_fake_financial_command_outbox_authority_v13'
   );
   assert.equal(
     NONPRODUCTION_TEST_FINANCIAL_MIGRATION_PATH,
@@ -78,6 +78,12 @@ test('pins the required-test fake-finance fixture to the append-only nonproducti
       '20260926_universal_v1_change_order_three_phase_v1',
       '20260927_universal_v1_change_order_recovery_v1',
       '20261002_universal_v1_dispute_fake_release_gate_v8',
+      '20261010_universal_v1_fake_financial_expiry_v9',
+      '20261011_universal_v1_fake_financial_expiry_recovery_v10',
+      '20261013_nonproduction_runtime_insert_authority_v1',
+      '20261015_universal_v1_work_order_fake_financial_authority_hardening_v12',
+      '20261015_universal_v1_work_order_bootstrap_seal_v1',
+      '20261016_universal_v1_fake_financial_command_outbox_authority_v13',
     ]
   );
   const sql = await Promise.all(
@@ -106,6 +112,34 @@ test('pins the required-test fake-finance fixture to the append-only nonproducti
   assert.match(sql[7], /aa_universal_v1_dispute_terminal_intent_gate/u);
   assert.match(sql[7], /hxos_fake_financial_schema_evidence_v8/u);
   assert.match(sql[7], /enforce_universal_v1_dispute_release_gate_v1/u);
+  assert.match(sql[8], /hxos_fake_financial_schema_evidence_v9/u);
+  assert.match(sql[8], /hxos_fake_financial_legacy_expiry_dispositions_v9/u);
+  assert.match(sql[8], /LEGACY_EXPIRY_UNPROVEN/u);
+  assert.match(sql[8], /COMPENSATION_REQUIRED/u);
+  assert.match(sql[8], /hxos_fake_financial_legacy_expiry_compensation_commands_v9/u);
+  assert.match(sql[8], /hxos_fake_financial_legacy_expiry_compensation_attempts_v9/u);
+  assert.match(sql[8], /hxos_fake_financial_legacy_expiry_compensation_outcomes_v9/u);
+  assert.match(sql[8], /hxos_fake_financial_legacy_expiry_compensations_v9/u);
+  assert.match(sql[8], /provider_expires_at/u);
+  assert.match(sql[8], /expiry_authority_sha256/u);
+  assert.match(sql[9], /hxos_fake_financial_schema_evidence_v10/u);
+  assert.match(sql[9], /hxos_fake_financial_legacy_expiry_noncompensable_facts_v10/u);
+  assert.match(sql[9], /hxos_prepare_legacy_expiry_compensation_v10/u);
+  assert.match(sql[9], /hxos_record_legacy_expiry_compensation_attempt_v10/u);
+  assert.match(sql[9], /hxos_finalize_legacy_expiry_compensation_v10/u);
+  assert.match(sql[10], /hxos_fake_financial_schema_evidence_v11/u);
+  assert.match(sql[10], /hxos_record_financial_provider_command_v1/u);
+  assert.match(sql[10], /hxos_record_fake_reconciliation_bridge_v1/u);
+  assert.match(sql[11], /hxos_fake_financial_schema_evidence_v12/u);
+  assert.match(sql[11], /HXUV1-WOCMD-V12-4/u);
+  assert.doesNotMatch(sql[11], /^\s*(?:CREATE ROLE|GRANT)\b/imu);
+  assert.match(sql[12], /hxos_work_order_bootstrap_seal_evidence_v1/u);
+  assert.match(sql[12], /assert_universal_v1_work_order_bootstrap_seal_v1/u);
+  assert.match(sql[12], /HXUV1-WOCMD-SEAL-4/u);
+  assert.doesNotMatch(sql[12], /^\s*(?:CREATE ROLE|GRANT)\b/imu);
+  assert.match(sql[13], /hxos_fake_financial_schema_evidence_v13/u);
+  assert.match(sql[13], /fake_financial_command_outbox_requests_v13/u);
+  assert.match(sql[13], /HXUV1-FINOUT-13-47/u);
   for (const migrationSql of sql) {
     assert.match(migrationSql, /append-only/iu);
     assert.doesNotMatch(migrationSql, /stripe_events/u);

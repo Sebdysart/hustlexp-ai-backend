@@ -1,10 +1,15 @@
 # Universal V1 Work Order database authority boundary
 
-Status: `EXTERNAL_DECISION_REQUIRED / RELEASE_BLOCKING`
+Status: `AUTHORIZED_LOCAL_NONPROD_IMPLEMENTATION_PENDING /
+RELEASE_BLOCKED_PENDING_IMPLEMENTATION_AND_INDEPENDENT_REVIEW`
 
 Production effects: `NONE`
 
 Production money: `FROZEN`
+
+Production hard assignment: `FROZEN`
+
+Independent security/release approval: `ABSENT`
 
 ## Current truth
 
@@ -21,7 +26,7 @@ The hold artifact is
 verifier is
 `backend/src/jobs/work-order-command-role-authority.ts`. Neither creates a
 role, changes an ACL, applies a migration, or grants release authority.
-After the exact candidate has been compiled and the three role identities are
+After the exact candidate has been compiled and the eight role identities are
 explicitly configured, run the read-only live check with
 `npm run db:verify:work-order-authority`. A nonzero exit or a `BLOCKED` report
 is a release stop, never evidence that the verifier should be bypassed.
@@ -31,35 +36,52 @@ is a release stop, never evidence that the verifier should be bypassed.
 Before the Work Order path can be called release-ready, live readback must
 prove all of the following on the exact target database:
 
-1. Three explicitly configured and pairwise-distinct roles exist: one-shot
-   migration, application runtime, and Work Order command owner.
+1. Eight explicitly configured and pairwise-distinct roles exist: one-shot
+   migration, API, worker, isolated attester, and `NOLOGIN` Work Order command,
+   assertion, finance, and telemetry owners. Runtime database target v3 binds
+   their canonical topology digest to the database/environment/release/build
+   target identity.
 2. The command owner is `NOLOGIN`, has no superuser, role-creation,
    database-creation, replication, or row-security-bypass attribute, and owns
    the exact command function.
-3. The command function is `SECURITY DEFINER`, `VOLATILE`, fixes its search
-   path to `pg_catalog, public`, and binds its actor argument to an approved
-   authenticated-request identity channel.
-4. `PUBLIC` and the migration role cannot execute the function. The runtime
-   role can execute it.
-5. The runtime role neither owns nor has direct `INSERT`, `UPDATE`, `DELETE`,
+3. Every command function is `SECURITY DEFINER`, `VOLATILE`, fixes its search
+   path to `pg_catalog`, fully qualifies non-catalog objects, and derives its
+   actor from an exactly bound, consumed assertion rather than an actor argument.
+4. `PUBLIC` and the migration role cannot execute runtime functions. The
+   attester may execute only sealed assertion issuance, the API only approved
+   human command entrypoints, and the worker only approved recovery entrypoints.
+5. API, worker, and attester roles neither own nor have direct `INSERT`, `UPDATE`, `DELETE`,
    or `TRUNCATE` authority on `task_work_order_command_requests`,
-   `task_provider_eligibility_decisions`, or `task_work_orders`.
+   `task_provider_eligibility_decisions`, `task_work_orders`,
+   `task_work_order_execution_facts`, `task_reservations`, or
+   `task_applications`. The final three are part of the same atomic
+   finalization write surface: materialization appends its initial execution
+   fact, releases the conditional hold, and closes the provider interest.
 6. Exact privilege readback succeeds after provisioning and again from the
    immutable release candidate environment.
 
-## External decision required
+## Owner-authorized decision; implementation and independent review required
 
-The infrastructure owner must provide, without placing credentials or role
-passwords in source:
+The owner selected Option A: an isolated attester issues opaque, one-time actor
+assertions whose random 256-bit token is represented in PostgreSQL only by its
+SHA-256 digest and whose database-owned maximum lifetime is 60 seconds. This
+decision applies only to synthetic local, preview, and staging implementation.
+It grants no production, payment, hard-assignment, migration, deployment, or
+release authority and is not independent approval.
 
-- the exact existing migration, runtime, and non-login command-owner role
-  identities for local, preview, staging, and any later production target;
-- the approved system that provisions those roles and distributes only the
-  runtime credential to API/worker services;
-- whether API and worker use one runtime role or distinct roles;
-- the authenticated actor-binding protocol the database command will verify;
-- the reviewed function/table privilege matrix, including whether any runtime
-  read access is required.
+Implementation must still provide, without placing credentials, bearer tokens,
+plaintext assertion tokens, or role passwords in source:
+
+- the exact pairwise-distinct migration, API, worker, attester, `NOLOGIN`
+  command-owner, `NOLOGIN` assertion-owner, and `NOLOGIN` finance-owner role
+  identities for local, preview, and staging;
+- the approved system that provisions those roles and distributes only each
+  service's own credential through an approved secret reference;
+- the implemented token-digest issuance and one-time consumption protocol;
+- the sealed Work Order command family and complete alternate-writer
+  disposition before direct DML is revoked;
+- the reviewed function/table privilege matrix, live role/ACL readback, exact
+  tests, and independent human approval.
 
 `CREATE ROLE` is deliberately absent from ordinary application migrations.
 Until the decision is implemented and the live readback report is `READY`, the
@@ -118,6 +140,7 @@ a provisioned service actor from an ordinary active user. Therefore neither the
 HMAC callback nor the request-bound SMTP worker proves the required
 least-privilege role, sealed command, direct-DML revocation, or database-verifiable
 actor protocol. Both remain nonproduction synthetic review candidates under
-this `EXTERNAL_DECISION_REQUIRED / RELEASE_BLOCKING` hold and grant no live
+this `AUTHORIZED_LOCAL_NONPROD_IMPLEMENTATION_PENDING /
+RELEASE_BLOCKED_PENDING_IMPLEMENTATION_AND_INDEPENDENT_REVIEW` hold and grant no live
 provider, assignment, private-address, payment, capture, settlement, payout, or
 production capability.

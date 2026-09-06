@@ -1,10 +1,13 @@
-import { createHash } from 'node:crypto';
+import type { UniversalV1ActorAttestationHandle } from '../../auth/universal-v1-actor-attestation-contracts.js';
+import { createHash, randomUUID } from 'node:crypto';
+import { encodeFakeFinancialDurableRequest } from './FakeFinancialDurableRequest.js';
 
 import { buildIdentity, type BuildIdentity } from '../../buildIdentity.js';
 import { db, type Database, type QueryFn } from '../../db.js';
 import { readReleaseManifest, type ReleaseManifestEvidence } from '../../releaseManifest.js';
 import {
-  FakeFinancialProvider,
+  createDatabaseBackedFakeFinancialProvider,
+  issueLiveFakeFinancialDatabaseCapability,
   PostgresFakeFinancialOperationRepository,
   type FakeFinancialScenario,
 } from './FakeFinancialProvider.js';
@@ -184,6 +187,7 @@ export interface RecordedUniversalV1FinancialEvent {
   readonly providerState: FinancialOperationState;
   readonly recordedBy: string;
   readonly occurredAt: string;
+  readonly expiresAt: string | null;
 }
 
 interface RecordFinancialEventCommand {
@@ -208,6 +212,12 @@ interface RecordFinancialEventCommand {
   readonly providerIdempotencyReplayed: boolean;
   readonly durableFakeEvidence?: DurableFakeFinancialCommandEvidence;
   readonly recordedBy: string;
+  /** Exact adapter-owned provider observation, never caller command time. */
+  readonly occurredAt: string;
+  /** Provider-authored positive-security expiry; null for every other result. */
+  readonly expiresAt: string | null;
+  /** Exact replay-only retirement tag for a pre-v9 fake security result. */
+  readonly expiryDisposition?: 'LEGACY_EXPIRY_UNPROVEN';
 }
 
 export interface UniversalV1ReconciliationSnapshot {
@@ -293,16 +303,13 @@ export interface RecordedUniversalV1Reconciliation {
  * needed by a caller to materialize its own append-only domain fact. No such
  * claim is made for an approved-provider result.
  */
-export type UniversalV1FakeDurableProviderCommandResult<
-  TResult extends FinancialOperationResult,
-> = Omit<TResult, 'providerKind'> & {
-  readonly providerKind: 'FAKE';
-  readonly durableFakeEvidence: DurableFakeFinancialCommandDispatchEvidence;
-};
+export type UniversalV1FakeDurableProviderCommandResult<TResult extends FinancialOperationResult> =
+  Omit<TResult, 'providerKind'> & {
+    readonly providerKind: 'FAKE';
+    readonly durableFakeEvidence: DurableFakeFinancialCommandDispatchEvidence;
+  };
 
-export type UniversalV1DurableProviderCommandResult<
-  TResult extends FinancialOperationResult,
-> =
+export type UniversalV1DurableProviderCommandResult<TResult extends FinancialOperationResult> =
   | UniversalV1FakeDurableProviderCommandResult<TResult>
   | (Omit<TResult, 'providerKind'> & {
       readonly providerKind: 'APPROVED_PROVIDER';
@@ -498,43 +505,67 @@ const PROVIDER_STATES_BY_OPERATION: Readonly<
 
 function assertProviderResult(
   result: FinancialOperationResult,
-  command: Pick<ApplicationOperationBase, 'operationId' | 'providerExpectedVersion'>
-    & Partial<Pick<BoundFinancialEffectOperation, 'amountCents' | 'currency'>>,
+  command: Pick<ApplicationOperationBase, 'operationId' | 'providerExpectedVersion'> &
+    Partial<Pick<BoundFinancialEffectOperation, 'amountCents' | 'currency'>>,
   operationKind: FinancialOperationKind,
   configuredProviderKind: FinancialProviderKind
 ): void {
   if (
-    !result
-    || typeof result !== 'object'
-    || result.providerKind !== configuredProviderKind ||
+    !result ||
+    typeof result !== 'object' ||
+    result.providerKind !== configuredProviderKind ||
     result.operationId !== command.operationId ||
     result.operationKind !== operationKind ||
-    !Number.isSafeInteger(result.version)
-    || result.version !== command.providerExpectedVersion + 1
+    !Number.isSafeInteger(result.version) ||
+    result.version !== command.providerExpectedVersion + 1
   ) {
     throw new Error('UNIVERSAL_FINANCE_PROVIDER_RESULT_IDENTITY_MISMATCH');
   }
   if (
-    !FINANCIAL_OPERATION_STATES.has(result.state)
-    || !PROVIDER_STATES_BY_OPERATION[operationKind].has(result.state)
-    || typeof result.idempotencyReplayed !== 'boolean'
-    || typeof result.retryable !== 'boolean'
-    || (result.retryable && !['PENDING', 'RETRYABLE_FAILURE'].includes(result.state))
-    || (result.state === 'RETRYABLE_FAILURE' && !result.retryable)
-    || typeof result.externalReference !== 'string'
-    || result.externalReference.length < 1
-    || result.externalReference.length > 512
-    || result.externalReference.trim() !== result.externalReference
-    || containsControlCharacter(result.externalReference)
+    !FINANCIAL_OPERATION_STATES.has(result.state) ||
+    !PROVIDER_STATES_BY_OPERATION[operationKind].has(result.state) ||
+    typeof result.idempotencyReplayed !== 'boolean' ||
+    typeof result.retryable !== 'boolean' ||
+    (result.retryable && !['PENDING', 'RETRYABLE_FAILURE'].includes(result.state)) ||
+    (result.state === 'RETRYABLE_FAILURE' && !result.retryable) ||
+    typeof result.externalReference !== 'string' ||
+    result.externalReference.length < 1 ||
+    result.externalReference.length > 512 ||
+    result.externalReference.trim() !== result.externalReference ||
+    containsControlCharacter(result.externalReference)
   ) {
     throw new Error('UNIVERSAL_FINANCE_PROVIDER_RESULT_SHAPE_INVALID');
   }
+  const recordedAt = new Date(result.recordedAt);
+  const expiresAt = result.expiresAt === null ? null : new Date(result.expiresAt);
+  const requiresExpiry =
+    result.state === 'SUCCEEDED' && ['AUTHORIZE', 'SECURE', 'ADJUST'].includes(operationKind);
+  const validProviderExpiry =
+    expiresAt !== null &&
+    Number.isFinite(expiresAt.getTime()) &&
+    expiresAt.toISOString() === result.expiresAt &&
+    expiresAt.getTime() > recordedAt.getTime();
+  const legacyExpiryUnproven =
+    requiresExpiry &&
+    expiresAt === null &&
+    result.expiryDisposition === 'LEGACY_EXPIRY_UNPROVEN' &&
+    result.providerKind === 'FAKE' &&
+    result.idempotencyReplayed;
+  if (
+    !Number.isFinite(recordedAt.getTime()) ||
+    recordedAt.toISOString() !== result.recordedAt ||
+    (requiresExpiry && !validProviderExpiry && !legacyExpiryUnproven) ||
+    (requiresExpiry && validProviderExpiry && result.expiryDisposition !== undefined) ||
+    (!requiresExpiry && (result.expiresAt !== null || result.expiryDisposition !== undefined))
+  ) {
+    throw new Error('UNIVERSAL_FINANCE_PROVIDER_RESULT_EXPIRY_INVALID');
+  }
   if (MONEY_OPERATION_KINDS.has(operationKind)) {
     if (
-      !Number.isSafeInteger(command.amountCents)
-      || result.amountCents !== command.amountCents
-      || typeof result.currency !== 'string'
-      || result.currency.toUpperCase() !== canonicalCurrency(command.currency ?? '')
+      !Number.isSafeInteger(command.amountCents) ||
+      result.amountCents !== command.amountCents ||
+      typeof result.currency !== 'string' ||
+      result.currency.toUpperCase() !== canonicalCurrency(command.currency ?? '')
     ) {
       throw new Error('UNIVERSAL_FINANCE_PROVIDER_RESULT_AMOUNT_MISMATCH');
     }
@@ -543,23 +574,21 @@ function assertProviderResult(
   }
 }
 
-function assertProviderAccountResult(
-  result: ProviderAccountStateResult,
-  providerId: string,
-): void {
+function assertProviderAccountResult(result: ProviderAccountStateResult, providerId: string): void {
   if (
-    result.providerId !== providerId
-    || !['PENDING', 'ENABLED', 'RESTRICTED', 'FAILED'].includes(result.accountState)
-    || typeof result.chargesEnabled !== 'boolean'
-    || typeof result.payoutsEnabled !== 'boolean'
-    || !Array.isArray(result.requirementsDue)
-    || result.requirementsDue.some((requirement) => (
-      typeof requirement !== 'string'
-      || requirement.length < 1
-      || requirement.length > 255
-      || requirement.trim() !== requirement
-      || containsControlCharacter(requirement)
-    ))
+    result.providerId !== providerId ||
+    !['PENDING', 'ENABLED', 'RESTRICTED', 'FAILED'].includes(result.accountState) ||
+    typeof result.chargesEnabled !== 'boolean' ||
+    typeof result.payoutsEnabled !== 'boolean' ||
+    !Array.isArray(result.requirementsDue) ||
+    result.requirementsDue.some(
+      (requirement) =>
+        typeof requirement !== 'string' ||
+        requirement.length < 1 ||
+        requirement.length > 255 ||
+        requirement.trim() !== requirement ||
+        containsControlCharacter(requirement)
+    )
   ) {
     throw new Error('UNIVERSAL_FINANCE_PROVIDER_ACCOUNT_RESULT_INVALID');
   }
@@ -718,10 +747,13 @@ function durableProviderCommandResult<TResult extends FinancialOperationResult>(
       ),
     } as UniversalV1DurableProviderCommandResult<TResult>;
   }
-  return { ...result, providerKind: 'APPROVED_PROVIDER' } as UniversalV1DurableProviderCommandResult<TResult>;
+  return {
+    ...result,
+    providerKind: 'APPROVED_PROVIDER',
+  } as UniversalV1DurableProviderCommandResult<TResult>;
 }
 
-function exactFinancialProviderRequest(
+function uncheckedFinancialProviderRequest(
   command: ExecuteUniversalV1FinancialEventCommand
 ): Record<string, unknown> {
   const base = {
@@ -757,6 +789,15 @@ function exactFinancialProviderRequest(
     default:
       return money;
   }
+}
+
+function exactFinancialProviderRequest(
+  command: ExecuteUniversalV1FinancialEventCommand
+): Record<string, unknown> {
+  const request = uncheckedFinancialProviderRequest(command);
+  if (command.providerKind === 'FAKE')
+    encodeFakeFinancialDurableRequest(command.operationKind, request);
+  return request;
 }
 
 function assertReconciliationSnapshot(snapshot: UniversalV1ReconciliationSnapshot): void {
@@ -832,48 +873,90 @@ function sameRecordedEvent(
   existing: RecordedUniversalV1FinancialEvent,
   command: RecordFinancialEventCommand
 ): boolean {
+  const existingIdentity = {
+    operationId: existing.operationId,
+    eventKind: existing.eventKind,
+    status: existing.status,
+    providerKind: existing.providerKind,
+    externalReference: existing.externalReference,
+    providerOperationVersion: existing.providerOperationVersion,
+    lifecycleExpectedVersion: existing.lifecycleExpectedVersion,
+    taskDraftId: existing.taskDraftId,
+    taskId: existing.taskId,
+    eligibilityDecisionId: existing.eligibilityDecisionId,
+    scopeVersionId: existing.scopeVersionId,
+    changeOrderId: existing.changeOrderId,
+    predecessorEventId: existing.predecessorEventId,
+    completionFactId: existing.completionFactId,
+    amountCents: existing.amountCents,
+    currency: existing.currency,
+    providerState: existing.providerState,
+    recordedBy: existing.recordedBy,
+  };
+  const commandIdentity = {
+    operationId: command.operationId,
+    eventKind: command.eventKind,
+    status: command.status,
+    providerKind: command.providerKind,
+    externalReference: command.externalReference,
+    providerOperationVersion: command.providerOperationVersion,
+    lifecycleExpectedVersion: command.lifecycleExpectedVersion,
+    taskDraftId: command.taskDraftId,
+    taskId: command.taskId,
+    eligibilityDecisionId: command.eligibilityDecisionId,
+    scopeVersionId: command.scopeVersionId,
+    changeOrderId: command.changeOrderId,
+    predecessorEventId: command.predecessorEventId,
+    completionFactId: command.completionFactId,
+    amountCents: command.amountCents,
+    currency: command.currency,
+    providerState: command.providerState,
+    recordedBy: command.recordedBy,
+  };
   return (
     commandHash({
-      operationId: existing.operationId,
-      eventKind: existing.eventKind,
-      status: existing.status,
-      providerKind: existing.providerKind,
-      externalReference: existing.externalReference,
-      providerOperationVersion: existing.providerOperationVersion,
-      lifecycleExpectedVersion: existing.lifecycleExpectedVersion,
-      taskDraftId: existing.taskDraftId,
-      taskId: existing.taskId,
-      eligibilityDecisionId: existing.eligibilityDecisionId,
-      scopeVersionId: existing.scopeVersionId,
-      changeOrderId: existing.changeOrderId,
-      predecessorEventId: existing.predecessorEventId,
-      completionFactId: existing.completionFactId,
-      amountCents: existing.amountCents,
-      currency: existing.currency,
-      providerState: existing.providerState,
-      recordedBy: existing.recordedBy,
+      ...existingIdentity,
+      occurredAt: existing.occurredAt,
+      expiresAt: existing.expiresAt,
     }) ===
     commandHash({
-      operationId: command.operationId,
-      eventKind: command.eventKind,
-      status: command.status,
-      providerKind: command.providerKind,
-      externalReference: command.externalReference,
-      providerOperationVersion: command.providerOperationVersion,
-      lifecycleExpectedVersion: command.lifecycleExpectedVersion,
-      taskDraftId: command.taskDraftId,
-      taskId: command.taskId,
-      eligibilityDecisionId: command.eligibilityDecisionId,
-      scopeVersionId: command.scopeVersionId,
-      changeOrderId: command.changeOrderId,
-      predecessorEventId: command.predecessorEventId,
-      completionFactId: command.completionFactId,
-      amountCents: command.amountCents,
-      currency: command.currency,
-      providerState: command.providerState,
-      recordedBy: command.recordedBy,
+      ...commandIdentity,
+      occurredAt: command.occurredAt,
+      expiresAt: command.expiresAt,
     })
   );
+}
+
+function assertRecordFinancialEventObservation(
+  command: RecordFinancialEventCommand,
+  allowExactLegacyReplay = false
+): void {
+  const occurredAt = new Date(command.occurredAt);
+  const expiresAt = command.expiresAt === null ? null : new Date(command.expiresAt);
+  const requiresExpiry =
+    command.status === 'SUCCEEDED' &&
+    ['AUTHORIZED', 'SECURED', 'ADJUSTMENT_AUTHORIZED'].includes(command.eventKind);
+  const validProviderExpiry =
+    expiresAt !== null &&
+    Number.isFinite(expiresAt.getTime()) &&
+    expiresAt.toISOString() === command.expiresAt &&
+    expiresAt.getTime() > occurredAt.getTime();
+  const legacyExpiryUnproven =
+    allowExactLegacyReplay &&
+    requiresExpiry &&
+    expiresAt === null &&
+    command.expiryDisposition === 'LEGACY_EXPIRY_UNPROVEN' &&
+    command.providerKind === 'FAKE' &&
+    command.providerIdempotencyReplayed;
+  if (
+    !Number.isFinite(occurredAt.getTime()) ||
+    occurredAt.toISOString() !== command.occurredAt ||
+    (requiresExpiry && !validProviderExpiry && !legacyExpiryUnproven) ||
+    (requiresExpiry && validProviderExpiry && command.expiryDisposition !== undefined) ||
+    (!requiresExpiry && (command.expiresAt !== null || command.expiryDisposition !== undefined))
+  ) {
+    throw new Error('UNIVERSAL_FINANCE_LIFECYCLE_EXPIRY_INVALID');
+  }
 }
 
 function reconciliationCommandHash(command: RecordReconciliationCommand): string {
@@ -965,11 +1048,10 @@ export class InMemoryUniversalV1FinancialLifecycleRepository implements Universa
   >();
   private readonly reconciliationHashes = new Map<string, string>();
 
-  constructor(private readonly now: () => Date = () => new Date()) {}
-
   async recordFinancialEvent(
     command: RecordFinancialEventCommand
   ): Promise<RecordedUniversalV1FinancialEvent> {
+    assertRecordFinancialEventObservation(command, true);
     const replay = this.eventsByIdempotency.get(command.idempotencyKey);
     if (replay) {
       if (!sameRecordedEvent(replay, command)) {
@@ -977,6 +1059,10 @@ export class InMemoryUniversalV1FinancialLifecycleRepository implements Universa
       }
       return { ...replay, idempotencyReplayed: true };
     }
+
+    // A pre-v9 expiry-unproven success is terminal recovery evidence only. It
+    // may replay an existing canonical fact, but can never create a new one.
+    assertRecordFinancialEventObservation(command);
 
     if (command.eventKind === 'PAYMENT_METHOD_PREPARED') {
       if (command.predecessorEventId !== null || command.lifecycleExpectedVersion !== 0) {
@@ -1018,7 +1104,8 @@ export class InMemoryUniversalV1FinancialLifecycleRepository implements Universa
       currency: command.currency,
       providerState: command.providerState,
       recordedBy: command.recordedBy,
-      occurredAt: this.now().toISOString(),
+      occurredAt: command.occurredAt,
+      expiresAt: command.expiresAt,
     };
     this.eventsById.set(event.id, event);
     this.eventsByIdempotency.set(command.idempotencyKey, event);
@@ -1077,6 +1164,7 @@ interface FinancialEventRow {
   evidence: Record<string, unknown>;
   recorded_by: string;
   occurred_at: Date | string;
+  expires_at: Date | string | null;
 }
 
 interface FinancialLifecycleBridgeRow {
@@ -1127,6 +1215,7 @@ function mapFinancialEventRow(
     providerState: row.evidence.providerState as FinancialOperationState,
     recordedBy: row.recorded_by,
     occurredAt: new Date(row.occurred_at).toISOString(),
+    expiresAt: row.expires_at === null ? null : new Date(row.expires_at).toISOString(),
   };
 }
 
@@ -1135,7 +1224,7 @@ const FINANCIAL_EVENT_SELECT = `
   expected_version, idempotency_key, task_draft_id, task_id,
   eligibility_decision_id, scope_version_id, change_order_id,
   predecessor_event_id, completion_fact_id, amount_cents, currency,
-  evidence, recorded_by, occurred_at`;
+  evidence, recorded_by, occurred_at, expires_at`;
 
 function exactBridgeEvidence(
   row: FinancialLifecycleBridgeRow,
@@ -1176,6 +1265,14 @@ export class PostgresUniversalV1FinancialLifecycleRepository implements Universa
   async recordFinancialEvent(
     command: RecordFinancialEventCommand
   ): Promise<RecordedUniversalV1FinancialEvent> {
+    assertRecordFinancialEventObservation(command, true);
+    if (command.providerKind !== 'FAKE') {
+      throw new Error('UNIVERSAL_FINANCE_POSTGRES_LIFECYCLE_FAKE_ONLY');
+    }
+    const durableFakeEvidence = command.durableFakeEvidence;
+    if (!durableFakeEvidence) {
+      throw new Error('UNIVERSAL_FINANCE_LIFECYCLE_BRIDGE_EVIDENCE_REQUIRED');
+    }
     return this.database.serializableTransaction(async (query) => {
       await query(
         `SELECT pg_advisory_xact_lock(hashtext('universal-v1-financial-event'), hashtext($1))`,
@@ -1192,101 +1289,70 @@ export class PostgresUniversalV1FinancialLifecycleRepository implements Universa
         if (!sameRecordedEvent(mapped, command)) {
           throw new Error('UNIVERSAL_FINANCE_LIFECYCLE_IDEMPOTENCY_CONFLICT');
         }
-        if (command.providerKind === 'FAKE') {
-          if (!command.durableFakeEvidence) {
-            throw new Error('UNIVERSAL_FINANCE_LIFECYCLE_BRIDGE_EVIDENCE_REQUIRED');
-          }
-          const bridge = await query<FinancialLifecycleBridgeRow>(
-            `SELECT bridge_id, prepared_command_id, command_id,
-                    dispatch_attempt_id, outcome_fact_id,
-                    fake_operation_event_id, task_financial_security_event_id,
-                    authority_chain_sha256
-               FROM public.universal_v1_fake_financial_lifecycle_bridges
-              WHERE task_financial_security_event_id=$1`,
-            [mapped.id]
-          );
-          if (
-            !bridge.rows[0] ||
-            !exactBridgeEvidence(bridge.rows[0], command.durableFakeEvidence, mapped.id)
-          ) {
-            throw new Error('UNIVERSAL_FINANCE_LIFECYCLE_BRIDGE_IDENTITY_MISMATCH');
-          }
+        const bridge = await query<FinancialLifecycleBridgeRow>(
+          `SELECT bridge_id, prepared_command_id, command_id,
+                  dispatch_attempt_id, outcome_fact_id,
+                  fake_operation_event_id, task_financial_security_event_id,
+                  authority_chain_sha256
+             FROM public.universal_v1_fake_financial_lifecycle_bridges
+            WHERE task_financial_security_event_id=$1`,
+          [mapped.id]
+        );
+        if (
+          !bridge.rows[0] ||
+          !exactBridgeEvidence(bridge.rows[0], durableFakeEvidence, mapped.id)
+        ) {
+          throw new Error('UNIVERSAL_FINANCE_LIFECYCLE_BRIDGE_IDENTITY_MISMATCH');
         }
         return { ...mapped, idempotencyReplayed: true };
       }
 
-      if (command.providerKind === 'FAKE' && !command.durableFakeEvidence) {
-        throw new Error('UNIVERSAL_FINANCE_LIFECYCLE_BRIDGE_EVIDENCE_REQUIRED');
-      }
+      // The only bounded exception above is an exact canonical+bridge replay.
+      // Raw-only legacy success remains retired and cannot be materialized.
+      assertRecordFinancialEventObservation(command);
 
+      const eventId = randomUUID();
+      const bridgeId = randomUUID();
       const inserted = await query<FinancialEventRow>(
-        `INSERT INTO task_financial_security_events (
-           task_draft_id, task_id, eligibility_decision_id, scope_version_id,
-           change_order_id, predecessor_event_id, event_kind, status,
-           operation_id, idempotency_key, expected_version, provider_kind,
-           external_reference, amount_cents, currency, evidence, recorded_by,
-           occurred_at, completion_fact_id
-         ) VALUES (
-           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-           $13, $14, $15, $16::jsonb, $17, clock_timestamp(), $18
-         )
-         RETURNING ${FINANCIAL_EVENT_SELECT}`,
+        `SELECT ${FINANCIAL_EVENT_SELECT}
+           FROM public.hxos_record_fake_financial_security_event_v1(
+             $1,$2,$3,$4,$5,$6,$7,$8,$9,$10
+           )`,
         [
-          command.taskDraftId,
-          command.taskId,
-          command.eligibilityDecisionId,
-          command.scopeVersionId,
-          command.changeOrderId,
-          command.predecessorEventId,
-          command.eventKind,
-          command.status,
+          eventId,
+          bridgeId,
+          command.providerKind,
           command.operationId,
           command.idempotencyKey,
-          command.lifecycleExpectedVersion,
-          command.providerKind,
-          command.externalReference,
-          command.amountCents,
-          command.currency,
-          JSON.stringify({
-            providerState: command.providerState,
-            providerOperationVersion: command.providerOperationVersion,
-            providerIdempotencyReplayed: command.providerIdempotencyReplayed,
-          }),
-          command.recordedBy,
-          command.completionFactId,
+          durableFakeEvidence.preparedCommandId,
+          durableFakeEvidence.commandId,
+          durableFakeEvidence.dispatchAttemptId,
+          durableFakeEvidence.outcomeFactId,
+          durableFakeEvidence.fakeOperationEventId,
         ]
       );
       const row = inserted.rows[0];
       if (!row) throw new Error('UNIVERSAL_FINANCE_EVENT_INSERT_MISSING');
-      if (command.providerKind === 'FAKE') {
-        const evidence = command.durableFakeEvidence!;
-        const bridge = await query<FinancialLifecycleBridgeRow>(
-          `INSERT INTO public.universal_v1_fake_financial_lifecycle_bridges (
-             prepared_command_id, command_id, dispatch_attempt_id,
-             outcome_fact_id, fake_operation_event_id,
-             task_financial_security_event_id
-           ) VALUES ($1,$2,$3,$4,$5,$6)
-           RETURNING bridge_id, prepared_command_id, command_id,
-                     dispatch_attempt_id, outcome_fact_id,
-                     fake_operation_event_id, task_financial_security_event_id,
-                     authority_chain_sha256`,
-          [
-            evidence.preparedCommandId,
-            evidence.commandId,
-            evidence.dispatchAttemptId,
-            evidence.outcomeFactId,
-            evidence.fakeOperationEventId,
-            row.id,
-          ]
-        );
-        if (
-          !bridge.rows[0] ||
-          !exactBridgeEvidence(bridge.rows[0], evidence, row.id)
-        ) {
-          throw new Error('UNIVERSAL_FINANCE_LIFECYCLE_BRIDGE_INSERT_MISSING');
-        }
+      const mapped = mapFinancialEventRow(row, false);
+      if (!sameRecordedEvent(mapped, command)) {
+        throw new Error('UNIVERSAL_FINANCE_LIFECYCLE_PORT_IDENTITY_MISMATCH');
       }
-      return mapFinancialEventRow(row, false);
+      const bridge = await query<FinancialLifecycleBridgeRow>(
+        `SELECT bridge_id, prepared_command_id, command_id,
+                dispatch_attempt_id, outcome_fact_id,
+                fake_operation_event_id, task_financial_security_event_id,
+                authority_chain_sha256
+           FROM public.universal_v1_fake_financial_lifecycle_bridges
+          WHERE task_financial_security_event_id=$1`,
+        [row.id]
+      );
+      if (
+        bridge.rows[0]?.bridge_id !== bridgeId ||
+        !exactBridgeEvidence(bridge.rows[0], durableFakeEvidence, row.id)
+      ) {
+        throw new Error('UNIVERSAL_FINANCE_LIFECYCLE_BRIDGE_INSERT_MISSING');
+      }
+      return mapped;
     });
   }
 
@@ -1294,6 +1360,12 @@ export class PostgresUniversalV1FinancialLifecycleRepository implements Universa
     command: RecordReconciliationCommand
   ): Promise<RecordedUniversalV1Reconciliation> {
     assertRecordReconciliationCommand(command);
+    if (command.providerKind !== 'FAKE') {
+      throw new Error('UNIVERSAL_FINANCE_POSTGRES_RECONCILIATION_FAKE_ONLY');
+    }
+    if (!command.terminalIntentId || !command.durableFakeEvidence) {
+      throw new Error('UNIVERSAL_FINANCE_RECONCILIATION_TERMINAL_BRIDGE_EVIDENCE_REQUIRED');
+    }
     return this.database.serializableTransaction(async (query) => {
       await query(
         `SELECT pg_advisory_xact_lock(hashtext('universal-v1-reconciliation'), hashtext($1))`,
@@ -1360,7 +1432,11 @@ export class PostgresUniversalV1FinancialLifecycleRepository implements Universa
     query: QueryFn,
     command: RecordReconciliationCommand
   ): Promise<RecordedUniversalV1Reconciliation> {
-    const snapshot = command.snapshot;
+    const evidence = command.durableFakeEvidence!;
+    const terminalIntentId = command.terminalIntentId!;
+    const reconciliationFactId = randomUUID();
+    const reconciliationBridgeId = randomUUID();
+    const applicationRequestSha256 = reconciliationCommandHash(command);
     const inserted = await query<{
       id: string;
       work_order_id: string;
@@ -1368,101 +1444,50 @@ export class PostgresUniversalV1FinancialLifecycleRepository implements Universa
       reconciliation_state: UniversalV1ReconciliationSnapshot['reconciliationState'];
       mismatch_codes: string[];
     }>(
-      `INSERT INTO task_reconciliation_facts (
-         work_order_id, reconciliation_version, supersedes_fact_id,
-         void_event_id, capture_event_id, refund_event_id, reversal_event_id,
-         settlement_event_id, funding_event_id, provider_release_event_id,
-         payout_event_id, bank_settlement_event_id, void_state, capture_state,
-         refund_state, reversal_state, settlement_state, funding_state,
-         provider_release_state, payout_state, bank_settlement_state,
-         ledger_state, reconciliation_state, mismatch_codes,
-         customer_ledger_amount_cents, provider_ledger_amount_cents, currency,
-         expected_version, evidence, recorded_by, idempotency_key
-       ) VALUES (
-         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-         $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24,
-         $25, $26, $27, $28, $29::jsonb, $30, $31
-       )
-       RETURNING id, work_order_id, reconciliation_version,
-                 reconciliation_state, mismatch_codes`,
+      `SELECT id, work_order_id, reconciliation_version,
+              reconciliation_state, mismatch_codes
+         FROM public.hxos_record_fake_reconciliation_fact_v1(
+           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12
+         )`,
       [
-        snapshot.workOrderId,
-        snapshot.reconciliationVersion,
-        snapshot.supersedesFactId ?? null,
-        snapshot.voidEventId ?? null,
-        snapshot.captureEventId ?? null,
-        snapshot.refundEventId ?? null,
-        snapshot.reversalEventId ?? null,
-        snapshot.settlementEventId ?? null,
-        snapshot.fundingEventId ?? null,
-        snapshot.providerReleaseEventId ?? null,
-        snapshot.payoutEventId ?? null,
-        snapshot.bankSettlementEventId ?? null,
-        snapshot.voidState,
-        snapshot.captureState,
-        snapshot.refundState,
-        snapshot.reversalState,
-        snapshot.settlementState,
-        snapshot.fundingState,
-        snapshot.providerReleaseState,
-        snapshot.payoutState,
-        snapshot.bankSettlementState,
-        snapshot.ledgerState,
-        snapshot.reconciliationState,
-        [...snapshot.mismatchCodes],
-        snapshot.customerLedgerAmountCents,
-        snapshot.providerLedgerAmountCents,
-        snapshot.currency,
-        snapshot.expectedVersion,
-        JSON.stringify({
-          operationId: command.operationId,
-          providerKind: command.providerKind,
-          providerState: command.providerState,
-          providerOperationVersion: command.providerOperationVersion,
-          providerExternalReference: command.externalReference,
-          providerIdempotencyReplayed: command.providerIdempotencyReplayed,
-          reconciliationSnapshotSha256: command.reconciliationSnapshotSha256,
-          terminalIntentId: command.terminalIntentId ?? null,
-          durableFakeEvidence: command.durableFakeEvidence ?? null,
-          applicationRequestSha256: reconciliationCommandHash(command),
-        }),
-        snapshot.recordedBy,
+        reconciliationFactId,
+        reconciliationBridgeId,
+        command.providerKind,
+        command.operationId,
         command.idempotencyKey,
+        command.reconciliationSnapshotSha256,
+        terminalIntentId,
+        evidence.commandId,
+        evidence.dispatchAttemptId,
+        evidence.outcomeFactId,
+        evidence.fakeOperationEventId,
+        applicationRequestSha256,
       ]
     );
     const row = inserted.rows[0];
     if (!row) throw new Error('UNIVERSAL_FINANCE_RECONCILIATION_INSERT_MISSING');
-    if (command.terminalIntentId !== undefined) {
-      const evidence = command.durableFakeEvidence!;
-      const bridge = await query<ReconciliationBridgeRow>(
-        `INSERT INTO public.universal_v1_fake_reconciliation_bridges (
-           terminal_intent_id, reconciliation_fact_id, command_id, dispatch_attempt_id,
-           outcome_fact_id, fake_operation_event_id
-         ) VALUES ($1,$2,$3,$4,$5,$6)
-         RETURNING reconciliation_bridge_id, terminal_intent_id,
-                   reconciliation_fact_id, command_id,
-                   dispatch_attempt_id, outcome_fact_id, fake_operation_event_id,
-                   authority_chain_sha256`,
-        [
-          command.terminalIntentId,
-          row.id,
-          evidence.commandId,
-          evidence.dispatchAttemptId,
-          evidence.outcomeFactId,
-          evidence.fakeOperationEventId,
-        ]
-      );
-      if (
-        !bridge.rows[0] ||
-        !exactReconciliationBridgeEvidence(
-          bridge.rows[0],
-          command.terminalIntentId,
-          row.id,
-          evidence
-        )
-      ) {
-        throw new Error('UNIVERSAL_FINANCE_RECONCILIATION_BRIDGE_INSERT_MISSING');
-      }
+    if (
+      row.work_order_id !== command.snapshot.workOrderId ||
+      row.reconciliation_version !== command.snapshot.reconciliationVersion ||
+      row.reconciliation_state !== command.snapshot.reconciliationState ||
+      commandHash(row.mismatch_codes) !== commandHash(command.snapshot.mismatchCodes)
+    ) {
+      throw new Error('UNIVERSAL_FINANCE_RECONCILIATION_PORT_IDENTITY_MISMATCH');
+    }
+    const bridge = await query<ReconciliationBridgeRow>(
+      `SELECT reconciliation_bridge_id, terminal_intent_id,
+              reconciliation_fact_id, command_id,
+              dispatch_attempt_id, outcome_fact_id, fake_operation_event_id,
+              authority_chain_sha256
+         FROM public.universal_v1_fake_reconciliation_bridges
+        WHERE reconciliation_fact_id=$1`,
+      [row.id]
+    );
+    if (
+      bridge.rows[0]?.reconciliation_bridge_id !== reconciliationBridgeId ||
+      !exactReconciliationBridgeEvidence(bridge.rows[0], terminalIntentId, row.id, evidence)
+    ) {
+      throw new Error('UNIVERSAL_FINANCE_RECONCILIATION_BRIDGE_INSERT_MISSING');
     }
     return {
       id: row.id,
@@ -1476,6 +1501,25 @@ export class PostgresUniversalV1FinancialLifecycleRepository implements Universa
       mismatchCodes: row.mismatch_codes,
     };
   }
+}
+
+/** Normalize one immutable fake request before any asynchronous preparation. */
+export function prepareUniversalV1FakeFinancialRequest(
+  raw: ExecuteUniversalV1FinancialEventCommand
+) {
+  const command = Object.freeze({ ...raw });
+  assertEventCommand(command, 'FAKE');
+  const durableRequest = encodeFakeFinancialDurableRequest(
+    command.operationKind,
+    exactFinancialProviderRequest(command)
+  );
+  return Object.freeze({
+    command,
+    durableRequest,
+    preparationInput: Object.freeze(
+      preparedAuthorityInput(command, durableRequest.providerRequestSha256)
+    ),
+  });
 }
 
 export class UniversalV1FinancialApplicationService {
@@ -1492,8 +1536,8 @@ export class UniversalV1FinancialApplicationService {
     foregroundCoordinator?: ForegroundFinancialProviderCommandCoordinator
   ) {
     if (
-      configuredProviderKind === 'APPROVED_PROVIDER'
-      && approvedProviderAuthority?.runtimeSeal !== APPROVED_PROVIDER_RUNTIME_AUTHORITY_SEAL
+      configuredProviderKind === 'APPROVED_PROVIDER' &&
+      approvedProviderAuthority?.runtimeSeal !== APPROVED_PROVIDER_RUNTIME_AUTHORITY_SEAL
     ) {
       throw new Error('UNIVERSAL_FINANCE_APPROVED_PROVIDER_RUNTIME_AUTHORITY_UNAVAILABLE');
     }
@@ -1560,7 +1604,8 @@ export class UniversalV1FinancialApplicationService {
   }
 
   async executeFinancialEvent(
-    command: ExecuteUniversalV1FinancialEventCommand
+    command: ExecuteUniversalV1FinancialEventCommand,
+    attestation?: UniversalV1ActorAttestationHandle
   ): Promise<RecordedUniversalV1FinancialEvent> {
     this.executionGate.assertAuthorized();
     assertEventCommand(command, this.configuredProviderKind);
@@ -1569,12 +1614,11 @@ export class UniversalV1FinancialApplicationService {
       exactFinancialProviderRequest(command)
     );
     const prepared = await this.preparedAuthority.prepare(
-      preparedAuthorityInput(command, providerRequestSha256)
+      preparedAuthorityInput(command, providerRequestSha256),
+      attestation
     );
     if (prepared.idempotencyReplayed && !this.providerInvoker.hasForegroundCoordinator()) {
-      throw new PreparedFinancialCommandAuthorityError(
-        'REPLAY_FOREGROUND_COORDINATOR_REQUIRED'
-      );
+      throw new PreparedFinancialCommandAuthorityError('REPLAY_FOREGROUND_COORDINATOR_REQUIRED');
     }
     const execution = await this.executeProviderOperation(command, prepared);
     const durableFakeEvidence =
@@ -1582,12 +1626,7 @@ export class UniversalV1FinancialApplicationService {
         ? lifecycleDispatchEvidence(execution.evidence)
         : undefined;
     const result = execution.result;
-    assertProviderResult(
-      result,
-      command,
-      command.operationKind,
-      this.configuredProviderKind
-    );
+    assertProviderResult(result, command, command.operationKind, this.configuredProviderKind);
     const eventKind = EVENT_KIND_BY_OPERATION[command.operationKind];
     const taskId = command.taskId ?? null;
     const eligibilityDecisionId = command.eligibilityDecisionId ?? null;
@@ -1621,10 +1660,13 @@ export class UniversalV1FinancialApplicationService {
       currency,
       providerState: result.state,
       providerIdempotencyReplayed: result.idempotencyReplayed,
-      ...(durableFakeEvidence === undefined
-        ? {}
-        : { durableFakeEvidence }),
+      ...(durableFakeEvidence === undefined ? {} : { durableFakeEvidence }),
       recordedBy: command.recordedBy,
+      occurredAt: result.recordedAt,
+      expiresAt: result.expiresAt,
+      ...(result.expiryDisposition === 'LEGACY_EXPIRY_UNPROVEN'
+        ? { expiryDisposition: result.expiryDisposition }
+        : {}),
     });
   }
 
@@ -1762,8 +1804,9 @@ export class UniversalV1FinancialApplicationService {
       'UNIVERSAL_FINANCE_RECONCILIATION_DURABLE_COORDINATOR_REQUIRED'
     );
 
-    const reconciliationSnapshotSha256 =
-      canonicalUniversalV1ReconciliationSnapshotSha256(command.snapshot);
+    const reconciliationSnapshotSha256 = canonicalUniversalV1ReconciliationSnapshotSha256(
+      command.snapshot
+    );
     const providerCommand = {
       operationId: command.operationId,
       idempotencyKey: command.idempotencyKey,
@@ -1865,9 +1908,8 @@ export class UniversalV1FinancialApplicationService {
         invokeAdapter
       );
     if (command.operationKind === 'PREPARE_PAYMENT_METHOD') {
-      return invoke(
-        { ...base, customerId: command.customerId },
-        (exactRequest) => this.provider.preparePaymentMethod(exactRequest)
+      return invoke({ ...base, customerId: command.customerId }, (exactRequest) =>
+        this.provider.preparePaymentMethod(exactRequest)
       );
     }
     const money = {
@@ -1931,9 +1973,7 @@ export class UniversalV1FinancialApplicationService {
           (exactRequest) => this.provider.payout(exactRequest)
         );
       case 'OBSERVE_BANK_SETTLEMENT':
-        return invoke(money, (exactRequest) =>
-          this.provider.observeBankSettlement(exactRequest)
-        );
+        return invoke(money, (exactRequest) => this.provider.observeBankSettlement(exactRequest));
     }
   }
 }
@@ -1994,19 +2034,25 @@ class RuntimeFakeFinancialExecutionGate implements FakeFinancialExecutionGate {
   }
 }
 
-export function createUniversalV1FakeFinancialApplicationService(
-  database: Database = db,
-  environment: NodeJS.ProcessEnv = process.env,
-  release: ReleaseManifestEvidence = readReleaseManifest(),
-  identity: BuildIdentity = buildIdentity
-): UniversalV1FakeFinancialApplicationService {
+export function createUniversalV1FakeFinancialApplicationService(): Promise<UniversalV1FakeFinancialApplicationService>;
+export async function createUniversalV1FakeFinancialApplicationService(
+  ...callerArguments: readonly unknown[]
+): Promise<UniversalV1FakeFinancialApplicationService> {
+  if (callerArguments.length !== 0) {
+    throw new Error('NONPRODUCTION_FAKE_FINANCE_REFUSED:CALLER_SHAPED_APPLICATION_FACTORY_INPUT');
+  }
+
   const component =
-    environment.SERVICE_ROLE?.trim().toLowerCase() === 'worker' ? 'worker' : 'backend';
-  const authorization = { env: environment, release, identity, component } as const;
+    process.env.SERVICE_ROLE?.trim().toLowerCase() === 'worker' ? 'worker' : 'backend';
+  const authorization = { component } as const;
   const gate = new RuntimeFakeFinancialExecutionGate(authorization);
   gate.assertAuthorized();
-  const fakeEvents = new PostgresFakeFinancialOperationRepository(database);
-  const commandRecovery = new PostgresFinancialProviderCommandRecoveryRepository(database);
+  const capability = await issueLiveFakeFinancialDatabaseCapability(authorization);
+  const provider = createDatabaseBackedFakeFinancialProvider(capability);
+  const fakeEvents = new PostgresFakeFinancialOperationRepository(db);
+  const release = readReleaseManifest();
+  const identity = buildIdentity;
+  const commandRecovery = new PostgresFinancialProviderCommandRecoveryRepository(db);
   const foregroundCoordinator = new DurableFakeFinancialProviderCommandCoordinator(
     commandRecovery,
     fakeEvents,
@@ -2021,11 +2067,11 @@ export function createUniversalV1FakeFinancialApplicationService(
     }
   );
   return new UniversalV1FakeFinancialApplicationService(
-    new FakeFinancialProvider(fakeEvents),
-    new PostgresUniversalV1FinancialLifecycleRepository(database),
+    provider,
+    new PostgresUniversalV1FinancialLifecycleRepository(db),
     gate,
-    new PostgresFinancialProviderCommandJournal(database),
-    new PostgresUniversalV1PreparedFinancialCommandAuthority(database),
+    new PostgresFinancialProviderCommandJournal(db),
+    new PostgresUniversalV1PreparedFinancialCommandAuthority(db),
     foregroundCoordinator
   );
 }

@@ -12,48 +12,42 @@ import {
   releaseManifestEvidence,
 } from './releaseManifest.js';
 import { newPaymentCreationHealth } from './services/NewPaymentCreationGuard.js';
+import { hardAssignmentHealth } from './services/HardAssignmentGuard.js';
 import { legacyTaskMaterializationHealth } from './services/LegacyTaskMaterializationGuard.js';
 import { readNonproductionFinancialBootstrapReadiness } from './services/payment/NonproductionFinancialBootstrapReadiness.js';
 
 export function runtimeHealthEnvironment(
-  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env
 ): string {
   const hxEnvironment = env.HX_ENVIRONMENT?.trim().toLowerCase();
   const nodeEnvironment = env.NODE_ENV?.trim().toLowerCase();
-  if (
-    hxEnvironment === 'production'
-    && nodeEnvironment
-    && nodeEnvironment !== 'production'
-  ) {
+  if (hxEnvironment === 'production' && nodeEnvironment && nodeEnvironment !== 'production') {
     return 'unknown';
   }
   if (
-    (hxEnvironment === 'preview' || hxEnvironment === 'staging')
-    && nodeEnvironment !== 'production'
+    (hxEnvironment === 'preview' || hxEnvironment === 'staging') &&
+    nodeEnvironment !== 'production'
   ) {
     return 'unknown';
   }
-  return hxEnvironment
-    || nodeEnvironment
-    || config.app.env;
+  return hxEnvironment || nodeEnvironment || config.app.env;
 }
 
 function runtimeReleaseManifest(environment: string) {
-  return releaseManifestForRuntime(
-    releaseManifestEvidence,
-    {
-      service: 'backend',
-      revision: buildIdentity.revision,
-      environment,
-      artifactDigest: buildIdentity.artifact_digest,
-    }
-  );
+  return releaseManifestForRuntime(releaseManifestEvidence, {
+    service: 'backend',
+    revision: buildIdentity.revision,
+    environment,
+    artifactDigest: buildIdentity.artifact_digest,
+  });
 }
 
 function exactReleaseReady(environment: string): boolean {
   if (!exactManifestRequired(environment)) return true;
-  return isTrustedBuildIdentity(buildIdentity)
-    && runtimeReleaseManifest(environment).status === 'compatible';
+  return (
+    isTrustedBuildIdentity(buildIdentity) &&
+    runtimeReleaseManifest(environment).status === 'compatible'
+  );
 }
 
 function runtimeFinancialBootstrap(environment: string) {
@@ -100,11 +94,12 @@ async function dependencyChecks(paymentCreationMode: 'enabled' | 'frozen') {
   }
   checks.firebase = { status: config.firebase.projectId ? 'configured' : 'missing' };
   checks.stripe = {
-    status: paymentCreationMode === 'frozen'
-      ? 'disabled_by_policy'
-      : config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder')
-        ? 'configured'
-        : 'placeholder',
+    status:
+      paymentCreationMode === 'frozen'
+        ? 'disabled_by_policy'
+        : config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder')
+          ? 'configured'
+          : 'placeholder',
   };
   return checks;
 }
@@ -143,11 +138,12 @@ async function detailedHealth(context: Context) {
   const checks = await dependencyChecks(paymentCreation.mode);
   const environment = runtimeHealthEnvironment();
   const financialBootstrap = await runtimeFinancialBootstrap(environment);
-  const pool = db.getPool();
-  const allHealthy = exactReleaseReady(environment)
-    && financialBootstrap.ready
-    && Object.values(checks).every(
-      (check) => ['ok', 'configured', 'disabled_by_policy'].includes(check.status)
+  const pool = db.getPoolStats();
+  const allHealthy =
+    exactReleaseReady(environment) &&
+    financialBootstrap.ready &&
+    Object.values(checks).every((check) =>
+      ['ok', 'configured', 'disabled_by_policy'].includes(check.status)
     );
   return context.json(
     {
@@ -155,14 +151,15 @@ async function detailedHealth(context: Context) {
       timestamp: new Date().toISOString(),
       checks,
       pool: {
-        totalConnections: pool.totalCount,
-        idleConnections: pool.idleCount,
-        waitingClients: pool.waitingCount,
+        totalConnections: pool.totalConnections,
+        idleConnections: pool.idleConnections,
+        waitingClients: pool.waitingRequests,
       },
       circuitBreakers: await circuitBreakerStates(),
       build: buildIdentity,
       releaseManifest: runtimeReleaseManifest(environment),
       paymentCreation,
+      hardAssignment: hardAssignmentHealth(),
       legacyTaskMaterialization: legacyTaskMaterializationHealth(),
       nonproductionFinancialBootstrap: financialBootstrap,
       uptime: process.uptime(),
@@ -187,6 +184,7 @@ export function registerHealthRoutes(app: HustleApp): void {
           build: buildIdentity,
           releaseManifest: runtimeReleaseManifest(environment),
           paymentCreation: newPaymentCreationHealth(),
+          hardAssignment: hardAssignmentHealth(),
           legacyTaskMaterialization: legacyTaskMaterializationHealth(),
           nonproductionFinancialBootstrap: financialBootstrap,
         },
@@ -200,6 +198,7 @@ export function registerHealthRoutes(app: HustleApp): void {
           build: buildIdentity,
           releaseManifest: runtimeReleaseManifest(runtimeHealthEnvironment()),
           paymentCreation: newPaymentCreationHealth(),
+          hardAssignment: hardAssignmentHealth(),
           legacyTaskMaterialization: legacyTaskMaterializationHealth(),
           nonproductionFinancialBootstrap: financialBootstrap,
         },
@@ -213,23 +212,31 @@ export function registerHealthRoutes(app: HustleApp): void {
     try {
       await db.query('SELECT 1');
       const ready = exactReleaseReady(environment) && financialBootstrap.ready;
-      return context.json({
-        ready,
-        build: buildIdentity,
-        releaseManifest: runtimeReleaseManifest(environment),
-        paymentCreation: newPaymentCreationHealth(),
-        legacyTaskMaterialization: legacyTaskMaterializationHealth(),
-        nonproductionFinancialBootstrap: financialBootstrap,
-      }, ready ? 200 : 503);
+      return context.json(
+        {
+          ready,
+          build: buildIdentity,
+          releaseManifest: runtimeReleaseManifest(environment),
+          paymentCreation: newPaymentCreationHealth(),
+          hardAssignment: hardAssignmentHealth(),
+          legacyTaskMaterialization: legacyTaskMaterializationHealth(),
+          nonproductionFinancialBootstrap: financialBootstrap,
+        },
+        ready ? 200 : 503
+      );
     } catch {
-      return context.json({
-        ready: false,
-        build: buildIdentity,
-        releaseManifest: runtimeReleaseManifest(runtimeHealthEnvironment()),
-        paymentCreation: newPaymentCreationHealth(),
-        legacyTaskMaterialization: legacyTaskMaterializationHealth(),
-        nonproductionFinancialBootstrap: financialBootstrap,
-      }, 503);
+      return context.json(
+        {
+          ready: false,
+          build: buildIdentity,
+          releaseManifest: runtimeReleaseManifest(runtimeHealthEnvironment()),
+          paymentCreation: newPaymentCreationHealth(),
+          hardAssignment: hardAssignmentHealth(),
+          legacyTaskMaterialization: legacyTaskMaterializationHealth(),
+          nonproductionFinancialBootstrap: financialBootstrap,
+        },
+        503
+      );
     }
   });
   app.get('/health/liveness', (context) => {
@@ -240,6 +247,7 @@ export function registerHealthRoutes(app: HustleApp): void {
       build: buildIdentity,
       releaseManifest: runtimeReleaseManifest(environment),
       paymentCreation: newPaymentCreationHealth(),
+      hardAssignment: hardAssignmentHealth(),
       legacyTaskMaterialization: legacyTaskMaterializationHealth(),
     });
   });

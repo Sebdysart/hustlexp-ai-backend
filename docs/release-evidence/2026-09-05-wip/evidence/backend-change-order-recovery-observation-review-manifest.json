@@ -1,0 +1,202 @@
+{
+  "recordedAt": "2026-09-06T01:11:40.352Z",
+  "repository": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip",
+  "head": "36255e604e718320ccae7d4e3ac269ad09678205",
+  "status": "LOCAL_SCOPED_WORKER_RECOVERY_OBSERVATION_PASS",
+  "releaseEligible": false,
+  "goalComplete": false,
+  "productionEffects": "NONE",
+  "customerMoney": "FROZEN",
+  "hardAssignment": "FROZEN",
+  "previousGoalTurn": "PROGRESS_VERIFIED_LEASE_CHECKPOINT_AND_MATRIX",
+  "baseline": {
+    "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/change-order-recovery-observation-baseline.json",
+    "sha256": "d599a4891fab1bdcd7c49b3f8b0b9cfe1712748019d501d1174264010a2d5fc8",
+    "sequence": "Incremental after the worker recovery lease checkpoint."
+  },
+  "files": [
+    {
+      "path": "backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql",
+      "change": "modified",
+      "beforeSha256": "a7a65b9761c6f5e969940e66792d52aa2bbe3ecbe13e6d7685126f7dd2482ce8",
+      "afterSha256": "ef8faf0f0b753c51f02d4578f6dfd2da05d83dc282dc19e514187c403f669735"
+    },
+    {
+      "path": "backend/src/jobs/change-order-recovery-role-plans.ts",
+      "change": "modified",
+      "beforeSha256": "e6eaf553637834ea2325ab0f167d5091f533600eabba25f1d5e716bf60d9376b",
+      "afterSha256": "5854c081ed2b50067e40ce552e1b9fe38041d26b02db91cb7b89f18f4db76412"
+    },
+    {
+      "path": "backend/src/jobs/fake-financial-outbox-role-plans.ts",
+      "change": "modified",
+      "beforeSha256": "3e67aa4054d041003060dbec67f46b0409046f3e18b97c6d43661ac6325d24c6",
+      "afterSha256": "1e6217311367698c45db79059a46bf8cac1dc272616b20999c917a18792fcb3e"
+    },
+    {
+      "path": "backend/src/jobs/financial-readiness-custody.ts",
+      "change": "modified",
+      "beforeSha256": "e6966d074a9c149c49749e4e04ae3f7dac2242723530bdd750577caa2e3c3986",
+      "afterSha256": "d609d7e15f1263cfc343fba8d50770480c4f5292283ced8d538535d5671082e0"
+    },
+    {
+      "path": "backend/src/jobs/work-order-command-role-authority.ts",
+      "change": "modified",
+      "beforeSha256": "bcd3e224d34d8743200de40a14919ab3a9b553db7cab9a0733b0ec4e0932fdf2",
+      "afterSha256": "2aa0fc3fd9546355ac83e4c9220aa2226815131320c7cbfdf22c9ba2b261c661"
+    },
+    {
+      "path": "backend/src/services/UniversalV1ChangeOrderRecovery.ts",
+      "change": "modified",
+      "beforeSha256": "bc32df00123cc57c4068228174a387485027a47aa58589c45b45a971783e3db1",
+      "afterSha256": "bf4f089fbe047d799196c04fc99e415ea2b513db787b596f5fc2db1611878abf"
+    },
+    {
+      "path": "backend/src/services/UniversalV1ChangeOrderRecoveryObservation.ts",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "953760736223b1b3389b9034e6c4fe976ff46b912e3f4aeef54e4cc87d35712f"
+    },
+    {
+      "path": "backend/src/services/payment/NonproductionFinancialBootstrapReadiness.ts",
+      "change": "modified",
+      "beforeSha256": "cb9ec34192789e5f147fb08376b0826cf274c54df78bfb8412d2876c49d45cee",
+      "afterSha256": "530cc25ca467fe69bb5c3d4edfb3b9160f46d258087958b64ff582e1f440e2db"
+    },
+    {
+      "path": "backend/tests/helpers/universal-v1-synthetic-role-provisioning.ts",
+      "change": "modified",
+      "beforeSha256": "73b1aae81fb2538d0f374fccb0ecfeec9bf9ea74a4e15db3be03c461f6e0a6fa",
+      "afterSha256": "b7da655808ee03e6a0edeb559c1e3ec1b8db12f756727ec7ccb180914bf2f98e"
+    },
+    {
+      "path": "backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts",
+      "change": "modified",
+      "beforeSha256": "ad8b2148176adae6bf1ec4599ecc07d2831333fca4d9b78d135228f71b45a856",
+      "afterSha256": "93a7a18ffbc5154259d7ea505496547787d9350e33cf5a458dc397abfd8b6a38"
+    },
+    {
+      "path": "backend/tests/unit/change-order-recovery-observation.test.ts",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "be40f2836911cca123cc7df2d3da49c7d3aaff0a2c99523178c348500a88ad02"
+    },
+    {
+      "path": "backend/tests/unit/work-order-command-role-authority.test.ts",
+      "change": "modified",
+      "beforeSha256": "3f45ad2f859b9dfb5490102e437693eb00ca93c176703302b688e475a0e36af6",
+      "afterSha256": "d629435334f292b3aad0925cc040aac7b3fe0fcb2c99d1cfd59228d9f31e09a9"
+    }
+  ],
+  "patchSha256": "3eaea2bb38b969c7095da01c2e8010a4e3d3a802389d6199fc7a1511cbfa0e46",
+  "patchBytes": 58242,
+  "logs": [
+    {
+      "path": "change-order-recovery-observation-units-3.log",
+      "sha256": "09e99f2418797c853bf0e3b20493727da763b14301b47c79558d19e4ebda3993"
+    },
+    {
+      "path": "change-order-recovery-observation-types-3.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "change-order-recovery-observation-compile-2.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "change-order-recovery-observation-lint-2.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "change-order-recovery-observation-domain-full-2.log",
+      "sha256": "46c699f2114332e8ca3870401cb36fdbc20fb957b7cd24999fc53d4b49cee6f9"
+    },
+    {
+      "path": "change-order-recovery-observation-red.log",
+      "sha256": "f1ececdc53f9838d6566055ea544ef0ccfb8d758ba789ac362bf911bac938a37"
+    }
+  ],
+  "integrationObservation": {
+    "path": "work/change-order-recovery-observation-integration-observation.json",
+    "recordedAt": "2026-09-06T00:58:10.597Z",
+    "sha256": "a21469c5c810707033bf1f360821f1fd56baf3cb874b158ae3d92da8c2cfb1fa",
+    "scope": "Exact source observed before four complete financial/readiness cohorts; bytes unchanged through packaging."
+  },
+  "validation": {
+    "unitContracts": {
+      "files": 6,
+      "passed": 210,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    "financialAndReadinessRegression": {
+      "files": 4,
+      "passed": 251,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    "sourceCompilation": "PASS",
+    "expandedTestTypes": "PASS",
+    "allSourceLintZeroWarnings": "PASS",
+    "gitDiffCheck": "PASS",
+    "patchReverseCheck": "PASS",
+    "patchForwardByteReproduction": "PASS",
+    "unrelatedWorktreePreserved": true,
+    "baselineInventoryEntries": 1790,
+    "currentInventoryEntries": 1792,
+    "fullRequiredGate": {
+      "status": "FAIL",
+      "passed": 10571,
+      "failed": 27,
+      "skipped": 33,
+      "todo": 0,
+      "files": 684,
+      "sourceRelation": "Prior full required run. Not rerun on these bytes; focused successes do not replace it."
+    }
+  },
+  "semanticReview": {
+    "catalogCapture": "backend-change-order-recovery-observation-catalog-capture-2.json",
+    "catalogSha256": "102960cac05b22b73e92fca263ca2bc0c21bb6462fd394b22a914629f6cff581",
+    "v13MigrationSha256": "ef8faf0f0b753c51f02d4578f6dfd2da05d83dc282dc19e514187c403f669735",
+    "functionCatalog": {
+      "function_count": 152,
+      "function_catalog_sha256": "19e7c6d624bb4391a1824cb8fb9692ffe9eec8f56cb5933e40cdfd8d2b4ea634"
+    },
+    "triggerCatalog": {
+      "trigger_count": 343,
+      "trigger_catalog_sha256": "b23def6b0513e6951e9730233fa33f36997b0fce34de782479e9f497395dc34b"
+    },
+    "predecessorV13TextUnchanged": true,
+    "independentFreshCatalogs": 2,
+    "frozenMigrations": {
+      "20261014_universal_v1_work_order_command_ports_v1.sql": "3920ac8d3208b9f573dc331cab60c373d0349611700c6e14a6e4c1dd8c53aac4",
+      "20261015_universal_v1_work_order_fake_financial_authority_hardening_v12.sql": "5bb8ee72b9113146b88c22c6751ebe527ba6246b4463a8611ef9c24b999b7ac5",
+      "20261015_universal_v1_work_order_bootstrap_seal_v1.sql": "c69825589193885d0f6a3b93930880998e95e1c5cd44bb9b5999cb457192b2bd"
+    },
+    "criticalFunctionsSha256": "69475967edb0c64491291d494452af0437154370323744815b8138db9291d141"
+  },
+  "review": {
+    "kind": "Root source and integration review; independent human review remains required",
+    "evidenceBoundary": "Actual restricted worker observes exact live leases, revoked customers and adjustment-to-amendment progression. Provider execution precedes recovery age and remains within its original admission window. Preparation and historical amendment setup use existing fixtures. Adapter installed-authority identity is synthetic. Decoder unit cases preserve all thirteen observation states; PostgreSQL does not yet cover every compensation observation state."
+  },
+  "behavior": [
+    "Worker-only sealed observation validates current target/release and exact proposal, lease, owner, witness and Work Order",
+    "Proposal/witness/fulfillment coordination refuses contention without dispatch or terminal authority",
+    "Latest-attempt outcome correlation; existing amendment and compensation precedence preserved",
+    "Revocation after admission stays reconcile-only; unrelated revocation evidence is excluded from the typed causal claim",
+    "Strict immutable receipts and installed-authority recheck before commit; exact named dependency reads and retained classifier custody"
+  ],
+  "docs": {
+    "checkedAtUtc": "2026-09-06 00:42:41 UTC",
+    "modificationTimesUnchanged": true
+  },
+  "remaining": [
+    "Compensation winner creation with locked current authority, worker-claim provenance for durable reversal, and exact terminal writers",
+    "Remaining compensation observation states and expired/terminal lease integration cases, NO_EFFECT versus request/first-admission races, scheduled-worker integration",
+    "Remaining financial/account callers, current-Docs product work, all thirteen end-to-end journeys and full zero-failure/skip/todo required gate",
+    "Clean clones, signatures, protected independent human review and isolated staging"
+  ],
+  "publicationAuthorization": "User explicitly requested publication of all work to a public branch. This WIP publication is separate from release certification."
+}

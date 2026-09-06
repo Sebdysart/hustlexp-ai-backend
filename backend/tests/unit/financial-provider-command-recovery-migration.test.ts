@@ -98,7 +98,7 @@ describe('financial provider command recovery migration', () => {
   });
 
   it('reauthorizes batch and exact-event entry and requires cooperative abort settlement', () => {
-    expect(recoveryWorker.match(/this\.authorize\(\{ component: 'worker' \}\)/gu)).toHaveLength(2);
+    expect(recoveryWorker.match(/this\.authorize\(\{ component: 'worker' \}\)/gu)).toHaveLength(3);
     expect(recoveryWorker).toContain("abortContract: 'ABORT_SIGNAL_SETTLES'");
     expect(recoveryWorker).toContain('new AbortController()');
     expect(recoveryWorker).toContain('this.reconciliationDeadlineMs');

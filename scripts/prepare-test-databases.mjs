@@ -85,6 +85,60 @@ export const NONPRODUCTION_TEST_FINANCIAL_MIGRATIONS = Object.freeze([
     evidenceTable: 'hxos_fake_financial_schema_evidence_v8',
     requiredMarker: 'aa_universal_v1_dispute_terminal_intent_gate',
   }),
+  Object.freeze({
+    name: '20261010_universal_v1_fake_financial_expiry_v9',
+    path: resolve(
+      scriptDirectory,
+      '../backend/database/migrations/20261010_universal_v1_fake_financial_expiry_v9.sql'
+    ),
+    evidenceTable: 'hxos_fake_financial_schema_evidence_v9',
+    requiredMarker: 'expiry_authority_sha256',
+  }),
+  Object.freeze({
+    name: '20261011_universal_v1_fake_financial_expiry_recovery_v10',
+    path: resolve(
+      scriptDirectory,
+      '../backend/database/migrations/20261011_universal_v1_fake_financial_expiry_recovery_v10.sql'
+    ),
+    evidenceTable: 'hxos_fake_financial_schema_evidence_v10',
+    requiredMarker: 'hxos_finalize_legacy_expiry_compensation_v10',
+  }),
+  Object.freeze({
+    name: '20261013_nonproduction_runtime_insert_authority_v1',
+    path: resolve(
+      scriptDirectory,
+      '../backend/database/migrations/20261013_nonproduction_runtime_insert_authority_v1.sql'
+    ),
+    evidenceTable: 'hxos_fake_financial_schema_evidence_v11',
+    requiredMarker: 'hxos_record_financial_provider_command_v1',
+  }),
+  Object.freeze({
+    name: '20261015_universal_v1_work_order_fake_financial_authority_hardening_v12',
+    path: resolve(
+      scriptDirectory,
+      '../backend/database/migrations/20261015_universal_v1_work_order_fake_financial_authority_hardening_v12.sql'
+    ),
+    evidenceTable: 'hxos_fake_financial_schema_evidence_v12',
+    requiredMarker: 'HXUV1-WOCMD-V12-4',
+  }),
+  Object.freeze({
+    name: '20261015_universal_v1_work_order_bootstrap_seal_v1',
+    path: resolve(
+      scriptDirectory,
+      '../backend/database/migrations/20261015_universal_v1_work_order_bootstrap_seal_v1.sql'
+    ),
+    evidenceTable: 'hxos_work_order_bootstrap_seal_evidence_v1',
+    requiredMarker: 'HXUV1-WOCMD-SEAL-5',
+  }),
+  Object.freeze({
+    name: '20261016_universal_v1_fake_financial_command_outbox_authority_v13',
+    path: resolve(
+      scriptDirectory,
+      '../backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql'
+    ),
+    evidenceTable: 'hxos_fake_financial_schema_evidence_v13',
+    requiredMarker: 'HXUV1-FINOUT-13-47',
+  }),
 ]);
 export const NONPRODUCTION_TEST_FINANCIAL_MIGRATION =
   NONPRODUCTION_TEST_FINANCIAL_MIGRATIONS.at(-1).name;
@@ -239,24 +293,26 @@ async function installNonproductionFinancialFixture(urls) {
     }
     const client = new Client({ connectionString: databaseUrl });
     await client.connect();
+    let transactionStarted = false;
     try {
       await client.query('BEGIN');
+      transactionStarted = true;
       for (const migration of migrations) {
         await client.query(migration.sql);
         await client.query(
-          `INSERT INTO ${migration.evidenceTable}
+          `INSERT INTO public.${migration.evidenceTable}
              (migration_name, migration_sql_sha256)
            VALUES ($1, $2)`,
           [migration.name, migration.sha256]
         );
         await client.query(
-          `INSERT INTO applied_migrations(name, sha256)
+          `INSERT INTO public.applied_migrations(name, sha256)
            VALUES ($1, $2)`,
           [migration.name, migration.sha256]
         );
         const evidence = await client.query(
           `SELECT migration_sql_sha256
-           FROM ${migration.evidenceTable}
+           FROM public.${migration.evidenceTable}
            WHERE migration_name = $1`,
           [migration.name]
         );
@@ -264,13 +320,16 @@ async function installNonproductionFinancialFixture(urls) {
           throw new Error(`${role} fake-finance fixture evidence mismatch: ${migration.name}`);
         }
       }
+      transactionStarted = false;
       await client.query('COMMIT');
       console.log(
         `Prepared isolated ${role} fake-finance fixture ` +
           `(${migrations.map((migration) => migration.sha256).join(',')})`
       );
     } catch (error) {
-      await client.query('ROLLBACK');
+      if (transactionStarted) {
+        await client.query('ROLLBACK').catch(() => undefined);
+      }
       throw error;
     } finally {
       await client.end();

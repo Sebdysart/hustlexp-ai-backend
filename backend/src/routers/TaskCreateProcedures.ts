@@ -24,29 +24,40 @@ function hasUnsupportedLocationCharacter(value: string): boolean {
   });
 }
 
-function assertQuoteEconomics(input: CreateInput, ctx: AuthedContext): void {
+function assertQuoteEconomics(input: CreateInput): void {
   const hasPayout = input.hustlerPayoutCents !== undefined;
   const hasMargin = input.platformMarginCents !== undefined;
   if (hasPayout !== hasMargin) {
-    throw new TRPCError({ code: 'BAD_REQUEST', message: 'Quoted payout and margin must be provided together.' });
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: 'Quoted payout and margin must be provided together.',
+    });
   }
   if (!hasPayout) return;
-  if (ctx.engineBridgeAuthorized !== true) {
-    throw new TRPCError({ code: 'FORBIDDEN', message: 'Canonical quote economics require engine bridge authority.' });
-  }
   if (input.hustlerPayoutCents! + input.platformMarginCents! !== input.price) {
-    throw new TRPCError({ code: 'BAD_REQUEST', message: 'Quoted payout and margin must reconcile to the task price.' });
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: 'Quoted payout and margin must reconcile to the task price.',
+    });
   }
+  throw new TRPCError({
+    code: 'PRECONDITION_FAILED',
+    message:
+      'Caller-supplied quote economics are retired; use the canonical estimate and acceptance boundary.',
+  });
 }
 
 function createParams(
   input: CreateInput,
   ctx: AuthedContext,
   templateSlug: string,
-  compliance?: Awaited<ReturnType<typeof ComplianceGuardianService.evaluate>>,
+  compliance?: Awaited<ReturnType<typeof ComplianceGuardianService.evaluate>>
 ): CreateTaskParams {
-  if (input.isTest === true && ctx.engineBridgeAuthorized !== true) {
-    throw new TRPCError({ code: 'FORBIDDEN', message: 'Controlled-test provenance requires engine bridge authority.' });
+  if (input.isTest === true) {
+    throw new TRPCError({
+      code: 'PRECONDITION_FAILED',
+      message: 'Legacy controlled-test task materialization is retired.',
+    });
   }
   return {
     posterId: ctx.user.id,
@@ -77,7 +88,7 @@ function createParams(
     complianceGuardianNotes: compliance?.notes,
     clientIdempotencyKey: input.clientIdempotencyKey,
     roughArea: input.roughArea,
-    automationClassification: input.isTest === true ? 'CONTROLLED_TEST' : 'PRODUCTION',
+    automationClassification: 'PRODUCTION',
     proofSteps: input.proof_steps?.map(({ step }) => step),
     estimatedDurationMinutes: input.estimatedDurationMinutes,
     requiredTools: input.requiredTools,
@@ -88,10 +99,14 @@ function createParams(
 async function preflightReplay(params: CreateTaskParams): Promise<Task | undefined> {
   if (!params.clientIdempotencyKey) return undefined;
   const result = await TaskService.lookupCreateRequest(params);
-  if (!result.success) throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: result.error.message });
+  if (!result.success)
+    throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: result.error.message });
   if (result.data.status === 'replay') return { ...result.data.task, idempotency_replayed: true };
   if (result.data.status === 'conflict') {
-    throw new TRPCError({ code: 'CONFLICT', message: 'Idempotency key was already used with different task input.' });
+    throw new TRPCError({
+      code: 'CONFLICT',
+      message: 'Idempotency key was already used with different task input.',
+    });
   }
   return undefined;
 }
@@ -126,10 +141,11 @@ function unwrapCreated(result: Awaited<ReturnType<typeof TaskService.create>>): 
   if (result.success) return result.data;
   let code: 'BAD_REQUEST' | 'PRECONDITION_FAILED' | 'CONFLICT' = 'BAD_REQUEST';
   if (
-    result.error.code === 'HX902'
-    || result.error.code === 'HX901'
-    || result.error.code === LEGACY_TASK_MATERIALIZATION_FROZEN_CODE
-  ) code = 'PRECONDITION_FAILED';
+    result.error.code === 'HX902' ||
+    result.error.code === 'HX901' ||
+    result.error.code === LEGACY_TASK_MATERIALIZATION_FROZEN_CODE
+  )
+    code = 'PRECONDITION_FAILED';
   if (result.error.code === 'IDEMPOTENCY_CONFLICT') code = 'CONFLICT';
   throw new TRPCError({
     code,
@@ -140,9 +156,15 @@ function unwrapCreated(result: Awaited<ReturnType<typeof TaskService.create>>): 
   });
 }
 
-async function handleCreateTask({ ctx, input }: { ctx: AuthedContext; input: CreateInput }): Promise<Task> {
+async function handleCreateTask({
+  ctx,
+  input,
+}: {
+  ctx: AuthedContext;
+  input: CreateInput;
+}): Promise<Task> {
   assertImplementedFields(input);
-  assertQuoteEconomics(input, ctx);
+  assertQuoteEconomics(input);
   const templateSlug = input.templateSlug ?? 'standard_physical';
   requiredTemplate(templateSlug);
   const replay = await preflightReplay(createParams(input, ctx, templateSlug));
@@ -156,17 +178,22 @@ async function handleCreateTask({ ctx, input }: { ctx: AuthedContext; input: Cre
 }
 
 export const TaskCreateProcedures = {
-create: posterProcedure
-    .input(Schemas.createTask)
-    .mutation(handleCreateTask),
-setExactLocation: posterProcedure
-    .input(z.object({
-      taskId: Schemas.uuid,
-      exactLocation: z.string().trim().min(5).max(500).refine(
-        (value) => !hasUnsupportedLocationCharacter(value),
-        'Service location contains unsupported characters.',
-      ),
-    }))
+  create: posterProcedure.input(Schemas.createTask).mutation(handleCreateTask),
+  setExactLocation: posterProcedure
+    .input(
+      z.object({
+        taskId: Schemas.uuid,
+        exactLocation: z
+          .string()
+          .trim()
+          .min(5)
+          .max(500)
+          .refine(
+            (value) => !hasUnsupportedLocationCharacter(value),
+            'Service location contains unsupported characters.'
+          ),
+      })
+    )
     .mutation(async ({ ctx, input }) => {
       const result = await TaskLocationService.setByPoster({
         taskId: input.taskId,
@@ -174,18 +201,19 @@ setExactLocation: posterProcedure
         exactLocation: input.exactLocation,
       });
       if (!result.success) {
-        const code = result.error.code === 'NOT_FOUND'
-          ? 'NOT_FOUND'
-          : result.error.code === 'FORBIDDEN'
-            ? 'FORBIDDEN'
-            : result.error.code === 'DB_ERROR'
-              ? 'INTERNAL_SERVER_ERROR'
-              : 'PRECONDITION_FAILED';
+        const code =
+          result.error.code === 'NOT_FOUND'
+            ? 'NOT_FOUND'
+            : result.error.code === 'FORBIDDEN'
+              ? 'FORBIDDEN'
+              : result.error.code === 'DB_ERROR'
+                ? 'INTERNAL_SERVER_ERROR'
+                : 'PRECONDITION_FAILED';
         throw new TRPCError({ code, message: result.error.message });
       }
       return result.data;
     }),
-releaseExactLocation: hustlerProcedure
+  releaseExactLocation: hustlerProcedure
     .input(z.object({ taskId: Schemas.uuid }))
     .mutation(async ({ ctx, input }) => {
       const result = await TaskLocationService.releaseToReservedWorker({
@@ -193,57 +221,58 @@ releaseExactLocation: hustlerProcedure
         workerId: ctx.user.id,
       });
       if (!result.success) {
-        const code = result.error.code === 'NOT_FOUND' || result.error.code === 'EXACT_LOCATION_MISSING'
-          ? 'NOT_FOUND'
-          : result.error.code === 'DB_ERROR'
-            ? 'INTERNAL_SERVER_ERROR'
-            : 'PRECONDITION_FAILED';
+        const code =
+          result.error.code === 'NOT_FOUND' || result.error.code === 'EXACT_LOCATION_MISSING'
+            ? 'NOT_FOUND'
+            : result.error.code === 'DB_ERROR'
+              ? 'INTERNAL_SERVER_ERROR'
+              : 'PRECONDITION_FAILED';
         throw new TRPCError({ code, message: result.error.message });
       }
       return result.data;
     }),
-evaluateDraft: posterProcedure
-    .input(Schemas.evaluateDraft)
-    .mutation(async ({ ctx, input }) => {
-      await checkDraftEvalRateLimit(ctx.user.id);
+  evaluateDraft: posterProcedure.input(Schemas.evaluateDraft).mutation(async ({ ctx, input }) => {
+    await checkDraftEvalRateLimit(ctx.user.id);
 
-      const complianceResult = await ComplianceGuardianService.evaluate({
-        description: input.description,
-        userId: ctx.user.id,
-        templateSlug: input.templateSlug,
+    const complianceResult = await ComplianceGuardianService.evaluate({
+      description: input.description,
+      userId: ctx.user.id,
+      templateSlug: input.templateSlug,
+    });
+
+    if (complianceResult.tier === 'hard_block') {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: `This task was blocked. Reason: ${complianceResult.triggeredRules.join(', ')}. HustleXP only allows legal IRL tasks.`,
       });
+    }
 
-      if (complianceResult.tier === 'hard_block') {
-        throw new TRPCError({
-          code: 'BAD_REQUEST',
-          message: `This task was blocked. Reason: ${complianceResult.triggeredRules.join(', ')}. HustleXP only allows legal IRL tasks.`,
-        });
-      }
+    const scopeResult = await ScoperAIService.analyzeTaskScope({
+      userId: ctx.user.id,
+      description: input.description,
+      templateSlug: input.templateSlug,
+      wildcardFlags: input.wildcardFlags,
+      complianceResult: complianceResult,
+    });
 
-      const scopeResult = await ScoperAIService.analyzeTaskScope({
-        userId: ctx.user.id,
-        description: input.description,
-        templateSlug: input.templateSlug,
-        wildcardFlags: input.wildcardFlags,
-        complianceResult: complianceResult,
-      });
-
-      return {
-        score: complianceResult.score,
-        tier: complianceResult.tier,
-        triggeredRules: complianceResult.triggeredRules,
-        suggestedAlternative: complianceResult.suggestedAlternative,
-        notes: complianceResult.notes,
-        scopeProposal: scopeResult.success ? scopeResult.data : null,
-      };
-    }),
-respondToScopeProposal: posterProcedure
-    .input(z.object({
-      observationId: Schemas.uuid,
-      action: z.enum(['ACCEPTED', 'EDITED', 'DISMISSED', 'SNOOZED', 'OVERRIDDEN']),
-      editedFields: z.array(z.string().trim().min(1).max(100)).max(24).default([]),
-      idempotencyKey: Schemas.uuid,
-    }))
+    return {
+      score: complianceResult.score,
+      tier: complianceResult.tier,
+      triggeredRules: complianceResult.triggeredRules,
+      suggestedAlternative: complianceResult.suggestedAlternative,
+      notes: complianceResult.notes,
+      scopeProposal: scopeResult.success ? scopeResult.data : null,
+    };
+  }),
+  respondToScopeProposal: posterProcedure
+    .input(
+      z.object({
+        observationId: Schemas.uuid,
+        action: z.enum(['ACCEPTED', 'EDITED', 'DISMISSED', 'SNOOZED', 'OVERRIDDEN']),
+        editedFields: z.array(z.string().trim().min(1).max(100)).max(24).default([]),
+        idempotencyKey: Schemas.uuid,
+      })
+    )
     .mutation(async ({ ctx, input }) => {
       const result = await AIObservabilityService.recordUserResponse({
         observationId: input.observationId,
@@ -253,13 +282,14 @@ respondToScopeProposal: posterProcedure
         idempotencyKey: input.idempotencyKey,
       });
       if (!result.success) {
-        const code = result.error.code === 'AI_OBSERVATION_NOT_FOUND'
-          ? 'NOT_FOUND'
-          : result.error.code === 'IDEMPOTENCY_CONFLICT'
-            ? 'CONFLICT'
-            : 'INTERNAL_SERVER_ERROR';
+        const code =
+          result.error.code === 'AI_OBSERVATION_NOT_FOUND'
+            ? 'NOT_FOUND'
+            : result.error.code === 'IDEMPOTENCY_CONFLICT'
+              ? 'CONFLICT'
+              : 'INTERNAL_SERVER_ERROR';
         throw new TRPCError({ code, message: result.error.message });
       }
       return result.data;
-    })
+    }),
 };

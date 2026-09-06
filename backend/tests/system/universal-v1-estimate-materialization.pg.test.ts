@@ -9,7 +9,7 @@ import type { BuildIdentity } from '../../src/buildIdentity.js';
 import type { Database, QueryFn } from '../../src/db.js';
 import {
   releaseManifestDigest,
-  type ReleaseManifest,
+  type ReleaseManifestV2,
   type ReleaseManifestEvidence,
 } from '../../src/releaseManifest.js';
 import {
@@ -60,8 +60,8 @@ import {
   type UniversalV1TaskDraftClaimDependencies,
 } from '../../src/services/UniversalV1TaskDraftClaim.js';
 import {
-  createUniversalV1FakeFinancialApplicationService,
   PostgresUniversalV1FinancialLifecycleRepository,
+  UniversalV1FakeFinancialApplicationService,
   UniversalV1FinancialApplicationService,
 } from '../../src/services/payment/UniversalV1FinancialApplicationService.js';
 import {
@@ -84,6 +84,7 @@ import {
   type PreparedUniversalV1FinancialCommandReceipt,
   type UniversalV1PreparedFinancialCommandAuthority,
 } from '../../src/services/payment/PreparedFinancialCommandAuthority.js';
+import { assertNonproductionFakeFinanceAuthorized } from '../../src/services/payment/NonproductionFinancialAuthorization.js';
 import { PostgresUniversalV1FakeProviderAccountRepository } from '../../src/services/payment/UniversalV1FakeProviderAccountRepository.js';
 import { createCompletionDeliveryWebhook } from '../../src/serverCompletionDeliveryWebhook.js';
 import {
@@ -91,6 +92,16 @@ import {
   reconcileNotificationProviderReceipts,
 } from '../../src/services/NotificationDeliveryRecoveryService.js';
 import { processEmailJob } from '../../src/jobs/email-worker.js';
+import {
+  buildUniversalV1CanonicalActorRequest,
+  type UniversalV1ActorAttestationHandle,
+  type UniversalV1ActorCommand,
+} from '../../src/auth/universal-v1-actor-attestation-contracts.js';
+import { PostgresUniversalV1CanonicalRequestDigest } from '../../src/services/UniversalV1ActorAttesterClient.js';
+import {
+  PostgresUniversalV1ActorAssertionIssuer,
+  type UniversalV1VerifiedAuthenticationFacts,
+} from '../../src/services/UniversalV1ActorAssertionIssuer.js';
 
 const enabled = process.env.HX_ALLOW_TASK_DRAFT_INGRESS_PG === '1';
 const describePg = enabled ? describe : describe.skip;
@@ -125,8 +136,8 @@ function localFakeFinanceAuthority(): {
   identity: BuildIdentity;
 } {
   const revision = '1'.repeat(40);
-  const manifest: ReleaseManifest = {
-    version: 1,
+  const manifest: ReleaseManifestV2 = {
+    version: 2,
     environment: 'local',
     releaseId: 'local-work-order-pg-proof-0001',
     createdAt: '2026-08-27T00:00:00.000Z',
@@ -160,9 +171,21 @@ function localFakeFinanceAuthority(): {
       fixtures: {
         revision: '5'.repeat(40),
         artifactDigest: sha256Digest('9'),
-        imageEvidence: 'VERIFIED_IMMUTABLE_IMAGE',
-        imageDigest: sha256Digest('a'),
+        providerImageEvidence: 'VERIFIED_IMMUTABLE_IMAGE',
+        providerImageDigest: sha256Digest('a'),
+        databaseImageEvidence: 'VERIFIED_IMMUTABLE_IMAGE',
+        databaseImageDigest: sha256Digest('b'),
       },
+    },
+    infrastructure: {
+      revision: '6'.repeat(40),
+      artifactDigest: sha256Digest('c'),
+      desiredTopologyDigest: sha256Digest('d'),
+    },
+    databaseTargets: {
+      api: { component: 'api', environment: 'local', databaseTargetDigest: sha256Digest('e') },
+      worker: { component: 'worker', environment: 'local', databaseTargetDigest: sha256Digest('f') },
+      attester: { component: 'attester', environment: 'local', databaseTargetDigest: sha256Digest('1') },
     },
     capabilities: {
       financialProvider: 'fake',
@@ -176,11 +199,20 @@ function localFakeFinanceAuthority(): {
     promotion: {
       baseManifestDigest: null,
       changedComponents: ['backend', 'worker', 'web', 'migration', 'policy', 'fixtures'],
+      infrastructureChanged: true,
     },
-    health: {
-      backend: { component: 'backend', path: '/health' },
-      worker: { component: 'worker', path: '/health' },
-      web: { component: 'web', path: '/version.json' },
+    acceptance: {
+      backend: { kind: 'http', component: 'backend', path: '/health' },
+      worker: { kind: 'http', component: 'worker', path: '/health' },
+      web: { kind: 'http', component: 'web', path: '/version.json' },
+      migration: { kind: 'receipt', component: 'migration', receiptType: 'migration-execution-v1' },
+      policy: { kind: 'receipt', component: 'policy', receiptType: 'canonical-policy-digest-v1' },
+      fixtures: { kind: 'receipt', component: 'fixtures', receiptType: 'fixture-seed-v1' },
+      infrastructure: {
+        kind: 'readback',
+        binding: 'infrastructure',
+        receiptType: 'infrastructure-readback-v1',
+      },
     },
   };
   return {
@@ -249,8 +281,44 @@ interface EstimateLaneFixture {
   provider: ProviderAuthorityFixture;
 }
 
+interface WorkOrderTargetAuthorityFixture {
+  readonly target_authority_id: string;
+  readonly authority_version: number;
+  readonly target_database_name: string;
+  readonly environment: 'local';
+  readonly release_manifest_sha256: string;
+}
+
+interface ActorAssertionProof {
+  readonly assertionId: string;
+  readonly actorUserId: string;
+  readonly verifiedSubject: string;
+  readonly commandKind: UniversalV1ActorCommand['commandKind'];
+  readonly canonicalRequestSha256: string;
+  readonly tokenSha256: string;
+}
+
+const disposableAttesterRole = `hx_ci_est_att_${process.pid}_${randomBytes(4).toString('hex')}`;
+const disposableAttesterPassword = randomBytes(24).toString('hex');
+const workOrderFaultFunction = `hx_ci_wo_insert_fault_${process.pid}`;
+const workOrderFaultTrigger = `hx_ci_wo_insert_fault_${process.pid}`;
+
+function quoteDisposablePgIdentifier(value: string): string {
+  if (!/^hx_ci_[a-z0-9_]+$/u.test(value) || value.length > 63) {
+    throw new Error(`Unsafe disposable PostgreSQL identifier: ${value}`);
+  }
+  return `"${value}"`;
+}
+
 describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
   const pool = new pg.Pool({ connectionString: databaseUrl, max: 12 });
+  let attesterClient: pg.Client | null = null;
+  let actorAssertionIssuer: PostgresUniversalV1ActorAssertionIssuer | null = null;
+  let canonicalRequestDigest: PostgresUniversalV1CanonicalRequestDigest | null = null;
+  let workOrderTargetAuthority: WorkOrderTargetAuthorityFixture | null = null;
+  let disposableAttesterRoleProvisioned = false;
+  const actorAssertionProofs: ActorAssertionProof[] = [];
+  const issuedTokenDigests = new Set<string>();
 
   const runTransaction = async <T>(
     isolation: '' | ' ISOLATION LEVEL SERIALIZABLE',
@@ -305,6 +373,327 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
     close: async () => undefined,
   };
 
+  function attesterDatabaseUrl(): string {
+    const parsed = new URL(databaseUrl);
+    parsed.username = disposableAttesterRole;
+    parsed.password = disposableAttesterPassword;
+    return parsed.toString();
+  }
+
+  async function ensureExactWorkOrderTargetAuthority(): Promise<WorkOrderTargetAuthorityFixture> {
+    const releaseManifestSha256 = localFakeFinanceAuthority().release.digest;
+    const readTarget = async (): Promise<WorkOrderTargetAuthorityFixture> => {
+      const result = await pool.query<WorkOrderTargetAuthorityFixture>(
+        `SELECT target_authority_id, authority_version, target_database_name,
+                environment, release_manifest_sha256
+           FROM hx_authority.read_universal_v1_work_order_target_authority_v1()`
+      );
+      if (result.rows.length !== 1 || !result.rows[0]) {
+        throw new Error('SYSTEM_TEST_EXACT_WORK_ORDER_TARGET_AUTHORITY_REQUIRED');
+      }
+      return result.rows[0];
+    };
+
+    let target: WorkOrderTargetAuthorityFixture;
+    try {
+      target = await readTarget();
+    } catch (error) {
+      const postgresError = error as { code?: string; message?: string };
+      if (postgresError.code !== 'P0001' || !postgresError.message?.includes('HXUV1-WOCMD-4')) {
+        throw error;
+      }
+      const existing = await pool.query<{ fact_count: number; tip_count: number }>(
+        `SELECT pg_catalog.count(*)::INTEGER AS fact_count,
+                pg_catalog.count(*) FILTER (
+                  WHERE NOT EXISTS (
+                    SELECT 1
+                      FROM hx_authority.universal_v1_work_order_target_authority_facts successor
+                     WHERE successor.supersedes_target_authority_id = target.target_authority_id
+                  )
+                )::INTEGER AS tip_count
+           FROM hx_authority.universal_v1_work_order_target_authority_facts target`
+      );
+      if (existing.rows[0]?.fact_count !== 0 || existing.rows[0]?.tip_count !== 0) {
+        throw new Error('SYSTEM_TEST_REFUSED_TO_SILENTLY_SUPERSEDE_WORK_ORDER_TARGET_AUTHORITY');
+      }
+      const currentDatabase = await pool.query<{ current_database: string }>(
+        `SELECT pg_catalog.current_database() AS current_database`
+      );
+      const databaseName = currentDatabase.rows[0]?.current_database;
+      if (!databaseName) {
+        throw new Error('SYSTEM_TEST_WORK_ORDER_TARGET_DATABASE_UNAVAILABLE');
+      }
+      const activationRequestSha256 = createHash('sha256')
+        .update(
+          [
+            'HUSTLEXP_SYSTEM_TEST_WORK_ORDER_TARGET_AUTHORITY_V1',
+            databaseName,
+            'local',
+            releaseManifestSha256,
+          ].join('\n'),
+          'utf8'
+        )
+        .digest('hex');
+      await pool.query(
+        `INSERT INTO hx_authority.universal_v1_work_order_target_authority_facts(
+           authority_version, target_database_name, environment,
+           release_manifest_sha256, activation_request_sha256
+         ) VALUES (1, pg_catalog.current_database(), 'local', $1, $2)`,
+        [releaseManifestSha256, activationRequestSha256]
+      );
+      target = await readTarget();
+    }
+
+    if (
+      target.environment !== 'local' ||
+      target.release_manifest_sha256 !== releaseManifestSha256
+    ) {
+      throw new Error('SYSTEM_TEST_WORK_ORDER_TARGET_AUTHORITY_MISMATCH');
+    }
+    return target;
+  }
+
+  async function provisionDisposableAttester(): Promise<void> {
+    const quotedRole = quoteDisposablePgIdentifier(disposableAttesterRole);
+    const databaseName = new URL(databaseUrl).pathname.slice(1);
+    const quotedDatabase = quoteDisposablePgIdentifier(databaseName);
+    const loginValidUntil = new Date(Date.now() + 15 * 60_000).toISOString();
+    await pool.query(
+      `CREATE ROLE ${quotedRole}
+         LOGIN PASSWORD '${disposableAttesterPassword}'
+         CONNECTION LIMIT 2 VALID UNTIL '${loginValidUntil}'
+         NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+       GRANT CONNECT ON DATABASE ${quotedDatabase} TO ${quotedRole};
+       GRANT USAGE ON SCHEMA public TO ${quotedRole};
+       GRANT EXECUTE ON FUNCTION public.hxos_issue_universal_v1_actor_assertion_v1(
+         TEXT, TEXT, TEXT, TEXT, JSONB, TIMESTAMPTZ
+       ) TO ${quotedRole}`
+    );
+    disposableAttesterRoleProvisioned = true;
+    attesterClient = new pg.Client({ connectionString: attesterDatabaseUrl() });
+    await attesterClient.connect();
+    const attesterQuery = async <Row>(sql: string, parameters?: readonly unknown[]) => {
+      const result = await attesterClient!.query(sql, parameters ? [...parameters] : undefined);
+      return { rows: result.rows as Row[], rowCount: result.rowCount ?? 0 };
+    };
+    actorAssertionIssuer = new PostgresUniversalV1ActorAssertionIssuer({
+      env: {
+        HX_ENVIRONMENT: 'local',
+        HX_PAYMENT_CREATION_MODE: 'frozen',
+        STRIPE_MODE: 'test',
+        ENGINE_API_MODE: 'test',
+        HX_EXTERNAL_VALUE: 'false',
+        SERVICE_ROLE: 'attester',
+        HX_WORK_ORDER_ATTESTER_DATABASE_ROLE: disposableAttesterRole,
+      },
+      query: attesterQuery,
+    });
+    await expect(actorAssertionIssuer.readiness()).resolves.toMatchObject({
+      databaseRole: disposableAttesterRole,
+      databaseName,
+      issuerIdentity:
+        'public.hxos_issue_universal_v1_actor_assertion_v1(text,text,text,text,jsonb,timestamp with time zone)',
+    });
+    canonicalRequestDigest = new PostgresUniversalV1CanonicalRequestDigest(
+      async <Row = Record<string, unknown>>(sql: string, params?: unknown[]) => {
+        const result = await pool.query(sql, params);
+        return { rows: result.rows as Row[], rowCount: result.rowCount ?? 0 };
+      }
+    );
+  }
+
+  async function cleanupDisposableAttester(): Promise<void> {
+    await actorAssertionIssuer?.close();
+    actorAssertionIssuer = null;
+    await attesterClient?.end().catch(() => undefined);
+    attesterClient = null;
+    if (!disposableAttesterRoleProvisioned) return;
+    const quotedRole = quoteDisposablePgIdentifier(disposableAttesterRole);
+    const databaseName = new URL(databaseUrl).pathname.slice(1);
+    const quotedDatabase = quoteDisposablePgIdentifier(databaseName);
+    await pool.query(
+      `REVOKE EXECUTE ON FUNCTION public.hxos_issue_universal_v1_actor_assertion_v1(
+         TEXT, TEXT, TEXT, TEXT, JSONB, TIMESTAMPTZ
+       ) FROM ${quotedRole};
+       REVOKE USAGE ON SCHEMA public FROM ${quotedRole};
+       REVOKE CONNECT ON DATABASE ${quotedDatabase} FROM ${quotedRole};
+       DROP ROLE ${quotedRole}`
+    );
+    disposableAttesterRoleProvisioned = false;
+  }
+
+  async function actorAttestationHandle(
+    actorUserId: string
+  ): Promise<UniversalV1ActorAttestationHandle> {
+    const identity = await pool.query<{ firebase_uid: string }>(
+      `SELECT firebase_uid
+         FROM users
+        WHERE id = $1
+          AND pg_catalog.upper(account_status::TEXT) = 'ACTIVE'
+          AND COALESCE(is_minor, FALSE) IS FALSE
+          AND COALESCE(is_banned, FALSE) IS FALSE`,
+      [actorUserId]
+    );
+    const verifiedSubject = identity.rows[0]?.firebase_uid;
+    if (identity.rows.length !== 1 || !verifiedSubject) {
+      throw new Error('SYSTEM_TEST_ACTOR_CANONICAL_FIREBASE_IDENTITY_REQUIRED');
+    }
+    const target = workOrderTargetAuthority;
+    const digest = canonicalRequestDigest;
+    const issuer = actorAssertionIssuer;
+    if (!target || !digest || !issuer) {
+      throw new Error('SYSTEM_TEST_ACTOR_ATTESTATION_AUTHORITY_NOT_READY');
+    }
+
+    return Object.freeze({
+      issue: async (command: UniversalV1ActorCommand) => {
+        const canonicalRequest = buildUniversalV1CanonicalActorRequest(
+          target.release_manifest_sha256,
+          command,
+          {
+            id: target.target_authority_id,
+            version: target.authority_version,
+            database: target.target_database_name,
+            environment: target.environment,
+            release: target.release_manifest_sha256,
+          }
+        );
+        const canonicalRequestSha256 = await digest.digest(canonicalRequest);
+        const opaqueToken = randomBytes(32).toString('hex');
+        const tokenSha256 = createHash('sha256').update(opaqueToken, 'utf8').digest('hex');
+        if (issuedTokenDigests.has(tokenSha256)) {
+          throw new Error('SYSTEM_TEST_ACTOR_ASSERTION_TOKEN_REUSED');
+        }
+        issuedTokenDigests.add(tokenSha256);
+        const clock = Date.now();
+        const authenticationFacts: UniversalV1VerifiedAuthenticationFacts = {
+          schema_version: 1,
+          verified_subject: verifiedSubject,
+          issuer: 'https://securetoken.google.com/hustlexp-system-test',
+          audience: 'hustlexp-system-test',
+          release_manifest_sha256: target.release_manifest_sha256,
+          verified_at: new Date(clock - 100).toISOString(),
+          bearer_expires_at: new Date(clock + 120_000).toISOString(),
+          auth_time: new Date(clock - 1_000).toISOString(),
+          revocation_checked_at: new Date(clock - 50).toISOString(),
+          amr: ['password'],
+          mfa_verified: false,
+          step_up: { satisfied: false, method: null, verified_at: null },
+        };
+        const issued = await issuer.issue({
+          opaqueToken,
+          environment: target.environment,
+          commandKind: command.commandKind,
+          canonicalRequest,
+          canonicalRequestSha256,
+          authenticationFacts,
+          requestedExpiresAt: new Date(clock + 45_000),
+        });
+        actorAssertionProofs.push({
+          assertionId: issued.assertionId,
+          actorUserId,
+          verifiedSubject,
+          commandKind: command.commandKind,
+          canonicalRequestSha256,
+          tokenSha256,
+        });
+        return {
+          schema_version: 1 as const,
+          command_kind: command.commandKind,
+          canonical_request_sha256: canonicalRequestSha256,
+          actor_assertion_token: opaqueToken,
+          assertion_expires_at: issued.expiresAt.toISOString(),
+        };
+      },
+    });
+  }
+
+  async function expectIssuedConsumedExecuted(proofs: readonly ActorAssertionProof[]) {
+    if (proofs.length === 0) {
+      throw new Error('SYSTEM_TEST_ACTOR_ASSERTION_EXECUTION_PROOF_REQUIRED');
+    }
+    const target = workOrderTargetAuthority;
+    if (!target) throw new Error('SYSTEM_TEST_WORK_ORDER_TARGET_AUTHORITY_NOT_READY');
+    const assertionIds = proofs.map((proof) => proof.assertionId);
+    const evidence = await pool.query<{
+      assertion_id: string;
+      token_sha256: string;
+      environment: string;
+      command_kind: string;
+      canonical_request_sha256: string;
+      release_manifest_sha256: string;
+      verified_subject: string;
+      issued_at: Date;
+      resolved_user_id: string;
+      consumed_at: Date;
+      command_execution_fact_id: string;
+      target_authority_id: string;
+      actor_user_id: string;
+      result_kind: string;
+      recorded_at: Date;
+      hard_assignment_created: boolean;
+      payment_creation_performed: boolean;
+      canonical_firebase_uid: string;
+    }>(
+      `SELECT issuance.assertion_id,
+              issuance.token_sha256::TEXT AS token_sha256,
+              issuance.environment,
+              issuance.command_kind,
+              issuance.canonical_request_sha256::TEXT AS canonical_request_sha256,
+              issuance.release_manifest_sha256,
+              issuance.verified_subject,
+              issuance.issued_at,
+              consumption.resolved_user_id,
+              consumption.consumed_at,
+              execution.command_execution_fact_id,
+              execution.target_authority_id,
+              execution.actor_user_id,
+              execution.result_kind,
+              execution.recorded_at,
+              execution.hard_assignment_created,
+              execution.payment_creation_performed,
+              account.firebase_uid AS canonical_firebase_uid
+         FROM hx_authority.universal_v1_actor_assertion_issuance_facts issuance
+         JOIN hx_authority.universal_v1_actor_assertion_consumption_facts consumption
+           ON consumption.assertion_id = issuance.assertion_id
+         JOIN hx_authority.universal_v1_work_order_command_execution_facts execution
+           ON execution.actor_assertion_id = consumption.assertion_id
+         JOIN users account ON account.id = consumption.resolved_user_id
+        WHERE issuance.assertion_id = ANY($1::UUID[])
+        ORDER BY pg_catalog.array_position($1::UUID[], issuance.assertion_id)`,
+      [assertionIds]
+    );
+    expect(evidence.rows).toHaveLength(proofs.length);
+    for (const [index, proof] of proofs.entries()) {
+      const row = evidence.rows[index];
+      expect(row).toMatchObject({
+        assertion_id: proof.assertionId,
+        token_sha256: proof.tokenSha256,
+        environment: target.environment,
+        command_kind: proof.commandKind,
+        canonical_request_sha256: proof.canonicalRequestSha256,
+        release_manifest_sha256: target.release_manifest_sha256,
+        verified_subject: proof.verifiedSubject,
+        resolved_user_id: proof.actorUserId,
+        target_authority_id: target.target_authority_id,
+        actor_user_id: proof.actorUserId,
+        hard_assignment_created: false,
+        payment_creation_performed: false,
+        canonical_firebase_uid: proof.verifiedSubject,
+      });
+      expect(row?.command_execution_fact_id).toMatch(/^[0-9a-f-]{36}$/u);
+      expect(['RECORDED', 'REPLAYED', 'COMPLETED', 'RECOVERY_RECORDED']).toContain(
+        row?.result_kind
+      );
+      expect(new Date(row!.consumed_at).getTime()).toBeGreaterThanOrEqual(
+        new Date(row!.issued_at).getTime()
+      );
+      expect(new Date(row!.recorded_at).getTime()).toBeGreaterThanOrEqual(
+        new Date(row!.consumed_at).getTime()
+      );
+    }
+  }
+
   const ingressDependencies: Partial<TaskDraftIngressDependencies> = {
     env: {
       NODE_ENV: 'test',
@@ -341,6 +730,8 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
     assertDisposableDatabase(databaseUrl);
     expect(process.env.HX_PAYMENT_CREATION_MODE).toBe('frozen');
     await pool.query('SELECT 1');
+    workOrderTargetAuthority = await ensureExactWorkOrderTargetAuthority();
+    await provisionDisposableAttester();
     await ensureUniversalV1SyntheticServiceCell(pool);
     const policyDocument = {
       schemaVersion: 'hxos-region-policy-v1',
@@ -401,7 +792,15 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
   });
 
   afterAll(async () => {
-    await pool.end();
+    try {
+      await dropWorkOrderInsertFault();
+    } finally {
+      try {
+        await cleanupDisposableAttester();
+      } finally {
+        await pool.end();
+      }
+    }
   });
 
   async function userFixture(mode: 'poster' | 'worker' = 'poster'): Promise<string> {
@@ -413,6 +812,60 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
       [userId, `firebase-${userId}`, `${userId}@example.invalid`, mode]
     );
     return userId;
+  }
+
+  async function recordControlledTestIdentityFixture(userId: string): Promise<void> {
+    const provider = 'local_certification_identity';
+    const policyVersion = 'hx-work-order-task-freeze-identity-v1';
+    await runTransaction('', async (query) => {
+      await query(
+        `SELECT set_config(
+           'hustlexp.local_test_identity_enabled',
+           'true',
+           true
+         )`
+      );
+      const consent = await query<{ id: string }>(
+        `INSERT INTO identity_verification_consents (
+           user_id, provider, provider_environment, is_test, policy_version,
+           disclosure_hash, purpose, idempotency_key
+         ) VALUES (
+           $1::uuid, $2, 'CONTROLLED_TEST', TRUE, $3, repeat('a', 64),
+           'Controlled-test identity evidence for the Work Order task-freeze proof.',
+           'work-order-task-freeze-identity:' || $1::uuid::text
+         )
+         RETURNING id`,
+        [userId, provider, policyVersion]
+      );
+      const consentId = consent.rows[0]?.id;
+      if (!consentId) {
+        throw new Error('CONTROLLED_TEST_IDENTITY_CONSENT_NOT_RECORDED');
+      }
+      const identityCase = await query<{ case_id: string }>(
+        `SELECT case_id
+           FROM begin_identity_verification_case_v1(
+             $1::uuid, $2::uuid, $3,
+             'idv_hxos_test_' || replace($1::uuid::text, '-', ''),
+             'CONTROLLED_TEST', TRUE, $4, repeat('b', 64),
+             NOW() + INTERVAL '90 days'
+           )`,
+        [userId, consentId, provider, policyVersion]
+      );
+      const caseId = identityCase.rows[0]?.case_id;
+      if (!caseId) {
+        throw new Error('CONTROLLED_TEST_IDENTITY_CASE_NOT_RECORDED');
+      }
+      await query(
+        `SELECT case_status
+           FROM record_identity_verification_event_v1(
+             $1::uuid, $2::uuid,
+             'identity-verified-' || $1::uuid::text,
+             'VERIFIED', repeat('c', 64), repeat('d', 64),
+             NOW(), NOW() + INTERVAL '90 days', $1::uuid
+           )`,
+        [userId, caseId]
+      );
+    });
   }
 
   async function generalProviderFixture(): Promise<ProviderAuthorityFixture> {
@@ -851,13 +1304,7 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
     return new UniversalV1WorkOrderApplication(
       new PostgresUniversalV1WorkOrderPublicFactReader(query),
       new PostgresUniversalV1WorkOrderRepository(databaseOverride),
-      () =>
-        createUniversalV1FakeFinancialApplicationService(
-          databaseOverride,
-          authority.env,
-          authority.release,
-          authority.identity
-        )
+      () => fakeFinanceService(databaseOverride)
     );
   }
 
@@ -866,32 +1313,46 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
     databaseOverride: Database = database
   ): UniversalV1FulfillmentApplication {
     return new UniversalV1FulfillmentApplication(
-      new PostgresUniversalV1FulfillmentRepository(
-        databaseOverride,
-        undefined,
-        {
-          NODE_ENV: 'test',
-          HX_ENVIRONMENT: 'test',
-          HX_PAYMENT_CREATION_MODE: 'frozen',
-          HX_OUTBOUND_COMMUNICATION_MODE: 'sink',
-          HX_EMAIL_DELIVERY_MODE: 'sink',
-          HX_LIVE_DELIVERY: 'false',
-          HX_LIVE_PROVIDER_ACCESS: 'false',
-          HX_EXTERNAL_VALUE: 'false',
-          HX_COMPLETION_DELIVERY_SINK_ACTOR_ID: completionSinkActorId,
-        }
-      ),
+      new PostgresUniversalV1FulfillmentRepository(databaseOverride, undefined, {
+        NODE_ENV: 'test',
+        HX_ENVIRONMENT: 'test',
+        HX_PAYMENT_CREATION_MODE: 'frozen',
+        HX_OUTBOUND_COMMUNICATION_MODE: 'sink',
+        HX_EMAIL_DELIVERY_MODE: 'sink',
+        HX_LIVE_DELIVERY: 'false',
+        HX_LIVE_PROVIDER_ACCESS: 'false',
+        HX_EXTERNAL_VALUE: 'false',
+        HX_COMPLETION_DELIVERY_SINK_ACTOR_ID: completionSinkActorId,
+      }),
       () => fakeFinanceService(databaseOverride)
     );
   }
 
   function fakeFinanceService(databaseOverride: Database = database) {
     const authority = localFakeFinanceAuthority();
-    return createUniversalV1FakeFinancialApplicationService(
-      databaseOverride,
-      authority.env,
-      authority.release,
-      authority.identity
+    const gate = {
+      assertAuthorized: () => {
+        assertNonproductionFakeFinanceAuthorized({
+          env: authority.env,
+          release: authority.release,
+          identity: authority.identity,
+          component: 'backend',
+        });
+      },
+    };
+    const fakeEvents = new PostgresFakeFinancialOperationRepository(databaseOverride);
+    const foregroundCoordinator = new DurableFakeFinancialProviderCommandCoordinator(
+      new PostgresFinancialProviderCommandRecoveryRepository(databaseOverride),
+      fakeEvents,
+      { leaseOwnerId: randomUUID() }
+    );
+    return new UniversalV1FakeFinancialApplicationService(
+      new FakeFinancialProvider(fakeEvents),
+      new PostgresUniversalV1FinancialLifecycleRepository(databaseOverride),
+      gate,
+      new PostgresFinancialProviderCommandJournal(databaseOverride),
+      new PostgresUniversalV1PreparedFinancialCommandAuthority(databaseOverride),
+      foregroundCoordinator
     );
   }
 
@@ -973,25 +1434,39 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
     );
   }
 
-  function databaseRejectingWorkOrderInsert(): Database {
-    return {
-      ...database,
-      serializableTransaction: <T>(callback: (query: QueryFn) => Promise<T>) =>
-        runTransaction(' ISOLATION LEVEL SERIALIZABLE', async (query) => {
-          const rejectingQuery: QueryFn = async <Row = Record<string, unknown>>(
-            sql: string,
-            params?: unknown[]
-          ) => {
-            if (/^\s*INSERT\s+INTO\s+task_work_orders\b/iu.test(sql)) {
-              throw Object.assign(new Error('INJECTED_WORK_ORDER_INSERT_FAILURE'), {
-                code: 'XX999',
-              });
-            }
-            return query<Row>(sql, params);
-          };
-          return callback(rejectingQuery);
-        }),
-    };
+  async function dropWorkOrderInsertFault(): Promise<void> {
+    const quotedFunction = quoteDisposablePgIdentifier(workOrderFaultFunction);
+    const quotedTrigger = quoteDisposablePgIdentifier(workOrderFaultTrigger);
+    await pool.query(
+      `DROP TRIGGER IF EXISTS ${quotedTrigger} ON public.task_work_orders;
+       DROP FUNCTION IF EXISTS public.${quotedFunction}()`
+    );
+  }
+
+  async function installWorkOrderInsertFault(): Promise<() => Promise<void>> {
+    const quotedFunction = quoteDisposablePgIdentifier(workOrderFaultFunction);
+    const quotedTrigger = quoteDisposablePgIdentifier(workOrderFaultTrigger);
+    await dropWorkOrderInsertFault();
+    await pool.query(
+      `CREATE FUNCTION public.${quotedFunction}()
+       RETURNS TRIGGER
+       LANGUAGE plpgsql
+       SET search_path = pg_catalog
+       AS $fault$
+       BEGIN
+         RAISE EXCEPTION USING
+           ERRCODE = 'XX999',
+           MESSAGE = 'INJECTED_WORK_ORDER_INSERT_FAILURE';
+       END;
+       $fault$;
+       REVOKE ALL ON FUNCTION public.${quotedFunction}() FROM PUBLIC;
+       CREATE TRIGGER ${quotedTrigger}
+       BEFORE INSERT ON public.task_work_orders
+       FOR EACH ROW
+       WHEN (NEW.idempotency_key LIKE 'workorder-rollback:%')
+       EXECUTE FUNCTION public.${quotedFunction}()`
+    );
+    return dropWorkOrderInsertFault;
   }
 
   async function acceptedWorkOrderLane(kind: 'yard' | 'plumbing' = 'yard') {
@@ -1014,6 +1489,7 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
   async function heldWorkOrderLane(kind: 'yard' | 'plumbing' = 'yard') {
     const lane = await acceptedWorkOrderLane(kind);
     const application = workOrderService();
+    const actorProofStart = actorAssertionProofs.length;
     const interest = await application.expressProviderInterest(
       lane.fixture.provider.actor_user_id,
       {
@@ -1021,14 +1497,25 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
         expected_scope_version: lane.scopeVersion,
         idempotency_key: `workorder-interest:${lane.accepted.task_id}`,
         client_ts: new Date().toISOString(),
-      }
+      },
+      await actorAttestationHandle(lane.fixture.provider.actor_user_id)
     );
-    const hold = await application.placeConditionalHold(lane.fixture.posterUserId, {
-      interest_application_id: interest.interest_application_id,
-      expected_eligibility_version: interest.eligibility_version,
-      idempotency_key: `workorder-hold:${lane.accepted.task_id}`,
-      client_ts: new Date().toISOString(),
-    });
+    const hold = await application.placeConditionalHold(
+      lane.fixture.posterUserId,
+      {
+        interest_application_id: interest.interest_application_id,
+        expected_eligibility_version: interest.eligibility_version,
+        idempotency_key: `workorder-hold:${lane.accepted.task_id}`,
+        client_ts: new Date().toISOString(),
+      },
+      await actorAttestationHandle(lane.fixture.posterUserId)
+    );
+    const actorProof = actorAssertionProofs.slice(actorProofStart);
+    expect(actorProof.map((proof) => proof.commandKind)).toEqual([
+      'EXPRESS_POST_ESTIMATE_INTEREST',
+      'PLACE_CONDITIONAL_HOLD',
+    ]);
+    await expectIssuedConsumedExecuted(actorProof);
     return { ...lane, application, interest, hold };
   }
 
@@ -1041,7 +1528,8 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
         expected_eligibility_version: lane.interest.eligibility_version,
         idempotency_key: `recovery-work-order:${label}:${randomUUID()}`,
         client_ts: new Date().toISOString(),
-      }
+      },
+      await actorAttestationHandle(lane.fixture.posterUserId)
     );
     const execution = executionService();
     const genesis = await execution.getWorkOrderExecutionState(
@@ -1060,9 +1548,8 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
       }
     );
     const repository = new PostgresUniversalV1ChangeOrderRepository(database);
-    const changeOrders = new UniversalV1ChangeOrderApplication(
-      repository,
-      () => fakeFinanceService()
+    const changeOrders = new UniversalV1ChangeOrderApplication(repository, () =>
+      fakeFinanceService()
     );
     const economics = await pool.query<{
       customer_total_cents: number;
@@ -2295,31 +2782,45 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
     };
     const interest = await application.expressProviderInterest(
       tradeLane.fixture.provider.actor_user_id,
-      tradeInterestCommand
+      tradeInterestCommand,
+      await actorAttestationHandle(tradeLane.fixture.provider.actor_user_id)
     );
     await expect(
       application.expressProviderInterest(
         tradeLane.fixture.provider.actor_user_id,
-        tradeInterestCommand
+        tradeInterestCommand,
+        await actorAttestationHandle(tradeLane.fixture.provider.actor_user_id)
       )
     ).resolves.toEqual({ ...interest, replayed: true });
     await expect(
-      application.expressProviderInterest(tradeLane.fixture.provider.actor_user_id, {
-        ...tradeInterestCommand,
-        client_ts: new Date(Date.parse(tradeInterestCommand.client_ts) + 1).toISOString(),
-      })
+      application.expressProviderInterest(
+        tradeLane.fixture.provider.actor_user_id,
+        {
+          ...tradeInterestCommand,
+          client_ts: new Date(Date.parse(tradeInterestCommand.client_ts) + 1).toISOString(),
+        },
+        await actorAttestationHandle(tradeLane.fixture.provider.actor_user_id)
+      )
     ).rejects.toMatchObject({ code: 'WORK_ORDER_IDEMPOTENCY_CONFLICT' });
     await expect(
-      application.expressProviderInterest(tradeLane.fixture.provider.actor_user_id, {
-        ...tradeInterestCommand,
-        idempotency_key: `workorder-trade-interest-changed:${randomUUID()}`,
-      })
+      application.expressProviderInterest(
+        tradeLane.fixture.provider.actor_user_id,
+        {
+          ...tradeInterestCommand,
+          idempotency_key: `workorder-trade-interest-changed:${randomUUID()}`,
+        },
+        await actorAttestationHandle(tradeLane.fixture.provider.actor_user_id)
+      )
     ).rejects.toMatchObject({ code: 'WORK_ORDER_AUTHORITY_REVOKED' });
     await expect(
-      application.expressProviderInterest(tradeLane.fixture.provider.actor_user_id, {
-        ...tradeInterestCommand,
-        expected_scope_version: tradeLane.scopeVersion + 1,
-      })
+      application.expressProviderInterest(
+        tradeLane.fixture.provider.actor_user_id,
+        {
+          ...tradeInterestCommand,
+          expected_scope_version: tradeLane.scopeVersion + 1,
+        },
+        await actorAttestationHandle(tradeLane.fixture.provider.actor_user_id)
+      )
     ).rejects.toMatchObject({ code: 'WORK_ORDER_VERSION_CONFLICT' });
     const copied = await pool.query<{
       decision_version: number;
@@ -2391,12 +2892,16 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
       [restrictedLane.fixture.provider.provider_user_id]
     );
     await expect(
-      application.expressProviderInterest(restrictedLane.fixture.provider.actor_user_id, {
-        task_id: restrictedLane.accepted.task_id,
-        expected_scope_version: restrictedLane.scopeVersion,
-        idempotency_key: `workorder-trust-hold:${randomUUID()}`,
-        client_ts: new Date().toISOString(),
-      })
+      application.expressProviderInterest(
+        restrictedLane.fixture.provider.actor_user_id,
+        {
+          task_id: restrictedLane.accepted.task_id,
+          expected_scope_version: restrictedLane.scopeVersion,
+          idempotency_key: `workorder-trust-hold:${randomUUID()}`,
+          client_ts: new Date().toISOString(),
+        },
+        await actorAttestationHandle(restrictedLane.fixture.provider.actor_user_id)
+      )
     ).rejects.toMatchObject({ code: 'WORK_ORDER_AUTHORITY_REVOKED' });
     const refused = await pool.query<{
       interests: number;
@@ -2433,20 +2938,32 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
       client_ts: new Date().toISOString(),
     };
 
+    const materializationActorProofStart = actorAssertionProofs.length;
     const materialized = await first.application.secureAndMaterializeFakeWorkOrder(
       first.fixture.posterUserId,
-      command
+      command,
+      await actorAttestationHandle(first.fixture.posterUserId)
     );
+    const materializationActorProof = actorAssertionProofs.slice(materializationActorProofStart);
+    expect(materializationActorProof.map((proof) => proof.commandKind)).toEqual([
+      'PREPARE_FAKE_WORK_ORDER',
+      'MATERIALIZE_FAKE_WORK_ORDER',
+    ]);
+    await expectIssuedConsumedExecuted(materializationActorProof);
     expect(materialized).toMatchObject({
       replayed: false,
       hard_assignment_created: false,
       payment_creation_performed: false,
     });
     await expect(
-      first.application.secureAndMaterializeFakeWorkOrder(first.fixture.posterUserId, {
-        ...command,
-        client_ts: new Date().toISOString(),
-      })
+      first.application.secureAndMaterializeFakeWorkOrder(
+        first.fixture.posterUserId,
+        {
+          ...command,
+          client_ts: new Date().toISOString(),
+        },
+        await actorAttestationHandle(first.fixture.posterUserId)
+      )
     ).resolves.toEqual({ ...materialized, replayed: true });
 
     const committed = await workOrderEffectSnapshot({
@@ -2508,12 +3025,16 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
 
     const second = await heldWorkOrderLane('yard');
     await expect(
-      second.application.secureAndMaterializeFakeWorkOrder(second.fixture.posterUserId, {
-        conditional_hold_id: second.hold.conditional_hold_id,
-        expected_eligibility_version: second.interest.eligibility_version,
-        idempotency_key: idempotencyKey,
-        client_ts: new Date().toISOString(),
-      })
+      second.application.secureAndMaterializeFakeWorkOrder(
+        second.fixture.posterUserId,
+        {
+          conditional_hold_id: second.hold.conditional_hold_id,
+          expected_eligibility_version: second.interest.eligibility_version,
+          idempotency_key: idempotencyKey,
+          client_ts: new Date().toISOString(),
+        },
+        await actorAttestationHandle(second.fixture.posterUserId)
+      )
     ).rejects.toMatchObject({ code: 'WORK_ORDER_IDEMPOTENCY_CONFLICT' });
     expect(
       await workOrderEffectSnapshot({
@@ -2553,7 +3074,8 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
   it('preserves committed fake-finance evidence when terminal Work Order insertion fails', async () => {
     const lane = await heldWorkOrderLane('yard');
     const idempotencyKey = `workorder-rollback:${randomUUID()}`;
-    const failingApplication = workOrderService(databaseRejectingWorkOrderInsert());
+    const removeWorkOrderInsertFault = await installWorkOrderInsertFault();
+    const failingApplication = workOrderService();
     const command = {
       conditional_hold_id: lane.hold.conditional_hold_id,
       expected_eligibility_version: lane.interest.eligibility_version,
@@ -2561,68 +3083,77 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
       client_ts: new Date().toISOString(),
     };
 
-    await expect(
-      failingApplication.secureAndMaterializeFakeWorkOrder(lane.fixture.posterUserId, command)
-    ).rejects.toMatchObject({
-      code: 'XX999',
-      message: 'INJECTED_WORK_ORDER_INSERT_FAILURE',
-    });
-    const compensated = await workOrderEffectSnapshot({
-      draftId: lane.fixture.draftId,
-      taskId: lane.accepted.task_id,
-      interestId: lane.interest.interest_application_id,
-      holdId: lane.hold.conditional_hold_id,
-      idempotencyKey,
-    });
-    expect(compensated).toEqual({
-      worker_id: null,
-      task_work_order_id: null,
-      work_orders: 0,
-      witnesses: 1,
-      security_events: 4,
-      fake_operations: 4,
-      fake_operation_events: 4,
-      approved_provider_operations: 0,
-      non_fake_security_events: 0,
-      non_fake_external_references: 0,
-      escrows: 0,
-      quote_payments: 0,
-      interest_status: 'pending',
-      hold_status: 'ACTIVE',
-      security_event_kinds: ['PAYMENT_METHOD_PREPARED', 'AUTHORIZED', 'SECURED', 'VOIDED'],
-      security_event_providers: ['FAKE'],
-    });
-
-    await expect(
-      failingApplication.secureAndMaterializeFakeWorkOrder(lane.fixture.posterUserId, {
-        ...command,
-        client_ts: new Date().toISOString(),
-      })
-    ).rejects.toMatchObject({ code: 'WORK_ORDER_AUTHORITY_REVOKED' });
-    expect(
-      await workOrderEffectSnapshot({
+    try {
+      await expect(
+        failingApplication.secureAndMaterializeFakeWorkOrder(
+          lane.fixture.posterUserId,
+          command,
+          await actorAttestationHandle(lane.fixture.posterUserId)
+        )
+      ).rejects.toMatchObject({
+        code: 'XX999',
+        message: 'INJECTED_WORK_ORDER_INSERT_FAILURE',
+      });
+      const compensated = await workOrderEffectSnapshot({
         draftId: lane.fixture.draftId,
         taskId: lane.accepted.task_id,
         interestId: lane.interest.interest_application_id,
         holdId: lane.hold.conditional_hold_id,
         idempotencyKey,
-      })
-    ).toEqual(compensated);
+      });
+      expect(compensated).toEqual({
+        worker_id: null,
+        task_work_order_id: null,
+        work_orders: 0,
+        witnesses: 1,
+        security_events: 4,
+        fake_operations: 4,
+        fake_operation_events: 4,
+        approved_provider_operations: 0,
+        non_fake_security_events: 0,
+        non_fake_external_references: 0,
+        escrows: 0,
+        quote_payments: 0,
+        interest_status: 'pending',
+        hold_status: 'ACTIVE',
+        security_event_kinds: ['PAYMENT_METHOD_PREPARED', 'AUTHORIZED', 'SECURED', 'VOIDED'],
+        security_event_providers: ['FAKE'],
+      });
 
-    const operationIds = [
-      ...financialOperationIds(idempotencyKey),
-      deterministicUuid(idempotencyKey, 'void'),
-    ];
-    const authority = await pool.query<{
-      compensation_commands: number;
-      prepared_commands: number;
-      journal_commands: number;
-      dispatch_attempts: number;
-      observed_outcomes: number;
-      lifecycle_bridges: number;
-      successful_voids: number;
-    }>(
-      `SELECT
+      await expect(
+        failingApplication.secureAndMaterializeFakeWorkOrder(
+          lane.fixture.posterUserId,
+          {
+            ...command,
+            client_ts: new Date().toISOString(),
+          },
+          await actorAttestationHandle(lane.fixture.posterUserId)
+        )
+      ).rejects.toMatchObject({ code: 'WORK_ORDER_AUTHORITY_REVOKED' });
+      expect(
+        await workOrderEffectSnapshot({
+          draftId: lane.fixture.draftId,
+          taskId: lane.accepted.task_id,
+          interestId: lane.interest.interest_application_id,
+          holdId: lane.hold.conditional_hold_id,
+          idempotencyKey,
+        })
+      ).toEqual(compensated);
+
+      const operationIds = [
+        ...financialOperationIds(idempotencyKey),
+        deterministicUuid(idempotencyKey, 'void'),
+      ];
+      const authority = await pool.query<{
+        compensation_commands: number;
+        prepared_commands: number;
+        journal_commands: number;
+        dispatch_attempts: number;
+        observed_outcomes: number;
+        lifecycle_bridges: number;
+        successful_voids: number;
+      }>(
+        `SELECT
        (SELECT COUNT(*)::integer
           FROM universal_v1_work_order_compensation_commands compensation
          WHERE compensation.work_order_idempotency_key=$1
@@ -2656,22 +3187,25 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
            AND event.status='SUCCEEDED'
            AND event.provider_kind='FAKE'
            AND event.expected_version=3) AS successful_voids`,
-      [
-        idempotencyKey,
-        lane.accepted.task_id,
-        operationIds,
-        deterministicUuid(idempotencyKey, 'void'),
-      ]
-    );
-    expect(authority.rows[0]).toEqual({
-      compensation_commands: 1,
-      prepared_commands: 4,
-      journal_commands: 4,
-      dispatch_attempts: 4,
-      observed_outcomes: 4,
-      lifecycle_bridges: 4,
-      successful_voids: 1,
-    });
+        [
+          idempotencyKey,
+          lane.accepted.task_id,
+          operationIds,
+          deterministicUuid(idempotencyKey, 'void'),
+        ]
+      );
+      expect(authority.rows[0]).toEqual({
+        compensation_commands: 1,
+        prepared_commands: 4,
+        journal_commands: 4,
+        dispatch_attempts: 4,
+        observed_outcomes: 4,
+        lifecycle_bridges: 4,
+        successful_voids: 1,
+      });
+    } finally {
+      await removeWorkOrderInsertFault();
+    }
   });
 
   it('uses only the exact compensation claim when eligibility changes after SECURE', async () => {
@@ -2726,25 +3260,23 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
         return repository.finalizeMaterialization(...args);
       },
     };
-    const authority = localFakeFinanceAuthority();
     const application = new UniversalV1WorkOrderApplication(
       new PostgresUniversalV1WorkOrderPublicFactReader(database.query),
       invalidatingRepository as never,
-      () => createUniversalV1FakeFinancialApplicationService(
-        database,
-        authority.env,
-        authority.release,
-        authority.identity
-      )
+      () => fakeFinanceService(database)
     );
 
     await expect(
-      application.secureAndMaterializeFakeWorkOrder(lane.fixture.posterUserId, {
-        conditional_hold_id: lane.hold.conditional_hold_id,
-        expected_eligibility_version: lane.interest.eligibility_version,
-        idempotency_key: idempotencyKey,
-        client_ts: new Date().toISOString(),
-      })
+      application.secureAndMaterializeFakeWorkOrder(
+        lane.fixture.posterUserId,
+        {
+          conditional_hold_id: lane.hold.conditional_hold_id,
+          expected_eligibility_version: lane.interest.eligibility_version,
+          idempotency_key: idempotencyKey,
+          client_ts: new Date().toISOString(),
+        },
+        await actorAttestationHandle(lane.fixture.posterUserId)
+      )
     ).rejects.toMatchObject({ code: 'WORK_ORDER_AUTHORITY_REVOKED' });
     expect(successorEligibilityId).not.toBeNull();
 
@@ -2826,10 +3358,7 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
         deterministicUuid(idempotencyKey, 'void'),
         successorEligibilityId,
         lane.accepted.task_id,
-        [
-          ...financialOperationIds(idempotencyKey),
-          deterministicUuid(idempotencyKey, 'void'),
-        ],
+        [...financialOperationIds(idempotencyKey), deterministicUuid(idempotencyKey, 'void')],
       ]
     );
     expect(exact.rows[0]).toEqual({
@@ -2837,6 +3366,177 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
       successor_decisions: 1,
       work_orders: 0,
       approved_provider_commands: 0,
+    });
+  });
+
+  it('voids the exact fake security event when legacy task state changes after SECURE', async () => {
+    const lane = await heldWorkOrderLane('yard');
+    const idempotencyKey = `workorder-cancelled-after-secure:${randomUUID()}`;
+    const repository = new PostgresUniversalV1WorkOrderRepository(database);
+    let cancellationInjected = false;
+    const invalidatingRepository = {
+      prepareMaterialization: repository.prepareMaterialization.bind(repository),
+      claimMaterializationCompensation:
+        repository.claimMaterializationCompensation.bind(repository),
+      finalizeMaterialization: async (
+        ...args: Parameters<typeof repository.finalizeMaterialization>
+      ) => {
+        if (!cancellationInjected) {
+          const cancelled = await pool.query(
+            `UPDATE tasks
+                SET state = 'CANCELLED', cancelled_at = clock_timestamp()
+              WHERE id = $1
+                AND state = 'OPEN'
+                AND worker_id IS NULL
+                AND work_order_id IS NULL`,
+            [lane.accepted.task_id]
+          );
+          expect(cancelled.rowCount).toBe(1);
+          cancellationInjected = true;
+        }
+        return repository.finalizeMaterialization(...args);
+      },
+    };
+    const application = new UniversalV1WorkOrderApplication(
+      new PostgresUniversalV1WorkOrderPublicFactReader(database.query),
+      invalidatingRepository as never,
+      () => fakeFinanceService(database)
+    );
+
+    await expect(
+      application.secureAndMaterializeFakeWorkOrder(
+        lane.fixture.posterUserId,
+        {
+          conditional_hold_id: lane.hold.conditional_hold_id,
+          expected_eligibility_version: lane.interest.eligibility_version,
+          idempotency_key: idempotencyKey,
+          client_ts: new Date().toISOString(),
+        },
+        await actorAttestationHandle(lane.fixture.posterUserId)
+      )
+    ).rejects.toMatchObject({ code: 'WORK_ORDER_AUTHORITY_REVOKED' });
+    expect(cancellationInjected).toBe(true);
+
+    expect(
+      await workOrderEffectSnapshot({
+        draftId: lane.fixture.draftId,
+        taskId: lane.accepted.task_id,
+        interestId: lane.interest.interest_application_id,
+        holdId: lane.hold.conditional_hold_id,
+        idempotencyKey,
+      })
+    ).toMatchObject({
+      worker_id: null,
+      task_work_order_id: null,
+      work_orders: 0,
+      witnesses: 1,
+      security_events: 4,
+      fake_operations: 4,
+      fake_operation_events: 4,
+      approved_provider_operations: 0,
+      non_fake_security_events: 0,
+      non_fake_external_references: 0,
+      escrows: 0,
+      quote_payments: 0,
+      interest_status: 'pending',
+      hold_status: 'ACTIVE',
+      security_event_kinds: ['PAYMENT_METHOD_PREPARED', 'AUTHORIZED', 'SECURED', 'VOIDED'],
+      security_event_providers: ['FAKE'],
+    });
+    const exact = await pool.query<{
+      state: string;
+      work_orders: number;
+      compensation_commands: number;
+      successful_voids: number;
+    }>(
+      `SELECT task.state,
+              (SELECT COUNT(*)::integer FROM task_work_orders work_order
+                WHERE work_order.task_id = task.id) AS work_orders,
+              (SELECT COUNT(*)::integer
+                 FROM universal_v1_work_order_compensation_commands compensation
+                WHERE compensation.work_order_idempotency_key = $2) AS compensation_commands,
+              (SELECT COUNT(*)::integer FROM task_financial_security_events event
+                WHERE event.task_id = task.id
+                  AND event.operation_id = $3
+                  AND event.event_kind = 'VOIDED'
+                  AND event.status = 'SUCCEEDED'
+                  AND event.provider_kind = 'FAKE') AS successful_voids
+         FROM tasks task
+        WHERE task.id = $1`,
+      [lane.accepted.task_id, idempotencyKey, deterministicUuid(idempotencyKey, 'void')]
+    );
+    expect(exact.rows[0]).toEqual({
+      state: 'CANCELLED',
+      work_orders: 0,
+      compensation_commands: 1,
+      successful_voids: 1,
+    });
+  });
+
+  it('freezes the legacy task lifecycle projection after exact Work Order binding', async () => {
+    const lane = await heldWorkOrderLane('yard');
+    const materialized = await lane.application.secureAndMaterializeFakeWorkOrder(
+      lane.fixture.posterUserId,
+      {
+        conditional_hold_id: lane.hold.conditional_hold_id,
+        expected_eligibility_version: lane.interest.eligibility_version,
+        idempotency_key: `workorder-task-freeze:${randomUUID()}`,
+        client_ts: new Date().toISOString(),
+      },
+      await actorAttestationHandle(lane.fixture.posterUserId)
+    );
+
+    const workerMutation = `UPDATE tasks SET worker_id = $2 WHERE id = $1`;
+    const workerMutationParams = [lane.accepted.task_id, lane.fixture.provider.provider_user_id];
+    await expect(pool.query(workerMutation, workerMutationParams)).rejects.toThrow('HXIDV20');
+    await recordControlledTestIdentityFixture(lane.fixture.provider.provider_user_id);
+    const currentIdentity = await pool.query<{ current: boolean }>(
+      `SELECT identity_verification_is_current_v1(
+         $1::uuid,
+         'CONTROLLED_TEST'
+       ) AS current`,
+      [lane.fixture.provider.provider_user_id]
+    );
+    expect(currentIdentity.rows[0]?.current).toBe(true);
+    await expect(pool.query(workerMutation, workerMutationParams)).rejects.toThrow(
+      'HXUV1-ASSIGN-2'
+    );
+
+    const forbiddenMutations = [
+      {
+        sql: `UPDATE tasks SET state = 'CANCELLED' WHERE id = $1`,
+        params: [lane.accepted.task_id],
+        code: 'HXUV1-WO-STATE-2',
+      },
+      {
+        sql: `UPDATE tasks SET work_order_id = NULL WHERE id = $1`,
+        params: [lane.accepted.task_id],
+        code: 'HXUV1-WO-STATE-2',
+      },
+      {
+        sql: `UPDATE tasks SET work_order_id = $2 WHERE id = $1`,
+        params: [lane.accepted.task_id, randomUUID()],
+        code: 'HXUV1-WO-STATE-2',
+      },
+      {
+        sql: `DELETE FROM tasks WHERE id = $1`,
+        params: [lane.accepted.task_id],
+        code: 'HXUV1-WO-STATE-4',
+      },
+    ] as const;
+    for (const mutation of forbiddenMutations) {
+      await expect(pool.query(mutation.sql, mutation.params)).rejects.toThrow(mutation.code);
+    }
+
+    const preserved = await pool.query<{
+      state: string;
+      worker_id: string | null;
+      work_order_id: string;
+    }>('SELECT state, worker_id, work_order_id FROM tasks WHERE id = $1', [lane.accepted.task_id]);
+    expect(preserved.rows[0]).toEqual({
+      state: 'OPEN',
+      worker_id: null,
+      work_order_id: materialized.work_order_id,
     });
   });
 
@@ -2848,12 +3548,16 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
     ]);
 
     await expect(
-      lane.application.secureAndMaterializeFakeWorkOrder(lane.fixture.posterUserId, {
-        conditional_hold_id: lane.hold.conditional_hold_id,
-        expected_eligibility_version: lane.interest.eligibility_version,
-        idempotency_key: idempotencyKey,
-        client_ts: new Date().toISOString(),
-      })
+      lane.application.secureAndMaterializeFakeWorkOrder(
+        lane.fixture.posterUserId,
+        {
+          conditional_hold_id: lane.hold.conditional_hold_id,
+          expected_eligibility_version: lane.interest.eligibility_version,
+          idempotency_key: idempotencyKey,
+          client_ts: new Date().toISOString(),
+        },
+        await actorAttestationHandle(lane.fixture.posterUserId)
+      )
     ).rejects.toMatchObject({ code: 'WORK_ORDER_AUTHORITY_REVOKED' });
     expect(
       await workOrderEffectSnapshot({
@@ -2954,7 +3658,8 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
         expected_eligibility_version: lane.interest.eligibility_version,
         idempotency_key: `workorder-scope-change:${randomUUID()}`,
         client_ts: new Date().toISOString(),
-      }
+      },
+      await actorAttestationHandle(lane.fixture.posterUserId)
     );
     const execution = executionService();
     const genesis = await execution.getWorkOrderExecutionState(
@@ -3189,7 +3894,8 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
         expected_eligibility_version: lane.interest.eligibility_version,
         idempotency_key: `workorder-price-change:${randomUUID()}`,
         client_ts: new Date().toISOString(),
-      }
+      },
+      await actorAttestationHandle(lane.fixture.posterUserId)
     );
     const execution = executionService();
     const genesis = await execution.getWorkOrderExecutionState(
@@ -3350,10 +4056,7 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
       new PostgresUniversalV1OccurrenceFactReader(database.readQuery),
       new PostgresUniversalV1OperationsOccurrenceReader(database.transaction)
     );
-    const customerView = await occurrence.customer(
-      lane.fixture.draftId,
-      lane.fixture.posterUserId
-    );
+    const customerView = await occurrence.customer(lane.fixture.draftId, lane.fixture.posterUserId);
     const providerView = await occurrence.provider(
       lane.fixture.draftId,
       lane.fixture.provider.actor_user_id
@@ -3417,10 +4120,7 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
     }
 
     await expect(
-      changeOrders.authorizeAndMaterializeFakeChangeOrder(
-        lane.fixture.posterUserId,
-        command
-      )
+      changeOrders.authorizeAndMaterializeFakeChangeOrder(lane.fixture.posterUserId, command)
     ).resolves.toEqual({ ...amendment, replayed: true });
     await expect(
       changeOrders.authorizeAndMaterializeFakeChangeOrder(lane.fixture.posterUserId, {
@@ -3431,126 +4131,111 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
     ).rejects.toMatchObject({ code: 'CHANGE_ORDER_IDEMPOTENCY_CONFLICT' });
   });
 
-  it(
-    'recovers every price-change crash boundary and terminally seals revoked authority',
-    async () => {
-      const phaseACrash = await preparedPriceAndScopeRecoveryLane('phase-a-crash');
-      const revokedBeforeAdjust = await preparedPriceAndScopeRecoveryLane(
-        'revoked-before-adjust'
-      );
-      const confirmedNoEffect = await preparedPriceAndScopeRecoveryLane(
-        'confirmed-no-effect'
-      );
-      const revokedAfterAdjust = await preparedPriceAndScopeRecoveryLane(
-        'revoked-after-adjust'
-      );
-      const amendmentRace = await preparedPriceAndScopeRecoveryLane('amendment-race');
-      const witnessFirst = await preparedPriceAndScopeRecoveryLane('witness-first-slot');
-      const financeFirst = await approvedPriceAndScopeRecoveryLane('finance-first-slot');
+  it('recovers every price-change crash boundary and terminally seals revoked authority', async () => {
+    const phaseACrash = await preparedPriceAndScopeRecoveryLane('phase-a-crash');
+    const revokedBeforeAdjust = await preparedPriceAndScopeRecoveryLane('revoked-before-adjust');
+    const confirmedNoEffect = await preparedPriceAndScopeRecoveryLane('confirmed-no-effect');
+    const revokedAfterAdjust = await preparedPriceAndScopeRecoveryLane('revoked-after-adjust');
+    const amendmentRace = await preparedPriceAndScopeRecoveryLane('amendment-race');
+    const witnessFirst = await preparedPriceAndScopeRecoveryLane('witness-first-slot');
+    const financeFirst = await approvedPriceAndScopeRecoveryLane('finance-first-slot');
 
-      const declinedAdjustment = await executeRecoveryAdjustment(
-        confirmedNoEffect,
-        'DECLINE'
-      );
-      expect(declinedAdjustment).toMatchObject({
-        operationId: confirmedNoEffect.phase.context.adjustmentOperationId,
-        eventKind: 'ADJUSTMENT_AUTHORIZED',
-        status: 'DECLINED',
+    const declinedAdjustment = await executeRecoveryAdjustment(confirmedNoEffect, 'DECLINE');
+    expect(declinedAdjustment).toMatchObject({
+      operationId: confirmedNoEffect.phase.context.adjustmentOperationId,
+      eventKind: 'ADJUSTMENT_AUTHORIZED',
+      status: 'DECLINED',
+      providerKind: 'FAKE',
+    });
+    const succeededAfterRevocationBoundary = await executeRecoveryAdjustment(revokedAfterAdjust);
+    const succeededForAmendmentRace = await executeRecoveryAdjustment(amendmentRace);
+    expect(succeededAfterRevocationBoundary.status).toBe('SUCCEEDED');
+    expect(succeededForAmendmentRace.status).toBe('SUCCEEDED');
+
+    await pool.query(`UPDATE users SET is_banned = TRUE WHERE id = $1`, [
+      revokedBeforeAdjust.fixture.provider.provider_user_id,
+    ]);
+    await pool.query(`UPDATE users SET is_banned = TRUE WHERE id = $1`, [
+      revokedAfterAdjust.fixture.posterUserId,
+    ]);
+
+    const preparedAuthority = new PostgresUniversalV1PreparedFinancialCommandAuthority(database);
+    const witnessFirstContext = witnessFirst.phase.context;
+    const conflictingAdjustmentOperationId = randomUUID();
+    await expect(
+      preparedAuthority.prepare({
+        operationKind: 'ADJUST',
+        operationId: conflictingAdjustmentOperationId,
         providerKind: 'FAKE',
-      });
-      const succeededAfterRevocationBoundary = await executeRecoveryAdjustment(
-        revokedAfterAdjust
-      );
-      const succeededForAmendmentRace = await executeRecoveryAdjustment(amendmentRace);
-      expect(succeededAfterRevocationBoundary.status).toBe('SUCCEEDED');
-      expect(succeededForAmendmentRace.status).toBe('SUCCEEDED');
-
-      await pool.query(`UPDATE users SET is_banned = TRUE WHERE id = $1`, [
-        revokedBeforeAdjust.fixture.provider.provider_user_id,
-      ]);
-      await pool.query(`UPDATE users SET is_banned = TRUE WHERE id = $1`, [
-        revokedAfterAdjust.fixture.posterUserId,
-      ]);
-
-      const preparedAuthority = new PostgresUniversalV1PreparedFinancialCommandAuthority(
-        database
-      );
-      const witnessFirstContext = witnessFirst.phase.context;
-      const conflictingAdjustmentOperationId = randomUUID();
-      await expect(
-        preparedAuthority.prepare({
-          operationKind: 'ADJUST',
-          operationId: conflictingAdjustmentOperationId,
-          providerKind: 'FAKE',
-          idempotencyKey: `witness-first-conflict:${randomUUID()}`,
-          providerExpectedVersion: 0,
-          lifecycleExpectedVersion: witnessFirstContext.expectedFinancialVersion + 1,
-          providerRequestSha256: createHash('sha256')
-            .update(`witness-first:${conflictingAdjustmentOperationId}`)
-            .digest('hex'),
-          taskDraftId: witnessFirstContext.taskDraftId,
-          taskId: witnessFirstContext.taskId,
-          eligibilityDecisionId: witnessFirstContext.eligibilityDecisionId,
-          scopeVersionId: witnessFirstContext.scopeVersionId,
-          changeOrderId: witnessFirstContext.proposalId,
-          predecessorEventId: witnessFirstContext.predecessorEventId,
-          completionFactId: null,
-          relatedOperationId: witnessFirstContext.predecessorOperationId,
-          amountCents: witnessFirstContext.customerTotalCents,
-          currency: witnessFirstContext.currency,
-          recordedBy: witnessFirst.fixture.posterUserId,
-        })
-      ).rejects.toThrow(/HXUV1-CHANGE-(?:3P-4|RECOVERY-29)/u);
-      expect(
-        await pool.query(
-          `SELECT 1 FROM universal_v1_prepared_financial_commands
+        idempotencyKey: `witness-first-conflict:${randomUUID()}`,
+        providerExpectedVersion: 0,
+        lifecycleExpectedVersion: witnessFirstContext.expectedFinancialVersion + 1,
+        providerRequestSha256: createHash('sha256')
+          .update(`witness-first:${conflictingAdjustmentOperationId}`)
+          .digest('hex'),
+        taskDraftId: witnessFirstContext.taskDraftId,
+        taskId: witnessFirstContext.taskId,
+        eligibilityDecisionId: witnessFirstContext.eligibilityDecisionId,
+        scopeVersionId: witnessFirstContext.scopeVersionId,
+        changeOrderId: witnessFirstContext.proposalId,
+        predecessorEventId: witnessFirstContext.predecessorEventId,
+        completionFactId: null,
+        relatedOperationId: witnessFirstContext.predecessorOperationId,
+        amountCents: witnessFirstContext.customerTotalCents,
+        currency: witnessFirstContext.currency,
+        recordedBy: witnessFirst.fixture.posterUserId,
+      })
+    ).rejects.toThrow(/HXUV1-CHANGE-(?:3P-4|RECOVERY-29)/u);
+    expect(
+      await pool.query(
+        `SELECT 1 FROM universal_v1_prepared_financial_commands
             WHERE operation_id = $1`,
-          [conflictingAdjustmentOperationId]
-        )
-      ).toMatchObject({ rowCount: 0 });
+        [conflictingAdjustmentOperationId]
+      )
+    ).toMatchObject({ rowCount: 0 });
 
-      const financeFirstOperationId = randomUUID();
-      await expect(
-        preparedAuthority.prepare({
-          operationKind: 'VOID',
-          operationId: financeFirstOperationId,
-          providerKind: 'FAKE',
-          idempotencyKey: `finance-first-void:${randomUUID()}`,
-          providerExpectedVersion: 0,
-          lifecycleExpectedVersion: financeFirst.predecessor.expected_version + 1,
-          providerRequestSha256: createHash('sha256')
-            .update(`finance-first:${financeFirstOperationId}`)
-            .digest('hex'),
-          taskDraftId: financeFirst.fixture.draftId,
-          taskId: financeFirst.accepted.task_id,
-          eligibilityDecisionId: financeFirst.interest.eligibility_decision_id,
-          scopeVersionId: financeFirst.accepted.scope_version_id,
-          changeOrderId: null,
-          predecessorEventId: financeFirst.predecessor.id,
-          completionFactId: null,
-          relatedOperationId: financeFirst.predecessor.operation_id,
-          amountCents: financeFirst.predecessor.amount_cents,
-          currency: financeFirst.predecessor.currency,
-          recordedBy: financeFirst.fixture.posterUserId,
-        })
-      ).resolves.toMatchObject({
+    const financeFirstOperationId = randomUUID();
+    await expect(
+      preparedAuthority.prepare({
         operationKind: 'VOID',
         operationId: financeFirstOperationId,
-        workOrderId: financeFirst.workOrder.work_order_id,
-        commandState: 'PREPARED',
-      });
-      await expect(
-        financeFirst.repository.preparePriceAndScopeMaterialization(
-          financeFirst.fixture.posterUserId,
-          financeFirst.command
-        )
-      ).rejects.toThrow(/HXUV1-CHANGE-RECOVERY-30/u);
-      const rolledBackFinanceFirst = await pool.query<{
-        witnesses: number;
-        approved_change_scopes: number;
-        proposal_status: string;
-      }>(
-        `SELECT
+        providerKind: 'FAKE',
+        idempotencyKey: `finance-first-void:${randomUUID()}`,
+        providerExpectedVersion: 0,
+        lifecycleExpectedVersion: financeFirst.predecessor.expected_version + 1,
+        providerRequestSha256: createHash('sha256')
+          .update(`finance-first:${financeFirstOperationId}`)
+          .digest('hex'),
+        taskDraftId: financeFirst.fixture.draftId,
+        taskId: financeFirst.accepted.task_id,
+        eligibilityDecisionId: financeFirst.interest.eligibility_decision_id,
+        scopeVersionId: financeFirst.accepted.scope_version_id,
+        changeOrderId: null,
+        predecessorEventId: financeFirst.predecessor.id,
+        completionFactId: null,
+        relatedOperationId: financeFirst.predecessor.operation_id,
+        amountCents: financeFirst.predecessor.amount_cents,
+        currency: financeFirst.predecessor.currency,
+        recordedBy: financeFirst.fixture.posterUserId,
+      })
+    ).resolves.toMatchObject({
+      operationKind: 'VOID',
+      operationId: financeFirstOperationId,
+      workOrderId: financeFirst.workOrder.work_order_id,
+      commandState: 'PREPARED',
+    });
+    await expect(
+      financeFirst.repository.preparePriceAndScopeMaterialization(
+        financeFirst.fixture.posterUserId,
+        financeFirst.command
+      )
+    ).rejects.toThrow(/HXUV1-CHANGE-RECOVERY-30/u);
+    const rolledBackFinanceFirst = await pool.query<{
+      witnesses: number;
+      approved_change_scopes: number;
+      proposal_status: string;
+    }>(
+      `SELECT
            (SELECT COUNT(*)::integer
               FROM universal_v1_change_order_materialization_commands command
              WHERE command.proposal_id = proposal.id) AS witnesses,
@@ -3561,66 +4246,64 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
            proposal.status AS proposal_status
          FROM task_scope_change_proposals proposal
         WHERE proposal.id = $1`,
-        [financeFirst.proposal.proposal_id]
-      );
-      expect(rolledBackFinanceFirst.rows[0]).toEqual({
-        witnesses: 0,
-        approved_change_scopes: 0,
-        proposal_status: 'PENDING',
-      });
+      [financeFirst.proposal.proposal_id]
+    );
+    expect(rolledBackFinanceFirst.rows[0]).toEqual({
+      witnesses: 0,
+      approved_change_scopes: 0,
+      proposal_status: 'PENDING',
+    });
 
-      // Recovery intentionally waits for an age floor so a foreground Phase C
-      // has the first opportunity to finish. One bounded wait ages every fixture.
-      await pool.query('SELECT pg_sleep(5.1)');
-      const recoveryRepository = new PostgresUniversalV1ChangeOrderRecoveryRepository(
-        database
-      );
-      const recoveryService = new UniversalV1ChangeOrderRecoveryService(
-        recoveryRepository,
-        new PostgresUniversalV1ChangeOrderRepository(database)
-      );
-      const claims = await recoveryRepository.claimDue({
-        leaseOwnerId: randomUUID(),
-        limit: 100,
-        leaseDurationSeconds: 60,
-        minimumAgeSeconds: 5,
-      });
-      const claimFor = (proposalId: string) => {
-        const claim = claims.find((candidate) => candidate.proposalId === proposalId);
-        if (!claim) throw new Error(`SYSTEM_TEST_RECOVERY_CLAIM_MISSING:${proposalId}`);
-        return claim;
-      };
+    // Recovery intentionally waits for an age floor so a foreground Phase C
+    // has the first opportunity to finish. One bounded wait ages every fixture.
+    await pool.query('SELECT pg_sleep(5.1)');
+    const recoveryRepository = new PostgresUniversalV1ChangeOrderRecoveryRepository(database);
+    const recoveryService = new UniversalV1ChangeOrderRecoveryService(
+      recoveryRepository,
+      new PostgresUniversalV1ChangeOrderRepository(database)
+    );
+    const claims = await recoveryRepository.claimDue({
+      leaseOwnerId: randomUUID(),
+      limit: 100,
+      leaseDurationSeconds: 60,
+      minimumAgeSeconds: 5,
+    });
+    const claimFor = (proposalId: string) => {
+      const claim = claims.find((candidate) => candidate.proposalId === proposalId);
+      if (!claim) throw new Error(`SYSTEM_TEST_RECOVERY_CLAIM_MISSING:${proposalId}`);
+      return claim;
+    };
 
-      const phaseAResult = await recoveryService.recover(
-        claimFor(phaseACrash.proposal.proposal_id),
-        fakeFinanceService()
-      );
-      expect(phaseAResult).toMatchObject({
-        status: 'MATERIALIZED',
-        terminal: true,
-        holdsMayClear: true,
-        allowedNextCommands: 'ORDINARY_AMENDMENT_FLOW',
-      });
+    const phaseAResult = await recoveryService.recover(
+      claimFor(phaseACrash.proposal.proposal_id),
+      fakeFinanceService()
+    );
+    expect(phaseAResult).toMatchObject({
+      status: 'MATERIALIZED',
+      terminal: true,
+      holdsMayClear: true,
+      allowedNextCommands: 'ORDINARY_AMENDMENT_FLOW',
+    });
 
-      const materializedAdjustment = await pool.query<{
-        id: string;
-        expected_version: number;
-        amount_cents: number;
-        currency: string;
-      }>(
-        `SELECT id, expected_version::integer, amount_cents::integer, currency
+    const materializedAdjustment = await pool.query<{
+      id: string;
+      expected_version: number;
+      amount_cents: number;
+      currency: string;
+    }>(
+      `SELECT id, expected_version::integer, amount_cents::integer, currency
            FROM task_financial_security_events
           WHERE change_order_id = $1
             AND event_kind = 'ADJUSTMENT_AUTHORIZED'
             AND status = 'SUCCEEDED'`,
-        [phaseACrash.proposal.proposal_id]
-      );
-      expect(materializedAdjustment.rowCount).toBe(1);
-      const arbitraryScopeDriftOperationId = randomUUID();
-      const arbitraryScopeDriftIdempotencyKey = `arbitrary-drift:${randomUUID()}`;
-      await expect(
-        pool.query(
-          `INSERT INTO public.task_financial_security_events (
+      [phaseACrash.proposal.proposal_id]
+    );
+    expect(materializedAdjustment.rowCount).toBe(1);
+    const arbitraryScopeDriftOperationId = randomUUID();
+    const arbitraryScopeDriftIdempotencyKey = `arbitrary-drift:${randomUUID()}`;
+    await expect(
+      pool.query(
+        `INSERT INTO public.task_financial_security_events (
              task_draft_id, task_id, eligibility_decision_id, scope_version_id,
              predecessor_event_id, event_kind, status, operation_id,
              idempotency_key, expected_version, provider_kind, amount_cents,
@@ -3629,118 +4312,116 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
              $1,$2,$3,$4,$5,'REVERSED','SUCCEEDED',$6,$7,$8,'FAKE',$9,$10,$11,
              clock_timestamp()
            )`,
-          [
-            phaseACrash.fixture.draftId,
-            phaseACrash.accepted.task_id,
-            phaseACrash.interest.eligibility_decision_id,
-            phaseACrash.accepted.scope_version_id,
-            materializedAdjustment.rows[0]!.id,
-            arbitraryScopeDriftOperationId,
-            arbitraryScopeDriftIdempotencyKey,
-            materializedAdjustment.rows[0]!.expected_version + 1,
-            materializedAdjustment.rows[0]!.amount_cents,
-            materializedAdjustment.rows[0]!.currency,
-            phaseACrash.fixture.posterUserId,
-          ]
-        )
-      ).rejects.toMatchObject({
-        code: 'P0001',
-        message: expect.stringContaining('HXUV1-FIN-12'),
-      });
-      const arbitraryScopeDriftPersistence = await pool.query<{
-        operations: number;
-        events: number;
-      }>(
-        `SELECT
+        [
+          phaseACrash.fixture.draftId,
+          phaseACrash.accepted.task_id,
+          phaseACrash.interest.eligibility_decision_id,
+          phaseACrash.accepted.scope_version_id,
+          materializedAdjustment.rows[0]!.id,
+          arbitraryScopeDriftOperationId,
+          arbitraryScopeDriftIdempotencyKey,
+          materializedAdjustment.rows[0]!.expected_version + 1,
+          materializedAdjustment.rows[0]!.amount_cents,
+          materializedAdjustment.rows[0]!.currency,
+          phaseACrash.fixture.posterUserId,
+        ]
+      )
+    ).rejects.toMatchObject({
+      code: 'P0001',
+      message: expect.stringContaining('HXUV1-FIN-12'),
+    });
+    const arbitraryScopeDriftPersistence = await pool.query<{
+      operations: number;
+      events: number;
+    }>(
+      `SELECT
            (SELECT COUNT(*)::integer FROM task_financial_operations operation
              WHERE operation.operation_id = $1) AS operations,
            (SELECT COUNT(*)::integer FROM task_financial_security_events event
              WHERE event.operation_id = $1) AS events`,
-        [arbitraryScopeDriftOperationId]
-      );
-      expect(arbitraryScopeDriftPersistence.rows[0]).toEqual({
-        operations: 0,
-        events: 0,
-      });
+      [arbitraryScopeDriftOperationId]
+    );
+    expect(arbitraryScopeDriftPersistence.rows[0]).toEqual({
+      operations: 0,
+      events: 0,
+    });
 
-      const revokedBeforeClaim = claimFor(revokedBeforeAdjust.proposal.proposal_id);
-      expect(revokedBeforeClaim).toMatchObject({
-        observation: 'ADJUST_NO_EFFECT_AUTHORITY_REVOKED',
-        adjustmentOutcomeFactId: null,
-        authorityRevocationReason: expect.any(String),
-      });
-      const revokedBeforeResult = await recoveryService.recover(
-        revokedBeforeClaim,
-        fakeFinanceService()
-      );
-      expect(revokedBeforeResult).toEqual({
-        status: 'CANCELLED_RECOVERY_REQUIRED',
-        terminal: true,
-        holdsMayClear: true,
-        allowedNextCommands: 'BOUNDED_CANCELLATION_RECOVERY_ONLY',
-        terminalEvidence: 'NO_EFFECT',
-        compensationEventId: null,
-      });
+    const revokedBeforeClaim = claimFor(revokedBeforeAdjust.proposal.proposal_id);
+    expect(revokedBeforeClaim).toMatchObject({
+      observation: 'ADJUST_NO_EFFECT_AUTHORITY_REVOKED',
+      adjustmentOutcomeFactId: null,
+      authorityRevocationReason: expect.any(String),
+    });
+    const revokedBeforeResult = await recoveryService.recover(
+      revokedBeforeClaim,
+      fakeFinanceService()
+    );
+    expect(revokedBeforeResult).toEqual({
+      status: 'CANCELLED_RECOVERY_REQUIRED',
+      terminal: true,
+      holdsMayClear: true,
+      allowedNextCommands: 'BOUNDED_CANCELLATION_RECOVERY_ONLY',
+      terminalEvidence: 'NO_EFFECT',
+      compensationEventId: null,
+    });
 
-      const confirmedNoEffectClaim = claimFor(confirmedNoEffect.proposal.proposal_id);
-      expect(confirmedNoEffectClaim).toMatchObject({
-        observation: 'ADJUST_TERMINAL_NO_EFFECT',
-        adjustmentOutcomeFactId: expect.any(String),
-        authorityRevocationReason: null,
-      });
-      const confirmedNoEffectResult = await recoveryService.recover(
-        confirmedNoEffectClaim,
-        fakeFinanceService()
-      );
-      expect(confirmedNoEffectResult).toEqual({
-        status: 'CANCELLED_RECOVERY_REQUIRED',
-        terminal: true,
-        holdsMayClear: true,
-        allowedNextCommands: 'BOUNDED_CANCELLATION_RECOVERY_ONLY',
-        terminalEvidence: 'NO_EFFECT',
-        compensationEventId: null,
-      });
+    const confirmedNoEffectClaim = claimFor(confirmedNoEffect.proposal.proposal_id);
+    expect(confirmedNoEffectClaim).toMatchObject({
+      observation: 'ADJUST_TERMINAL_NO_EFFECT',
+      adjustmentOutcomeFactId: expect.any(String),
+      authorityRevocationReason: null,
+    });
+    const confirmedNoEffectResult = await recoveryService.recover(
+      confirmedNoEffectClaim,
+      fakeFinanceService()
+    );
+    expect(confirmedNoEffectResult).toEqual({
+      status: 'CANCELLED_RECOVERY_REQUIRED',
+      terminal: true,
+      holdsMayClear: true,
+      allowedNextCommands: 'BOUNDED_CANCELLATION_RECOVERY_ONLY',
+      terminalEvidence: 'NO_EFFECT',
+      compensationEventId: null,
+    });
 
-      const revokedAfterResult = await recoveryService.recover(
-        claimFor(revokedAfterAdjust.proposal.proposal_id),
-        fakeFinanceService()
-      );
-      expect(revokedAfterResult).toMatchObject({
-        status: 'CANCELLED_RECOVERY_REQUIRED',
-        terminal: true,
-        holdsMayClear: true,
-        allowedNextCommands: 'BOUNDED_CANCELLATION_RECOVERY_ONLY',
-        terminalEvidence: 'REVERSAL',
-        compensationEventId: expect.any(String),
-      });
+    const revokedAfterResult = await recoveryService.recover(
+      claimFor(revokedAfterAdjust.proposal.proposal_id),
+      fakeFinanceService()
+    );
+    expect(revokedAfterResult).toMatchObject({
+      status: 'CANCELLED_RECOVERY_REQUIRED',
+      terminal: true,
+      holdsMayClear: true,
+      allowedNextCommands: 'BOUNDED_CANCELLATION_RECOVERY_ONLY',
+      terminalEvidence: 'REVERSAL',
+      compensationEventId: expect.any(String),
+    });
 
-      const raceClaim = claimFor(amendmentRace.proposal.proposal_id);
-      const [compensationContender, amendmentContender] = await Promise.allSettled([
-        recoveryRepository.claimCompensation(
-          raceClaim,
-          succeededForAmendmentRace.id
-        ),
-        amendmentRace.repository.finalizePriceAndScopeMaterialization(
-          amendmentRace.phase,
-          succeededForAmendmentRace.id,
-          amendmentRace.fixture.posterUserId
-        ),
-      ]);
-      expect(amendmentContender.status).toBe('fulfilled');
-      if (compensationContender.status === 'fulfilled') {
-        expect(compensationContender.value.kind).toBe('AMENDMENT_MATERIALIZED');
-      } else {
-        expect(compensationContender.reason).toBeInstanceOf(Error);
-      }
-      await expect(
-        recoveryService.recover(raceClaim, fakeFinanceService())
-      ).resolves.toMatchObject({ status: 'MATERIALIZED', terminal: true });
-      const raceWinner = await pool.query<{
-        amendments: number;
-        compensation_commands: number;
-        materialized_terminals: number;
-      }>(
-        `SELECT
+    const raceClaim = claimFor(amendmentRace.proposal.proposal_id);
+    const [compensationContender, amendmentContender] = await Promise.allSettled([
+      recoveryRepository.claimCompensation(raceClaim, succeededForAmendmentRace.id),
+      amendmentRace.repository.finalizePriceAndScopeMaterialization(
+        amendmentRace.phase,
+        succeededForAmendmentRace.id,
+        amendmentRace.fixture.posterUserId
+      ),
+    ]);
+    expect(amendmentContender.status).toBe('fulfilled');
+    if (compensationContender.status === 'fulfilled') {
+      expect(compensationContender.value.kind).toBe('AMENDMENT_MATERIALIZED');
+    } else {
+      expect(compensationContender.reason).toBeInstanceOf(Error);
+    }
+    await expect(recoveryService.recover(raceClaim, fakeFinanceService())).resolves.toMatchObject({
+      status: 'MATERIALIZED',
+      terminal: true,
+    });
+    const raceWinner = await pool.query<{
+      amendments: number;
+      compensation_commands: number;
+      materialized_terminals: number;
+    }>(
+      `SELECT
            (SELECT COUNT(*)::integer FROM task_work_order_amendments amendment
              WHERE amendment.change_order_id = $1) AS amendments,
            (SELECT COUNT(*)::integer
@@ -3750,28 +4431,28 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
               FROM universal_v1_change_order_recovery_terminal_facts terminal
              WHERE terminal.proposal_id = $1
                AND terminal.outcome_state = 'MATERIALIZED') AS materialized_terminals`,
-        [amendmentRace.proposal.proposal_id]
-      );
-      expect(raceWinner.rows[0]).toEqual({
-        amendments: 1,
-        compensation_commands: 0,
-        materialized_terminals: 1,
-      });
+      [amendmentRace.proposal.proposal_id]
+    );
+    expect(raceWinner.rows[0]).toEqual({
+      amendments: 1,
+      compensation_commands: 0,
+      materialized_terminals: 1,
+    });
 
-      const terminalFacts = await pool.query<{
-        proposal_id: string;
-        outcome_state: string;
-        recovery_state: string;
-        adjustment_event_id: string | null;
-        compensation_event_id: string | null;
-        no_effect_outcome_fact_id: string | null;
-        authority_revocation_reason: string | null;
-        resolution_evidence_kind: string;
-        prior_secured_state_restored: boolean;
-        execution_resume_authorized: boolean;
-        capture_resume_authorized: boolean;
-      }>(
-        `SELECT proposal_id, outcome_state, recovery_state, adjustment_event_id,
+    const terminalFacts = await pool.query<{
+      proposal_id: string;
+      outcome_state: string;
+      recovery_state: string;
+      adjustment_event_id: string | null;
+      compensation_event_id: string | null;
+      no_effect_outcome_fact_id: string | null;
+      authority_revocation_reason: string | null;
+      resolution_evidence_kind: string;
+      prior_secured_state_restored: boolean;
+      execution_resume_authorized: boolean;
+      capture_resume_authorized: boolean;
+    }>(
+      `SELECT proposal_id, outcome_state, recovery_state, adjustment_event_id,
                 compensation_event_id, no_effect_outcome_fact_id,
                 authority_revocation_reason, resolution_evidence_kind,
                 prior_secured_state_restored, execution_resume_authorized,
@@ -3779,198 +4460,194 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
            FROM universal_v1_change_order_recovery_terminal_facts
           WHERE proposal_id = ANY($1::uuid[])
           ORDER BY proposal_id`,
-        [[
+      [
+        [
           revokedBeforeAdjust.proposal.proposal_id,
           confirmedNoEffect.proposal.proposal_id,
           revokedAfterAdjust.proposal.proposal_id,
-        ]]
-      );
-      const terminalByProposal = new Map(
-        terminalFacts.rows.map((fact) => [fact.proposal_id, fact])
-      );
-      expect(terminalByProposal.get(revokedBeforeAdjust.proposal.proposal_id)).toMatchObject({
-        outcome_state: 'CANCELLED',
-        recovery_state: 'RECOVERY_REQUIRED',
-        adjustment_event_id: null,
-        compensation_event_id: null,
-        no_effect_outcome_fact_id: null,
-        authority_revocation_reason: 'PROVIDER_ACTOR_AUTHORITY_REVOKED',
-        resolution_evidence_kind: 'NO_EFFECT',
-        prior_secured_state_restored: false,
-        execution_resume_authorized: false,
-        capture_resume_authorized: false,
-      });
-      expect(terminalByProposal.get(confirmedNoEffect.proposal.proposal_id)).toMatchObject({
-        outcome_state: 'CANCELLED',
-        recovery_state: 'RECOVERY_REQUIRED',
-        adjustment_event_id: declinedAdjustment.id,
-        compensation_event_id: null,
-        no_effect_outcome_fact_id: expect.any(String),
-        authority_revocation_reason: null,
-        resolution_evidence_kind: 'NO_EFFECT',
-        prior_secured_state_restored: false,
-        execution_resume_authorized: false,
-        capture_resume_authorized: false,
-      });
-      expect(terminalByProposal.get(revokedAfterAdjust.proposal.proposal_id)).toMatchObject({
-        outcome_state: 'CANCELLED',
-        recovery_state: 'RECOVERY_REQUIRED',
-        adjustment_event_id: succeededAfterRevocationBoundary.id,
-        compensation_event_id: revokedAfterResult.compensationEventId,
-        no_effect_outcome_fact_id: null,
-        authority_revocation_reason: null,
-        resolution_evidence_kind: 'REVERSAL',
-        prior_secured_state_restored: false,
-        execution_resume_authorized: false,
-        capture_resume_authorized: false,
-      });
+        ],
+      ]
+    );
+    const terminalByProposal = new Map(terminalFacts.rows.map((fact) => [fact.proposal_id, fact]));
+    expect(terminalByProposal.get(revokedBeforeAdjust.proposal.proposal_id)).toMatchObject({
+      outcome_state: 'CANCELLED',
+      recovery_state: 'RECOVERY_REQUIRED',
+      adjustment_event_id: null,
+      compensation_event_id: null,
+      no_effect_outcome_fact_id: null,
+      authority_revocation_reason: 'PROVIDER_ACTOR_AUTHORITY_REVOKED',
+      resolution_evidence_kind: 'NO_EFFECT',
+      prior_secured_state_restored: false,
+      execution_resume_authorized: false,
+      capture_resume_authorized: false,
+    });
+    expect(terminalByProposal.get(confirmedNoEffect.proposal.proposal_id)).toMatchObject({
+      outcome_state: 'CANCELLED',
+      recovery_state: 'RECOVERY_REQUIRED',
+      adjustment_event_id: declinedAdjustment.id,
+      compensation_event_id: null,
+      no_effect_outcome_fact_id: expect.any(String),
+      authority_revocation_reason: null,
+      resolution_evidence_kind: 'NO_EFFECT',
+      prior_secured_state_restored: false,
+      execution_resume_authorized: false,
+      capture_resume_authorized: false,
+    });
+    expect(terminalByProposal.get(revokedAfterAdjust.proposal.proposal_id)).toMatchObject({
+      outcome_state: 'CANCELLED',
+      recovery_state: 'RECOVERY_REQUIRED',
+      adjustment_event_id: succeededAfterRevocationBoundary.id,
+      compensation_event_id: revokedAfterResult.compensationEventId,
+      no_effect_outcome_fact_id: null,
+      authority_revocation_reason: null,
+      resolution_evidence_kind: 'REVERSAL',
+      prior_secured_state_restored: false,
+      execution_resume_authorized: false,
+      capture_resume_authorized: false,
+    });
 
-      await expect(
-        revokedAfterAdjust.execution.advanceWorkOrderExecution(
-          revokedAfterAdjust.fixture.provider.actor_user_id,
-          {
-            work_order_id: revokedAfterAdjust.workOrder.work_order_id,
-            action: 'START_WORK',
-            expected_execution_version: revokedAfterAdjust.acknowledged.execution_version,
-            expected_scope_version: revokedAfterAdjust.scopeVersion,
-            idempotency_key: `terminal-execution-denial:${randomUUID()}`,
-            client_ts: new Date().toISOString(),
-          }
-        )
-      ).rejects.toThrow(/HXUV1-CHANGE-RECOVERY-27/u);
-      await expect(
-        revokedAfterAdjust.changeOrders.proposeChangeOrder(
-          revokedAfterAdjust.fixture.provider.actor_user_id,
-          {
-            work_order_id: revokedAfterAdjust.workOrder.work_order_id,
-            expected_scope_version: revokedAfterAdjust.scopeVersion,
-            expected_amendment_version: 0,
-            expected_latest_proposal_version: revokedAfterAdjust.proposal.proposal_version,
-            observed_scope_summary: 'Attempted proposal after terminal recovery.',
-            proposed_scope: {
-              title: 'Forbidden post-recovery scope',
-              description: 'This proposal must never become authoritative.',
-              requirements: null,
-              checklist: ['Remain terminally held'],
-            },
-            change_order_kind: 'SCOPE_ONLY',
-            idempotency_key: `terminal-proposal-denial:${randomUUID()}`,
-            client_ts: new Date().toISOString(),
-          }
-        )
-      ).rejects.toThrow(/HXUV1-CHANGE-RECOVERY-28/u);
+    await expect(
+      revokedAfterAdjust.execution.advanceWorkOrderExecution(
+        revokedAfterAdjust.fixture.provider.actor_user_id,
+        {
+          work_order_id: revokedAfterAdjust.workOrder.work_order_id,
+          action: 'START_WORK',
+          expected_execution_version: revokedAfterAdjust.acknowledged.execution_version,
+          expected_scope_version: revokedAfterAdjust.scopeVersion,
+          idempotency_key: `terminal-execution-denial:${randomUUID()}`,
+          client_ts: new Date().toISOString(),
+        }
+      )
+    ).rejects.toThrow(/HXUV1-CHANGE-RECOVERY-27/u);
+    await expect(
+      revokedAfterAdjust.changeOrders.proposeChangeOrder(
+        revokedAfterAdjust.fixture.provider.actor_user_id,
+        {
+          work_order_id: revokedAfterAdjust.workOrder.work_order_id,
+          expected_scope_version: revokedAfterAdjust.scopeVersion,
+          expected_amendment_version: 0,
+          expected_latest_proposal_version: revokedAfterAdjust.proposal.proposal_version,
+          observed_scope_summary: 'Attempted proposal after terminal recovery.',
+          proposed_scope: {
+            title: 'Forbidden post-recovery scope',
+            description: 'This proposal must never become authoritative.',
+            requirements: null,
+            checklist: ['Remain terminally held'],
+          },
+          change_order_kind: 'SCOPE_ONLY',
+          idempotency_key: `terminal-proposal-denial:${randomUUID()}`,
+          client_ts: new Date().toISOString(),
+        }
+      )
+    ).rejects.toThrow(/HXUV1-CHANGE-RECOVERY-28/u);
 
-      const captureOperationId = randomUUID();
-      await expect(
-        preparedAuthority.prepare({
-          operationKind: 'CAPTURE',
-          operationId: captureOperationId,
-          providerKind: 'FAKE',
-          idempotencyKey: `terminal-capture-denial:${randomUUID()}`,
-          providerExpectedVersion: 0,
-          lifecycleExpectedVersion:
-            revokedAfterAdjust.phase.context.expectedFinancialVersion + 3,
-          providerRequestSha256: createHash('sha256')
-            .update(`terminal-capture:${captureOperationId}`)
-            .digest('hex'),
-          taskDraftId: revokedAfterAdjust.fixture.draftId,
-          taskId: revokedAfterAdjust.accepted.task_id,
-          eligibilityDecisionId: revokedAfterAdjust.interest.eligibility_decision_id,
-          scopeVersionId: revokedAfterAdjust.accepted.scope_version_id,
-          changeOrderId: null,
-          predecessorEventId: revokedAfterResult.compensationEventId,
-          completionFactId: randomUUID(),
-          relatedOperationId: deterministicUuid(
-            revokedAfterAdjust.phase.idempotencyKey,
-            'recovery:reversal'
-          ),
-          amountCents: revokedAfterAdjust.customerTotalCents,
-          currency: revokedAfterAdjust.predecessor.currency,
-          recordedBy: revokedAfterAdjust.fixture.posterUserId,
-        })
-      ).rejects.toThrow();
-      const terminalAuthority = await pool.query<{
-        resolution: string;
-        capture_preparations: number;
-      }>(
-        `SELECT public.universal_v1_change_order_recovery_resolution_v1($1) AS resolution,
+    const captureOperationId = randomUUID();
+    await expect(
+      preparedAuthority.prepare({
+        operationKind: 'CAPTURE',
+        operationId: captureOperationId,
+        providerKind: 'FAKE',
+        idempotencyKey: `terminal-capture-denial:${randomUUID()}`,
+        providerExpectedVersion: 0,
+        lifecycleExpectedVersion: revokedAfterAdjust.phase.context.expectedFinancialVersion + 3,
+        providerRequestSha256: createHash('sha256')
+          .update(`terminal-capture:${captureOperationId}`)
+          .digest('hex'),
+        taskDraftId: revokedAfterAdjust.fixture.draftId,
+        taskId: revokedAfterAdjust.accepted.task_id,
+        eligibilityDecisionId: revokedAfterAdjust.interest.eligibility_decision_id,
+        scopeVersionId: revokedAfterAdjust.accepted.scope_version_id,
+        changeOrderId: null,
+        predecessorEventId: revokedAfterResult.compensationEventId,
+        completionFactId: randomUUID(),
+        relatedOperationId: deterministicUuid(
+          revokedAfterAdjust.phase.idempotencyKey,
+          'recovery:reversal'
+        ),
+        amountCents: revokedAfterAdjust.customerTotalCents,
+        currency: revokedAfterAdjust.predecessor.currency,
+        recordedBy: revokedAfterAdjust.fixture.posterUserId,
+      })
+    ).rejects.toThrow();
+    const terminalAuthority = await pool.query<{
+      resolution: string;
+      capture_preparations: number;
+    }>(
+      `SELECT public.universal_v1_change_order_recovery_resolution_v1($1) AS resolution,
                 (SELECT COUNT(*)::integer
                    FROM universal_v1_prepared_financial_commands prepared
                   WHERE prepared.operation_id = $2) AS capture_preparations`,
-        [revokedAfterAdjust.proposal.proposal_id, captureOperationId]
-      );
-      expect(terminalAuthority.rows[0]).toEqual({
-        resolution: 'CANCELLED_RECOVERY_REQUIRED',
-        capture_preparations: 0,
-      });
+      [revokedAfterAdjust.proposal.proposal_id, captureOperationId]
+    );
+    expect(terminalAuthority.rows[0]).toEqual({
+      resolution: 'CANCELLED_RECOVERY_REQUIRED',
+      capture_preparations: 0,
+    });
 
-      const materializedClaim = claimFor(phaseACrash.proposal.proposal_id);
-      const materializedAmendment = await pool.query<{
-        amendment_id: string;
-        adjustment_event_id: string;
-      }>(
-        `SELECT amendment.id AS amendment_id, amendment.adjustment_event_id
+    const materializedClaim = claimFor(phaseACrash.proposal.proposal_id);
+    const materializedAmendment = await pool.query<{
+      amendment_id: string;
+      adjustment_event_id: string;
+    }>(
+      `SELECT amendment.id AS amendment_id, amendment.adjustment_event_id
            FROM task_work_order_amendments amendment
           WHERE amendment.change_order_id = $1`,
-        [phaseACrash.proposal.proposal_id]
+      [phaseACrash.proposal.proposal_id]
+    );
+    const runtimeRole = 'hx_change_recovery_test_worker';
+    const roleClient = await pool.connect();
+    const dropRuntimeRole = async () => {
+      const existing = await roleClient.query(`SELECT 1 FROM pg_roles WHERE rolname = $1`, [
+        runtimeRole,
+      ]);
+      if (existing.rowCount === 0) return;
+      await roleClient.query(
+        `REVOKE EXECUTE ON FUNCTION public.record_universal_v1_change_order_materialized_recovery_v1(uuid,uuid,uuid,uuid,uuid) FROM ${runtimeRole}`
       );
-      const runtimeRole = 'hx_change_recovery_test_worker';
-      const roleClient = await pool.connect();
-      const dropRuntimeRole = async () => {
-        const existing = await roleClient.query(
-          `SELECT 1 FROM pg_roles WHERE rolname = $1`,
-          [runtimeRole]
-        );
-        if (existing.rowCount === 0) return;
-        await roleClient.query(
-          `REVOKE EXECUTE ON FUNCTION public.record_universal_v1_change_order_materialized_recovery_v1(uuid,uuid,uuid,uuid,uuid) FROM ${runtimeRole}`
-        );
-        await roleClient.query(`REVOKE USAGE ON SCHEMA public FROM ${runtimeRole}`);
-        await roleClient.query(`REVOKE ${runtimeRole} FROM hx_ci_runner`);
-        await roleClient.query(`DROP ROLE ${runtimeRole}`);
-      };
-      try {
-        await dropRuntimeRole();
-        await roleClient.query(`CREATE ROLE ${runtimeRole} NOLOGIN`);
-        await roleClient.query(`GRANT ${runtimeRole} TO hx_ci_runner`);
-        await roleClient.query(`GRANT USAGE ON SCHEMA public TO ${runtimeRole}`);
-        await roleClient.query(
-          `GRANT EXECUTE ON FUNCTION public.record_universal_v1_change_order_materialized_recovery_v1(uuid,uuid,uuid,uuid,uuid) TO ${runtimeRole}`
-        );
-        await roleClient.query(`SET ROLE ${runtimeRole}`);
-        await expect(
-          roleClient.query(
-            `INSERT INTO public.universal_v1_change_order_recovery_leases(
+      await roleClient.query(`REVOKE USAGE ON SCHEMA public FROM ${runtimeRole}`);
+      await roleClient.query(`REVOKE ${runtimeRole} FROM hx_ci_runner`);
+      await roleClient.query(`DROP ROLE ${runtimeRole}`);
+    };
+    try {
+      await dropRuntimeRole();
+      await roleClient.query(`CREATE ROLE ${runtimeRole} NOLOGIN`);
+      await roleClient.query(`GRANT ${runtimeRole} TO hx_ci_runner`);
+      await roleClient.query(`GRANT USAGE ON SCHEMA public TO ${runtimeRole}`);
+      await roleClient.query(
+        `GRANT EXECUTE ON FUNCTION public.record_universal_v1_change_order_materialized_recovery_v1(uuid,uuid,uuid,uuid,uuid) TO ${runtimeRole}`
+      );
+      await roleClient.query(`SET ROLE ${runtimeRole}`);
+      await expect(
+        roleClient.query(
+          `INSERT INTO public.universal_v1_change_order_recovery_leases(
                proposal_id, lease_owner_id, lease_duration_seconds, expires_at
              ) VALUES ($1,$2,60,clock_timestamp() + interval '60 seconds')`,
-            [phaseACrash.proposal.proposal_id, randomUUID()]
-          )
-        ).rejects.toMatchObject({ code: '42501' });
-        const typedReplay = await roleClient.query<{ terminal_fact_id: string }>(
-          `SELECT terminal_fact_id
+          [phaseACrash.proposal.proposal_id, randomUUID()]
+        )
+      ).rejects.toMatchObject({ code: '42501' });
+      const typedReplay = await roleClient.query<{ terminal_fact_id: string }>(
+        `SELECT terminal_fact_id
              FROM public.record_universal_v1_change_order_materialized_recovery_v1(
                $1,$2,$3,$4,$5
              )`,
-          [
-            phaseACrash.proposal.proposal_id,
-            materializedClaim.recoveryLeaseId,
-            materializedClaim.leaseOwnerId,
-            materializedAmendment.rows[0]!.amendment_id,
-            materializedAmendment.rows[0]!.adjustment_event_id,
-          ]
-        );
-        expect(typedReplay.rowCount).toBe(1);
+        [
+          phaseACrash.proposal.proposal_id,
+          materializedClaim.recoveryLeaseId,
+          materializedClaim.leaseOwnerId,
+          materializedAmendment.rows[0]!.amendment_id,
+          materializedAmendment.rows[0]!.adjustment_event_id,
+        ]
+      );
+      expect(typedReplay.rowCount).toBe(1);
+    } finally {
+      await roleClient.query('RESET ROLE');
+      try {
+        await dropRuntimeRole();
       } finally {
-        await roleClient.query('RESET ROLE');
-        try {
-          await dropRuntimeRole();
-        } finally {
-          roleClient.release();
-        }
+        roleClient.release();
       }
-    },
-    60_000
-  );
+    }
+  }, 60_000);
 
   it('serializes one organization account across owner/admin actors and rejects forged or out-of-order authority', async () => {
     const provider = await verifiedTradeProviderFixture();
@@ -4235,6 +4912,42 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
       scenario: 'PROVIDER_ACCOUNT_FAILURE',
       recordedBy: adminUserId,
     });
+    const providerObservationChronology = await pool.query<{
+      operation_created_at: Date | string;
+      event_recorded_at: Date | string;
+      operation_has_submillisecond_precision: boolean;
+      event_is_causally_ordered: boolean;
+      event_is_canonical_millisecond: boolean;
+    }>(
+      `SELECT operation.created_at AS operation_created_at,
+              event.recorded_at AS event_recorded_at,
+              mod(extract(microseconds FROM operation.created_at)::bigint, 1000) <> 0
+                AS operation_has_submillisecond_precision,
+              operation.created_at <= event.recorded_at AS event_is_causally_ordered,
+              mod(extract(microseconds FROM event.recorded_at)::bigint, 1000) = 0
+                AS event_is_canonical_millisecond
+         FROM hxos_fake_financial_operation_events_v1 event
+         JOIN hxos_fake_financial_operations_v1 operation
+           ON operation.operation_id = event.operation_id
+        WHERE event.event_id = ANY($1::uuid[])
+        ORDER BY event.recorded_at, event.event_id`,
+      [
+        [
+          observationOnboard.durableFakeEvidence.fakeOperationEventId,
+          oldSuccess.durableFakeEvidence.fakeOperationEventId,
+          newFailure.durableFakeEvidence.fakeOperationEventId,
+        ],
+      ]
+    );
+    expect(providerObservationChronology.rows).toHaveLength(3);
+    expect(
+      providerObservationChronology.rows.every(
+        (row) => row.event_is_causally_ordered && row.event_is_canonical_millisecond
+      )
+    ).toBe(true);
+    expect(
+      providerObservationChronology.rows.some((row) => row.operation_has_submillisecond_precision)
+    ).toBe(true);
     const latestFailure = await repository.materializeFromDurableEvidence({
       providerSubject,
       recordedBy: adminUserId,
@@ -4287,7 +5000,8 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
         expected_eligibility_version: lane.interest.eligibility_version,
         idempotency_key: `smtp-worker-workorder:${randomUUID()}`,
         client_ts: new Date().toISOString(),
-      }
+      },
+      await actorAttestationHandle(lane.fixture.posterUserId)
     );
     const execution = executionService();
     const genesis = await execution.getWorkOrderExecutionState(
@@ -4305,17 +5019,14 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
         client_ts: new Date().toISOString(),
       }
     );
-    const started = await execution.advanceWorkOrderExecution(
-      lane.fixture.provider.actor_user_id,
-      {
-        work_order_id: materialized.work_order_id,
-        action: 'START_WORK',
-        expected_execution_version: acknowledged.execution_version,
-        expected_scope_version: lane.scopeVersion,
-        idempotency_key: `smtp-worker-start:${randomUUID()}`,
-        client_ts: new Date().toISOString(),
-      }
-    );
+    const started = await execution.advanceWorkOrderExecution(lane.fixture.provider.actor_user_id, {
+      work_order_id: materialized.work_order_id,
+      action: 'START_WORK',
+      expected_execution_version: acknowledged.execution_version,
+      expected_scope_version: lane.scopeVersion,
+      idempotency_key: `smtp-worker-start:${randomUUID()}`,
+      client_ts: new Date().toISOString(),
+    });
     const sinkActorId = await userFixture('poster');
     const fulfillment = fulfillmentService(sinkActorId);
     const submitted = await fulfillment.submitCompletionEvidence(
@@ -4407,9 +5118,7 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
         }
       });
     });
-    await new Promise<void>((resolveListen) =>
-      smtpServer.listen(0, '127.0.0.1', resolveListen)
-    );
+    await new Promise<void>((resolveListen) => smtpServer.listen(0, '127.0.0.1', resolveListen));
     const smtpAddress = smtpServer.address();
     if (!smtpAddress || typeof smtpAddress === 'string') {
       throw new Error('Completion SMTP system sink did not bind TCP');
@@ -4422,8 +5131,7 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
       HX_LIVE_DELIVERY: process.env.HX_LIVE_DELIVERY,
       HX_LIVE_PROVIDER_ACCESS: process.env.HX_LIVE_PROVIDER_ACCESS,
       HX_EXTERNAL_VALUE: process.env.HX_EXTERNAL_VALUE,
-      HX_COMPLETION_DELIVERY_SINK_ACTOR_ID:
-        process.env.HX_COMPLETION_DELIVERY_SINK_ACTOR_ID,
+      HX_COMPLETION_DELIVERY_SINK_ACTOR_ID: process.env.HX_COMPLETION_DELIVERY_SINK_ACTOR_ID,
       SMTP_URL: process.env.SMTP_URL,
     };
     Object.assign(process.env, {
@@ -4534,7 +5242,8 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
           expected_eligibility_version: lane.interest.eligibility_version,
           idempotency_key: materializationKey,
           client_ts: new Date().toISOString(),
-        }
+        },
+        await actorAttestationHandle(lane.fixture.posterUserId)
       );
       const execution = executionService();
       const genesis = await execution.getWorkOrderExecutionState(
@@ -4665,18 +5374,16 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
         completion_facts: string;
         execution_facts: string;
       }>(
-          `SELECT
+        `SELECT
              (SELECT COUNT(*)::text FROM proofs proof
                WHERE proof.work_order_id=$1) AS proofs,
              (SELECT COUNT(*)::text FROM task_completion_facts completion
                WHERE completion.work_order_id=$1) AS completion_facts,
              (SELECT COUNT(*)::text FROM task_work_order_execution_facts execution
                WHERE execution.work_order_id=$1) AS execution_facts`,
-          [materialized.work_order_id]
-        );
-      expect(afterEmailDisabledSubmission.rows[0]).toEqual(
-        beforeEmailDisabledSubmission.rows[0]
+        [materialized.work_order_id]
       );
+      expect(afterEmailDisabledSubmission.rows[0]).toEqual(beforeEmailDisabledSubmission.rows[0]);
       await pool.query(`UPDATE users SET do_not_email=FALSE WHERE id=$1`, [
         lane.fixture.posterUserId,
       ]);
@@ -4798,14 +5505,13 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
           `UPDATE outbox_events
               SET idempotency_key=$2
             WHERE aggregate_id=$1`,
-          [
-            noticeDispatch.rows[0]!.email_id,
-            `completion-notice-email:${randomUUID()}`,
-          ]
+          [noticeDispatch.rows[0]!.email_id, `completion-notice-email:${randomUUID()}`]
         )
       ).rejects.toMatchObject({ code: 'P0001' });
       await expect(
-        pool.query('DELETE FROM outbox_events WHERE aggregate_id=$1', [noticeDispatch.rows[0]!.email_id])
+        pool.query('DELETE FROM outbox_events WHERE aggregate_id=$1', [
+          noticeDispatch.rows[0]!.email_id,
+        ])
       ).rejects.toMatchObject({ code: 'P0001' });
       await expect(pool.query('TRUNCATE email_outbox')).rejects.toMatchObject({ code: 'P0001' });
       await expect(pool.query('TRUNCATE outbox_events')).rejects.toMatchObject({ code: 'P0001' });
@@ -4848,10 +5554,9 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
               WHERE aggregate_id=$1`,
             [noticeDispatch.rows[0]!.email_id]
           );
-          await query(
-            `UPDATE outbox_events SET status='pending' WHERE aggregate_id=$1`,
-            [noticeDispatch.rows[0]!.email_id]
-          );
+          await query(`UPDATE outbox_events SET status='pending' WHERE aggregate_id=$1`, [
+            noticeDispatch.rows[0]!.email_id,
+          ]);
         })
       ).rejects.toMatchObject({ code: 'P0001' });
 
@@ -4917,10 +5622,9 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
       const directExecutionWriter = await pool.connect();
       try {
         await fulfillmentLockHolder.query('BEGIN');
-        await fulfillmentLockHolder.query(
-          `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,
-          [`fulfillment:${materialized.work_order_id}`]
-        );
+        await fulfillmentLockHolder.query(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, [
+          `fulfillment:${materialized.work_order_id}`,
+        ]);
         await directExecutionWriter.query('BEGIN');
         await directExecutionWriter.query(`SET LOCAL lock_timeout='250ms'`);
         await expect(
@@ -5148,11 +5852,7 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
             SET status='processing',dispatch_attempt_id=$2,
                 bullmq_job_id=$3,updated_at=clock_timestamp()
           WHERE aggregate_id=$1`,
-        [
-          noticeDispatch.rows[0]!.email_id,
-          randomUUID(),
-          `completion-notice-worker:${randomUUID()}`,
-        ]
+        [noticeDispatch.rows[0]!.email_id, randomUUID(), `completion-notice-worker:${randomUUID()}`]
       );
       await expect(
         pool.query(
@@ -5257,30 +5957,29 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
           [noticeDispatch.rows[0]!.email_id]
         )
       ).toMatchObject({
-        rows: [{
-          email_status: 'provider_outcome_unknown',
-          last_error: 'provider_attempt_deadline_exceeded',
-          outbox_status: 'processed',
-          error_message: 'provider_outcome_unknown',
-        }],
+        rows: [
+          {
+            email_status: 'provider_outcome_unknown',
+            last_error: 'provider_attempt_deadline_exceeded',
+            outbox_status: 'processed',
+            error_message: 'provider_outcome_unknown',
+          },
+        ],
       });
       await expect(
-        pool.query(
-          `UPDATE email_outbox SET status='pending' WHERE id=$1`,
-          [noticeDispatch.rows[0]!.email_id]
-        )
+        pool.query(`UPDATE email_outbox SET status='pending' WHERE id=$1`, [
+          noticeDispatch.rows[0]!.email_id,
+        ])
       ).rejects.toMatchObject({ code: 'P0001' });
       await expect(
-        pool.query(
-          `UPDATE email_outbox SET sent_at=clock_timestamp() WHERE id=$1`,
-          [noticeDispatch.rows[0]!.email_id]
-        )
+        pool.query(`UPDATE email_outbox SET sent_at=clock_timestamp() WHERE id=$1`, [
+          noticeDispatch.rows[0]!.email_id,
+        ])
       ).rejects.toMatchObject({ code: 'P0001' });
       await expect(
-        pool.query(
-          `UPDATE outbox_events SET status='pending' WHERE aggregate_id=$1`,
-          [noticeDispatch.rows[0]!.email_id]
-        )
+        pool.query(`UPDATE outbox_events SET status='pending' WHERE aggregate_id=$1`, [
+          noticeDispatch.rows[0]!.email_id,
+        ])
       ).rejects.toMatchObject({ code: 'P0001' });
       await expect(
         pool.query(
@@ -5302,14 +6001,12 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
           RETURNING provider_receipt_at::text,provider_io_started_at::text`,
         [noticeDispatch.rows[0]!.email_id, providerMessageId]
       );
-      expect(
-        Date.parse(persistedReceipt.rows[0]!.provider_receipt_at)
-      ).toBeGreaterThanOrEqual(Date.parse(persistedReceipt.rows[0]!.provider_io_started_at));
+      expect(Date.parse(persistedReceipt.rows[0]!.provider_receipt_at)).toBeGreaterThanOrEqual(
+        Date.parse(persistedReceipt.rows[0]!.provider_io_started_at)
+      );
 
-      const exactDeliveryServiceIdentity =
-        `hustlexp.synthetic-communications-sink.v1:${sinkActorId}`;
-      const exactDeliveryIdempotency =
-        `completion-notice-delivery:${noticeDispatch.rows[0]!.request_id}`;
+      const exactDeliveryServiceIdentity = `hustlexp.synthetic-communications-sink.v1:${sinkActorId}`;
+      const exactDeliveryIdempotency = `completion-notice-delivery:${noticeDispatch.rows[0]!.request_id}`;
       const deliveryAuditNullCases = [
         {
           providerKind: null,
@@ -5477,17 +6174,17 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
               decisionClientTs,
             ]
           );
-          await query(`UPDATE email_outbox
+          await query(
+            `UPDATE email_outbox
                           SET status='sent',sent_at=COALESCE(sent_at,clock_timestamp())
-                        WHERE id=$1`, [
-            noticeDispatch.rows[0]!.email_id,
-          ]);
-          const delayed = await query<{
-            materialize_universal_v1_completion_notice_delivery: string;
-          }>(
-            `SELECT public.materialize_universal_v1_completion_notice_delivery($1::UUID)`,
+                        WHERE id=$1`,
             [noticeDispatch.rows[0]!.email_id]
           );
+          const delayed = await query<{
+            materialize_universal_v1_completion_notice_delivery: string;
+          }>(`SELECT public.materialize_universal_v1_completion_notice_delivery($1::UUID)`, [
+            noticeDispatch.rows[0]!.email_id,
+          ]);
           delayedDecisionDeliveryId =
             delayed.rows[0]!.materialize_universal_v1_completion_notice_delivery;
           throw new Error('ROLLBACK_DELAYED_COMPLETION_NOTICE_PROBE');
@@ -5497,17 +6194,17 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
 
       const finalizeReceipt = () =>
         runTransaction('', async (query) => {
-          await query(`UPDATE email_outbox
+          await query(
+            `UPDATE email_outbox
                           SET status='sent',sent_at=COALESCE(sent_at,clock_timestamp())
-                        WHERE id=$1`, [
-            noticeDispatch.rows[0]!.email_id,
-          ]);
-          const delivery = await query<{
-            materialize_universal_v1_completion_notice_delivery: string;
-          }>(
-            `SELECT public.materialize_universal_v1_completion_notice_delivery($1::UUID)`,
+                        WHERE id=$1`,
             [noticeDispatch.rows[0]!.email_id]
           );
+          const delivery = await query<{
+            materialize_universal_v1_completion_notice_delivery: string;
+          }>(`SELECT public.materialize_universal_v1_completion_notice_delivery($1::UUID)`, [
+            noticeDispatch.rows[0]!.email_id,
+          ]);
           return delivery.rows[0]!.materialize_universal_v1_completion_notice_delivery;
         });
       const [workerDeliveryOne, workerDeliveryTwo, recoveredReceipts] = await Promise.all([
@@ -5561,8 +6258,9 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
         recorded_by: sinkActorId,
         provider_service_identity: `hustlexp.synthetic-communications-sink.v1:${sinkActorId}`,
       });
-      expect(await pool.query(`SELECT worker_id FROM tasks WHERE id=$1`, [lane.accepted.task_id]))
-        .toMatchObject({ rows: [{ worker_id: null }] });
+      expect(
+        await pool.query(`SELECT worker_id FROM tasks WHERE id=$1`, [lane.accepted.task_id])
+      ).toMatchObject({ rows: [{ worker_id: null }] });
       expect(
         await pool.query<{
           security_events: string;
@@ -5575,10 +6273,12 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
           [lane.accepted.task_id]
         )
       ).toMatchObject({
-        rows: [{
-          security_events: financialEffectsBeforeNotice.rows[0]!.security_events,
-          financial_operations: financialEffectsBeforeNotice.rows[0]!.financial_operations,
-        }],
+        rows: [
+          {
+            security_events: financialEffectsBeforeNotice.rows[0]!.security_events,
+            financial_operations: financialEffectsBeforeNotice.rows[0]!.financial_operations,
+          },
+        ],
       });
 
       const unrelatedLegacyDelivery = await pool.query<{ id: string }>(
@@ -5586,11 +6286,7 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
            task_id,provider_delivery_id,channel,delivered_at,recorded_by
          ) VALUES ($1,$2,'EMAIL',clock_timestamp(),$3)
          RETURNING id`,
-        [
-          lane.accepted.task_id,
-          `legacy-task-only:${randomUUID()}`,
-          lane.fixture.posterUserId,
-        ]
+        [lane.accepted.task_id, `legacy-task-only:${randomUUID()}`, lane.fixture.posterUserId]
       );
       await expect(
         fulfillment.decideCompletion(lane.fixture.posterUserId, {
@@ -6025,12 +6721,7 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
                idempotency_key
              ) VALUES ($1, $2, 'other', 'standard', $3, 'in_app_only', $4)
              RETURNING id`,
-            [
-              lane.accepted.task_id,
-              lane.fixture.posterUserId,
-              description,
-              randomUUID(),
-            ]
+            [lane.accepted.task_id, lane.fixture.posterUserId, description, randomUUID()]
           );
           return incident.rows[0]!.id;
         };
@@ -6213,8 +6904,7 @@ describePg('Universal V1 provider estimate PostgreSQL golden path', () => {
                   ...command,
                   snapshot: {
                     ...command.snapshot,
-                    customerLedgerAmountCents:
-                      command.snapshot.customerLedgerAmountCents + 1,
+                    customerLedgerAmountCents: command.snapshot.customerLedgerAmountCents + 1,
                   },
                 })
               ).rejects.toThrow(/HXUV1-FTL-44/u);

@@ -65,4 +65,74 @@ export async function ensureUniversalV1SyntheticServiceCell(
   ) {
     throw new Error('Universal V1 synthetic service-cell authority is not exact');
   }
+
+  for (const category of ['furniture_assembly', 'moving'] as const) {
+    const mappingEvidence = {
+      fixture: 'hustlexp-universal-v1-required-test-price-book-mapping-v1',
+      synthetic: true,
+      customer_data: false,
+      service_cell_authority_id: SYNTHETIC_SERVICE_CELL_AUTHORITY_ID,
+      service_cell_authority_version: 1,
+      service_cell_region_code: SYNTHETIC_SERVICE_CELL_REGION_CODE,
+      price_book_category: category,
+      mapping_authority: 'EXPLICIT_SYNTHETIC_FIXTURE_ONLY',
+    };
+    await database.query(
+      `INSERT INTO public.universal_v1_service_cell_price_book_mappings(
+         service_cell_authority_id, service_cell_authority_version,
+         price_book_id, price_book_policy_version, environment_class,
+         mapping_version, evidence, evidence_sha256
+       )
+       SELECT $1::UUID, 1, price.id, price.policy_version, 'local', 1,
+              $3::JSONB, encode(digest($3::JSONB::TEXT, 'sha256'), 'hex')
+         FROM public.price_book price
+        WHERE price.category = $2
+          AND price.policy_version = 'hxos-price-book-v1'
+          AND price.active IS TRUE
+       ON CONFLICT (
+         service_cell_authority_id, service_cell_authority_version,
+         price_book_id, price_book_policy_version, environment_class,
+         mapping_version
+       ) DO NOTHING`,
+      [
+        SYNTHETIC_SERVICE_CELL_AUTHORITY_ID,
+        category,
+        JSON.stringify(mappingEvidence),
+      ],
+    );
+  }
+  const mappings = await database.query<{
+    category: string;
+    price_book_policy_version: string;
+    environment_class: string;
+    mapping_version: number;
+    evidence_sha256_valid: boolean;
+  }>(
+    `SELECT price.category, mapping.price_book_policy_version,
+            mapping.environment_class, mapping.mapping_version,
+            btrim(mapping.evidence_sha256) =
+              encode(digest(mapping.evidence::TEXT, 'sha256'), 'hex')
+              AS evidence_sha256_valid
+       FROM public.universal_v1_service_cell_price_book_mappings mapping
+       JOIN public.price_book price ON price.id = mapping.price_book_id
+      WHERE mapping.service_cell_authority_id = $1::UUID
+        AND mapping.service_cell_authority_version = 1
+        AND mapping.environment_class = 'local'
+        AND mapping.mapping_version = 1
+        AND price.category IN ('furniture_assembly', 'moving')
+      ORDER BY price.category`,
+    [SYNTHETIC_SERVICE_CELL_AUTHORITY_ID],
+  );
+  if (
+    mappings.rows.length !== 2
+    || mappings.rows.some((mapping) =>
+      mapping.price_book_policy_version !== 'hxos-price-book-v1'
+      || mapping.environment_class !== 'local'
+      || mapping.mapping_version !== 1
+      || mapping.evidence_sha256_valid !== true)
+    || mappings.rows.map((mapping) => mapping.category).join(',')
+      !== 'furniture_assembly,moving'
+  ) {
+    throw new Error('Universal V1 synthetic service-cell Price Book mapping is not exact');
+  }
 }

@@ -163,6 +163,7 @@ describe('legacy Task/PENDING-escrow service containment', () => {
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [{
         id: '20000000-0000-4000-8000-000000000001',
+        version: '1',
         poster_id: input.posterId,
         title: input.title,
         description: input.description,
@@ -192,6 +193,7 @@ describe('legacy Task/PENDING-escrow service containment', () => {
     const input = params('legacy-replay-create-0002');
     mocks.query.mockResolvedValueOnce({ rows: [{
       id: '20000000-0000-4000-8000-000000000002',
+      version: '1',
       poster_id: input.posterId,
       title: input.title,
       description: input.description,
@@ -323,6 +325,7 @@ describe('legacy Task/PENDING-escrow service containment', () => {
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [{
         id: '20000000-0000-4000-8000-000000000007',
+        version: '1',
         poster_id: input.posterId,
         title: input.title,
         description: input.description,

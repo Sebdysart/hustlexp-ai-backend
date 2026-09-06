@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { db, type Database, type QueryFn } from '../../db.js';
 import {
@@ -958,25 +958,11 @@ export class PostgresFinancialProviderCommandRecoveryRepository implements Finan
       }
 
       const inserted = await query<AttemptRow>(
-        `WITH timing AS MATERIALIZED (
-           SELECT clock_timestamp() AS now
-         )
-         INSERT INTO public.financial_provider_command_dispatch_attempts (
-           command_id, recovery_lease_id, attempt_number, request_sha256,
-           outcome_timeout_seconds, attempted_at, outcome_deadline_at
-         )
-         SELECT $1, $2,
-                COALESCE(MAX(previous.attempt_number), 0) + 1,
-                command.request_sha256, $3::INTEGER, timing.now,
-                timing.now + make_interval(secs => $3::INTEGER)
-           FROM public.financial_provider_command_journal command
-           CROSS JOIN timing
-           LEFT JOIN public.financial_provider_command_dispatch_attempts previous
-             ON previous.command_id = command.command_id
-          WHERE command.command_id=$1
-          GROUP BY command.request_sha256, timing.now
-         RETURNING ${ATTEMPT_SELECT}`,
-        [commandId, recoveryLeaseId, outcomeTimeoutSeconds]
+        `SELECT ${ATTEMPT_SELECT}
+           FROM public.hxos_record_financial_provider_dispatch_attempt_v1(
+             $1,$2,$3,$4
+           )`,
+        [randomUUID(), commandId, recoveryLeaseId, outcomeTimeoutSeconds]
       );
       const row = inserted.rows[0];
       if (!row) throw new FinancialProviderCommandRecoveryError('PERSISTENCE_INCOMPLETE');
@@ -1407,7 +1393,10 @@ export class DurableFakeFinancialProviderCommandCoordinator implements Foregroun
     try {
       adapterResult = await invokeAdapter(context.exactRequest);
     } catch (error) {
-      const reconciled = await this.findAndVerifyEvent(context);
+      // The adapter threw after an immutable raw event may already have
+      // committed. Read-only reconstruction is therefore an idempotent replay,
+      // including the explicit pre-v9 expiry-unproven recovery disposition.
+      const reconciled = await this.findAndVerifyEvent(context, true);
       if (reconciled) {
         const outcome = await this.recordObserved(
           state.command,

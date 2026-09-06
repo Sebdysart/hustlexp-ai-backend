@@ -1,4 +1,5 @@
-import type { TaskDraftCategory } from './UniversalV1TaskDraftIngress';
+import type { TaskDraftCategory } from './UniversalV1TaskDraftContracts.js';
+import { UNIVERSAL_V1_FURNITURE_ASSEMBLY_QUESTIONS } from './UniversalV1StandardizedScopePolicy.js';
 
 export type SanitizedTaskDraftAnswer = string | string[] | boolean | number;
 
@@ -180,8 +181,14 @@ const ADAPTIVE_QUESTIONS: Record<TaskDraftCategory, readonly AdaptiveQuestion[]>
         { value: 'two', label: 'Two' },
         { value: 'three_plus', label: 'Three or more' },
       ],
+      required: true,
     },
-    { key: 'fragile', label: 'Anything fragile or high-value?', kind: 'yesno' },
+    {
+      key: 'fragile',
+      label: 'Anything fragile or high-value?',
+      kind: 'yesno',
+      required: true,
+    },
     { key: 'timing', label: 'Preferred day / time?', kind: 'text', required: true },
   ],
   yard: [
@@ -212,14 +219,7 @@ const ADAPTIVE_QUESTIONS: Record<TaskDraftCategory, readonly AdaptiveQuestion[]>
     },
     { key: 'timing', label: 'Preferred day / time?', kind: 'text', required: true },
   ],
-  furniture_assembly: [
-    { key: 'item', label: 'What item(s) — brand / model?', kind: 'text', required: true },
-    { key: 'product_link', label: 'Product link (optional)', kind: 'text' },
-    { key: 'new_in_box', label: 'New in box?', kind: 'yesno', required: true },
-    { key: 'tools_included', label: 'Are assembly tools included?', kind: 'yesno' },
-    { key: 'old_item_removal', label: 'Remove / haul an old item?', kind: 'yesno' },
-    { key: 'timing', label: 'Preferred day / time?', kind: 'text', required: true },
-  ],
+  furniture_assembly: UNIVERSAL_V1_FURNITURE_ASSEMBLY_QUESTIONS,
   errands: [
     { key: 'pickup_dropoff', label: 'Pickup and drop-off areas?', kind: 'text', required: true },
     {

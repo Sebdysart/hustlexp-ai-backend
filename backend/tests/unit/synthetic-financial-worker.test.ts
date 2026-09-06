@@ -1,233 +1,396 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Job } from 'bullmq';
-
+import { describe, expect, it, vi } from 'vitest';
+import { SyntheticFinancialCommandProcessor } from '../../src/jobs/synthetic-financial-worker.js';
 import {
-  enqueueSyntheticFinancialEvent,
-  enqueueSyntheticReconciliation,
-  processSyntheticFinancialJob,
-} from '../../src/jobs/synthetic-financial-worker.js';
-
-const ids = {
-  actor: '00000000-0000-4000-8000-000000000301',
-  draft: '00000000-0000-4000-8000-000000000302',
-  task: '00000000-0000-4000-8000-000000000303',
-  eligibility: '00000000-0000-4000-8000-000000000304',
-  scope: '00000000-0000-4000-8000-000000000305',
-  operation: '00000000-0000-4000-8000-000000000306',
-  workOrder: '00000000-0000-4000-8000-000000000307',
-  related: '00000000-0000-4000-8000-000000000308',
-} as const;
-
-const eventCommand = {
-  providerKind: 'FAKE' as const,
-  operationKind: 'PREPARE_PAYMENT_METHOD' as const,
-  operationId: ids.operation,
-  idempotencyKey: 'worker:prepare:0001',
-  providerExpectedVersion: 0,
-  lifecycleExpectedVersion: 0,
-  taskDraftId: ids.draft,
-  taskId: ids.task,
-  eligibilityDecisionId: ids.eligibility,
-  scopeVersionId: ids.scope,
-  occurredAt: '2026-08-26T12:00:00.000Z',
-  customerId: 'synthetic-customer',
+  FAKE_FINANCIAL_OUTBOX_JOB,
+  FAKE_FINANCIAL_OUTBOX_QUEUE,
+} from '../../src/jobs/fake-financial-outbox-publisher.js';
+const id = (n: number) => '00000000-0000-4000-8000-' + String(n).padStart(12, '0');
+const payload = {
+  version: 1 as const,
+  kind: 'UNIVERSAL_V1_FAKE_FINANCIAL_COMMAND' as const,
+  outboxRequestId: id(1),
+  commandId: id(2),
+  jobAuthoritySha256: 'b'.repeat(64),
 };
-
-const bankSettlementCommand = {
-  providerKind: 'FAKE' as const,
-  operationKind: 'OBSERVE_BANK_SETTLEMENT' as const,
-  operationId: ids.operation,
-  idempotencyKey: 'worker:bank-settlement:0001',
-  providerExpectedVersion: 0,
-  lifecycleExpectedVersion: 8,
-  taskDraftId: ids.draft,
-  taskId: ids.task,
-  eligibilityDecisionId: ids.eligibility,
-  scopeVersionId: ids.scope,
-  predecessorEventId: '00000000-0000-4000-8000-000000000309',
-  relatedOperationId: ids.related,
-  amountCents: 10_000,
-  currency: 'usd',
-  occurredAt: '2026-08-26T12:08:00.000Z',
-};
-
-const reconciliationCommand = {
-  providerKind: 'FAKE' as const,
-  operationId: ids.operation,
-  idempotencyKey: 'worker:reconcile:0001',
-  providerExpectedVersion: 0,
-  relatedOperationId: ids.related,
-  scenario: 'RECONCILIATION_MISMATCH' as const,
-  snapshot: {
-    workOrderId: ids.workOrder,
-    reconciliationVersion: 1,
-    voidState: 'NOT_APPLICABLE' as const,
-    captureState: 'NOT_APPLICABLE' as const,
-    refundState: 'NOT_APPLICABLE' as const,
-    reversalState: 'NOT_APPLICABLE' as const,
-    settlementState: 'NOT_APPLICABLE' as const,
-    fundingState: 'NOT_APPLICABLE' as const,
-    providerReleaseState: 'NOT_APPLICABLE' as const,
-    payoutState: 'NOT_APPLICABLE' as const,
-    bankSettlementState: 'NOT_APPLICABLE' as const,
-    ledgerState: 'MISMATCH' as const,
-    reconciliationState: 'MISMATCH' as const,
-    mismatchCodes: ['SYNTHETIC_MISMATCH'],
-    customerLedgerAmountCents: 0,
-    providerLedgerAmountCents: 0,
-    currency: 'USD',
-    expectedVersion: 0,
-  },
-};
-
-const mocks = {
-  executeEvent: vi.fn(),
-  reconcile: vi.fn(),
-  assertTask: vi.fn(),
-  assertWorkOrder: vi.fn(),
-  createService: vi.fn(),
-  verify: vi.fn(),
-};
-
-function dependencies() {
-  mocks.createService.mockReturnValue({
-    executeFinancialEvent: mocks.executeEvent,
-    reconcile: mocks.reconcile,
-  });
-  return {
-    authority: {
-      assertTaskParticipant: mocks.assertTask,
-      assertWorkOrderParticipant: mocks.assertWorkOrder,
-    },
-    createService: mocks.createService,
-    verifySignature: mocks.verify,
-  } as never;
-}
-
-function job(kind: 'FINANCIAL_EVENT' | 'RECONCILIATION', name?: string): Job {
-  const command = kind === 'FINANCIAL_EVENT' ? eventCommand : reconciliationCommand;
-  return {
-    name:
-      name ??
-      (kind === 'FINANCIAL_EVENT' ? 'synthetic_finance.event' : 'synthetic_finance.reconciliation'),
-    data: {
-      payload: { version: 1, kind, actorId: ids.actor, command },
-      _sig: 'valid-signature',
-    },
-  } as Job;
-}
-
-beforeEach(() => {
-  vi.clearAllMocks();
-  mocks.verify.mockReturnValue(true);
-  mocks.executeEvent.mockResolvedValue({ operationId: ids.operation });
-  mocks.reconcile.mockResolvedValue({ operationId: ids.operation });
+const job = () => ({
+  name: FAKE_FINANCIAL_OUTBOX_JOB,
+  queueName: FAKE_FINANCIAL_OUTBOX_QUEUE,
+  id: 'hx-fake-fin-' + id(2).replaceAll('-', '') + '-' + 'b'.repeat(64),
+  data: payload,
+  attemptsMade: 0,
 });
-
-describe('synthetic financial worker', () => {
-  it('rejects unsigned work before manifest service construction or database authority', async () => {
-    mocks.verify.mockReturnValue(false);
-    await expect(
-      processSyntheticFinancialJob(job('FINANCIAL_EVENT'), dependencies())
-    ).rejects.toThrow('SYNTHETIC_FINANCIAL_JOB_SIGNATURE_INVALID');
-    expect(mocks.createService).not.toHaveBeenCalled();
-    expect(mocks.assertTask).not.toHaveBeenCalled();
-  });
-
-  it('refuses a signed payload placed under a different job name', async () => {
-    await expect(
-      processSyntheticFinancialJob(
-        job('FINANCIAL_EVENT', 'synthetic_finance.reconciliation'),
-        dependencies()
-      )
-    ).rejects.toThrow('SYNTHETIC_FINANCIAL_JOB_KIND_MISMATCH');
-    expect(mocks.createService).not.toHaveBeenCalled();
-  });
-
-  it('revalidates the runtime gate, participant authority, and authenticated actor for events', async () => {
-    await processSyntheticFinancialJob(job('FINANCIAL_EVENT'), dependencies());
-    expect(mocks.createService).toHaveBeenCalledOnce();
-    expect(mocks.assertTask).toHaveBeenCalledWith(ids.actor, ids.draft, ids.task);
-    expect(mocks.executeEvent).toHaveBeenCalledWith({ ...eventCommand, recordedBy: ids.actor });
-  });
-
-  it('rejects a signed terminal event envelope before service, authority, or provider calls', async () => {
-    const bankJob = {
-      name: 'synthetic_finance.event',
-      data: {
-        payload: {
-          version: 1,
-          kind: 'FINANCIAL_EVENT',
-          actorId: ids.actor,
-          command: bankSettlementCommand,
-        },
-        _sig: 'valid-signature',
+const admission = { job_validation_id: id(3), recovery_lease_id: id(4) };
+function recorded(unknown = false) {
+  return {
+    admission: { evidence: admission },
+    lease: { recovery_lease_id: id(4) },
+    outcome: {
+      outcome_kind: unknown ? 'OUTCOME_UNKNOWN' : 'OUTCOME_OBSERVED',
+      retryable: unknown,
+      outcome_fact_id: id(5),
+    },
+  };
+}
+function progress(
+  existingAdmission = false,
+  existingOutcome: ReturnType<typeof recorded> | null = null
+) {
+  return {
+    kind: existingAdmission ? 'NO_COMMITTED_EVENT' : 'NO_COMMITTED_ADMISSION',
+    admission: existingAdmission ? { evidence: admission } : null,
+    recordedOutcome: existingOutcome,
+  };
+}
+function fixture() {
+  // Isolate orchestration here; sealed receipt decoding and role restrictions
+  // have separate unit and real PostgreSQL coverage.
+  const calls: string[] = [];
+  const d = {
+    assertAuthorized: vi.fn(() => {
+      calls.push('authorize');
+    }),
+    readProgress: vi.fn(async () => {
+      calls.push('read');
+      return progress();
+    }),
+    admit: vi.fn(async () => {
+      calls.push('admit');
+      return admission;
+    }),
+    issueExecutionCapability: vi.fn(async () => {
+      calls.push('issue');
+      return { opaque: true };
+    }),
+    execute: vi.fn(async () => {
+      calls.push('execute');
+    }),
+    acquireReconcileLease: vi.fn(async () => {
+      calls.push('lease');
+      return { lease: { expires_at: new Date(Date.now() + 60_000).toISOString() } };
+    }),
+    recordOutcome: vi.fn(async () => {
+      calls.push('outcome');
+      return recorded();
+    }),
+    materialize: vi.fn(async () => {
+      calls.push('materialize');
+      return { financialEvent: { id: id(6) }, idempotencyReplayed: false };
+    }),
+  };
+  const processor = new SyntheticFinancialCommandProcessor(
+    d as unknown as NonNullable<
+      ConstructorParameters<typeof SyntheticFinancialCommandProcessor>[0]
+    >,
+    id(7)
+  );
+  return { d, processor, calls };
+}
+describe('v13 financial ID-only worker orchestration', () => {
+  it('fails the current queue attempt when reconciliation first commits a fence so BullMQ can retry', async () => {
+    const f = fixture();
+    f.d.readProgress.mockResolvedValue(progress(true));
+    f.d.recordOutcome.mockResolvedValue({
+      ...recorded(true),
+      outcome: {
+        ...recorded(true).outcome,
+        outcome_kind: 'FAILED',
+        failure_code: 'FAKE_ADMISSION_FENCED_NO_EFFECT',
       },
-    } as Job;
-
-    await expect(processSyntheticFinancialJob(bankJob, dependencies())).rejects.toThrow();
-    expect(mocks.createService).not.toHaveBeenCalled();
-    expect(mocks.assertTask).not.toHaveBeenCalled();
-    expect(mocks.executeEvent).not.toHaveBeenCalled();
-    expect(mocks.reconcile).not.toHaveBeenCalled();
+    } as ReturnType<typeof recorded>);
+    await expect(f.processor.process(job())).rejects.toThrow('REDISPATCH_REQUIRED');
+    expect(f.d.admit).not.toHaveBeenCalled();
+    expect(f.d.execute).not.toHaveBeenCalled();
+    expect(f.d.materialize).not.toHaveBeenCalled();
   });
-
-  it('rejects a signed reconciliation envelope before service, authority, or provider calls', async () => {
-    await expect(
-      processSyntheticFinancialJob(job('RECONCILIATION'), dependencies())
-    ).rejects.toThrow();
-    expect(mocks.createService).not.toHaveBeenCalled();
-    expect(mocks.assertTask).not.toHaveBeenCalled();
-    expect(mocks.assertWorkOrder).not.toHaveBeenCalled();
-    expect(mocks.executeEvent).not.toHaveBeenCalled();
-    expect(mocks.reconcile).not.toHaveBeenCalled();
-  });
-
-  it('authorizes and signs deterministic pre-WorkOrder event queue jobs', async () => {
-    const enqueue = vi.fn().mockResolvedValueOnce({ id: 'event-job' });
-    const enqueueDependencies = {
-      authority: {
-        assertTaskParticipant: mocks.assertTask,
-        assertWorkOrderParticipant: mocks.assertWorkOrder,
+  it('re-admits only a committed fenced no-effect outcome using the actual queue attempt', async () => {
+    const f = fixture();
+    const fence = {
+      ...recorded(true),
+      outcome: {
+        ...recorded(true).outcome,
+        outcome_kind: 'FAILED',
+        effect_certainty: 'CONFIRMED_NO_EFFECT',
+        failure_code: 'FAKE_ADMISSION_FENCED_NO_EFFECT',
       },
-      assertAuthorized: vi.fn(),
-      sign: vi.fn(() => 'signed'),
-      enqueue,
-    } as never;
-
-    await expect(
-      enqueueSyntheticFinancialEvent(ids.actor, eventCommand, enqueueDependencies)
-    ).resolves.toEqual({ queue: 'synthetic_finance', jobId: 'event-job' });
-
-    expect(enqueueDependencies.assertAuthorized).toHaveBeenCalledOnce();
-    expect(mocks.assertTask).toHaveBeenCalledWith(ids.actor, ids.draft, ids.task);
-    expect(enqueue).toHaveBeenCalledWith(
-      'synthetic_finance',
-      'synthetic_finance.event',
-      expect.objectContaining({ _sig: 'signed' }),
-      expect.objectContaining({ jobId: expect.stringContaining(ids.operation) })
+    };
+    f.d.readProgress.mockResolvedValue(progress(true, fence));
+    const result = await f.processor.process({ ...job(), attemptsMade: 7 });
+    expect(result.state).toBe('MATERIALIZED');
+    expect(f.d.admit).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ bullmqAttemptNumber: 7 })
     );
+    expect(f.d.acquireReconcileLease).not.toHaveBeenCalled();
+    expect(f.d.execute).toHaveBeenCalledOnce();
   });
-
-  it('refuses generic reconciliation before authorization, authority, signing, or queue calls', async () => {
-    const enqueueDependencies = {
-      authority: {
-        assertTaskParticipant: mocks.assertTask,
-        assertWorkOrderParticipant: mocks.assertWorkOrder,
+  it('returns fenced retry identity from durable recovery without inventing a queue attempt', async () => {
+    const f = fixture();
+    const fence = {
+      ...recorded(true),
+      outcome: {
+        ...recorded(true).outcome,
+        outcome_kind: 'FAILED',
+        effect_certainty: 'CONFIRMED_NO_EFFECT',
+        failure_code: 'FAKE_ADMISSION_FENCED_NO_EFFECT',
       },
-      assertAuthorized: vi.fn(),
-      sign: vi.fn(() => 'signed'),
-      enqueue: vi.fn(),
-    } as never;
-
-    await expect(
-      enqueueSyntheticReconciliation(ids.actor, reconciliationCommand, enqueueDependencies)
-    ).rejects.toThrow('UNIVERSAL_FINANCE_PUBLIC_RECONCILIATION_REFUSED');
-
-    expect(enqueueDependencies.assertAuthorized).not.toHaveBeenCalled();
-    expect(mocks.assertTask).not.toHaveBeenCalled();
-    expect(mocks.assertWorkOrder).not.toHaveBeenCalled();
-    expect(enqueueDependencies.sign).not.toHaveBeenCalled();
-    expect(enqueueDependencies.enqueue).not.toHaveBeenCalled();
+    };
+    f.d.readProgress.mockResolvedValue(progress(true, fence));
+    expect(await f.processor.recover({ jobId: job().id, payload })).toEqual({
+      commandId: payload.commandId,
+      state: 'REDISPATCH_REQUIRED',
+      outcomeFactId: id(5),
+    });
+    expect(f.d.admit).not.toHaveBeenCalled();
+    expect(f.d.execute).not.toHaveBeenCalled();
+    expect(f.d.acquireReconcileLease).not.toHaveBeenCalled();
+    expect(f.d.materialize).not.toHaveBeenCalled();
+  });
+  it('recovers from database identity without Redis or a BullMQ attempt', async () => {
+    const f = fixture();
+    f.d.readProgress.mockResolvedValue(progress(true));
+    await f.processor.recover({ jobId: job().id, payload });
+    expect(f.d.acquireReconcileLease).toHaveBeenCalledOnce();
+    expect(f.d.materialize).toHaveBeenCalledOnce();
+    expect(f.d.admit).not.toHaveBeenCalled();
+    expect(f.d.issueExecutionCapability).not.toHaveBeenCalled();
+    expect(f.d.execute).not.toHaveBeenCalled();
+  });
+  it('does not turn absent admission discovered in the database into dispatch authority', async () => {
+    const f = fixture();
+    await expect(f.processor.recover({ jobId: job().id, payload })).rejects.toThrow(
+      'COMMITTED_ADMISSION_REQUIRED'
+    );
+    expect(f.d.admit).not.toHaveBeenCalled();
+    expect(f.d.issueExecutionCapability).not.toHaveBeenCalled();
+    expect(f.d.execute).not.toHaveBeenCalled();
+  });
+  it.each([
+    { jobId: 'forged', payload },
+    { jobId: job().id, payload: { ...payload, actorId: id(7) } },
+    { jobId: job().id, payload, attemptsMade: 0 },
+  ])('rejects an invalid recovery binding before database access', async (invalid) => {
+    const f = fixture();
+    await expect(f.processor.recover(invalid)).rejects.toThrow();
+    expect(f.d.readProgress).not.toHaveBeenCalled();
+  });
+  it('reads progress then commits admission, execution, outcome and materialization in sequence', async () => {
+    const f = fixture(),
+      result = await f.processor.process(job());
+    expect(f.calls.filter((x) => x !== 'authorize')).toEqual([
+      'read',
+      'admit',
+      'issue',
+      'execute',
+      'outcome',
+      'materialize',
+    ]);
+    expect(f.d.admit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload,
+        workerInstanceId: id(7),
+        bullmqAttemptNumber: 0,
+        leaseSeconds: 60,
+        outcomeTimeoutSeconds: 45,
+      })
+    );
+    expect(result).toEqual({
+      commandId: id(2),
+      state: 'MATERIALIZED',
+      outcomeFactId: id(5),
+      financialEventId: id(6),
+      idempotencyReplayed: false,
+    });
+    expect(Object.isFrozen(result)).toBe(true);
+  });
+  it.each([
+    [
+      'legacy signed envelope',
+      {
+        ...job(),
+        name: 'synthetic_finance.event',
+        data: { payload: { actorId: id(7) }, _sig: 'signed' },
+      },
+    ],
+    ['wrong queue', { ...job(), queueName: 'escrow' }],
+    ['extra actor', { ...job(), data: { ...payload, actorId: id(7) } }],
+    ['extra command', { ...job(), data: { ...payload, command: { amountCents: 100 } } }],
+    ['wrong job ID', { ...job(), id: 'forged' }],
+    ['missing job ID', { ...job(), id: undefined }],
+    ['attempt overflow', { ...job(), attemptsMade: 64 }],
+    [
+      'terminal envelope',
+      {
+        ...job(),
+        data: { version: 1, kind: 'FINANCIAL_EVENT', command: { operationKind: 'CAPTURE' } },
+      },
+    ],
+    ['reconciliation envelope', { ...job(), data: { version: 1, kind: 'RECONCILIATION' } }],
+  ])('rejects %s before database authority or execution', async (_label, invalid) => {
+    const f = fixture();
+    await expect(f.processor.process(invalid)).rejects.toThrow();
+    expect(f.d.readProgress).not.toHaveBeenCalled();
+    expect(f.d.execute).not.toHaveBeenCalled();
+  });
+  it('replays a terminal committed outcome without new admission or execution', async () => {
+    const f = fixture();
+    f.d.readProgress.mockResolvedValue(progress(true, recorded()));
+    await f.processor.process(job());
+    expect(f.d.admit).not.toHaveBeenCalled();
+    expect(f.d.execute).not.toHaveBeenCalled();
+    expect(f.d.materialize).toHaveBeenCalledOnce();
+  });
+  it('recovers an existing admission through a reconcile lease without executing it again', async () => {
+    const f = fixture();
+    f.d.readProgress.mockResolvedValue(progress(true));
+    await f.processor.process(job());
+    expect(f.d.acquireReconcileLease).toHaveBeenCalledOnce();
+    expect(f.d.admit).not.toHaveBeenCalled();
+    expect(f.d.issueExecutionCapability).not.toHaveBeenCalled();
+    expect(f.d.execute).not.toHaveBeenCalled();
+  });
+  it('keeps missing-event UNKNOWN unresolved without redispatch or materialization', async () => {
+    const f = fixture();
+    f.d.readProgress.mockResolvedValue(progress(true));
+    f.d.recordOutcome.mockResolvedValue(recorded(true));
+    await expect(f.processor.process(job())).rejects.toThrow('RECOVERY_REQUIRED');
+    expect(f.d.execute).not.toHaveBeenCalled();
+    expect(f.d.materialize).not.toHaveBeenCalled();
+  });
+  it('records a fresh observation after a prior UNKNOWN instead of replaying its outcome', async () => {
+    const f = fixture();
+    f.d.readProgress.mockResolvedValue(progress(true, recorded(true)));
+    await f.processor.process(job());
+    expect(f.d.acquireReconcileLease).toHaveBeenCalledOnce();
+    expect(f.d.recordOutcome).toHaveBeenCalledOnce();
+    expect(f.d.materialize).toHaveBeenCalledOnce();
+    expect(f.d.execute).not.toHaveBeenCalled();
+  });
+  it.each([
+    'admit',
+    'issueExecutionCapability',
+    'execute',
+    'recordOutcome',
+    'materialize',
+  ] as const)(
+    'propagates uncertain %s and reads committed progress before retrying',
+    async (stage) => {
+      const f = fixture();
+      f.d[stage].mockRejectedValueOnce(new Error('ACK_LOST'));
+      await expect(f.processor.process(job())).rejects.toThrow('ACK_LOST');
+      const executions = f.d.execute.mock.calls.length;
+      f.d.readProgress.mockResolvedValue(progress(true, recorded()));
+      await f.processor.process({ ...job(), attemptsMade: 1 });
+      expect(f.d.readProgress).toHaveBeenCalledTimes(2);
+      expect(f.d.execute).toHaveBeenCalledTimes(executions);
+    }
+  );
+  it('retains a reconcile lease identity after an uncertain acquisition acknowledgement', async () => {
+    const f = fixture();
+    f.d.readProgress.mockResolvedValue(progress(true));
+    f.d.acquireReconcileLease.mockRejectedValueOnce(new Error('LEASE_ACK_LOST'));
+    await expect(f.processor.process(job())).rejects.toThrow('LEASE_ACK_LOST');
+    await f.processor.process({ ...job(), attemptsMade: 1 });
+    const calls = f.d.acquireReconcileLease.mock.calls as unknown as Array<
+      [{ recoveryLeaseId: string }]
+    >;
+    expect(calls[1][0].recoveryLeaseId).toBe(calls[0][0].recoveryLeaseId);
+    expect(f.d.execute).not.toHaveBeenCalled();
+  });
+  it.each([
+    'HXFPCREC1-V13: command already has an active recovery lease',
+    'HXFPCREC1-V13: dispatch outcome deadline has not elapsed',
+    'HXFPCREC1-V13: reconciliation requires a due explicit nonterminal outcome',
+  ])('releases a definitively refused lease cache slot: %s', async (message) => {
+    const f = fixture();
+    f.d.readProgress.mockResolvedValue(progress(true));
+    f.d.acquireReconcileLease.mockRejectedValueOnce(
+      Object.assign(new Error(message), { code: 'P0001' })
+    );
+    await expect(f.processor.recover({ jobId: job().id, payload })).rejects.toThrow(message);
+    await f.processor.recover({ jobId: job().id, payload });
+    const calls = f.d.acquireReconcileLease.mock.calls as unknown as Array<
+      [{ recoveryLeaseId: string }]
+    >;
+    expect(calls[1][0].recoveryLeaseId).not.toBe(calls[0][0].recoveryLeaseId);
+    expect(f.d.execute).not.toHaveBeenCalled();
+  });
+  it('uses database expiry authority even when the local clock sees an old lease', async () => {
+    const f = fixture();
+    f.d.readProgress.mockResolvedValue(progress(true));
+    f.d.acquireReconcileLease.mockResolvedValueOnce({
+      lease: { expires_at: '2000-01-01T00:00:00.000Z' },
+    });
+    await f.processor.process(job());
+    expect(f.d.recordOutcome).toHaveBeenCalledOnce();
+    expect(f.d.materialize).toHaveBeenCalledOnce();
+  });
+  it('retires a lease only after the precise database expiry rejection', async () => {
+    const f = fixture();
+    f.d.readProgress.mockResolvedValue(progress(true));
+    f.d.recordOutcome.mockRejectedValueOnce(
+      Object.assign(new Error('HXFPCREC1: recovery lease expired before outcome commitment'), {
+        code: 'P0001',
+      })
+    );
+    await expect(f.processor.process(job())).rejects.toThrow('recovery lease expired');
+    await f.processor.process({ ...job(), attemptsMade: 1 });
+    const calls = f.d.acquireReconcileLease.mock.calls as unknown as Array<
+      [{ recoveryLeaseId: string }]
+    >;
+    expect(calls[1][0].recoveryLeaseId).not.toBe(calls[0][0].recoveryLeaseId);
+  });
+  it.each([
+    new Error('OUTCOME_ACK_LOST'),
+    new Error('HXFPCREC1: recovery lease expired before outcome commitment'),
+    Object.assign(new Error('HXFPCREC1: recovery lease expired before outcome commitment'), {
+      code: '08006',
+    }),
+    Object.assign(new Error('HXFPCREC1: another rejection'), { code: 'P0001' }),
+  ])('retains lease identity for an uncertain or different outcome failure %s', async (error) => {
+    const f = fixture();
+    f.d.readProgress.mockResolvedValue(progress(true));
+    f.d.recordOutcome.mockRejectedValueOnce(error);
+    await expect(f.processor.process(job())).rejects.toThrow(error.message);
+    await f.processor.process({ ...job(), attemptsMade: 1 });
+    const calls = f.d.acquireReconcileLease.mock.calls as unknown as Array<
+      [{ recoveryLeaseId: string }]
+    >;
+    expect(calls[1][0].recoveryLeaseId).toBe(calls[0][0].recoveryLeaseId);
+  });
+  it('releases bounded recovery capacity when other workers commit terminal outcomes', async () => {
+    const f = fixture();
+    for (let index = 0; index < 1024; index++) {
+      const commandId = id(index + 100),
+        data = { ...payload, commandId };
+      const current = {
+        ...job(),
+        data,
+        id: 'hx-fake-fin-' + commandId.replaceAll('-', '') + '-' + payload.jobAuthoritySha256,
+      };
+      f.d.readProgress
+        .mockResolvedValueOnce(progress(true))
+        .mockResolvedValueOnce(progress(true, recorded()));
+      f.d.acquireReconcileLease.mockRejectedValueOnce(new Error('LEASE_ACK_LOST'));
+      await expect(f.processor.process(current)).rejects.toThrow('LEASE_ACK_LOST');
+      await f.processor.process({ ...current, attemptsMade: 1 });
+    }
+    f.d.readProgress.mockResolvedValue(progress(true));
+    await f.processor.process(job());
+    expect(f.d.execute).not.toHaveBeenCalled();
+    expect(f.d.acquireReconcileLease).toHaveBeenCalledTimes(1025);
+  });
+  it('refuses concurrent processing of the same job within one processor', async () => {
+    const f = fixture();
+    let release!: () => void;
+    f.d.readProgress.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return progress();
+    });
+    const first = f.processor.process(job());
+    await expect(f.processor.process(job())).rejects.toThrow('JOB_ALREADY_RUNNING');
+    release();
+    await first;
+    expect(f.d.admit).toHaveBeenCalledOnce();
   });
 });

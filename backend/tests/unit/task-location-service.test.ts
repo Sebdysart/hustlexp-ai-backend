@@ -43,6 +43,10 @@ function releaseRow(overrides: Record<string, unknown> = {}) {
     location_key_id: encrypted.keyId,
     location_fingerprint: encrypted.fingerprint,
     expired_at: null,
+    observed_at: '2026-08-31T00:00:00.000Z',
+    universal_contract_version: 0,
+    task_work_order_id: null,
+    universal_financial_security_current: null,
     ...overrides,
   };
 }
@@ -192,6 +196,46 @@ describe('TaskLocationService.releaseToReservedWorker', () => {
 
     expect(result.success).toBe(false);
     expect(result.error.code).toBe('TASK_NOT_FUNDED');
+  });
+
+  it('denies a Universal V1 address before decrypt or audit when financial security is expired', async () => {
+    query.mockResolvedValueOnce({
+      rows: [releaseRow({
+        universal_contract_version: 1,
+        task_work_order_id: '550e8400-e29b-41d4-a716-446655440099',
+        universal_financial_security_current: false,
+      })],
+      rowCount: 1,
+    } as never);
+
+    await expect(TaskLocationService.releaseToReservedWorker({
+      taskId: TASK_ID,
+      workerId: WORKER_ID,
+    })).resolves.toMatchObject({
+      success: false,
+      error: { code: 'FINANCIAL_SECURITY_EXPIRED' },
+    });
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed when a Universal V1 task lacks its exact Work Order authority', async () => {
+    query.mockResolvedValueOnce({
+      rows: [releaseRow({
+        universal_contract_version: 1,
+        task_work_order_id: null,
+        universal_financial_security_current: null,
+      })],
+      rowCount: 1,
+    } as never);
+
+    await expect(TaskLocationService.releaseToReservedWorker({
+      taskId: TASK_ID,
+      workerId: WORKER_ID,
+    })).resolves.toMatchObject({
+      success: false,
+      error: { code: 'FINANCIAL_SECURITY_EXPIRED' },
+    });
+    expect(query).toHaveBeenCalledTimes(1);
   });
 
   it('rejects release after the task deadline closes the permitted window', async () => {

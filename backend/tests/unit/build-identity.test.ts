@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  buildIdentity,
   compiledArtifactDigest,
   isTrustedBuildIdentity,
   readBuildIdentity,
@@ -16,6 +17,10 @@ afterEach(() => {
 });
 
 describe('engine build identity', () => {
+  it('keeps the process-owned executable measurement immutable', () => {
+    expect(Object.isFrozen(buildIdentity)).toBe(true);
+  });
+
   it('reads an attributable clean build artifact', () => {
     const directory = mkdtempSync(join(tmpdir(), 'hx-build-'));
     directories.push(directory);

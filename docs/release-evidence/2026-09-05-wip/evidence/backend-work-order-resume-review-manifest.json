@@ -1,0 +1,245 @@
+{
+  "generatedAt": "2026-09-05T16:10:26.154Z",
+  "status": "FOCUSED_FOREGROUND_WORK_ORDER_PASS_BACKEND_INCOMPLETE",
+  "repository": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip",
+  "head": "36255e604e718320ccae7d4e3ac269ad09678205",
+  "baseline": "Exact preserved post-financial-predecessor WIP; incremental patch, not a signed release candidate.",
+  "productionEffects": "NONE",
+  "customerMoney": "FROZEN",
+  "hardAssignment": "FROZEN",
+  "releaseEligible": false,
+  "scope": "Fresh-human authenticated historical Work Order read and existing foreground request/pending/resume/finalization; one durable financial request per call, committed predecessors, compensation-first claim-bound VOID. Two sealed history functions with narrow role enrollment and closed public response contract.",
+  "validation": {
+    "units": {
+      "files": 46,
+      "passed": 942,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    "postgres": {
+      "files": 2,
+      "passed": 181,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    "sourceCompilation": "PASS",
+    "expandedTestTypecheck": "PASS",
+    "allSourceLintZeroWarnings": "PASS",
+    "gitDiffCheck": "PASS",
+    "validationInputPreservation": "PASS",
+    "unrelatedWorktreePreservation": "PASS",
+    "patchReverseCheck": "PASS",
+    "patchForwardByteReproduction": "PASS",
+    "fullRequiredGate": "NOT RERUN; last full run FAIL: 10434 passed, 33 failed, 39 skipped"
+  },
+  "regressions": [
+    "Existing protected Work Order endpoint progresses through actual isolated Redis/BullMQ PREPARE, AUTHORIZE, SECURE, finalizer and completed replay using real restricted PostgreSQL API/worker/attester roles.",
+    "Injected finalizer failure creates one immutable compensation claim; foreground resume submits one durable VOID, actual worker materializes it, later history returns COMPENSATED without a Work Order or hard assignment.",
+    "History requires a fresh consumed customer assertion, exact original Phase A canonical witness and execution proof; wrong actor/key/hold/version, token reuse, payload substitution, historical isolation and unauthorized roles refuse.",
+    "Units verify lost COMMIT acknowledgements, concurrent finalizer winner, exact predecessor identity, expired hold/eligibility/AUTH, compensation-first recovery, completed historical replay, immutable backend receipts and redacted closed public output.",
+    "Unfinished recovery remains pollable; PostgreSQL observedAt governs the foreground expiry precheck even when the API clock is ahead. All sealed execution expiry gates remain unchanged."
+  ],
+  "trustBoundaries": [
+    "Protected in-process tRPC with synthetic bearer/release injection; genuine restricted PostgreSQL logins and actual isolated Redis/BullMQ. Initial intake/estimate/hold fixture uses owner reads to establish prerequisites.",
+    "The normal and compensation worker journeys start from committed Phase A fixture. First-call absent-history Phase A wiring is unit-tested; actual first-call HTTP/Firebase, signed startup, independent OS restart, natural expiry and release rollover across a complete Work Order remain open.",
+    "Historical facts confer no delegated authority. Each foreground read/new command obtains current human authority; API never executes providers. Only delegated background Work Order continuation remains separately held."
+  ],
+  "diagnosticHistory": [
+    "Fixed the new history hold-kind predicate to match frozen CONDITIONAL_HOLD before the first history port probe; frozen migration bytes were never edited.",
+    "Read-only review found an ordinary outcome/materialization gap was non-pollable and a local-clock expiry decision; both repaired and regression-tested.",
+    "Measured the installed 133-function catalog after SQL observation-time change before updating its expected digest.",
+    "Initial broader unit run: 937 pass, 5 fail from a colliding mock function OID and two synchronous-finance actor-propagation fixtures. Repaired only the two unit files; complete 942 units and expanded types rerun. Source/SQL/PG inputs are proven unchanged from compilation/lint/PG validation."
+  ],
+  "sqlPins": {
+    "20261014_universal_v1_work_order_command_ports_v1.sql": "3920ac8d3208b9f573dc331cab60c373d0349611700c6e14a6e4c1dd8c53aac4",
+    "20261015_universal_v1_work_order_fake_financial_authority_hardening_v12.sql": "5bb8ee72b9113146b88c22c6751ebe527ba6246b4463a8611ef9c24b999b7ac5",
+    "20261015_universal_v1_work_order_bootstrap_seal_v1.sql": "c69825589193885d0f6a3b93930880998e95e1c5cd44bb9b5999cb457192b2bd",
+    "20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql": "585026fd99b781142589b98f91de8c1f6ebe2889b4f95f2bd3c37ce7f35f913a"
+  },
+  "functionCatalog": {
+    "count": 133,
+    "sha256": "e28a36ccbc0fc2f2d41ac1cf5568982b9bbadf0e3c8cde6969cf83e8aa43f9b4"
+  },
+  "triggerCatalog": {
+    "count": 335,
+    "sha256": "d747c03c24d6c11ca679a8ada70266a6576158c4cc439f697e71465021e335aa"
+  },
+  "migrationArtifact": {
+    "stored": "f888ee9b2872e73b90428bb3922d45a61108bcf3decdc43f8f3f117b123a7ac6",
+    "computed": "5b97ad64033c3d2b5320d28b28e2cc398e9157cc4601fdcc983bf8371f77dc2d",
+    "regenerated": false
+  },
+  "docsFreshness": {
+    "path": "backend-work-order-resume-docs-freshness.json",
+    "sha256": "be7d1ff655b60dda4974c9a1010c3bf1556773e8c033df6d08db8322988ef28d",
+    "checkedAtUtc": "2026-09-05 16:03:50 UTC"
+  },
+  "review": {
+    "kind": "Bounded read-only agent review, not independent human approval",
+    "result": "Two actionable liveness/clock findings repaired; no additional concrete history/compensation provenance defect identified. Reviewer ran no tests and made no edits."
+  },
+  "remaining": [
+    "Full required regression on integrated bytes, remaining bootstrap/caller/upgrade fixtures and stale migration artifact.",
+    "Actual first-call endpoint and normal HTTP/startup, natural expiry/rollover and independent-process recovery.",
+    "Foreground client pending/recovery UI and remaining terminal/account/reconciliation callers; all thirteen financial/ledger journeys and 60-row current Docs product gaps.",
+    "Exact signed protected human review, external containment proof, clean clones and isolated staging."
+  ],
+  "files": [
+    {
+      "path": "backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql",
+      "change": "modified",
+      "beforeSha256": "e358fcb5f06119e569a3b01ca1d73be3b380f224d6bf3d73f37fcf8f327db504",
+      "afterSha256": "585026fd99b781142589b98f91de8c1f6ebe2889b4f95f2bd3c37ce7f35f913a"
+    },
+    {
+      "path": "backend/src/auth/universal-v1-actor-attestation-contracts.ts",
+      "change": "modified",
+      "beforeSha256": "c94a83059ef7a0d814f8beb86ab0c70e6b170c4160ed3b22b6271c649a14eefd",
+      "afterSha256": "4fe4a55bca1bae9f6887917b29985d0b0c0f8584ad18dbc7555cdea133f148a2"
+    },
+    {
+      "path": "backend/src/auth/work-order-history-command-contract.ts",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "c53f27acb246f85d5dd33a216487a252f3e223cd517cd858cc8b10413b26bb52"
+    },
+    {
+      "path": "backend/src/jobs/work-order-command-role-authority.ts",
+      "change": "modified",
+      "beforeSha256": "faa42b2574d124f1708e716a394b0ff4781ff7a94dc6d09642644275b30f0921",
+      "afterSha256": "e17aa4d1778952e615d206a44a5a17bc91c8740f7cd0823f3316e5fa347e1e73"
+    },
+    {
+      "path": "backend/src/jobs/work-order-history-role-plans.ts",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "b3f2dee30106580bafc2ed3d13bcdd082d7aa67054f6e33f0e65a01e4d038cf6"
+    },
+    {
+      "path": "backend/src/routers/universalContract.ts",
+      "change": "modified",
+      "beforeSha256": "3dc0e70125aabc519ca0453ee4c3bb766072c00bd79d564b9a8ec12e5bdc98ce",
+      "afterSha256": "b456221e73031d481839fe8ad1f523302930658b44709c3b1af49cff57cba70e"
+    },
+    {
+      "path": "backend/src/services/UniversalV1ActorAttesterClient.ts",
+      "change": "modified",
+      "beforeSha256": "becbd77f919b18a2fa97311b4850b3ee2afba83ecedea2049430ee44ae0c2243",
+      "afterSha256": "e17e67d40e5ea09c2c8960de4cf9e6a3faf81286690234362e67902a034a7b56"
+    },
+    {
+      "path": "backend/src/services/UniversalV1WorkOrderApplication.ts",
+      "change": "modified",
+      "beforeSha256": "afed127d5498a63069963f8d33fac7f71ec20cf819132b94d0dd47d2d5f967db",
+      "afterSha256": "3c0a137e82c3a1a20d8cc4fd1082402091e6c78fb17544e53cf713334f5d9f07"
+    },
+    {
+      "path": "backend/src/services/UniversalV1WorkOrderContracts.ts",
+      "change": "modified",
+      "beforeSha256": "08d9632c0c97404062af210f9f4b85310094b73ffdee44c24c07bf8c85141e33",
+      "afterSha256": "a3763eb38fd86f59993b406e1fd3ecf435df0bef8476e5e05e24b8c6753567cd"
+    },
+    {
+      "path": "backend/src/services/UniversalV1WorkOrderHistory.ts",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "5b0b7981476de5ae89afc4f5c74b3880b53a0ab62fc7821a896610077befdb87"
+    },
+    {
+      "path": "backend/src/services/UniversalV1WorkOrderPostgresRepository.ts",
+      "change": "modified",
+      "beforeSha256": "c738352364dba9a0221e4ce1ef3b69cb066fa5d7cd444c1c156771eee1acd499",
+      "afterSha256": "85ae4e5c0e243729d67e68dd12eac2dd1b57a17977596a9e17b5f1816e18a283"
+    },
+    {
+      "path": "backend/src/services/UniversalV1WorkOrderResume.ts",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "58b0212e90ec3707e19402e7e72fa7e955bfeb1c28de6f3927f2beb291954535"
+    },
+    {
+      "path": "backend/src/services/payment/UniversalV1FinancialRequestService.ts",
+      "change": "modified",
+      "beforeSha256": "7c3b85ae411145e233c86ad670d7558a179ff832b996ccdf91702266052a13a6",
+      "afterSha256": "fc6215e800691161218dce335a6a3aea8d0ef117ec0e732fd2b02031aaf56be8"
+    },
+    {
+      "path": "backend/tests/helpers/universal-v1-synthetic-role-provisioning.ts",
+      "change": "modified",
+      "beforeSha256": "79f61e277799572e8399dafd770a1e9747c91dba1554bf9d095f5d66b5115855",
+      "afterSha256": "e478faf65a7504f8e23f70385c6d468a62aa628e38bde49c6c347d40db6fdc48"
+    },
+    {
+      "path": "backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts",
+      "change": "modified",
+      "beforeSha256": "f1c34757b0a31b6ca216af1ef34c545c9f3b2df4336536bd806d2bef61383235",
+      "afterSha256": "9f52fb582858787f521c7aa38c155af9b19f4134a012a6910855d068712fc438"
+    },
+    {
+      "path": "backend/tests/unit/universal-v1-actor-attestation-application.test.ts",
+      "change": "modified",
+      "beforeSha256": "bcde24dbd73a299d733fd807bd7bba92dc7000d871c8e8af9acbd15c3db470a2",
+      "afterSha256": "5ba52a92908c24ac2ab35f005a21b91ecc5d3203a432d84c6828359c02e1902e"
+    },
+    {
+      "path": "backend/tests/unit/universal-v1-work-order-application.test.ts",
+      "change": "modified",
+      "beforeSha256": "de436fd5aae39882ca9ae724b40f7206f99be7621620050503863943658beb91",
+      "afterSha256": "e747564e6e7aedb1218fe04f10d2cd3e1ec4a8d3928f7e7be29892013d77555d"
+    },
+    {
+      "path": "backend/tests/unit/universal-v1-work-order-compensation.test.ts",
+      "change": "modified",
+      "beforeSha256": "56694aaaf7669d2696279bdff5e06641981080618dd8a5d2d063e5d22c1fa7d0",
+      "afterSha256": "27e06b11092fee74fd212e061d227df885dd818914bd387d32604a7c239c17bf"
+    },
+    {
+      "path": "backend/tests/unit/universal-v1-work-order-resume.test.ts",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "ebaf3e1266e2007a45c7d525a76b6827bb212b064f1c17a0e861da08ecb8052f"
+    },
+    {
+      "path": "backend/tests/unit/work-order-command-role-authority.test.ts",
+      "change": "modified",
+      "beforeSha256": "14a57262c8305293e5e215b2f5eb732cae359e3c22d2872274618bb886637748",
+      "afterSha256": "eb579d7436391101365c443bd8049b96b24588721bbbee6c0009215e6f71d0df"
+    },
+    {
+      "path": "backend/tests/unit/work-order-history.test.ts",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "ae66ce1b4663f5c13d5558d3108070d69d4ba1c46f8bbd8dc77362215ec5824c"
+    }
+  ],
+  "validationLogs": [
+    {
+      "path": "work-order-resume-units.log",
+      "sha256": "e3aaa2639c8ff5b6c8651d7373c9ae94b1b7bd84465638854101257d1c97e02b"
+    },
+    {
+      "path": "work-order-resume-postgres.log",
+      "sha256": "d7dadfc83d52dcfe53704acc9bbf005a722f7cb1a490a69d50914c4a00d0faee"
+    },
+    {
+      "path": "work-order-resume-compile.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "work-order-resume-types.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "work-order-resume-lint.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "validationInputs": {
+    "path": "work/work-order-resume-validation-inputs.json",
+    "sha256": "b6d3a2c14aeb504f0704988abdac5f740a5a98a998d2d1c9249f3ab4823e9dda"
+  },
+  "patchSha256": "57acb032475380a0b3386c6f3a71be6a9ea9fac0e1af210349d6475cb39ea58d",
+  "patchBytes": 132144
+}

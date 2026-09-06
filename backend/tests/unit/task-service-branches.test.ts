@@ -148,6 +148,7 @@ const mockIsInvariant = vi.mocked(isInvariantViolation);
 function makeTask(overrides: Record<string, unknown> = {}) {
   return {
     id: 'task-1',
+    version: 1,
     poster_id: 'poster-1',
     worker_id: 'worker-1',
     title: 'Mow lawn',

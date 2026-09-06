@@ -140,6 +140,56 @@ export interface MaterializedUniversalV1ChangeOrder {
   readonly hard_assignment_created: false;
 }
 
+const unchangedProductionEffects = {
+  payment_creation_performed: z.literal(false),
+  hard_assignment_created: z.literal(false),
+};
+export const UniversalV1ChangeOrderPublicResultSchema = z
+  .discriminatedUnion('status', [
+    z
+      .object({
+        status: z.literal('MATERIALIZED'),
+        amendment_id: uuid,
+        amendment_version: z.number().int().positive(),
+        proposal_id: uuid,
+        scope_version_id: uuid,
+        scope_version: z.number().int().positive(),
+        adjustment_event_id: uuid.nullable(),
+        provider_kind: z.literal('FAKE').nullable(),
+        replayed: z.boolean(),
+        ...unchangedProductionEffects,
+      })
+      .strict(),
+    z
+      .object({
+        status: z.enum(['PENDING', 'COMPENSATING', 'RECOVERY_REQUIRED']),
+        stage: z.enum(['ADJUSTMENT', 'FINALIZATION', 'COMPENSATION']),
+        retry_after_ms: z.literal(1000).nullable(),
+        ...unchangedProductionEffects,
+      })
+      .strict(),
+    z
+      .object({
+        status: z.literal('CANCELLED'),
+        stage: z.literal('COMPENSATION'),
+        retry_after_ms: z.null(),
+        prior_secured_state_restored: z.literal(false),
+        execution_resume_authorized: z.literal(false),
+        capture_resume_authorized: z.literal(false),
+        ...unchangedProductionEffects,
+      })
+      .strict(),
+  ])
+  .refine(
+    (result) =>
+      result.status !== 'MATERIALIZED' ||
+      (result.adjustment_event_id === null) === (result.provider_kind === null),
+    'Materialized adjustment evidence and provider kind must be present together.'
+  );
+export type UniversalV1ChangeOrderPublicResult = z.infer<
+  typeof UniversalV1ChangeOrderPublicResultSchema
+>;
+
 export type UniversalV1ChangeOrderErrorCode =
   | 'CHANGE_ORDER_CONTEXT_UNAVAILABLE'
   | 'CHANGE_ORDER_REQUEST_STALE'

@@ -49,6 +49,7 @@ class FakeReconciliationClient implements ReconciliationClient {
   endCount = 0;
   ledger: LedgerFixture[];
   failUpdateName?: string;
+  failCommit = false;
   private transactionSnapshot?: LedgerFixture[];
 
   constructor(
@@ -104,6 +105,7 @@ class FakeReconciliationClient implements ReconciliationClient {
       return this.rows<Row>([{ name, sha256: checksum }]);
     }
     if (sql === 'COMMIT') {
+      if (this.failCommit) throw new Error('injected commit ambiguity');
       this.transactionSnapshot = undefined;
       return this.rows<Row>([]);
     }
@@ -306,6 +308,19 @@ describe('legacy applied_migrations checksum reconciliation', () => {
       { name: 'migration_a', sha256: fixture.migrations[0].sha256 },
       { name: 'migration_b', sha256: fixture.migrations[1].sha256 },
     ]);
+  });
+
+  it('issues no SQL after an ambiguous reconciliation COMMIT', async () => {
+    const fixture = buildFixture({ states: ['VERIFIED_CHECKSUM', 'NULL_CHECKSUM'] });
+    fixture.client.failCommit = true;
+
+    await expect(
+      runLegacyMigrationChecksumReconciliation('apply', fixture.runtime)
+    ).rejects.toThrow('injected commit ambiguity');
+
+    expect(fixture.client.commands.at(-1)?.sql).toBe('COMMIT');
+    expect(commandCount(fixture.client, 'ROLLBACK')).toBe(0);
+    expect(fixture.client.endCount).toBe(1);
   });
 
   it('refuses the checked-in HOLD state before opening a connection', async () => {

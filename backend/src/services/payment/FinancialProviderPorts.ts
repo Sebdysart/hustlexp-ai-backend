@@ -67,6 +67,19 @@ export interface FinancialOperationResult {
   readonly externalReference: string;
   readonly idempotencyReplayed: boolean;
   readonly retryable: boolean;
+  /** Exact provider/repository observation time; never a client command time. */
+  readonly recordedAt: string;
+  /**
+   * Provider-authored expiry for successful AUTHORIZE, SECURE, and ADJUST
+   * results only. Every other result carries null.
+   */
+  readonly expiresAt: string | null;
+  /**
+   * Explicit forward-only disposition for an immutable provider result that
+   * predates provider-authored expiry. It never grants positive-use authority;
+   * callers may use it only to converge an exact idempotent recovery/replay.
+   */
+  readonly expiryDisposition?: 'LEGACY_EXPIRY_UNPROVEN';
 }
 
 export interface PreparePaymentMethodCommand extends FinancialOperationCommand {

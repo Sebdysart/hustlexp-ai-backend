@@ -9,6 +9,7 @@ import {
   buildReservationRequestHash,
   commitReservation,
   findExistingReservation,
+  lockLegacyReservationTaskAuthority,
   loadTaskForReservation,
   loadWorkerForReservation,
   validateNoActiveCommitment,
@@ -128,6 +129,8 @@ async function reserveTransaction(
     `SELECT pg_advisory_xact_lock(hashtext('task-reservation'),hashtext($1))`,
     [params.idempotencyKey],
   );
+  const authorityError = await lockLegacyReservationTaskAuthority(query, params.engineTaskId);
+  if (authorityError) return authorityError;
   const existing = await findExistingReservation(query,params,requestHash);
   if (existing) return existing;
   const task = await loadTaskForReservation(query,params);

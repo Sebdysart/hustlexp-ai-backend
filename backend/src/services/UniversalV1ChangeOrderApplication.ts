@@ -8,15 +8,29 @@ import {
   UniversalV1ChangeOrderError,
 } from './UniversalV1ChangeOrderContracts.js';
 import {
-  PostgresUniversalV1ChangeOrderRepository,
-  type UniversalV1ChangeOrderRepository,
-} from './UniversalV1ChangeOrderPostgresRepository.js';
+  PostgresUniversalV1ChangeOrderMaterialization,
+  type UniversalV1ChangeOrderMaterialization,
+} from './UniversalV1ChangeOrderMaterialization.js';
 import {
-  createUniversalV1FakeFinancialApplicationService,
-  type UniversalV1FakeFinancialApplicationService,
-} from './payment/UniversalV1FinancialApplicationService.js';
+  PostgresUniversalV1ChangeOrderHistoryReader,
+  type UniversalV1ChangeOrderHistoryReader,
+} from './UniversalV1ChangeOrderHistory.js';
+import { createUniversalV1FinancialRequestService } from './payment/UniversalV1FinancialRequestService.js';
+import {
+  resumeUniversalV1ChangeOrder,
+  materializedChangeOrder,
+  type UniversalV1ChangeOrderRequestFinance,
+} from './UniversalV1ChangeOrderResume.js';
+import type { UniversalV1ChangeOrderPublicResult } from './UniversalV1ChangeOrderContracts.js';
+import type { UniversalV1ActorAttestationHandle } from '../auth/universal-v1-actor-attestation-contracts.js';
+import {
+  PostgresUniversalV1ChangeOrderCommands,
+  type UniversalV1ChangeOrderCommands,
+} from './UniversalV1ChangeOrderCommands.js';
 
-type FinanceAuthorization = () => UniversalV1FakeFinancialApplicationService;
+type FinanceAuthorization = () =>
+  | UniversalV1ChangeOrderRequestFinance
+  | Promise<UniversalV1ChangeOrderRequestFinance>;
 
 function assertCurrentRequest(clientTimestamp: string, now: () => number): void {
   const timestamp = Date.parse(clientTimestamp);
@@ -35,88 +49,84 @@ function assertCurrentRequest(clientTimestamp: string, now: () => number): void 
  */
 export class UniversalV1ChangeOrderApplication {
   constructor(
-    private readonly repository: UniversalV1ChangeOrderRepository = new PostgresUniversalV1ChangeOrderRepository(),
+    private readonly materialization: UniversalV1ChangeOrderMaterialization = new PostgresUniversalV1ChangeOrderMaterialization(),
     private readonly authorizeFinance: FinanceAuthorization = () =>
-      createUniversalV1FakeFinancialApplicationService(),
-    private readonly now: () => number = Date.now
+      createUniversalV1FinancialRequestService(),
+    private readonly now: () => number = Date.now,
+    private readonly commands: UniversalV1ChangeOrderCommands = new PostgresUniversalV1ChangeOrderCommands(),
+    private readonly history: UniversalV1ChangeOrderHistoryReader = new PostgresUniversalV1ChangeOrderHistoryReader()
   ) {}
-
-  async proposeChangeOrder(actorId: string, raw: ProposeUniversalV1ChangeOrderPublic) {
+  async proposeChangeOrder(
+    actorId: string,
+    raw: ProposeUniversalV1ChangeOrderPublic,
+    attestation?: UniversalV1ActorAttestationHandle
+  ) {
     const input = ProposeUniversalV1ChangeOrderPublicSchema.parse(raw);
     assertCurrentRequest(input.client_ts, this.now);
-    return this.repository.proposeChangeOrder(actorId, input);
+    if (!attestation)
+      throw new UniversalV1ChangeOrderError(
+        'CHANGE_ORDER_AUTHORITY_REVOKED',
+        'A request-scoped actor attestation is required.'
+      );
+    return this.commands.propose(actorId, input, attestation);
   }
 
-  async decideChangeOrder(actorId: string, raw: DecideUniversalV1ChangeOrderPublic) {
+  async decideChangeOrder(
+    actorId: string,
+    raw: DecideUniversalV1ChangeOrderPublic,
+    attestation?: UniversalV1ActorAttestationHandle
+  ) {
     const input = DecideUniversalV1ChangeOrderPublicSchema.parse(raw);
     assertCurrentRequest(input.client_ts, this.now);
-    return this.repository.decideChangeOrder(actorId, input);
+    if (!attestation)
+      throw new UniversalV1ChangeOrderError(
+        'CHANGE_ORDER_AUTHORITY_REVOKED',
+        'A request-scoped actor attestation is required.'
+      );
+    return this.commands.decide(actorId, input, attestation);
   }
 
   async authorizeAndMaterializeFakeChangeOrder(
     actorId: string,
-    raw: AuthorizeAndMaterializeUniversalV1ChangeOrderPublic
-  ) {
+    raw: AuthorizeAndMaterializeUniversalV1ChangeOrderPublic,
+    attestation?: UniversalV1ActorAttestationHandle
+  ): Promise<UniversalV1ChangeOrderPublicResult> {
     const input = AuthorizeAndMaterializeUniversalV1ChangeOrderPublicSchema.parse(raw);
     assertCurrentRequest(input.client_ts, this.now);
-
-    // Proposal kind is immutable. This read determines whether the fail-closed
-    // nonproduction fake-finance gate must be evaluated before the repository
-    // opens its caller-owned SERIALIZABLE transaction. The repository rechecks
-    // the kind and every authority binding while locked.
-    const kind = await this.repository.readFinalizationKind(actorId, input.proposal_id);
-    if (!kind) {
+    if (!attestation)
+      throw new UniversalV1ChangeOrderError(
+        'CHANGE_ORDER_AUTHORITY_REVOKED',
+        'A request-scoped actor attestation is required.'
+      );
+    const kind = await this.materialization.readKind(actorId, input.proposal_id, attestation);
+    if (!kind)
       throw new UniversalV1ChangeOrderError(
         'CHANGE_ORDER_CONTEXT_UNAVAILABLE',
         'The change order is unavailable for materialization.'
       );
-    }
-    if (kind === 'SCHEDULE_AND_SCOPE') {
+    if (kind === 'SCHEDULE_AND_SCOPE')
       throw new UniversalV1ChangeOrderError(
         'CHANGE_ORDER_SCHEDULE_UNSUPPORTED',
         'Structured Work Order schedule amendments are not yet authoritative.'
       );
+    if (kind === 'SCOPE_ONLY') {
+      const phase = await this.materialization.prepare(actorId, input, attestation);
+      if (!phase.completed || phase.result.adjustment_event_id !== null)
+        throw new UniversalV1ChangeOrderError(
+          'CHANGE_ORDER_STATE_CONFLICT',
+          'Scope-only materialization returned an incompatible result.'
+        );
+      return materializedChangeOrder(phase.result);
     }
-
-    if (kind !== 'PRICE_AND_SCOPE') {
-      return this.repository.authorizeAndMaterializeFakeChangeOrder(actorId, input);
-    }
-
-    // Constructing the independent fake-finance service performs the exact
-    // nonproduction, signed-manifest, build-identity, and frozen-money checks.
-    // It must happen before Phase A commits a durable change-order command
-    // witness. Provider I/O is never performed inside the repository's
-    // caller-owned SERIALIZABLE transaction.
-    const finance = this.authorizeFinance();
-    const phase = await this.repository.preparePriceAndScopeMaterialization(actorId, input);
-    if (phase.completed) return phase.result;
-
-    const context = phase.context;
-    const adjustment = await finance.executeFinancialEvent({
-      providerKind: 'FAKE',
-      operationKind: 'ADJUST',
-      operationId: context.adjustmentOperationId,
-      idempotencyKey: `${phase.idempotencyKey}:adjust`,
-      providerExpectedVersion: 0,
-      lifecycleExpectedVersion: context.expectedFinancialVersion + 1,
-      taskDraftId: context.taskDraftId,
-      taskId: context.taskId,
-      eligibilityDecisionId: context.eligibilityDecisionId,
-      scopeVersionId: context.scopeVersionId,
-      predecessorEventId: context.predecessorEventId,
-      relatedOperationId: context.predecessorOperationId,
-      changeOrderId: context.proposalId,
-      amountCents: context.customerTotalCents,
-      currency: context.currency.toLowerCase(),
-      recordedBy: actorId,
-      occurredAt: context.occurredAt,
-      scenario: 'SUCCESS',
-    });
-
-    return this.repository.finalizePriceAndScopeMaterialization(
-      phase,
-      adjustment.id,
-      actorId
+    // Authorize the exact fake-only release before committing a price witness.
+    const finance = await this.authorizeFinance();
+    return resumeUniversalV1ChangeOrder(
+      actorId,
+      input,
+      attestation,
+      this.materialization,
+      finance,
+      this.history
     );
   }
 }

@@ -11,7 +11,9 @@ import {
   type UniversalV1FakeFinancialApplicationService,
 } from './payment/UniversalV1FinancialApplicationService.js';
 
-type FakeFinanceFactory = () => UniversalV1FakeFinancialApplicationService;
+type FakeFinanceFactory = () =>
+  | UniversalV1FakeFinancialApplicationService
+  | Promise<UniversalV1FakeFinancialApplicationService>;
 
 function assertCurrentRequest(clientTimestamp: string): void {
   const timestamp = Date.parse(clientTimestamp);
@@ -54,9 +56,12 @@ export class UniversalV1FulfillmentApplication {
     return this.repository.decideCompletion(actorId, input);
   }
 
-  completeFakeFinancialLifecycle(actorId: string, input: CompleteFakeFinancialLifecyclePublic) {
+  async completeFakeFinancialLifecycle(
+    actorId: string,
+    input: CompleteFakeFinancialLifecyclePublic
+  ) {
     assertCurrentRequest(input.client_ts);
-    const finance = this.createFinance();
+    const finance = await this.createFinance();
     return this.repository.completeFakeFinancialLifecycle(actorId, input, finance);
   }
 }

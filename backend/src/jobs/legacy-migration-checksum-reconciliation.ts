@@ -861,6 +861,9 @@ export async function runLegacyMigrationChecksumReconciliation(
       }
       const finalLedger = await readLedger(client);
       assertExactLedgerAfterApply(manifest.payload.migrations, finalLedger);
+      // A COMMIT transport failure is ambiguous. Revoke rollback authority
+      // before sending it so the session receives no subsequent SQL.
+      transactionStarted = false;
       await client.query('COMMIT');
       return resultFor(
         mode,

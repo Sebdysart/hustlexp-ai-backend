@@ -61,172 +61,36 @@ beforeEach(() => {
 });
 
 describe('assignment.reserve', () => {
-  it('allows an admin ops caller without a poster credential', async () => {
-    reserve.mockResolvedValueOnce({
-      success: true,
-      data: {
-        reservationId: 'reservation-1',
-        engineTaskId: TASK_ID,
-        hustlerRef: WORKER_ID,
-        state: 'ENGINE_RESERVED',
-        idempotencyReplayed: false,
-      },
-    });
+  const input = {
+    engineTaskId: TASK_ID,
+    hustlerRef: WORKER_ID,
+    idempotencyKey: 'dispatch-wave-0001-attempt-01',
+  };
 
-    const result = await caller().reserve({
-      engineTaskId: TASK_ID,
-      hustlerRef: WORKER_ID,
-      idempotencyKey: 'dispatch-wave-0001-attempt-01',
+  it('terminally holds a named platform administrator before reservation logic', async () => {
+    await expect(caller().reserve(input)).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
     });
-
-    expect(result.state).toBe('ENGINE_RESERVED');
-    expect(reserve).toHaveBeenCalledWith({
-      engineTaskId: TASK_ID,
-      hustlerRef: WORKER_ID,
-      idempotencyKey: 'dispatch-wave-0001-attempt-01',
-      actorId: ADMIN_ID,
-    });
-  });
-
-  it('allows the authenticated engine bridge and records its configured actor', async () => {
-    reserve.mockResolvedValueOnce({
-      success: true,
-      data: {
-        reservationId: 'reservation-bridge',
-        engineTaskId: TASK_ID,
-        hustlerRef: WORKER_ID,
-        state: 'ENGINE_RESERVED',
-        idempotencyReplayed: false,
-      },
-    });
-    const result = await bridgeCaller().reserve({
-      engineTaskId: TASK_ID,
-      hustlerRef: WORKER_ID,
-      idempotencyKey: 'dispatch-wave-bridge-attempt-01',
-    });
-    expect(result.state).toBe('ENGINE_RESERVED');
-    expect(reserve).toHaveBeenCalledWith(expect.objectContaining({ actorId: ADMIN_ID }));
-  });
-
-  it('rejects a request that has neither an admin user nor authenticated bridge authority', async () => {
-    const unauthenticated = assignmentRouter.createCaller({
-      user: null,
-      firebaseUid: null,
-      engineBridgeAuthorized: false,
-      engineBridgeActorId: null,
-      ip: null,
-    });
-    await expect(unauthenticated.reserve({
-      engineTaskId: TASK_ID,
-      hustlerRef: WORKER_ID,
-      idempotencyKey: 'dispatch-wave-unauthenticated-01',
-    })).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
     expect(reserve).not.toHaveBeenCalled();
-  });
-
-  it('rejects a suspended admin identity before reservation', async () => {
-    const suspended = assignmentRouter.createCaller({
-      user: {
-        id: ADMIN_ID,
-        account_status: 'SUSPENDED',
-        is_admin: true,
-      } as any,
-      firebaseUid: 'firebase-suspended',
-      engineBridgeAuthorized: false,
-      engineBridgeActorId: null,
-      ip: null,
-    });
-    await expect(suspended.reserve({
-      engineTaskId: TASK_ID,
-      hustlerRef: WORKER_ID,
-      idempotencyKey: 'dispatch-wave-suspended-01',
-    })).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
-    expect(reserve).not.toHaveBeenCalled();
-  });
-
-  it('loads an uncached admin role before allowing reservation', async () => {
-    query.mockResolvedValueOnce({ rows: [{ role: 'admin' }], rowCount: 1 } as any);
-    reserve.mockResolvedValueOnce({
-      success: true,
-      data: {
-        reservationId: 'reservation-role-lookup',
-        engineTaskId: TASK_ID,
-        hustlerRef: WORKER_ID,
-        state: 'ENGINE_RESERVED',
-        idempotencyReplayed: false,
-      },
-    });
-    const roleLookup = assignmentRouter.createCaller({
-      user: {
-        id: ADMIN_ID,
-        account_status: 'ACTIVE',
-        is_admin: undefined,
-      } as any,
-      firebaseUid: 'firebase-role-lookup',
-      engineBridgeAuthorized: false,
-      engineBridgeActorId: null,
-      ip: null,
-    });
-    await expect(roleLookup.reserve({
-      engineTaskId: TASK_ID,
-      hustlerRef: WORKER_ID,
-      idempotencyKey: 'dispatch-wave-role-lookup-01',
-    })).resolves.toMatchObject({ state: 'ENGINE_RESERVED' });
+    expect(query).toHaveBeenCalledTimes(1);
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('SELECT role FROM admin_roles'),
-      [ADMIN_ID, ['admin', 'founder']],
+      expect.stringContaining('FROM admin_roles'),
+      [ADMIN_ID, ['admin', 'support', 'finance', 'moderator', 'founder']],
     );
   });
 
-  it('denies a cached support identity from engine-equivalent reservation authority', async () => {
-    query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
-    await expect(caller(true).reserve({
-      engineTaskId: TASK_ID,
-      hustlerRef: WORKER_ID,
-      idempotencyKey: 'dispatch-wave-support-denied-01',
-    })).rejects.toMatchObject({ code: 'FORBIDDEN' });
-    expect(reserve).not.toHaveBeenCalled();
-  });
-
-  it('fails closed if an accepted admin context has no reservation actor id', async () => {
-    const malformed = assignmentRouter.createCaller({
-      user: {
-        id: undefined,
-        account_status: 'ACTIVE',
-        is_admin: true,
-      } as any,
-      firebaseUid: 'firebase-malformed-admin',
-      engineBridgeAuthorized: false,
-      engineBridgeActorId: null,
-      ip: null,
+  it('does not trust forged engine-bridge context fields', async () => {
+    await expect(bridgeCaller().reserve(input)).rejects.toMatchObject({
+      code: 'UNAUTHORIZED',
     });
-    await expect(malformed.reserve({
-      engineTaskId: TASK_ID,
-      hustlerRef: WORKER_ID,
-      idempotencyKey: 'dispatch-wave-malformed-admin-01',
-    })).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
     expect(reserve).not.toHaveBeenCalled();
+    expect(query).not.toHaveBeenCalled();
   });
 
-  it('maps a reservation race to CONFLICT', async () => {
-    reserve.mockResolvedValueOnce({
-      success: false,
-      error: { code: 'RESERVATION_CONFLICT', message: 'already reserved' },
+  it('rejects ordinary authenticated users before reservation logic', async () => {
+    await expect(caller(false).reserve(input)).rejects.toMatchObject({
+      code: 'FORBIDDEN',
     });
-
-    await expect(caller().reserve({
-      engineTaskId: TASK_ID,
-      hustlerRef: WORKER_ID,
-      idempotencyKey: 'dispatch-wave-0001-attempt-01',
-    })).rejects.toMatchObject({ code: 'CONFLICT' });
-  });
-
-  it('rejects non-admin callers', async () => {
-    await expect(caller(false).reserve({
-      engineTaskId: TASK_ID,
-      hustlerRef: WORKER_ID,
-      idempotencyKey: 'dispatch-wave-0001-attempt-01',
-    })).rejects.toMatchObject({ code: 'FORBIDDEN' });
     expect(reserve).not.toHaveBeenCalled();
   });
 });

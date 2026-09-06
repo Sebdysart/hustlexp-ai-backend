@@ -10,7 +10,12 @@ import { registerAnimationRoutes } from './serverAnimationRoutes.js';
 import { registerAdminRoutes } from './serverAdminRoutes.js';
 import { registerErrorHandlers } from './serverErrorHandlers.js';
 import { registerHealthRoutes } from './serverHealthRoutes.js';
-import { installProcessHandlers } from './serverLifecycle.js';
+import {
+  installProcessHandlers,
+  shutdownServerResources,
+  stopHttpIntake,
+} from './serverLifecycle.js';
+import { closeRedisRuntime } from './lib/redis-runtime-shutdown.js';
 import {
   registerCoreMiddleware,
   registerGeneralRateLimits,
@@ -22,7 +27,7 @@ import {
   registerStaticRoutes,
 } from './serverPublicRoutes.js';
 import { registerStateRoutes } from './serverStateRoutes.js';
-import { bootHttpServer } from './serverBoot.js';
+import { bootHttpServer, waitForHttpListener } from './serverBoot.js';
 import { startServer } from './serverStartup.js';
 import { registerTrpcRoutes } from './serverTrpcRoutes.js';
 import type { HustleApp } from './serverTypes.js';
@@ -62,7 +67,14 @@ export default { port: config.app.port, fetch: app.fetch };
 const server = await bootHttpServer({
   startup: startServer,
   listen: () => serve({ fetch: app.fetch, port: config.app.port }),
+  awaitListening: waitForHttpListener,
   installHandlers: installProcessHandlers,
+  cleanupOnFailure: (partialServer, startup) =>
+    shutdownServerResources({
+      closeHttp: () => (partialServer ? stopHttpIntake(partialServer) : undefined),
+      closeRedis: closeRedisRuntime,
+      closeDatabase: () => startup?.closeDatabase(),
+    }),
 }).catch((error) => {
   logger.fatal({ err: error }, 'Failed to start server');
   throw error;

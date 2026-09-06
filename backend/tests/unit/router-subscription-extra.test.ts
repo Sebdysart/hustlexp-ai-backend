@@ -2,8 +2,6 @@
  * Subscription Router Extra Unit Tests
  *
  * Covers branches NOT in subscription-router.test.ts:
- * - cancel: Stripe cancel path (stripeSubId exists, config key not placeholder)
- * - cancel: Stripe cancel error is swallowed (log + continue)
  * - cancel: occurrences cancel query fires when series were paused
  * - subscribe: user NOT_FOUND
  * - getMySubscription: pro plan returns correct limit (999999)
@@ -16,9 +14,15 @@ import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-un
 // Mocks
 // ---------------------------------------------------------------------------
 
-vi.mock('../../src/db', () => ({
-  db: { query: vi.fn() },
-}));
+vi.mock('../../src/db', () => {
+  const query = vi.fn();
+  return {
+    db: {
+      query,
+      transaction: vi.fn(async (work: (queryFn: typeof query) => Promise<unknown>) => work(query)),
+    },
+  };
+});
 
 vi.mock('../../src/auth/firebase', () => ({
   firebaseAuth: { verifyIdToken: vi.fn() },
@@ -55,9 +59,14 @@ vi.mock('../../src/services/RevenueService', () => ({
 // ---------------------------------------------------------------------------
 
 import { db } from '../../src/db';
-import { subscriptionRouter } from '../../src/routers/subscription';
+import { router } from '../../src/trpc';
+import {
+  legacySubscriptionProcedures,
+  subscriptionRouter,
+} from '../../src/routers/subscription';
 
 const mockDb = vi.mocked(db);
+const legacySubscriptionRouter = router(legacySubscriptionProcedures);
 
 beforeEach(() => {
   enableControlledStripePaymentTestCohortV7();
@@ -75,6 +84,13 @@ const USER_UUID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 
 function makeCaller(userId = USER_UUID) {
   return subscriptionRouter.createCaller({
+    user: { id: userId, default_mode: 'poster' } as any,
+    firebaseUid: 'fb-uid',
+  });
+}
+
+function makeLegacyCaller(userId = USER_UUID) {
+  return legacySubscriptionRouter.createCaller({
     user: { id: userId, default_mode: 'poster' } as any,
     firebaseUid: 'fb-uid',
   });
@@ -98,10 +114,11 @@ describe('subscription.getMySubscription — pro plan', () => {
 
     expect(result.plan).toBe('pro');
     expect(result.recurringTaskLimit).toBe(999999);
-    expect(result.canCreateRecurringTask).toBe(true);
+    expect(result.canCreateRecurringTask).toBe(false);
+    expect(result.recurringTaskCreationHeldReason).toBe('CONTROLLED_V2_AUTHORITY_REQUIRED');
   });
 
-  it('returns canCreateRecurringTask=true even with many tasks for pro', async () => {
+  it('does not let a pro plan imply legacy recurrence creation authority', async () => {
     mockDb.query.mockResolvedValueOnce({
       rows: [{ plan: 'pro', plan_expires_at: null, stripe_subscription_id: 'sub_pro' }],
       rowCount: 1,
@@ -109,7 +126,8 @@ describe('subscription.getMySubscription — pro plan', () => {
     mockDb.query.mockResolvedValueOnce({ rows: [{ count: '999998' }], rowCount: 1 } as any);
 
     const result = await makeCaller().getMySubscription();
-    expect(result.canCreateRecurringTask).toBe(true);
+    expect(result.canCreateRecurringTask).toBe(false);
+    expect(result.recurringTaskCreationHeldReason).toBe('CONTROLLED_V2_AUTHORITY_REQUIRED');
   });
 
   it('returns recurringTaskCount from DB correctly', async () => {
@@ -128,6 +146,7 @@ describe('subscription.cancel — with recurring series', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('cancels occurrences when 1 series was paused', async () => {
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any); // advisory lock
     mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_subscription_id: null }], rowCount: 1 } as any);
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any); // downgrade
     // Pause 1 series
@@ -141,12 +160,13 @@ describe('subscription.cancel — with recurring series', () => {
     const result = await makeCaller().cancel();
 
     expect(result.pausedSeriesCount).toBe(1);
-    // 4th call should be cancelling occurrences
-    const occurrenceCall = (mockDb.query as any).mock.calls[3];
+    // 5th call should be cancelling occurrences after lock, lookup, downgrade, and pause.
+    const occurrenceCall = (mockDb.query as any).mock.calls[4];
     expect(occurrenceCall[1]).toEqual([['series-1']]);
   });
 
   it('does NOT call occurrence cancel when no series paused', async () => {
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any); // advisory lock
     mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_subscription_id: null }], rowCount: 1 } as any);
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any); // downgrade
     // No series paused (rowCount=0)
@@ -154,11 +174,12 @@ describe('subscription.cancel — with recurring series', () => {
 
     await makeCaller().cancel();
 
-    // Should only have 3 DB calls (user lookup, downgrade, pause series)
-    expect(mockDb.query).toHaveBeenCalledTimes(3);
+    // Lock, user lookup, downgrade, and pause series; no occurrence write.
+    expect(mockDb.query).toHaveBeenCalledTimes(4);
   });
 
   it('sets plan to free after cancel', async () => {
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any); // advisory lock
     mockDb.query.mockResolvedValueOnce({ rows: [{ stripe_subscription_id: null }], rowCount: 1 } as any);
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
@@ -169,7 +190,7 @@ describe('subscription.cancel — with recurring series', () => {
     expect(result.recurringTaskLimit).toBe(0);
 
     // Verify the downgrade query sets plan='free'
-    const downgradeCall = (mockDb.query as any).mock.calls[1];
+    const downgradeCall = (mockDb.query as any).mock.calls[2];
     expect(downgradeCall[0]).toContain("plan = 'free'");
   });
 });
@@ -184,7 +205,7 @@ describe('subscription.subscribe — input validation', () => {
     } as any);
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
 
-    const result = await makeCaller().subscribe({ plan: 'premium', interval: 'year' });
+    const result = await makeLegacyCaller().subscribe({ plan: 'premium', interval: 'year' });
     expect(result.success).toBe(true);
     expect(result.plan).toBe('premium');
 
@@ -200,7 +221,7 @@ describe('subscription.subscribe — input validation', () => {
     } as any);
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
 
-    const result = await makeCaller().subscribe({ plan: 'pro', interval: 'month' });
+    const result = await makeLegacyCaller().subscribe({ plan: 'pro', interval: 'month' });
     expect(result.plan).toBe('pro');
     expect(result.recurringTaskLimit).toBe(999999);
   });
@@ -212,7 +233,7 @@ describe('subscription.confirmSubscription — Stripe not configured', () => {
   it('always throws INTERNAL_SERVER_ERROR when Stripe key is placeholder', async () => {
     // The config mock has placeholder key — the router enters the else branch
     await expect(
-      makeCaller().confirmSubscription({ stripeSubscriptionId: 'sub_anything' })
+      makeLegacyCaller().confirmSubscription({ stripeSubscriptionId: 'sub_anything' })
     ).rejects.toThrow('Stripe is not configured');
   });
 });

@@ -1,18 +1,18 @@
 /**
  * Stripe Event Worker v1.0.0
- * 
+ *
  * Step 9-D - Stripe Integration: Process Stripe events from outbox
- * 
+ *
  * Responsibility:
  * - Claim and process Stripe events atomically
  * - Dispatch to appropriate processors
  * - Update processing status
- * 
+ *
  * Hard rules:
  * - Atomic claim prevents double processing (S-1)
  * - DB NOW() is authoritative for timestamps (S-2)
  * - All mutations are idempotent
- * 
+ *
  * @see STEP_9D_STRIPE_INTEGRATION.md
  */
 
@@ -53,10 +53,19 @@ const ALLOWED_STRIPE_EVENT_TYPES = new Set([
   'account.updated',
 ]);
 
-const ALWAYS_POSITIVE_PAYMENT_EVENTS = new Set([
-  'customer.subscription.created',
+const ALWAYS_FROZEN_CANONICAL_EFFECT_EVENTS = new Set([
   'checkout.session.completed',
   'payment_intent.succeeded',
+  'customer.subscription.created',
+  'customer.subscription.updated',
+  'customer.subscription.deleted',
+  // Even an all-false Connect observation can carry requirements that trigger
+  // live push delivery in the legacy handler. Preserve the processor fact, but
+  // suppress every canonical/account/notification effect while money is frozen.
+  'account.updated',
+  // The legacy handler grants a new 24-hour plan grace period. Retain the
+  // authenticated event as evidence, but do not invent downgrade timing or
+  // extend subscription authority while production money is frozen.
   'invoice.payment_failed',
 ]);
 
@@ -76,32 +85,31 @@ interface StripeEventEnvelope {
   };
 }
 
-function eventCreatesPositivePaymentState(type: string, event: StripeEventEnvelope): boolean {
-  if (ALWAYS_POSITIVE_PAYMENT_EVENTS.has(type)) return true;
-  if (type !== 'customer.subscription.updated') return false;
-  const status = String(event.data?.object?.status ?? '').toLowerCase();
-  // The current processor has an explicitly negative branch only for these
-  // statuses. Every other update would write/extend plan authority.
-  return !['canceled', 'unpaid'].includes(status);
+function eventRequiresFrozenContainment(type: string): boolean {
+  if (ALWAYS_FROZEN_CANONICAL_EFFECT_EVENTS.has(type)) return true;
+
+  // invoice.paid is retained as idempotent reconciliation evidence only;
+  // dispute events remain bounded recovery facts. None of these handlers may
+  // grant subscription or Connect authority.
+  return false;
 }
 
-async function containFrozenPositiveEvent(
-  stripeEventId: string,
-  type: string,
-  event: StripeEventEnvelope,
-): Promise<boolean> {
-  if (newPaymentCreationMode() !== 'frozen' || !eventCreatesPositivePaymentState(type, event)) {
+async function containFrozenPositiveEvent(stripeEventId: string, type: string): Promise<boolean> {
+  if (newPaymentCreationMode() !== 'frozen' || !eventRequiresFrozenContainment(type)) {
     return false;
   }
   await db.query(
     `UPDATE stripe_events
      SET result = 'skipped',
          processed_at = NOW(),
-         error_message = 'PAYMENT_CREATION_FROZEN: positive processor fact retained for reconciliation; canonical success effects suppressed'
+         error_message = 'PAYMENT_CREATION_FROZEN: processor fact retained for reconciliation; unauthorized canonical effects suppressed'
      WHERE stripe_event_id = $1`,
-    [stripeEventId],
+    [stripeEventId]
   );
-  log.warn({ stripeEventId, type }, 'Frozen payment event retained without positive canonical effects');
+  log.warn(
+    { stripeEventId, type },
+    'Frozen payment event retained without positive canonical effects'
+  );
   return true;
 }
 
@@ -111,11 +119,11 @@ async function containFrozenPositiveEvent(
 
 /**
  * Process Stripe event job
- * 
+ *
  * Invariant S-1: Atomic claim prevents double processing
  * - UPDATE with WHERE claimed_at IS NULL ensures single claim
  * - If already claimed/processed, returns early (no-op)
- * 
+ *
  * Invariant S-2: DB NOW() is authoritative
  * - claimed_at and processed_at use DB NOW()
  * - Not application Date.now()
@@ -132,7 +140,7 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
   if (!outerPayload || typeof outerPayload !== 'object') {
     log.error(
       { jobId: job.id, stripeEventId },
-      'Missing or invalid job payload — rejecting unsigned job (possible Redis injection attack)',
+      'Missing or invalid job payload — rejecting unsigned job (possible Redis injection attack)'
     );
     throw new Error('Missing or invalid job payload — rejecting unsigned job');
   }
@@ -140,7 +148,7 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
   if (!p['_sig']) {
     log.error(
       { jobId: job.id, stripeEventId },
-      'Missing job signature — job rejected (possible Redis injection attack)',
+      'Missing job signature — job rejected (possible Redis injection attack)'
     );
     throw new Error('Missing _sig — job signature required');
   }
@@ -148,7 +156,7 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
   if (!verifyJobSignature(payloadWithoutSig, _sig as string)) {
     log.error(
       { jobId: job.id, stripeEventId },
-      'Job signature verification failed — possible Redis injection attack',
+      'Job signature verification failed — possible Redis injection attack'
     );
     throw new Error('JOB_SIGNATURE_INVALID: Payload signature verification failed');
   }
@@ -199,7 +207,7 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
       return;
     }
 
-    if (await containFrozenPositiveEvent(stripeEventId, type, event)) return;
+    if (await containFrozenPositiveEvent(stripeEventId, type)) return;
 
     // Dispatch by type (SKELETON ONLY - no business logic here)
     switch (type) {
@@ -292,7 +300,10 @@ export async function processStripeEventJob(job: Job<StripeEventJobData>): Promi
       [stripeEventId, errorMessage]
     );
 
-    log.error({ type, stripeEventId, err: errorMessage }, 'Stripe event failed — claimed_at reset for BullMQ retry');
+    log.error(
+      { type, stripeEventId, err: errorMessage },
+      'Stripe event failed — claimed_at reset for BullMQ retry'
+    );
     throw error; // Re-throw for BullMQ retry logic
   }
 }
@@ -326,7 +337,10 @@ function getEventObject<T = Record<string, unknown>>(event: StripeEventEnvelope)
 async function fundEscrowForPaymentIntent(event: StripeEventEnvelope): Promise<void> {
   const paymentIntent = getEventObject<{ id: string }>(event);
   if (!paymentIntent?.id) {
-    log.warn({ eventId: event.id }, 'payment_intent.succeeded: missing payment intent id, skipping escrow funding');
+    log.warn(
+      { eventId: event.id },
+      'payment_intent.succeeded: missing payment intent id, skipping escrow funding'
+    );
     return;
   }
 
@@ -340,7 +354,10 @@ async function fundEscrowForPaymentIntent(event: StripeEventEnvelope): Promise<v
   if (escrowResult.rows.length === 0) {
     // No PENDING escrow — either there is no escrow for this payment intent
     // (entitlement-only payment) or it was already funded (idempotent replay).
-    log.info({ paymentIntentId }, 'payment_intent.succeeded: no PENDING escrow found, skipping escrow funding');
+    log.info(
+      { paymentIntentId },
+      'payment_intent.succeeded: no PENDING escrow found, skipping escrow funding'
+    );
     return;
   }
 
@@ -348,10 +365,15 @@ async function fundEscrowForPaymentIntent(event: StripeEventEnvelope): Promise<v
   const result = await EscrowService.fund({ escrowId, stripePaymentIntentId: paymentIntentId });
 
   if (!result.success) {
-    throw new Error(`Failed to fund escrow ${escrowId} for payment_intent ${paymentIntentId}: ${result.error.message}`);
+    throw new Error(
+      `Failed to fund escrow ${escrowId} for payment_intent ${paymentIntentId}: ${result.error.message}`
+    );
   }
 
-  log.info({ escrowId, paymentIntentId }, 'Escrow funded via payment_intent.succeeded (PENDING → FUNDED)');
+  log.info(
+    { escrowId, paymentIntentId },
+    'Escrow funded via payment_intent.succeeded (PENDING → FUNDED)'
+  );
 }
 
 async function handleCheckoutSessionCompleted(
@@ -372,7 +394,10 @@ async function handleCheckoutSessionCompleted(
   }
 
   // No subscription object available; rely on customer.subscription.* events.
-  log.info({ stripeEventId }, 'checkout.session.completed without expanded subscription, waiting for customer.subscription.* events');
+  log.info(
+    { stripeEventId },
+    'checkout.session.completed without expanded subscription, waiting for customer.subscription.* events'
+  );
 }
 
 async function handleInvoicePaymentFailed(event: StripeEventEnvelope): Promise<void> {
@@ -471,10 +496,18 @@ async function handleAccountUpdated(event: StripeEventEnvelope): Promise<void> {
       deepLink: 'app://settings/payments',
       channels: ['in_app', 'push'],
       priority: 'HIGH',
-    }).catch(err => log.error({ err: err instanceof Error ? err.message : String(err), userId }, 'Failed to send Stripe requirements notification'));
+    }).catch((err) =>
+      log.error(
+        { err: err instanceof Error ? err.message : String(err), userId },
+        'Failed to send Stripe requirements notification'
+      )
+    );
   }
 
-  log.info({ userId, accountId, connectStatus, payoutsEnabled, chargesEnabled }, 'Stripe Connect status synced');
+  log.info(
+    { userId, accountId, connectStatus, payoutsEnabled, chargesEnabled },
+    'Stripe Connect status synced'
+  );
 }
 
 async function handleInvoicePaid(event: StripeEventEnvelope): Promise<void> {
@@ -541,7 +574,10 @@ async function handleInvoicePaid(event: StripeEventEnvelope): Promise<void> {
 
   if (!insertResult.rows.length) {
     // ON CONFLICT DO NOTHING — already processed by a concurrent worker
-    log.info({ stripeEventId: event.id }, '[stripe-event-worker] handleInvoicePaid: revenue already logged (ON CONFLICT), skipping duplicate');
+    log.info(
+      { stripeEventId: event.id },
+      '[stripe-event-worker] handleInvoicePaid: revenue already logged (ON CONFLICT), skipping duplicate'
+    );
     return;
   }
 
@@ -552,7 +588,10 @@ async function handleInvoicePaid(event: StripeEventEnvelope): Promise<void> {
     );
   }
 
-  log.info({ stripeEventId: event.id, userId, amountPaid }, '[stripe-event-worker] handleInvoicePaid: subscription revenue logged');
+  log.info(
+    { stripeEventId: event.id, userId, amountPaid },
+    '[stripe-event-worker] handleInvoicePaid: subscription revenue logged'
+  );
 }
 
 async function handleChargeDisputeCreated(

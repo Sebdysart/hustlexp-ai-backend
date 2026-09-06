@@ -6,13 +6,17 @@ const service = fs.readFileSync('backend/src/services/HustlerIdentityLinkService
 const migration = fs.readFileSync('backend/database/migrations/20260712_hustler_identity_link.sql', 'utf8');
 const runner = [
   fs.readFileSync('backend/src/jobs/engine-automation-migration.ts', 'utf8'),
+  fs.readFileSync(
+    'backend/src/jobs/engine-automation-migration-files-foundation.ts',
+    'utf8'
+  ),
   fs.readFileSync('backend/src/jobs/engine-automation-migration-files.ts', 'utf8'),
 ].join('\n');
 
 describe('canonical Hustler identity link contract', () => {
-  it('is service-authenticated and validates engine id, claim id and E.164 phone', () => {
+  it('is terminally held and validates engine id, claim id and E.164 phone', () => {
     const block = router.slice(router.indexOf('linkHustlerIdentity'), router.indexOf('listTasks'));
-    expect(block).toContain('adminOrEngineBridgeProcedure');
+    expect(block).toContain('heldAdminOrEngineBridgeProcedure');
     expect(block).toContain('engineHustlerRef: Schemas.uuid');
     expect(block).toContain('providerClaimId: Schemas.uuid');
     expect(block).toMatch(/phoneE164: z\.string\(\)\.regex/);

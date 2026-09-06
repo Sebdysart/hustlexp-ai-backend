@@ -1,9 +1,9 @@
 import { db } from '../db.js';
-import type { Task } from '../types.js';
 import type { RegionPolicyTaskSnapshot } from './RegionPolicyService.js';
 import { deriveRoughArea, redactPrivateLocation } from './TaskLocationService.js';
 import { encryptTaskLocation } from './TaskLocationCrypto.js';
 import type { CreateTaskParams } from './TaskServiceShared.js';
+import { normalizeTaskVersion, type DatabaseTaskRow, type VersionedTask } from './TaskVersion.js';
 
 type Query = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -24,7 +24,7 @@ export interface TaskPersistenceInput {
 export interface TaskDependentInput {
   params: CreateTaskParams;
   requestHash: string | null;
-  task: Task;
+  task: VersionedTask;
   price: number;
   scope: TaskInitialScope;
 }
@@ -74,7 +74,10 @@ function templatePolicyValues(params: CreateTaskParams): unknown[] {
   ];
 }
 
-function regionPolicyValues(policy: RegionPolicyTaskSnapshot, category: string | undefined): unknown[] {
+function regionPolicyValues(
+  policy: RegionPolicyTaskSnapshot,
+  category: string | undefined
+): unknown[] {
   return [
     policy.regionCode,
     policy.policyId,
@@ -120,8 +123,11 @@ function publicTaskValues(input: TaskPersistenceInput): unknown[] {
   ];
 }
 
-export async function insertCanonicalTask(query: Query, input: TaskPersistenceInput): Promise<Task> {
-  const result = await query<Task>(
+export async function insertCanonicalTask(
+  query: Query,
+  input: TaskPersistenceInput
+): Promise<VersionedTask> {
+  const result = await query<DatabaseTaskRow>(
     `INSERT INTO tasks (
       poster_id, title, description, price, xp_reward, requirements, location, category,
       deadline, requires_proof, risk_level, mode, live_broadcast_radius_miles, instant_mode,
@@ -139,9 +145,9 @@ export async function insertCanonicalTask(query: Query, input: TaskPersistenceIn
       counter_offer_id, counter_candidate_id, ai_scope_observation_id
     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24::jsonb,$25,$26,$27,$28,$29,$30,$31::jsonb,$32,$33,$34,$35,$36,$37,$38,$39,$40::jsonb,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56)
     RETURNING *`,
-    publicTaskValues(input),
+    publicTaskValues(input)
   );
-  return result.rows[0];
+  return normalizeTaskVersion(result.rows[0]);
 }
 
 async function insertCreateWitness(query: Query, input: TaskDependentInput): Promise<void> {
@@ -149,7 +155,7 @@ async function insertCreateWitness(query: Query, input: TaskDependentInput): Pro
   await query(
     `INSERT INTO task_create_requests (poster_id, idempotency_key, request_hash, task_id)
      VALUES ($1, $2, $3, $4)`,
-    [input.params.posterId, input.params.clientIdempotencyKey, input.requestHash, input.task.id],
+    [input.params.posterId, input.params.clientIdempotencyKey, input.requestHash, input.task.id]
   );
 }
 
@@ -169,12 +175,12 @@ export async function insertTaskDependents(query: Query, input: TaskDependentInp
         encrypted.authTag,
         encrypted.keyId,
         encrypted.fingerprint,
-      ],
+      ]
     );
   }
   await query(
     `INSERT INTO escrows (task_id, amount, state, platform_fee_cents) VALUES ($1, $2, 'PENDING', $3)`,
-    [task.id, price, params.platformMarginCents ?? null],
+    [task.id, price, params.platformMarginCents ?? null]
   );
   await insertCreateWitness(query, input);
   await query(
@@ -195,6 +201,6 @@ export async function insertTaskDependents(query: Query, input: TaskDependentInp
       params.hustlerPayoutCents ?? null,
       'Initial approved execution scope',
       params.posterId,
-    ],
+    ]
   );
 }

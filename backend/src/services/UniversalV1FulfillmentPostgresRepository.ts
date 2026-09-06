@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { db, type Database, type QueryFn } from '../db.js';
 import { consumeFinalizedMediaReceipt } from './MediaUploadReceiptService.js';
 import {
@@ -1491,20 +1493,12 @@ export class PostgresUniversalV1FulfillmentRepository {
         );
       }
       const insertedIntent = await query<{ terminal_intent_id: string }>(
-        `INSERT INTO public.universal_v1_fake_terminal_lifecycle_intents (
-           terminal_path,
-           work_order_id,
-           completion_fact_id,
-           starting_financial_event_id,
-           provider_account_fact_id,
-           expected_financial_version,
-           expected_reconciliation_version,
-           idempotency_key,
-           request_sha256,
-           requested_by
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-         RETURNING terminal_intent_id`,
+        `SELECT terminal_intent_id
+           FROM public.hxos_record_fake_terminal_lifecycle_intent_v1(
+             $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11
+           )`,
         [
+          randomUUID(),
           input.path,
           context.work_order_id,
           completion.id,

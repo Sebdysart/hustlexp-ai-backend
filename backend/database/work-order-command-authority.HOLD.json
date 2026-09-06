@@ -1,40 +1,171 @@
 {
-  "schemaVersion": 1,
-  "status": "EXTERNAL_DECISION_REQUIRED",
+  "schemaVersion": 2,
+  "status": "AUTHORIZED_LOCAL_NONPROD_IMPLEMENTATION_PENDING",
+  "releaseStatus": "RELEASE_BLOCKED_PENDING_IMPLEMENTATION_AND_INDEPENDENT_REVIEW",
+  "decision": "OPTION_A_ISOLATED_ONE_TIME_ACTOR_ATTESTER",
+  "authorizationScope": {
+    "environments": [
+      "local",
+      "preview",
+      "staging"
+    ],
+    "syntheticDataOnly": true,
+    "fakeFinancialValueOnly": true,
+    "productionAuthorized": false
+  },
   "productionEffects": "NONE",
   "productionMoney": "FROZEN",
-  "commandFunction": "public.materialize_universal_v1_fake_work_order_v1(text,text,uuid,uuid,uuid)",
-  "roleNames": {
-    "migration": null,
-    "runtime": null,
-    "commandOwner": null
+  "productionHardAssignment": "FROZEN",
+  "independentReview": {
+    "status": "ABSENT",
+    "requiredBeforeRelease": true,
+    "ownerAuthorizationIsNotIndependentApproval": true
+  },
+  "logicalRoles": {
+    "migration": {
+      "configurationVariable": "HX_WORK_ORDER_MIGRATION_DATABASE_ROLE",
+      "configuredDatabaseRole": null,
+      "login": true,
+      "runtimeCredential": false
+    },
+    "api": {
+      "configurationVariable": "HX_WORK_ORDER_API_DATABASE_ROLE",
+      "configuredDatabaseRole": null,
+      "login": true,
+      "directProtectedWrite": false
+    },
+    "worker": {
+      "configurationVariable": "HX_WORK_ORDER_WORKER_DATABASE_ROLE",
+      "configuredDatabaseRole": null,
+      "login": true,
+      "directProtectedWrite": false
+    },
+    "attester": {
+      "configurationVariable": "HX_WORK_ORDER_ATTESTER_DATABASE_ROLE",
+      "configuredDatabaseRole": null,
+      "login": true,
+      "mayIssueAssertionsOnlyThroughSealedFunction": true,
+      "directProtectedWrite": false
+    },
+    "commandOwner": {
+      "configurationVariable": "HX_WORK_ORDER_COMMAND_OWNER_DATABASE_ROLE",
+      "configuredDatabaseRole": null,
+      "login": false,
+      "elevatedAttributes": false
+    },
+    "assertionOwner": {
+      "configurationVariable": "HX_WORK_ORDER_ASSERTION_OWNER_DATABASE_ROLE",
+      "configuredDatabaseRole": null,
+      "login": false,
+      "elevatedAttributes": false
+    },
+    "financeOwner": {
+      "configurationVariable": "HX_FINANCE_COMMAND_OWNER_DATABASE_ROLE",
+      "configuredDatabaseRole": null,
+      "login": false,
+      "elevatedAttributes": false
+    },
+    "telemetryOwner": {
+      "configurationVariable": "HX_TELEMETRY_OWNER_DATABASE_ROLE",
+      "configuredDatabaseRole": null,
+      "login": false,
+      "elevatedAttributes": false
+    }
   },
   "requiredRoleShape": {
-    "pairwiseDistinct": true,
-    "commandOwnerNoLogin": true,
-    "commandOwnerElevatedAttributes": false,
-    "runtimeElevatedAttributes": false,
-    "runtimeDirectWrite": false,
-    "runtimeExecuteOnly": true
+    "allEightPairwiseDistinct": true,
+    "loginRoles": [
+      "migration",
+      "api",
+      "worker",
+      "attester"
+    ],
+    "noLoginOwners": [
+      "commandOwner",
+      "assertionOwner",
+      "financeOwner",
+      "telemetryOwner"
+    ],
+    "noElevatedAttributes": true,
+    "noCrossMembership": true,
+    "apiDirectProtectedWrite": false,
+    "workerDirectProtectedWrite": false,
+    "attesterDirectProtectedWrite": false,
+    "apiExecuteOnly": true,
+    "workerExecuteOnly": true,
+    "attesterIssueOnly": true
+  },
+  "assertionProtocol": {
+    "verifiedBy": "ISOLATED_ATTESTER_REVERIFYING_ORIGINAL_BEARER",
+    "verifiedSubject": "FIREBASE_UID_OR_BOUNDED_NONPRODUCTION_EQUIVALENT",
+    "actorUuidAcceptedFromClient": false,
+    "tokenEntropyBits": 256,
+    "plaintextTokenPersisted": false,
+    "persistedTokenMaterial": "SHA256_DIGEST_ONLY",
+    "oneTime": true,
+    "maximumLifetimeSeconds": 60,
+    "expiryOwnedByDatabase": true,
+    "issuanceAppendOnly": true,
+    "consumptionAppendOnly": true,
+    "binding": [
+      "environment",
+      "command_kind",
+      "canonical_request_sha256",
+      "verified_subject",
+      "authentication_facts",
+      "verification_time"
+    ],
+    "databaseResolvesVerifiedSubjectToActor": true,
+    "customSessionSettingAccepted": false
+  },
+  "functionPlan": {
+    "assertionIssuer": "public.hxos_issue_universal_v1_actor_assertion_v1(text,text,text,text,jsonb,timestamptz)",
+    "internalAssertionConsumer": "hx_authority.consume_universal_v1_actor_assertion_v1(text,text,jsonb,text)",
+    "apiEntrypoints": [
+      "public.hxos_express_universal_v1_post_estimate_interest_v1(text,uuid,integer,text,timestamptz)",
+      "public.hxos_place_universal_v1_conditional_hold_v1(text,uuid,integer,text,timestamptz)",
+      "public.hxos_prepare_universal_v1_fake_work_order_v1(text,uuid,integer,text,timestamptz)",
+      "public.hxos_materialize_universal_v1_fake_work_order_v1(text,text,text,uuid)",
+      "public.hxos_request_universal_v1_fake_work_order_recovery_v1(text,text,text,uuid)"
+    ],
+    "workerEntrypoints": [
+      "public.hxos_claim_universal_v1_work_order_compensation_v2(integer,integer)"
+    ],
+    "implemented": false,
+    "provisioned": false,
+    "liveReadbackReady": false
   },
   "protectedWriteRelations": [
     "public.task_work_order_command_requests",
     "public.task_provider_eligibility_decisions",
-    "public.task_work_orders"
+    "public.task_work_orders",
+    "public.task_work_order_execution_facts",
+    "public.task_reservations",
+    "public.task_applications"
   ],
   "functionRequirements": {
     "securityDefiner": true,
     "volatility": "VOLATILE",
-    "searchPath": "pg_catalog, public",
+    "parallelSafety": "UNSAFE",
+    "searchPath": "pg_catalog",
     "publicExecute": false,
     "migrationExecute": false,
-    "authenticatedActorBinding": null
+    "actorDerivedFromConsumedAssertion": true,
+    "callerSuppliedActorAccepted": false,
+    "runtimeWritableActorSettingAccepted": false
   },
-  "currentContradiction": "The accepted local and Railway contracts bind migration, API, and worker to one PostgreSQL login role. backend/src/trpc-context.ts verifies Firebase or bounded synthetic bearer identity, but backend/src/services/UniversalV1WorkOrderPostgresRepository.ts receives only ctx.user.id and sets a caller-writable custom PostgreSQL setting. No independently verifiable database actor assertion reaches PostgreSQL and no actor-binding protocol is approved.",
+  "alternateWriterDisposition": {
+    "requiredBeforeDirectDmlRevocation": "PORT_TO_TYPED_SEALED_COMMAND_OR_STRUCTURALLY_HOLD",
+    "directDmlRevoked": false,
+    "writerInventoryProvenZero": false
+  },
+  "currentContradiction": "Option A is authorized for isolated synthetic local, preview, and staging implementation, but the repository still uses shared or unproven database identities, caller-supplied actor provenance, runtime direct DML, and no implemented token-digest assertion or sealed Work Order command family.",
   "requiredActorBindingDecision": {
-    "status": "MISSING",
-    "mustBind": "the exact verified request identity to the actor UUID inside the SECURITY DEFINER command",
-    "mustBeVerifiableBy": "PostgreSQL without trusting a custom setting writable by the runtime login",
+    "status": "AUTHORIZED_LOCAL_NONPROD_OPTION_A",
+    "implementationStatus": "PENDING",
+    "independentReviewStatus": "ABSENT",
+    "mustBind": "the independently reverified request identity to the exact command without accepting a caller-selected actor UUID",
+    "mustBeVerifiableBy": "PostgreSQL through one-time append-only token-digest assertion issuance and consumption",
     "currentRequestIdentitySource": "backend/src/trpc-context.ts",
     "currentDatabaseCallSite": "backend/src/services/UniversalV1WorkOrderPostgresRepository.ts",
     "customSessionSettingAloneAccepted": false

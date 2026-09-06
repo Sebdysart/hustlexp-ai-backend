@@ -1,10 +1,11 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   FakeFinancialProvider,
   InMemoryFakeFinancialOperationRepository,
   fakeFinancialProviderEnabled,
+  resultFromExactStoredFakeFinancialOperation,
   type FakeFinancialScenario,
 } from '../../src/services/payment/FakeFinancialProvider.js';
 
@@ -22,6 +23,9 @@ const operationIds = {
   funding: '00000000-0000-4000-8000-000000000011',
   providerRelease: '00000000-0000-4000-8000-000000000012',
   bankSettlement: '00000000-0000-4000-8000-000000000013',
+  secure: '00000000-0000-4000-8000-000000000014',
+  adjust: '00000000-0000-4000-8000-000000000015',
+  declinedAuthorize: '00000000-0000-4000-8000-000000000016',
 } as const;
 
 const reconciliationSnapshotSha256 = 'a'.repeat(64);
@@ -42,6 +46,83 @@ function command(
 }
 
 describe('FakeFinancialProvider', () => {
+  it('derives positive-security expiry from one injected repository observation', async () => {
+    const now = vi.fn(() => new Date('2030-01-01T00:00:00.000Z'));
+    const provider = new FakeFinancialProvider(new InMemoryFakeFinancialOperationRepository(now));
+    const authorization = await provider.authorize({
+      ...command(operationIds.authorize, 'test:expiry:authorize:0001'),
+      paymentMethodReference: 'pm-fake-expiry',
+    });
+    const security = await provider.secure({
+      ...command(operationIds.secure, 'test:expiry:secure:0001'),
+      authorizationOperationId: operationIds.authorize,
+    });
+    const adjustment = await provider.adjust({
+      ...command(operationIds.adjust, 'test:expiry:adjust:0001'),
+      relatedOperationId: operationIds.secure,
+      scopeVersionId: '00000000-0000-4000-8000-000000000017',
+      changeOrderId: '00000000-0000-4000-8000-000000000018',
+    });
+    const capture = await provider.capture({
+      ...command(operationIds.capture, 'test:expiry:capture:0001'),
+      relatedOperationId: operationIds.adjust,
+    });
+    const declined = await provider.authorize({
+      ...command(operationIds.declinedAuthorize, 'test:expiry:authorize-declined:0001', 'DECLINE'),
+      paymentMethodReference: 'pm-fake-expiry-declined',
+    });
+
+    for (const result of [authorization, security, adjustment]) {
+      expect(result.recordedAt).toBe('2030-01-01T00:00:00.000Z');
+      expect(result.expiresAt).toBe('2030-01-01T00:15:00.000Z');
+    }
+    expect(capture.expiresAt).toBeNull();
+    expect(declined.expiresAt).toBeNull();
+    expect(now).toHaveBeenCalledTimes(5);
+  });
+
+  it('reconstructs an explicitly classified pre-v9 success only as stale replay truth', async () => {
+    const repository = new InMemoryFakeFinancialOperationRepository(
+      () => new Date('2030-01-01T00:00:00.000Z')
+    );
+    const provider = new FakeFinancialProvider(repository);
+    const exactRequest = {
+      ...command(operationIds.authorize, 'test:expiry:legacy-replay:0001'),
+      paymentMethodReference: 'pm-fake-legacy-expiry',
+    } as const;
+    await provider.authorize(exactRequest);
+    const current = repository.events()[0]!;
+    const legacy = {
+      ...current,
+      expiresAt: null,
+      expiryDisposition: 'LEGACY_EXPIRY_UNPROVEN' as const,
+    };
+
+    expect(
+      resultFromExactStoredFakeFinancialOperation(
+        legacy,
+        'AUTHORIZE',
+        exactRequest,
+        current.providerRequestSha256,
+        true
+      )
+    ).toMatchObject({
+      state: 'SUCCEEDED',
+      expiresAt: null,
+      expiryDisposition: 'LEGACY_EXPIRY_UNPROVEN',
+      idempotencyReplayed: true,
+    });
+    expect(() =>
+      resultFromExactStoredFakeFinancialOperation(
+        { ...legacy, expiryDisposition: undefined },
+        'AUTHORIZE',
+        exactRequest,
+        current.providerRequestSha256,
+        true
+      )
+    ).toThrow('FAKE_FINANCIAL_EXPIRY_INVALID');
+  });
+
   it('executes the provider-neutral lifecycle without exposing a processor contract', async () => {
     const repository = new InMemoryFakeFinancialOperationRepository();
     const provider = new FakeFinancialProvider(repository);
@@ -359,11 +440,7 @@ describe('FakeFinancialProvider', () => {
       requirementsDue: ['identity_verification'],
     });
     const restricted = await provider.refreshProviderAccountState({
-      ...command(
-        '00000000-0000-4000-8000-000000000014',
-        'test:merchant-state:declined',
-        'DECLINE'
-      ),
+      ...command('00000000-0000-4000-8000-000000000014', 'test:merchant-state:declined', 'DECLINE'),
       providerId: 'provider-3',
       providerAccountReference: 'merchant-fake-3',
     });

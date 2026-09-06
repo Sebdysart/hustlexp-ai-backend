@@ -1,11 +1,21 @@
+import { createPrivateKey, createPublicKey, sign } from 'node:crypto';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { type AddressInfo } from 'node:net';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import type { BuildIdentity } from '../../src/buildIdentity';
 import {
   startWorkerHealthServer,
   type WorkerHealthServer,
 } from '../../src/jobs/worker-health-server';
-import type { ReleaseManifestEvidence } from '../../src/releaseManifest';
+import {
+  readReleaseManifest,
+  releaseManifestDigest,
+  releaseManifestSignaturePayload,
+  type ReleaseManifestEvidence,
+  type ReleaseManifestV2,
+} from '../../src/releaseManifest';
 
 const identity: BuildIdentity = {
   schema_version: 1,
@@ -19,74 +29,133 @@ const identity: BuildIdentity = {
   artifact_verified: true,
 };
 
-const release: ReleaseManifestEvidence = {
-  schema_version: 1,
-  status: 'valid',
-  digest: `sha256:${'d'.repeat(64)}`,
-  source: 'test',
-  errors: [],
-  authentication: {
-    status: 'verified',
-    algorithm: 'ed25519',
-    keyId: 'unit-test-release-authority',
-    keyFingerprint: `sha256:${'c'.repeat(64)}`,
-    signatureDigest: `sha256:${'f'.repeat(64)}`,
-    source: 'unit-test-detached-signature',
-    errors: [],
+const releaseManifest: ReleaseManifestV2 = {
+  version: 2,
+  environment: 'staging',
+  releaseId: 'staging-20260826-001',
+  createdAt: '2026-08-26T12:00:00.000Z',
+  authority: {
+    document: 'HustleXP Business and Universal V1 Charter',
+    charterVersion: '1.1.0',
+    charterRevision: '0b80c71e118d7cab70474bbbf6df778811fe4fe8',
+    capabilityPolicyDigest: `sha256:${'9'.repeat(64)}`,
   },
-  manifest: {
-    version: 1,
-    environment: 'production',
-    releaseId: 'production-20260826-001',
-    createdAt: '2026-08-26T12:00:00.000Z',
-    components: {
-      backend: {
-        revision: identity.revision,
-        artifactDigest: `sha256:${'d'.repeat(64)}`,
-        imageEvidence: 'VERIFIED_IMMUTABLE_IMAGE',
-        imageDigest: `sha256:${'a'.repeat(64)}`,
-      },
-      worker: {
-        revision: identity.revision,
-        artifactDigest: identity.artifact_digest,
-        imageEvidence: 'VERIFIED_IMMUTABLE_IMAGE',
-        imageDigest: `sha256:${'b'.repeat(64)}`,
-      },
-      web: {
-        revision: 'f'.repeat(40),
-        artifactDigest: `sha256:${'a'.repeat(64)}`,
-        imageEvidence: 'VERIFIED_IMMUTABLE_IMAGE',
-        imageDigest: `sha256:${'c'.repeat(64)}`,
-      },
-      migration: { revision: identity.revision, artifactDigest: `sha256:${'b'.repeat(64)}` },
-      policy: { revision: identity.revision, artifactDigest: `sha256:${'c'.repeat(64)}` },
-      fixtures: {
-        revision: identity.revision,
-        artifactDigest: `sha256:${'d'.repeat(64)}`,
-        imageEvidence: 'VERIFIED_IMMUTABLE_IMAGE',
-        imageDigest: `sha256:${'e'.repeat(64)}`,
-      },
+  components: {
+    backend: {
+      revision: identity.revision,
+      artifactDigest: `sha256:${'d'.repeat(64)}`,
+      imageEvidence: 'VERIFIED_IMMUTABLE_IMAGE',
+      imageDigest: `sha256:${'a'.repeat(64)}`,
     },
-    capabilities: {
-      financialProvider: 'disabled',
-      fakeFinancialEvents: false,
-      customerMoneyCreation: false,
-      hardAssignment: false,
-      realSettlement: false,
-      outboundCommunication: 'bounded_live',
-      dataClass: 'approved_customer',
+    worker: {
+      revision: identity.revision,
+      artifactDigest: identity.artifact_digest,
+      imageEvidence: 'VERIFIED_IMMUTABLE_IMAGE',
+      imageDigest: `sha256:${'b'.repeat(64)}`,
     },
-    promotion: {
-      baseManifestDigest: null,
-      changedComponents: ['backend', 'worker', 'web', 'migration', 'policy', 'fixtures'],
+    web: {
+      revision: 'f'.repeat(40),
+      artifactDigest: `sha256:${'a'.repeat(64)}`,
+      imageEvidence: 'VERIFIED_IMMUTABLE_IMAGE',
+      imageDigest: `sha256:${'c'.repeat(64)}`,
     },
-    health: {
-      backend: { component: 'backend', path: '/health' },
-      worker: { component: 'worker', path: '/health' },
-      web: { component: 'web', path: '/version.json' },
+    migration: { revision: identity.revision, artifactDigest: `sha256:${'b'.repeat(64)}` },
+    policy: { revision: identity.revision, artifactDigest: `sha256:${'c'.repeat(64)}` },
+    fixtures: {
+      revision: identity.revision,
+      artifactDigest: `sha256:${'d'.repeat(64)}`,
+      providerImageEvidence: 'VERIFIED_IMMUTABLE_IMAGE',
+      providerImageDigest: `sha256:${'e'.repeat(64)}`,
+      databaseImageEvidence: 'VERIFIED_IMMUTABLE_IMAGE',
+      databaseImageDigest: `sha256:${'f'.repeat(64)}`,
+    },
+  },
+  infrastructure: {
+    revision: identity.revision,
+    artifactDigest: `sha256:${'6'.repeat(64)}`,
+    desiredTopologyDigest: `sha256:${'7'.repeat(64)}`,
+  },
+  databaseTargets: {
+    api: {
+      component: 'api',
+      environment: 'staging',
+      databaseTargetDigest: `sha256:${'8'.repeat(64)}`,
+    },
+    worker: {
+      component: 'worker',
+      environment: 'staging',
+      databaseTargetDigest: `sha256:${'9'.repeat(64)}`,
+    },
+    attester: {
+      component: 'attester',
+      environment: 'staging',
+      databaseTargetDigest: `sha256:${'a'.repeat(64)}`,
+    },
+  },
+  capabilities: {
+    financialProvider: 'fake',
+    fakeFinancialEvents: true,
+    customerMoneyCreation: false,
+    hardAssignment: false,
+    realSettlement: false,
+    outboundCommunication: 'sink',
+    dataClass: 'synthetic',
+  },
+  promotion: {
+    baseManifestDigest: null,
+    changedComponents: ['backend', 'worker', 'web', 'migration', 'policy', 'fixtures'],
+    infrastructureChanged: true,
+  },
+  acceptance: {
+    backend: { kind: 'http', component: 'backend', path: '/health' },
+    worker: { kind: 'http', component: 'worker', path: '/health' },
+    web: { kind: 'http', component: 'web', path: '/version.json' },
+    migration: { kind: 'receipt', component: 'migration', receiptType: 'migration-execution-v1' },
+    policy: { kind: 'receipt', component: 'policy', receiptType: 'canonical-policy-digest-v1' },
+    fixtures: { kind: 'receipt', component: 'fixtures', receiptType: 'fixture-seed-v1' },
+    infrastructure: {
+      kind: 'readback',
+      binding: 'infrastructure',
+      receiptType: 'infrastructure-readback-v1',
     },
   },
 };
+
+const originalPromotionMode = process.env.HX_RELEASE_PROMOTION_MODE;
+const TEST_KEY_ID = 'worker-health-test-release-authority';
+const TEST_PRIVATE_KEY = createPrivateKey({
+  key: Buffer.concat([
+    Buffer.from('302e020100300506032b657004220420', 'hex'),
+    Buffer.from('4f'.repeat(32), 'hex'),
+  ]),
+  format: 'der',
+  type: 'pkcs8',
+});
+const TEST_PUBLIC_KEY_PEM = createPublicKey(TEST_PRIVATE_KEY)
+  .export({ type: 'spki', format: 'pem' })
+  .toString();
+const releaseDirectory = mkdtempSync(join(tmpdir(), 'hx-worker-health-release-'));
+const releasePath = join(releaseDirectory, 'manifest.json');
+const exactReleaseDigest = releaseManifestDigest(releaseManifest);
+writeFileSync(releasePath, JSON.stringify(releaseManifest), 'utf8');
+process.env.HX_RELEASE_PROMOTION_MODE = 'INITIAL';
+const release: ReleaseManifestEvidence = readReleaseManifest(releasePath, {
+  signatureRaw: JSON.stringify({
+    version: 1,
+    algorithm: 'ed25519',
+    keyId: TEST_KEY_ID,
+    manifestDigest: exactReleaseDigest,
+    signature: sign(
+      null,
+      releaseManifestSignaturePayload(exactReleaseDigest, releaseManifest.version),
+      TEST_PRIVATE_KEY
+    ).toString('base64'),
+  }),
+  signatureSource: 'unit-test-detached-signature',
+  trustedPublicKeys: { [TEST_KEY_ID]: TEST_PUBLIC_KEY_PEM },
+});
+if (originalPromotionMode === undefined) delete process.env.HX_RELEASE_PROMOTION_MODE;
+else process.env.HX_RELEASE_PROMOTION_MODE = originalPromotionMode;
 
 const handles: WorkerHealthServer[] = [];
 
@@ -109,11 +178,62 @@ async function create(options: Parameters<typeof startWorkerHealthServer>[0] = {
 
 afterEach(async () => {
   await Promise.allSettled(handles.splice(0).map((handle) => handle.close()));
+  if (originalPromotionMode === undefined) delete process.env.HX_RELEASE_PROMOTION_MODE;
+  else process.env.HX_RELEASE_PROMOTION_MODE = originalPromotionMode;
+});
+
+afterAll(() => {
+  rmSync(releaseDirectory, { recursive: true, force: true });
 });
 
 describe('worker deployment health server', () => {
-  it('stays unavailable until every worker and schedule has registered', async () => {
-    const { handle, url } = await create({ production: true });
+  it('keeps signed staging unavailable after every worker registers while promotion authority is held', async () => {
+    process.env.HX_RELEASE_PROMOTION_MODE = 'INITIAL';
+    const { handle, url } = await create({
+      production: false,
+      environment: 'staging',
+      financialReadiness: async () => ({
+        schemaVersion: 1,
+        required: true,
+        ready: true,
+        status: 'ready',
+        environment: 'staging',
+        releaseId: releaseManifest.releaseId,
+        releaseManifestDigest: release.digest,
+        migrationArtifactDigest: releaseManifest.components.migration.artifactDigest,
+        requiredMigrationCount: 130,
+        fakeFinancialMigrationCount: 8,
+        matchedFakeFinancialMigrationCount: 8,
+        completedAt: '2026-08-30T12:00:00.000Z',
+      }),
+      providerEventReplayHealth: () => ({
+        status: 'healthy',
+        inFlight: false,
+        consecutiveFailures: 0,
+        lastFailureCode: null,
+      }),
+      fakeFinancialCommandRecoveryHealth: () => ({
+        status: 'healthy',
+        inFlight: false,
+        consecutiveFailures: 0,
+        lastFailureCode: null,
+      }),
+      workOrderCompensationHealth: () => ({
+        status: 'healthy',
+        inFlight: false,
+        consecutiveFailures: 0,
+        lastFailureCode: null,
+      }),
+      changeOrderRecoveryHealth: () => ({
+        status: 'healthy',
+        inFlight: false,
+        consecutiveFailures: 0,
+        lastFailureCode: null,
+        compensationOutcome: 'CANCELLED_RECOVERY_REQUIRED',
+        priorSecuredStateRestored: false,
+        executionMayResumeAfterCompensation: false,
+      }),
+    });
 
     const starting = await fetch(`${url}/health`);
     expect(starting.status).toBe(503);
@@ -125,40 +245,48 @@ describe('worker deployment health server', () => {
 
     handle.markReady();
     const ready = await fetch(`${url}/health/readiness`);
-    expect(ready.status).toBe(200);
-    expect(await ready.json()).toMatchObject({
+    const readyBody = await ready.json();
+    expect(ready.status).toBe(503);
+    expect(readyBody).toMatchObject({
       service: 'hustlexp-worker',
       state: 'ready',
-      ready: true,
+      ready: false,
       build: identity,
-      releaseManifest: { ...release, status: 'compatible' },
+      releaseManifest: {
+        status: 'invalid',
+        digest: release.digest,
+        authentication: { status: 'verified' },
+        errors: [
+          'manifest does not match the runtime service revision, artifact, version, or environment',
+        ],
+      },
       nonproductionFinancialBootstrap: {
-        required: false,
+        required: true,
         ready: true,
-        status: 'disabled',
-        environment: 'production',
+        status: 'ready',
+        environment: 'staging',
       },
       dependencies: { database: 'ok', redis: 'ok' },
       providerEventReplay: {
-        status: 'disabled',
+        status: 'healthy',
         inFlight: false,
         consecutiveFailures: 0,
         lastFailureCode: null,
       },
       fakeFinancialCommandRecovery: {
-        status: 'disabled',
+        status: 'healthy',
         inFlight: false,
         consecutiveFailures: 0,
         lastFailureCode: null,
       },
       workOrderCompensation: {
-        status: 'disabled',
+        status: 'healthy',
         inFlight: false,
         consecutiveFailures: 0,
         lastFailureCode: null,
       },
       changeOrderRecovery: {
-        status: 'disabled',
+        status: 'healthy',
         inFlight: false,
         consecutiveFailures: 0,
         lastFailureCode: null,
@@ -222,7 +350,10 @@ describe('worker deployment health server', () => {
     });
   });
 
-  it('requires all four nonproduction financial pollers to report healthy', async () => {
+  it('requires the publisher and all four nonproduction financial pollers to report healthy', async () => {
+    let publisherState: ReturnType<
+      import('../../src/jobs/fake-financial-publisher-runtime.js').FakeFinancialPublisherHandle['status']
+    > | null = null;
     let recoveryHealthy = false;
     let compensationHealthy = false;
     let changeOrderRecoveryHealthy = false;
@@ -249,6 +380,7 @@ describe('worker deployment health server', () => {
         consecutiveFailures: 0,
         lastFailureCode: null,
       }),
+      fakeFinancialPublisherHealth: () => publisherState,
       fakeFinancialCommandRecoveryHealth: () => ({
         status: recoveryHealthy ? 'healthy' : 'degraded',
         inFlight: false,
@@ -324,6 +456,50 @@ describe('worker deployment health server', () => {
     });
 
     changeOrderRecoveryHealthy = true;
+    const absentPublisher = await fetch(`${url}/health/readiness`);
+    expect(absentPublisher.status).toBe(503);
+    expect(await absentPublisher.json()).toMatchObject({
+      fakeFinancialPublisher: { status: 'degraded', lastFailureCode: 'WORKER_NOT_STARTED' },
+    });
+    const successfulPublication = {
+      claimed: 1,
+      confirmed: 1,
+      retryableFailures: 0,
+      terminalFailures: 0,
+      persistenceErrors: 0,
+    };
+    for (const status of [
+      { stopped: false, running: false, consecutiveFailures: 1, lastResult: successfulPublication },
+      { stopped: true, running: false, consecutiveFailures: 0, lastResult: successfulPublication },
+      { stopped: false, running: false, consecutiveFailures: 0, lastResult: null },
+      {
+        stopped: false,
+        running: false,
+        consecutiveFailures: 0,
+        lastResult: { ...successfulPublication, persistenceErrors: 1 },
+      },
+      {
+        stopped: false,
+        running: false,
+        consecutiveFailures: 0,
+        lastResult: { ...successfulPublication, retryableFailures: 1 },
+      },
+      {
+        stopped: false,
+        running: false,
+        consecutiveFailures: 0,
+        lastResult: { ...successfulPublication, terminalFailures: 1 },
+      },
+    ]) {
+      publisherState = status;
+      expect((await fetch(`${url}/health/readiness`)).status).toBe(503);
+    }
+    publisherState = {
+      stopped: false,
+      running: true,
+      consecutiveFailures: 0,
+      lastResult: successfulPublication,
+    };
     const ready = await fetch(`${url}/health/readiness`);
     expect(ready.status).toBe(200);
     expect(await ready.json()).toMatchObject({
@@ -431,7 +607,7 @@ describe('worker deployment health server', () => {
       expect(await response.json()).toMatchObject({
         state: 'ready',
         ready: false,
-        releaseManifest: { status: 'compatible' },
+        releaseManifest: { status: 'invalid' },
         nonproductionFinancialBootstrap: {
           required: false,
           status: 'disabled',
@@ -478,7 +654,7 @@ describe('worker deployment health server', () => {
     expect(await response.json()).toMatchObject({
       alive: true,
       build: identity,
-      releaseManifest: { status: 'compatible' },
+      releaseManifest: { status: 'invalid' },
     });
     expect(dependencyReadiness).not.toHaveBeenCalled();
 

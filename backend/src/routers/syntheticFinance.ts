@@ -1,6 +1,7 @@
 import { TRPCError } from '@trpc/server';
+import { FakeFinancialProgressPayloadSchema } from '../auth/financial-progress-command-contract.js';
 
-import { enqueueSyntheticFinancialEvent } from '../jobs/synthetic-financial-worker.js';
+import { createUniversalV1FinancialRequestService } from '../services/payment/UniversalV1FinancialRequestService.js';
 import {
   SyntheticFinancialAuthorityError,
   syntheticFinancialCommandAuthority,
@@ -86,20 +87,46 @@ function routeError(error: unknown): never {
  * surfaces and are not imported here.
  */
 export const universalFinanceRouter = router({
+  requestProgress: protectedProcedure
+    .input(FakeFinancialProgressPayloadSchema)
+    .query(async ({ ctx, input }) => {
+      let progress;
+      try {
+        progress = await createUniversalV1FinancialRequestService().readProgress(
+          input.commandId,
+          ctx.user.id,
+          ctx.actorAttestation
+        );
+      } catch {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Financial request progress is temporarily unavailable.',
+        });
+      }
+      if (progress === null)
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'Financial request not found.',
+        });
+      return progress;
+    }),
   executeEvent: protectedProcedure
     .input(syntheticFinancialEventCommandSchema)
     .mutation(async ({ ctx, input }) => {
       try {
-        const service = createUniversalV1FakeFinancialApplicationService();
+        const service = await createUniversalV1FakeFinancialApplicationService();
         await syntheticFinancialCommandAuthority.assertTaskParticipant(
           ctx.user.id,
           input.taskDraftId,
           input.taskId
         );
-        return await service.executeFinancialEvent({
-          ...input,
-          recordedBy: ctx.user.id,
-        } as ExecuteUniversalV1FinancialEventCommand);
+        return await service.executeFinancialEvent(
+          {
+            ...input,
+            recordedBy: ctx.user.id,
+          } as ExecuteUniversalV1FinancialEventCommand,
+          ctx.actorAttestation
+        );
       } catch (error) {
         return routeError(error);
       }
@@ -109,7 +136,10 @@ export const universalFinanceRouter = router({
     .input(syntheticFinancialEventCommandSchema)
     .mutation(async ({ ctx, input }) => {
       try {
-        return await enqueueSyntheticFinancialEvent(ctx.user.id, input);
+        return await createUniversalV1FinancialRequestService().requestFinancialEvent(
+          { ...input, recordedBy: ctx.user.id } as ExecuteUniversalV1FinancialEventCommand,
+          ctx.actorAttestation
+        );
       } catch (error) {
         return routeError(error);
       }
@@ -137,7 +167,7 @@ export const universalFinanceRouter = router({
     .input(syntheticProviderOnboardingCommandSchema)
     .mutation(async ({ ctx, input }) => {
       try {
-        const service = createUniversalV1FakeFinancialApplicationService();
+        const service = await createUniversalV1FakeFinancialApplicationService();
         return await service.onboardProvider({
           ...input,
           providerId: ctx.user.id,
@@ -156,7 +186,7 @@ export const universalFinanceRouter = router({
           ctx.user.id,
           input.providerOrganizationId ?? null
         );
-        const service = createUniversalV1FakeFinancialApplicationService();
+        const service = await createUniversalV1FakeFinancialApplicationService();
         const providerId = input.providerOrganizationId ?? ctx.user.id;
         const onboard = await service.onboardProvider({
           providerKind: input.providerKind,
@@ -200,7 +230,7 @@ export const universalFinanceRouter = router({
     .input(syntheticProviderAccountStateCommandSchema)
     .mutation(async ({ ctx, input }) => {
       try {
-        const service = createUniversalV1FakeFinancialApplicationService();
+        const service = await createUniversalV1FakeFinancialApplicationService();
         return await service.refreshProviderAccountState({
           ...input,
           providerId: ctx.user.id,

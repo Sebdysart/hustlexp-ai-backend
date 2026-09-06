@@ -3,18 +3,18 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { REQUIRED_MIGRATION_FILES } from '../../src/jobs/engine-automation-migration-files.js';
 
-const SQL = readFileSync(resolve(
-  process.cwd(),
-  'backend/database/migrations/20260904_canonical_user_email_identity.sql',
-), 'utf8');
+const SQL = readFileSync(
+  resolve(process.cwd(), 'backend/database/migrations/20260904_canonical_user_email_identity.sql'),
+  'utf8'
+);
 
 describe('canonical user-email identity migration', () => {
   it('retains its exact append-only position in the current startup chain', () => {
     const identityIndex = REQUIRED_MIGRATION_FILES.findIndex(
-      ({ name }) => name === '20260904_canonical_user_email_identity',
+      ({ name }) => name === '20260904_canonical_user_email_identity'
     );
 
-    expect(REQUIRED_MIGRATION_FILES).toHaveLength(140);
+    expect(REQUIRED_MIGRATION_FILES).toHaveLength(146);
     expect(identityIndex).toBeGreaterThan(0);
     expect(REQUIRED_MIGRATION_FILES.slice(identityIndex - 1)).toEqual([
       {
@@ -133,6 +133,30 @@ describe('canonical user-email identity migration', () => {
         name: '20261006_stage1_legacy_authority_containment_v1',
         fileName: '20261006_stage1_legacy_authority_containment_v1.sql',
       },
+      {
+        name: '20261007_subscription_cancellation_recovery_v1',
+        fileName: '20261007_subscription_cancellation_recovery_v1.sql',
+      },
+      {
+        name: '20261008_universal_v1_work_order_task_state_containment_v1',
+        fileName: '20261008_universal_v1_work_order_task_state_containment_v1.sql',
+      },
+      {
+        name: '20261009_universal_v1_standardized_quote_readiness_v1',
+        fileName: '20261009_universal_v1_standardized_quote_readiness_v1.sql',
+      },
+      {
+        name: '20261010_universal_v1_financial_security_event_expiry_v1',
+        fileName: '20261010_universal_v1_financial_security_event_expiry_v1.sql',
+      },
+      {
+        name: '20261012_universal_v1_work_order_command_authority_v2',
+        fileName: '20261012_universal_v1_work_order_command_authority_v2.sql',
+      },
+      {
+        name: '20261014_universal_v1_work_order_command_ports_v1',
+        fileName: '20261014_universal_v1_work_order_command_ports_v1.sql',
+      },
     ]);
   });
 
@@ -144,7 +168,7 @@ describe('canonical user-email identity migration', () => {
     expect(SQL).toContain('index_state.indisunique');
     expect(SQL).toContain('index_state.indisvalid');
     expect(SQL).toContain(
-      "pg_get_expr(index_state.indexprs, index_state.indrelid) = 'lower((email)::text)'",
+      "pg_get_expr(index_state.indexprs, index_state.indrelid) = 'lower((email)::text)'"
     );
     expect(SQL).not.toMatch(/\b(?:UPDATE|DELETE|TRUNCATE)\b/iu);
   });

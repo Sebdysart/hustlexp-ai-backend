@@ -19,7 +19,6 @@ function deployedSyntheticEnvironment(
     SMTP_URL: 'smtp://message-sink.railway.internal:1025',
     HX_SMS_SINK_URL: 'http://synthetic-providers.railway.internal:8080/v1/messages/sms',
     HX_COMPLETION_DELIVERY_SINK_ACTOR_ID: '10000000-0000-4000-8000-000000000005',
-    HX_FAKE_FINANCIAL_WEBHOOK_SECRET: 'fake-financial-secret-reference-at-least-32',
     HX_SYNTHETIC_OPERATOR_AUTH_SECRET: 'synthetic-operator-secret-reference-at-least-32',
     STRIPE_MODE: 'test',
     HX_FAKE_FINANCIAL_PROVIDER_ENABLED: 'true',
@@ -31,8 +30,24 @@ function deployedSyntheticEnvironment(
 }
 
 describe('deployed synthetic provider policy', () => {
+  it('accepts no API-held webhook key and refuses the retired secret configuration', () => {
+    expect(deployedSyntheticProviderConfigurationErrors(deployedSyntheticEnvironment())).toEqual(
+      []
+    );
+    expect(
+      deployedSyntheticProviderConfigurationErrors(
+        deployedSyntheticEnvironment({
+          HX_FAKE_FINANCIAL_WEBHOOK_SECRET: 'retired-fake-financial-secret-at-least-32',
+        })
+      )
+    ).toEqual([
+      'HX_FAKE_FINANCIAL_WEBHOOK_SECRET must be absent; financial webhook verification is sealed in PostgreSQL',
+    ]);
+  });
   it('requires the named completion-delivery sink actor in an otherwise valid staging posture', () => {
-    expect(deployedSyntheticProviderConfigurationErrors(deployedSyntheticEnvironment())).toEqual([]);
+    expect(deployedSyntheticProviderConfigurationErrors(deployedSyntheticEnvironment())).toEqual(
+      []
+    );
 
     expect(
       deployedSyntheticProviderConfigurationErrors(

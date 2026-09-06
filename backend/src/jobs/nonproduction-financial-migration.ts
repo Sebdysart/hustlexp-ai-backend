@@ -15,7 +15,7 @@ import { assertNonproductionFakeFinanceAuthorized } from '../services/payment/No
 import {
   loadMigrationSql,
   productionMigrationRuntime,
-  runEngineAutomationMigrationsOnConnectedClient,
+  runEngineAutomationMigrationsOnConnectedClientWithReceipt,
   type MigrationClient,
   type MigrationOutcome,
   type MigrationRuntime,
@@ -23,7 +23,22 @@ import {
 } from './engine-automation-migration.js';
 import { REQUIRED_MIGRATION_FILES } from './engine-automation-migration-files.js';
 import { engineMigrationArtifactDigest } from './engine-migration-manifest.js';
-import { assertMigrationExecutionAuthorized } from './migration-execution-authority.js';
+import {
+  assertMigrationExecutionReceipt,
+  assertMigrationExecutionAuthorized,
+} from './migration-execution-authority.js';
+import {
+  abortFakeFinancialMigrationOperation,
+  assertFakeFinancialExecutionReceipt,
+  authorizeFakeFinancialExecutionSession,
+  beginFakeFinancialMigrationOperation,
+  CANONICAL_FAKE_FINANCIAL_MIGRATION_FILES,
+  completeFakeFinancialExecutionSession,
+  completeFakeFinancialMigrationOperation,
+  type FakeFinancialExecutionReceipt,
+  type FakeFinancialExecutionSession,
+  type FakeFinancialMigrationPlanEntry,
+} from './nonproduction-fake-financial-execution.js';
 import {
   assertConfiguredNonproductionDatabaseTarget,
   assertConnectedNonproductionDatabaseTarget,
@@ -31,66 +46,38 @@ import {
 } from './nonproduction-database-target.js';
 
 export const NONPRODUCTION_FAKE_FINANCIAL_BASE_MIGRATION =
-  '20260827_fake_financial_provider_v1';
+  CANONICAL_FAKE_FINANCIAL_MIGRATION_FILES[0].name;
 export const NONPRODUCTION_FAKE_FINANCIAL_ACCOUNT_REFRESH_MIGRATION =
-  '20260903_fake_financial_provider_account_refresh_v2';
+  CANONICAL_FAKE_FINANCIAL_MIGRATION_FILES[1].name;
 export const NONPRODUCTION_FAKE_FINANCIAL_SETTLEMENT_COMPLETION_MIGRATION =
-  '20260910_fake_financial_settlement_completion_v3';
+  CANONICAL_FAKE_FINANCIAL_MIGRATION_FILES[2].name;
 export const NONPRODUCTION_FAKE_FINANCIAL_LIFECYCLE_BRIDGE_MIGRATION =
-  '20260921_universal_v1_fake_financial_lifecycle_bridge_v1';
+  CANONICAL_FAKE_FINANCIAL_MIGRATION_FILES[3].name;
 export const NONPRODUCTION_FAKE_FINANCIAL_TERMINAL_LIFECYCLE_MIGRATION =
-  '20260922_universal_v1_fake_terminal_lifecycle_intent_v1';
+  CANONICAL_FAKE_FINANCIAL_MIGRATION_FILES[4].name;
 export const NONPRODUCTION_FAKE_FINANCIAL_CHANGE_ORDER_THREE_PHASE_MIGRATION =
-  '20260926_universal_v1_change_order_three_phase_v1';
+  CANONICAL_FAKE_FINANCIAL_MIGRATION_FILES[5].name;
 export const NONPRODUCTION_FAKE_FINANCIAL_CHANGE_ORDER_RECOVERY_MIGRATION =
-  '20260927_universal_v1_change_order_recovery_v1';
+  CANONICAL_FAKE_FINANCIAL_MIGRATION_FILES[6].name;
 export const NONPRODUCTION_FAKE_FINANCIAL_DISPUTE_RELEASE_GATE_MIGRATION =
-  '20261002_universal_v1_dispute_fake_release_gate_v8';
+  CANONICAL_FAKE_FINANCIAL_MIGRATION_FILES[7].name;
+export const NONPRODUCTION_FAKE_FINANCIAL_SECURITY_EXPIRY_MIGRATION =
+  CANONICAL_FAKE_FINANCIAL_MIGRATION_FILES[8].name;
+export const NONPRODUCTION_FAKE_FINANCIAL_EXPIRY_RECOVERY_MIGRATION =
+  CANONICAL_FAKE_FINANCIAL_MIGRATION_FILES[9].name;
+export const NONPRODUCTION_FAKE_FINANCIAL_RUNTIME_INSERT_AUTHORITY_MIGRATION =
+  CANONICAL_FAKE_FINANCIAL_MIGRATION_FILES[10].name;
+export const NONPRODUCTION_FAKE_FINANCIAL_WORK_ORDER_AUTHORITY_HARDENING_MIGRATION =
+  CANONICAL_FAKE_FINANCIAL_MIGRATION_FILES[11].name;
+export const NONPRODUCTION_FAKE_FINANCIAL_WORK_ORDER_BOOTSTRAP_SEAL_MIGRATION =
+  CANONICAL_FAKE_FINANCIAL_MIGRATION_FILES[12].name;
+export const NONPRODUCTION_FAKE_FINANCIAL_COMMAND_OUTBOX_MIGRATION =
+  CANONICAL_FAKE_FINANCIAL_MIGRATION_FILES[13].name;
 export const NONPRODUCTION_FAKE_FINANCIAL_MIGRATION =
-  NONPRODUCTION_FAKE_FINANCIAL_DISPUTE_RELEASE_GATE_MIGRATION;
+  NONPRODUCTION_FAKE_FINANCIAL_COMMAND_OUTBOX_MIGRATION;
 
-export const NONPRODUCTION_FAKE_FINANCIAL_MIGRATION_FILES = [
-  {
-    name: NONPRODUCTION_FAKE_FINANCIAL_BASE_MIGRATION,
-    fileName: '20260827_fake_financial_provider_v1.sql',
-    evidenceTable: 'hxos_fake_financial_schema_evidence_v1',
-  },
-  {
-    name: NONPRODUCTION_FAKE_FINANCIAL_ACCOUNT_REFRESH_MIGRATION,
-    fileName: '20260903_fake_financial_provider_account_refresh_v2.sql',
-    evidenceTable: 'hxos_fake_financial_schema_evidence_v2',
-  },
-  {
-    name: NONPRODUCTION_FAKE_FINANCIAL_SETTLEMENT_COMPLETION_MIGRATION,
-    fileName: '20260910_fake_financial_settlement_completion_v3.sql',
-    evidenceTable: 'hxos_fake_financial_schema_evidence_v3',
-  },
-  {
-    name: NONPRODUCTION_FAKE_FINANCIAL_LIFECYCLE_BRIDGE_MIGRATION,
-    fileName: '20260921_universal_v1_fake_financial_lifecycle_bridge_v1.sql',
-    evidenceTable: 'hxos_fake_financial_schema_evidence_v4',
-  },
-  {
-    name: NONPRODUCTION_FAKE_FINANCIAL_TERMINAL_LIFECYCLE_MIGRATION,
-    fileName: '20260922_universal_v1_fake_terminal_lifecycle_intent_v1.sql',
-    evidenceTable: 'hxos_fake_financial_schema_evidence_v5',
-  },
-  {
-    name: NONPRODUCTION_FAKE_FINANCIAL_CHANGE_ORDER_THREE_PHASE_MIGRATION,
-    fileName: '20260926_universal_v1_change_order_three_phase_v1.sql',
-    evidenceTable: 'hxos_fake_financial_schema_evidence_v6',
-  },
-  {
-    name: NONPRODUCTION_FAKE_FINANCIAL_CHANGE_ORDER_RECOVERY_MIGRATION,
-    fileName: '20260927_universal_v1_change_order_recovery_v1.sql',
-    evidenceTable: 'hxos_fake_financial_schema_evidence_v7',
-  },
-  {
-    name: NONPRODUCTION_FAKE_FINANCIAL_DISPUTE_RELEASE_GATE_MIGRATION,
-    fileName: '20261002_universal_v1_dispute_fake_release_gate_v8.sql',
-    evidenceTable: 'hxos_fake_financial_schema_evidence_v8',
-  },
-] as const;
+export const NONPRODUCTION_FAKE_FINANCIAL_MIGRATION_FILES =
+  CANONICAL_FAKE_FINANCIAL_MIGRATION_FILES;
 
 export interface NonproductionFinancialMigrationRuntime {
   env: NodeJS.ProcessEnv | Record<string, string | undefined>;
@@ -104,16 +91,11 @@ export interface NonproductionFinancialMigrationRuntime {
 }
 
 export interface NonproductionFinancialDatabaseBootstrapRuntime {
-  runRequiredMigrationsOnClient(
-    client: MigrationClient,
-    databaseUrl: string,
-    expectedTarget: ExpectedNonproductionDatabaseTarget,
-  ): Promise<MigrationOutcome[]>;
   financialMigration: NonproductionFinancialMigrationRuntime;
 }
 
 export interface NonproductionFinancialMigrationOutcome extends MigrationOutcome {
-  migrations: MigrationOutcome[];
+  migrations: readonly MigrationOutcome[];
   releaseManifestDigest: string;
   migrationArtifactDigest: string;
 }
@@ -121,6 +103,8 @@ export interface NonproductionFinancialMigrationOutcome extends MigrationOutcome
 export interface NonproductionFinancialBootstrapCompletion {
   schemaVersion: 1;
   status: 'complete';
+  receiptType: 'nonproduction-financial-bootstrap-diagnostic-v1';
+  acceptanceEligible: false;
   releaseManifestDigest: string;
   migrationArtifactDigest: string;
   releaseId: string;
@@ -140,6 +124,21 @@ interface BootstrapCompletionRow extends Record<string, unknown> {
   completed_at: Date | string;
 }
 
+interface CanonicalMigrationEvidence {
+  name: string;
+  sha256: string;
+  sourcePaths: readonly string[];
+}
+
+interface IssuedFinancialOutcomeProof {
+  receipt: FakeFinancialExecutionReceipt;
+  entries: readonly Readonly<FakeFinancialMigrationPlanEntry>[];
+  databaseUrl: string;
+  state: 'available' | 'reserved' | 'consumed';
+}
+
+const issuedFinancialOutcomes = new WeakMap<object, IssuedFinancialOutcomeProof>();
+
 function normalizeArtifactDigest(value: string): string {
   const normalized = value.trim().toLowerCase();
   if (/^[0-9a-f]{64}$/u.test(normalized)) return `sha256:${normalized}`;
@@ -151,18 +150,97 @@ function sqlSha256(sql: string): string {
   return createHash('sha256').update(sql, 'utf8').digest('hex');
 }
 
-function assertRequiredMigrationEvidence(required: readonly MigrationOutcome[]): void {
-  if (required.length !== REQUIRED_MIGRATION_FILES.length) {
+function exactSourcePath(value: string): string {
+  const normalized = path.resolve(value).replaceAll('\\', '/');
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+function canonicalMigrationSourcePaths(fileName: string): readonly string[] {
+  return Object.freeze([
+    ...new Set(
+      [
+        path.join(process.cwd(), 'backend/database/migrations', fileName),
+        path.join('/app/backend/database/migrations', fileName),
+      ].map(exactSourcePath)
+    ),
+  ]);
+}
+
+async function readCanonicalMigrationSql(fileName: string): Promise<{
+  sql: string;
+  sourcePaths: readonly string[];
+}> {
+  const sourcePaths = canonicalMigrationSourcePaths(fileName);
+  for (const sourcePath of sourcePaths) {
+    try {
+      const sql = await readFile(sourcePath, 'utf8');
+      if (!sql.trim()) throw new Error('empty canonical migration');
+      return { sql, sourcePaths };
+    } catch {
+      // Continue to the immutable image path.
+    }
+  }
+  throw new Error('NONPRODUCTION_CANONICAL_MIGRATION_SOURCE_UNAVAILABLE');
+}
+
+async function canonicalRequiredMigrationEvidence(): Promise<
+  readonly CanonicalMigrationEvidence[]
+> {
+  return Object.freeze(
+    await Promise.all(
+      REQUIRED_MIGRATION_FILES.map(async ({ name, fileName }) => {
+        const canonical = await readCanonicalMigrationSql(fileName);
+        return Object.freeze({
+          name,
+          sha256: sqlSha256(canonical.sql),
+          sourcePaths: canonical.sourcePaths,
+        });
+      })
+    )
+  );
+}
+
+async function canonicalConstitutionalBaselineEvidence(): Promise<CanonicalMigrationEvidence> {
+  const sourcePaths = Object.freeze([
+    ...new Set(
+      [
+        path.join(process.cwd(), 'backend/database/constitutional-schema.sql'),
+        path.join('/app/backend/database/constitutional-schema.sql'),
+      ].map(exactSourcePath)
+    ),
+  ]);
+  for (const sourcePath of sourcePaths) {
+    try {
+      const sql = await readFile(sourcePath, 'utf8');
+      if (sql.trim()) {
+        return Object.freeze({
+          name: 'constitutional_schema_v1',
+          sha256: sqlSha256(sql),
+          sourcePaths,
+        });
+      }
+    } catch {
+      // Continue to the immutable image path.
+    }
+  }
+  throw new Error('NONPRODUCTION_CANONICAL_BASELINE_SOURCE_UNAVAILABLE');
+}
+
+function assertRequiredMigrationEvidence(
+  required: readonly MigrationOutcome[],
+  canonical: readonly CanonicalMigrationEvidence[]
+): void {
+  if (required.length !== canonical.length) {
     throw new Error('NONPRODUCTION_REQUIRED_MIGRATION_EVIDENCE_INCOMPLETE');
   }
-  for (const [index, expected] of REQUIRED_MIGRATION_FILES.entries()) {
+  for (const [index, expected] of canonical.entries()) {
     const outcome = required[index];
     if (
-      !outcome
-      || outcome.migration !== expected.name
-      || !['applied', 'already_applied'].includes(outcome.status)
-      || !outcome.sourcePath?.trim()
-      || !/^[0-9a-f]{64}$/u.test(outcome.sha256)
+      !outcome ||
+      outcome.migration !== expected.name ||
+      !['applied', 'already_applied'].includes(outcome.status) ||
+      !expected.sourcePaths.includes(exactSourcePath(outcome.sourcePath)) ||
+      outcome.sha256 !== expected.sha256
     ) {
       throw new Error('NONPRODUCTION_REQUIRED_MIGRATION_EVIDENCE_MISMATCH');
     }
@@ -170,19 +248,19 @@ function assertRequiredMigrationEvidence(required: readonly MigrationOutcome[]):
 }
 
 function assertExactFakeFinancialMigrationChain(
-  runtime: NonproductionFinancialMigrationRuntime,
+  runtime: NonproductionFinancialMigrationRuntime
 ): void {
   const exactSpecs = NONPRODUCTION_FAKE_FINANCIAL_MIGRATION_FILES;
   if (
-    runtime.migrationSpecs.length !== exactSpecs.length
-    || runtime.migrationSpecs.some((spec, index) => spec.name !== exactSpecs[index]?.name)
+    runtime.migrationSpecs.length !== exactSpecs.length ||
+    runtime.migrationSpecs.some((spec, index) => spec.name !== exactSpecs[index]?.name)
   ) {
     throw new Error('NONPRODUCTION_FAKE_FINANCIAL_MIGRATION_CHAIN_MISMATCH');
   }
 }
 
 function fakeFinancialMigrationRuntime(
-  runtime: NonproductionFinancialMigrationRuntime,
+  runtime: NonproductionFinancialMigrationRuntime
 ): MigrationRuntime {
   return {
     databaseUrl: runtime.databaseUrl,
@@ -192,9 +270,45 @@ function fakeFinancialMigrationRuntime(
   };
 }
 
+async function exactFakeFinancialMigrationPlan(
+  runtime: NonproductionFinancialMigrationRuntime
+): Promise<readonly FakeFinancialMigrationPlanEntry[]> {
+  assertExactFakeFinancialMigrationChain(runtime);
+  const migrationRuntime = fakeFinancialMigrationRuntime(runtime);
+  return Object.freeze(
+    await Promise.all(
+      NONPRODUCTION_FAKE_FINANCIAL_MIGRATION_FILES.map(async (registration, index) => {
+        const spec = runtime.migrationSpecs[index];
+        if (!spec || spec.name !== registration.name) {
+          throw new Error('NONPRODUCTION_FAKE_FINANCIAL_MIGRATION_CHAIN_MISMATCH');
+        }
+        const [canonical, loaded] = await Promise.all([
+          readCanonicalMigrationSql(registration.fileName),
+          loadMigrationSql(migrationRuntime, spec),
+        ]);
+        const sourcePath = exactSourcePath(loaded.sourcePath);
+        const canonicalSha256 = sqlSha256(canonical.sql);
+        if (
+          !canonical.sourcePaths.includes(sourcePath) ||
+          sqlSha256(loaded.sql) !== canonicalSha256
+        ) {
+          throw new Error('NONPRODUCTION_FAKE_FINANCIAL_CANONICAL_SOURCE_MISMATCH');
+        }
+        return Object.freeze<FakeFinancialMigrationPlanEntry>({
+          name: registration.name,
+          evidenceTable: registration.evidenceTable,
+          sql: loaded.sql,
+          sourcePath: loaded.sourcePath,
+          sha256: canonicalSha256,
+        });
+      })
+    )
+  );
+}
+
 async function exactMigrationArtifactDigest(
   runtime: NonproductionFinancialMigrationRuntime,
-  expectedDigest: string,
+  expectedDigest: string
 ): Promise<string> {
   const artifactDigest = normalizeArtifactDigest(await runtime.migrationArtifactDigest());
   if (artifactDigest !== expectedDigest) {
@@ -203,69 +317,84 @@ async function exactMigrationArtifactDigest(
   return artifactDigest;
 }
 
+function qualifiedEvidenceRelation(evidenceTable: string): string {
+  if (!/^hxos_[a-z0-9_]{1,57}$/u.test(evidenceTable)) {
+    throw new Error('NONPRODUCTION_FAKE_FINANCIAL_EVIDENCE_RELATION_INVALID');
+  }
+  return `public.${evidenceTable}`;
+}
+
 async function applyVerifiedFakeFinancialMigration(
+  session: FakeFinancialExecutionSession,
   client: MigrationClient,
-  migrationName: string,
-  evidenceTable: string,
-  sql: string,
-  sourcePath: string,
+  runtime: NonproductionFinancialMigrationRuntime,
+  entry: Readonly<FakeFinancialMigrationPlanEntry>
 ): Promise<MigrationOutcome> {
-  const expectedSqlSha256 = sqlSha256(sql);
-  await client.query('BEGIN');
+  const databaseUrl = runtime.databaseUrl;
+  const permit = await beginFakeFinancialMigrationOperation(session, entry, client, databaseUrl);
+  let transactionStarted = false;
   try {
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
-      migrationName,
-    ]);
-    await client.query(`CREATE TABLE IF NOT EXISTS applied_migrations (
+    if (runtime.databaseUrl !== databaseUrl) {
+      throw new Error('NONPRODUCTION_FAKE_FINANCIAL_DATABASE_URL_SUBSTITUTION');
+    }
+    await client.query('BEGIN');
+    transactionStarted = true;
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [entry.name]);
+    await client.query(`CREATE TABLE IF NOT EXISTS public.applied_migrations (
       name TEXT PRIMARY KEY,
       sha256 CHAR(64) NOT NULL CHECK (sha256 ~ '^[a-f0-9]{64}$'),
       applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`);
     await client.query(
-      'ALTER TABLE applied_migrations ADD COLUMN IF NOT EXISTS sha256 CHAR(64)'
+      'ALTER TABLE public.applied_migrations ADD COLUMN IF NOT EXISTS sha256 CHAR(64)'
     );
     const existing = await client.query<{ name: string; sha256: string | null }>(
-      'SELECT name, sha256 FROM applied_migrations WHERE name = $1',
-      [migrationName],
+      'SELECT name, sha256 FROM public.applied_migrations WHERE name = $1',
+      [entry.name]
     );
     let status: MigrationOutcome['status'];
     if (existing.rows.length === 0) {
-      await client.query(sql);
+      await client.query(entry.sql);
       await client.query(
-        `INSERT INTO ${evidenceTable}
+        `INSERT INTO ${qualifiedEvidenceRelation(entry.evidenceTable)}
            (migration_name, migration_sql_sha256)
          VALUES ($1, $2)`,
-        [migrationName, expectedSqlSha256],
+        [entry.name, entry.sha256]
       );
       await client.query(
-        'INSERT INTO applied_migrations (name, sha256) VALUES ($1, $2)',
-        [migrationName, expectedSqlSha256],
+        'INSERT INTO public.applied_migrations (name, sha256) VALUES ($1, $2)',
+        [entry.name, entry.sha256]
       );
       status = 'applied';
     } else {
-      if (existing.rows[0]?.sha256?.trim() !== expectedSqlSha256) {
+      if (existing.rows[0]?.sha256?.trim() !== entry.sha256) {
         throw new Error('NONPRODUCTION_FAKE_FINANCIAL_APPLIED_DIGEST_MISMATCH');
       }
       const evidence = await client.query<{ migration_sql_sha256: string }>(
         `SELECT migration_sql_sha256
-         FROM ${evidenceTable}
+         FROM ${qualifiedEvidenceRelation(entry.evidenceTable)}
          WHERE migration_name = $1`,
-        [migrationName],
+        [entry.name]
       );
-      if (evidence.rows[0]?.migration_sql_sha256 !== expectedSqlSha256) {
+      if (evidence.rows[0]?.migration_sql_sha256 !== entry.sha256) {
         throw new Error('NONPRODUCTION_FAKE_FINANCIAL_SCHEMA_DIGEST_MISMATCH');
       }
       status = 'already_applied';
     }
+    // A failed COMMIT has an unknown server outcome. Clear rollback authority
+    // before sending it so no later SQL is issued on an ambiguous session.
+    transactionStarted = false;
     await client.query('COMMIT');
+    completeFakeFinancialMigrationOperation(session, permit, client, databaseUrl);
     return {
       status,
-      migration: migrationName,
-      sourcePath,
-      sha256: expectedSqlSha256,
+      migration: entry.name,
+      sourcePath: entry.sourcePath,
+      sha256: entry.sha256,
     };
   } catch (error) {
-    await client.query('ROLLBACK');
+    if (transactionStarted) await client.query('ROLLBACK').catch(() => undefined);
+    abortFakeFinancialMigrationOperation(session, permit, client, databaseUrl);
     throw error;
   }
 }
@@ -273,41 +402,40 @@ async function applyVerifiedFakeFinancialMigration(
 async function applyFakeFinancialMigrationChainOnConnectedClient(
   client: MigrationClient,
   runtime: NonproductionFinancialMigrationRuntime,
-  target: ExpectedNonproductionDatabaseTarget,
   releaseManifestDigestValue: string,
   artifactDigest: string,
-): Promise<NonproductionFinancialMigrationOutcome> {
-  await assertConnectedNonproductionDatabaseTarget(client, target);
-  const exactSpecs = NONPRODUCTION_FAKE_FINANCIAL_MIGRATION_FILES;
-  const migrationRuntime = fakeFinancialMigrationRuntime(runtime);
-  const migrations = await Promise.all(runtime.migrationSpecs.map(async (spec) => ({
-    spec,
-    loaded: await loadMigrationSql(migrationRuntime, spec),
-  })));
-
+  execution: Awaited<ReturnType<typeof authorizeFakeFinancialExecutionSession>>
+): Promise<{
+  outcome: NonproductionFinancialMigrationOutcome;
+  receipt: FakeFinancialExecutionReceipt;
+}> {
   const outcomes: MigrationOutcome[] = [];
-  for (const [index, migration] of migrations.entries()) {
-    const registration = exactSpecs[index];
-    if (!registration || registration.name !== migration.spec.name) {
-      throw new Error('NONPRODUCTION_FAKE_FINANCIAL_MIGRATION_CHAIN_MISMATCH');
-    }
-    outcomes.push(await applyVerifiedFakeFinancialMigration(
-      client,
-      migration.spec.name,
-      registration.evidenceTable,
-      migration.loaded.sql,
-      migration.loaded.sourcePath,
-    ));
+  for (const entry of execution.entries) {
+    outcomes.push(
+      await applyVerifiedFakeFinancialMigration(execution.session, client, runtime, entry)
+    );
   }
   const outcome = outcomes.at(-1);
   if (!outcome) throw new Error('NONPRODUCTION_FAKE_FINANCIAL_MIGRATION_CHAIN_EMPTY');
   workerLogger.info({ outcomes }, 'Nonproduction fake-financial migrations verified');
-  return {
+  const receipt = completeFakeFinancialExecutionSession(
+    execution.session,
+    client,
+    runtime.databaseUrl
+  );
+  const financial = Object.freeze<NonproductionFinancialMigrationOutcome>({
     ...outcome,
-    migrations: outcomes,
+    migrations: Object.freeze(outcomes.map((entry) => Object.freeze({ ...entry }))),
     releaseManifestDigest: releaseManifestDigestValue,
     migrationArtifactDigest: artifactDigest,
-  };
+  });
+  issuedFinancialOutcomes.set(financial, {
+    receipt,
+    entries: execution.entries,
+    databaseUrl: runtime.databaseUrl,
+    state: 'available',
+  });
+  return { outcome: financial, receipt };
 }
 
 export function defaultNonproductionFinancialMigrationRuntime(): NonproductionFinancialMigrationRuntime {
@@ -340,7 +468,7 @@ export function defaultNonproductionFinancialMigrationRuntime(): NonproductionFi
 }
 
 export async function runNonproductionFinancialMigration(
-  runtime: NonproductionFinancialMigrationRuntime = defaultNonproductionFinancialMigrationRuntime(),
+  runtime: NonproductionFinancialMigrationRuntime = defaultNonproductionFinancialMigrationRuntime()
 ): Promise<NonproductionFinancialMigrationOutcome> {
   const manifest = assertNonproductionFakeFinanceAuthorized({
     env: runtime.env,
@@ -348,23 +476,38 @@ export async function runNonproductionFinancialMigration(
     identity: runtime.identity,
     component: 'migration',
   });
-  const target = assertConfiguredNonproductionDatabaseTarget(runtime.env, runtime.databaseUrl);
+  assertConfiguredNonproductionDatabaseTarget(runtime.env, runtime.databaseUrl);
   assertExactFakeFinancialMigrationChain(runtime);
   const artifactDigest = await exactMigrationArtifactDigest(
     runtime,
-    manifest.components.migration.artifactDigest,
+    manifest.components.migration.artifactDigest
   );
+  const authority = assertMigrationExecutionAuthorized({
+    env: runtime.env,
+    release: runtime.release,
+    identity: runtime.identity,
+    migrationArtifactDigest: artifactDigest,
+    databaseUrl: runtime.databaseUrl,
+  });
+  const plan = await exactFakeFinancialMigrationPlan(runtime);
   const manifestDigest = releaseManifestDigest(manifest);
   const client = runtime.createClient(runtime.databaseUrl);
   await client.connect();
   try {
-    return await applyFakeFinancialMigrationChainOnConnectedClient(
+    const execution = await authorizeFakeFinancialExecutionSession({
+      authority,
+      databaseUrl: runtime.databaseUrl,
+      client,
+      entries: plan,
+    });
+    const result = await applyFakeFinancialMigrationChainOnConnectedClient(
       client,
       runtime,
-      target,
       manifestDigest,
       artifactDigest,
+      execution
     );
+    return result.outcome;
   } catch (error) {
     workerLogger.fatal({ err: error }, 'Nonproduction fake-financial migration failed closed');
     throw error;
@@ -377,6 +520,8 @@ function mapCompletion(row: BootstrapCompletionRow): NonproductionFinancialBoots
   return {
     schemaVersion: 1,
     status: 'complete',
+    receiptType: 'nonproduction-financial-bootstrap-diagnostic-v1',
+    acceptanceEligible: false,
     releaseManifestDigest: row.release_manifest_digest,
     migrationArtifactDigest: row.migration_artifact_digest,
     releaseId: row.release_id,
@@ -387,29 +532,101 @@ function mapCompletion(row: BootstrapCompletionRow): NonproductionFinancialBoots
   };
 }
 
+async function assertExactRequiredMigrationLedger(
+  client: MigrationClient,
+  canonical: readonly CanonicalMigrationEvidence[]
+): Promise<void> {
+  for (const expected of canonical) {
+    const result = await client.query<{ name: string; sha256: string | null }>(
+      'SELECT name, sha256 FROM public.applied_migrations WHERE name = $1',
+      [expected.name]
+    );
+    if (
+      result.rows.length !== 1 ||
+      result.rows[0]?.name !== expected.name ||
+      result.rows[0]?.sha256?.trim() !== expected.sha256
+    ) {
+      throw new Error('NONPRODUCTION_REQUIRED_MIGRATION_LEDGER_MISMATCH');
+    }
+  }
+}
+
+async function assertExactFakeFinancialMigrationLedger(
+  client: MigrationClient,
+  entries: readonly Readonly<FakeFinancialMigrationPlanEntry>[]
+): Promise<void> {
+  for (const entry of entries) {
+    const applied = await client.query<{ name: string; sha256: string | null }>(
+      'SELECT name, sha256 FROM public.applied_migrations WHERE name = $1',
+      [entry.name]
+    );
+    if (
+      applied.rows.length !== 1 ||
+      applied.rows[0]?.name !== entry.name ||
+      applied.rows[0]?.sha256?.trim() !== entry.sha256
+    ) {
+      throw new Error('NONPRODUCTION_FAKE_FINANCIAL_APPLIED_DIGEST_MISMATCH');
+    }
+    const evidence = await client.query<{ migration_sql_sha256: string }>(
+      `SELECT migration_sql_sha256
+       FROM ${qualifiedEvidenceRelation(entry.evidenceTable)}
+       WHERE migration_name = $1`,
+      [entry.name]
+    );
+    if (evidence.rows.length !== 1 || evidence.rows[0]?.migration_sql_sha256 !== entry.sha256) {
+      throw new Error('NONPRODUCTION_FAKE_FINANCIAL_SCHEMA_DIGEST_MISMATCH');
+    }
+  }
+}
+
+async function assertNoUnexpectedAppliedMigrations(
+  client: MigrationClient,
+  canonicalRequired: readonly CanonicalMigrationEvidence[],
+  baseline: CanonicalMigrationEvidence,
+  entries: readonly Readonly<FakeFinancialMigrationPlanEntry>[]
+): Promise<void> {
+  const allowed = new Map<string, string>([
+    ...canonicalRequired.map(({ name, sha256 }) => [name, sha256] as const),
+    [baseline.name, baseline.sha256] as const,
+    ...entries.map(({ name, sha256 }) => [name, sha256] as const),
+  ]);
+  const result = await client.query<{ name: string; sha256: string | null }>(
+    'SELECT name, sha256 FROM public.applied_migrations ORDER BY name'
+  );
+  const seen = new Set<string>();
+  for (const row of result.rows) {
+    if (seen.has(row.name) || allowed.get(row.name) !== row.sha256?.trim()) {
+      throw new Error('NONPRODUCTION_APPLIED_MIGRATION_SET_MISMATCH');
+    }
+    seen.add(row.name);
+  }
+}
+
 function assertNonproductionFinancialBootstrapEvidence(
   manifest: ReleaseManifest,
-  required: MigrationOutcome[],
+  required: readonly MigrationOutcome[],
   financial: NonproductionFinancialMigrationOutcome,
+  canonicalRequired: readonly CanonicalMigrationEvidence[],
+  entries: readonly Readonly<FakeFinancialMigrationPlanEntry>[]
 ): void {
-  assertRequiredMigrationEvidence(required);
-  const exactFinancialChain = NONPRODUCTION_FAKE_FINANCIAL_MIGRATION_FILES;
+  assertRequiredMigrationEvidence(required, canonicalRequired);
   if (
-    financial.migration !== NONPRODUCTION_FAKE_FINANCIAL_MIGRATION
-    || financial.migrations.length !== exactFinancialChain.length
-    || financial.migrations.some((outcome, index) => (
-      outcome.migration !== exactFinancialChain[index]?.name
-      || !['applied', 'already_applied'].includes(outcome.status)
-      || !outcome.sourcePath?.trim()
-      || !/^[0-9a-f]{64}$/u.test(outcome.sha256)
-    ))
-    || financial.status !== financial.migrations.at(-1)?.status
-    || financial.sourcePath !== financial.migrations.at(-1)?.sourcePath
-    || financial.sha256 !== financial.migrations.at(-1)?.sha256
-    || !['applied', 'already_applied'].includes(financial.status)
-    || !financial.sourcePath?.trim()
-    || financial.releaseManifestDigest !== releaseManifestDigest(manifest)
-    || financial.migrationArtifactDigest !== manifest.components.migration.artifactDigest
+    financial.migration !== NONPRODUCTION_FAKE_FINANCIAL_MIGRATION ||
+    financial.migrations.length !== entries.length ||
+    financial.migrations.some(
+      (outcome, index) =>
+        outcome.migration !== entries[index]?.name ||
+        !['applied', 'already_applied'].includes(outcome.status) ||
+        exactSourcePath(outcome.sourcePath) !== exactSourcePath(entries[index]?.sourcePath ?? '') ||
+        outcome.sha256 !== entries[index]?.sha256
+    ) ||
+    financial.status !== financial.migrations.at(-1)?.status ||
+    financial.sourcePath !== financial.migrations.at(-1)?.sourcePath ||
+    financial.sha256 !== financial.migrations.at(-1)?.sha256 ||
+    !['applied', 'already_applied'].includes(financial.status) ||
+    !financial.sourcePath?.trim() ||
+    financial.releaseManifestDigest !== releaseManifestDigest(manifest) ||
+    financial.migrationArtifactDigest !== manifest.components.migration.artifactDigest
   ) {
     throw new Error('NONPRODUCTION_BOOTSTRAP_EVIDENCE_MISMATCH');
   }
@@ -419,16 +636,37 @@ async function recordNonproductionFinancialBootstrapCompletionOnConnectedClient(
   client: MigrationClient,
   target: ExpectedNonproductionDatabaseTarget,
   manifest: ReleaseManifest,
-  required: MigrationOutcome[],
+  required: readonly MigrationOutcome[],
   financial: NonproductionFinancialMigrationOutcome,
+  canonicalRequired: readonly CanonicalMigrationEvidence[],
+  canonicalBaseline: CanonicalMigrationEvidence,
+  entries: readonly Readonly<FakeFinancialMigrationPlanEntry>[],
+  receipt: FakeFinancialExecutionReceipt
 ): Promise<NonproductionFinancialBootstrapCompletion> {
-  assertNonproductionFinancialBootstrapEvidence(manifest, required, financial);
+  assertFakeFinancialExecutionReceipt(receipt);
+  assertNonproductionFinancialBootstrapEvidence(
+    manifest,
+    required,
+    financial,
+    canonicalRequired,
+    entries
+  );
   await assertConnectedNonproductionDatabaseTarget(client, target);
+  let transactionStarted = false;
   await client.query('BEGIN');
+  transactionStarted = true;
   try {
     await client.query(
       `SELECT pg_advisory_xact_lock(hashtext('nonproduction-bootstrap-completion'), hashtext($1))`,
-      [financial.releaseManifestDigest],
+      [financial.releaseManifestDigest]
+    );
+    await assertExactRequiredMigrationLedger(client, canonicalRequired);
+    await assertExactFakeFinancialMigrationLedger(client, entries);
+    await assertNoUnexpectedAppliedMigrations(
+      client,
+      canonicalRequired,
+      canonicalBaseline,
+      entries
     );
     const values = [
       financial.releaseManifestDigest,
@@ -447,39 +685,38 @@ async function recordNonproductionFinancialBootstrapCompletionOnConnectedClient(
        RETURNING release_manifest_digest, migration_artifact_digest, release_id,
                  release_environment, required_migration_count,
                  financial_migration_status, completed_at`,
-      values,
+      values
     );
     const selected = inserted.rows[0]
       ? inserted
       : await client.query<BootstrapCompletionRow>(
-        `SELECT release_manifest_digest, migration_artifact_digest, release_id,
+          `SELECT release_manifest_digest, migration_artifact_digest, release_id,
                 release_environment, required_migration_count,
                 financial_migration_status, completed_at
          FROM hxos_nonproduction_bootstrap_completion_v1
          WHERE release_manifest_digest = $1 AND migration_artifact_digest = $2`,
-        values.slice(0, 2),
-      );
+          values.slice(0, 2)
+        );
     const row = selected.rows[0];
     if (!row) throw new Error('NONPRODUCTION_BOOTSTRAP_EVIDENCE_NOT_RECORDED');
     const completion = mapCompletion(row);
     if (
-      completion.releaseId !== manifest.releaseId
-      || completion.environment !== manifest.environment
-      || completion.requiredMigrationCount !== required.length
-      || (
-        completion.financialMigrationStatus !== financial.status
-        && !(
-          completion.financialMigrationStatus === 'applied'
-          && financial.status === 'already_applied'
-        )
-      )
+      completion.releaseId !== manifest.releaseId ||
+      completion.environment !== manifest.environment ||
+      completion.requiredMigrationCount !== required.length ||
+      (completion.financialMigrationStatus !== financial.status &&
+        !(
+          completion.financialMigrationStatus === 'applied' &&
+          financial.status === 'already_applied'
+        ))
     ) {
       throw new Error('NONPRODUCTION_BOOTSTRAP_EVIDENCE_CONFLICT');
     }
+    transactionStarted = false;
     await client.query('COMMIT');
     return completion;
   } catch (error) {
-    await client.query('ROLLBACK');
+    if (transactionStarted) await client.query('ROLLBACK').catch(() => undefined);
     throw error;
   }
 }
@@ -487,7 +724,7 @@ async function recordNonproductionFinancialBootstrapCompletionOnConnectedClient(
 export async function recordNonproductionFinancialBootstrapCompletion(
   runtime: NonproductionFinancialMigrationRuntime,
   required: MigrationOutcome[],
-  financial: NonproductionFinancialMigrationOutcome,
+  financial: NonproductionFinancialMigrationOutcome
 ): Promise<NonproductionFinancialBootstrapCompletion> {
   const manifest = assertNonproductionFakeFinanceAuthorized({
     env: runtime.env,
@@ -496,37 +733,53 @@ export async function recordNonproductionFinancialBootstrapCompletion(
     component: 'migration',
   });
   const target = assertConfiguredNonproductionDatabaseTarget(runtime.env, runtime.databaseUrl);
-  assertNonproductionFinancialBootstrapEvidence(manifest, required, financial);
-  const client = runtime.createClient(runtime.databaseUrl);
-  await client.connect();
+  const proof = issuedFinancialOutcomes.get(financial);
+  if (!proof || proof.state !== 'available') {
+    throw new Error('NONPRODUCTION_BOOTSTRAP_OPAQUE_FINANCIAL_RECEIPT_REQUIRED');
+  }
+  if (proof.databaseUrl !== runtime.databaseUrl) {
+    throw new Error('NONPRODUCTION_BOOTSTRAP_DATABASE_URL_MISMATCH');
+  }
+  proof.state = 'reserved';
   try {
-    return await recordNonproductionFinancialBootstrapCompletionOnConnectedClient(
-      client,
-      target,
+    const [canonicalRequired, canonicalBaseline] = await Promise.all([
+      canonicalRequiredMigrationEvidence(),
+      canonicalConstitutionalBaselineEvidence(),
+    ]);
+    assertNonproductionFinancialBootstrapEvidence(
       manifest,
       required,
       financial,
+      canonicalRequired,
+      proof.entries
     );
-  } finally {
-    await client.end();
+    const client = runtime.createClient(runtime.databaseUrl);
+    await client.connect();
+    try {
+      const completion = await recordNonproductionFinancialBootstrapCompletionOnConnectedClient(
+        client,
+        target,
+        manifest,
+        required,
+        financial,
+        canonicalRequired,
+        canonicalBaseline,
+        proof.entries,
+        proof.receipt
+      );
+      proof.state = 'consumed';
+      return completion;
+    } finally {
+      await client.end();
+    }
+  } catch (error) {
+    if (proof.state === 'reserved') proof.state = 'available';
+    throw error;
   }
 }
 
 export function defaultNonproductionFinancialDatabaseBootstrapRuntime(): NonproductionFinancialDatabaseBootstrapRuntime {
   return {
-    runRequiredMigrationsOnClient: async (client, databaseUrl, expectedTarget) => {
-      const requiredRuntime = productionMigrationRuntime();
-      if (
-        expectedTarget.databaseUrl !== databaseUrl
-        || requiredRuntime.databaseUrl !== databaseUrl
-      ) {
-        throw new Error('NONPRODUCTION_DATABASE_TARGET_REFUSED:CANONICAL_DATABASE_URL_MISMATCH');
-      }
-      return runEngineAutomationMigrationsOnConnectedClient(client, {
-        ...requiredRuntime,
-        databaseUrl,
-      });
-    },
     financialMigration: defaultNonproductionFinancialMigrationRuntime(),
   };
 }
@@ -536,8 +789,7 @@ export function defaultNonproductionFinancialDatabaseBootstrapRuntime(): Nonprod
  * migrations must succeed before the synthetic finance schema is considered.
  */
 export async function runNonproductionFinancialDatabaseBootstrap(
-  runtime: NonproductionFinancialDatabaseBootstrapRuntime =
-    defaultNonproductionFinancialDatabaseBootstrapRuntime(),
+  runtime: NonproductionFinancialDatabaseBootstrapRuntime = defaultNonproductionFinancialDatabaseBootstrapRuntime()
 ): Promise<{
   required: MigrationOutcome[];
   financial: NonproductionFinancialMigrationOutcome;
@@ -551,7 +803,7 @@ export async function runNonproductionFinancialDatabaseBootstrap(
   });
   const target = assertConfiguredNonproductionDatabaseTarget(
     runtime.financialMigration.env,
-    runtime.financialMigration.databaseUrl,
+    runtime.financialMigration.databaseUrl
   );
   assertExactFakeFinancialMigrationChain(runtime.financialMigration);
   const exactMigrationArtifactDigest = await runtime.financialMigration.migrationArtifactDigest();
@@ -559,37 +811,68 @@ export async function runNonproductionFinancialDatabaseBootstrap(
   if (artifactDigest !== manifest.components.migration.artifactDigest) {
     throw new Error('NONPRODUCTION_MIGRATION_ARTIFACT_DIGEST_MISMATCH');
   }
-  assertMigrationExecutionAuthorized({
+  const coreAuthority = assertMigrationExecutionAuthorized({
     env: runtime.financialMigration.env,
     release: runtime.financialMigration.release,
     identity: runtime.financialMigration.identity,
-    migrationArtifactDigest: exactMigrationArtifactDigest,
+    migrationArtifactDigest: artifactDigest,
+    databaseUrl: runtime.financialMigration.databaseUrl,
   });
-  const client = runtime.financialMigration.createClient(target.databaseUrl);
+  const fakeFinancialAuthority = assertMigrationExecutionAuthorized({
+    env: runtime.financialMigration.env,
+    release: runtime.financialMigration.release,
+    identity: runtime.financialMigration.identity,
+    migrationArtifactDigest: artifactDigest,
+    databaseUrl: runtime.financialMigration.databaseUrl,
+  });
+  const [plan, canonicalRequired, canonicalBaseline] = await Promise.all([
+    exactFakeFinancialMigrationPlan(runtime.financialMigration),
+    canonicalRequiredMigrationEvidence(),
+    canonicalConstitutionalBaselineEvidence(),
+  ]);
+  const client = runtime.financialMigration.createClient(runtime.financialMigration.databaseUrl);
   await client.connect();
   try {
-    await assertConnectedNonproductionDatabaseTarget(client, target);
-    const required = await runtime.runRequiredMigrationsOnClient(
+    const execution = await authorizeFakeFinancialExecutionSession({
+      authority: fakeFinancialAuthority,
+      databaseUrl: runtime.financialMigration.databaseUrl,
       client,
-      target.databaseUrl,
-      target,
+      entries: plan,
+    });
+    const coreExecution = await runEngineAutomationMigrationsOnConnectedClientWithReceipt(
+      client,
+      {
+        ...productionMigrationRuntime(),
+        databaseUrl: runtime.financialMigration.databaseUrl,
+      },
+      coreAuthority
     );
-    assertRequiredMigrationEvidence(required);
-    const financial = await applyFakeFinancialMigrationChainOnConnectedClient(
+    assertMigrationExecutionReceipt(coreExecution.receipt);
+    const required = coreExecution.outcomes;
+    assertRequiredMigrationEvidence(required, canonicalRequired);
+    await assertExactRequiredMigrationLedger(client, canonicalRequired);
+    const executed = await applyFakeFinancialMigrationChainOnConnectedClient(
       client,
       runtime.financialMigration,
-      target,
       releaseManifestDigest(manifest),
       artifactDigest,
+      execution
     );
     const completion = await recordNonproductionFinancialBootstrapCompletionOnConnectedClient(
       client,
       target,
       manifest,
       required,
-      financial,
+      executed.outcome,
+      canonicalRequired,
+      canonicalBaseline,
+      execution.entries,
+      executed.receipt
     );
-    return { required, financial, completion };
+    const proof = issuedFinancialOutcomes.get(executed.outcome);
+    if (!proof) throw new Error('NONPRODUCTION_BOOTSTRAP_OPAQUE_FINANCIAL_RECEIPT_REQUIRED');
+    proof.state = 'consumed';
+    return { required, financial: executed.outcome, completion };
   } finally {
     await client.end();
   }

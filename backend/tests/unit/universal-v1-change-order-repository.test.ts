@@ -84,6 +84,40 @@ function proposalContextFixture() {
 }
 
 describe('PostgresUniversalV1ChangeOrderRepository', () => {
+  it('maps only the exact expired-adjustment amendment denial to authority revocation', async () => {
+    const database = databaseFor(vi.fn() as unknown as QueryFn);
+    database.serializableTransaction = vi.fn().mockRejectedValue({
+      code: 'P0001',
+      message:
+        'HXUV1-FSE-EXP-2: expired adjustment authority cannot materialize a Work Order amendment',
+    });
+    const repository = new PostgresUniversalV1ChangeOrderRepository(database);
+
+    await expect(repository.finalizePriceAndScopeMaterialization({
+      completed: false,
+      idempotencyKey: 'change-order:finalize:expiry:0001',
+      requestSha256: 'f'.repeat(64),
+      context: {
+        proposalId: ids.proposal,
+        workOrderId: ids.workOrder,
+        taskId: ids.task,
+        taskDraftId: ids.draft,
+        eligibilityDecisionId: ids.eligibility,
+        scopeVersionId: ids.newScope,
+        scopeVersion: 2,
+        customerTotalCents: 13_000,
+        currency: 'USD',
+        predecessorEventId: ids.financial,
+        predecessorOperationId: ids.operation,
+        expectedFinancialVersion: 2,
+        adjustmentOperationId: ids.adjustment,
+        occurredAt: now,
+      },
+    }, ids.adjustment, ids.actor)).rejects.toMatchObject({
+      code: 'CHANGE_ORDER_AUTHORITY_REVOKED',
+    });
+  });
+
   it('creates one exact pending proposal using the PostgreSQL scope digest', async () => {
     const statements: string[] = [];
     const parameters: unknown[][] = [];

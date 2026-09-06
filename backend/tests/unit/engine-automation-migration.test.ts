@@ -102,27 +102,110 @@ import {
   SERVICE_BUSINESS_ASSIGNMENT_CONTRACT_MIGRATION,
   applyEngineAutomationMigration,
   backfillLegacyTaskLocations,
+  ensureConstitutionalBaseline,
   loadMigrationSql,
   productionMigrationRuntime,
   runEngineAutomationMigration,
   type MigrationClient,
   type MigrationRuntime,
 } from '../../src/jobs/engine-automation-migration.js';
+import {
+  assertMigrationExecutionAuthorized,
+  authorizeMigrationExecutionPlan,
+} from '../../src/jobs/migration-execution-authority.js';
+
+const LOCAL_DATABASE_URL = 'postgresql://hx_ci_runner@127.0.0.1:5432/hx_ci_system_test';
+
+function localMigrationSession(
+  client: MigrationClient,
+  migrations: Array<{ name: string; sql: string; sourcePath: string }> = []
+) {
+  const authority = assertMigrationExecutionAuthorized({
+    env: { HX_ENVIRONMENT: 'local', NODE_ENV: 'test', SERVICE_ROLE: 'migration' },
+    migrationArtifactDigest: `sha256:${'a'.repeat(64)}`,
+    databaseUrl: LOCAL_DATABASE_URL,
+  });
+  return authorizeMigrationExecutionPlan(authority, {
+    databaseUrl: LOCAL_DATABASE_URL,
+    client,
+    migrations,
+  });
+}
+
+function localBaselineSession(
+  client: MigrationClient,
+  baseline: { name: string; sql: string; sourcePath: string }
+) {
+  const authority = assertMigrationExecutionAuthorized({
+    env: { HX_ENVIRONMENT: 'local', NODE_ENV: 'test', SERVICE_ROLE: 'migration' },
+    migrationArtifactDigest: `sha256:${'a'.repeat(64)}`,
+    databaseUrl: LOCAL_DATABASE_URL,
+  });
+  return authorizeMigrationExecutionPlan(authority, {
+    databaseUrl: LOCAL_DATABASE_URL,
+    client,
+    baseline,
+    migrations: [],
+  });
+}
 
 function sha256(sql: string): string {
   return createHash('sha256').update(sql, 'utf8').digest('hex');
 }
 
-function clientWithQueries(
-  existingSha256?: string | null
-): MigrationClient & { queries: string[] } {
+function clientWithQueries(existingSha256?: string | null): MigrationClient & {
+  queries: string[];
+  connection: { backendPid: number; sessionMarker: string | null };
+} {
   const queries: string[] = [];
+  const connection = { backendPid: 17_001, sessionMarker: null as string | null };
   return {
     queries,
+    connection,
     connect: vi.fn(async () => undefined),
     end: vi.fn(async () => undefined),
-    query: vi.fn(async (sql: string) => {
+    query: vi.fn(async (sql: string, values?: unknown[]) => {
       queries.push(sql);
+      if (sql.includes("set_config('search_path', 'public', false)")) {
+        return { rows: [{ set_config: 'public' }] };
+      }
+      if (sql.includes('current_database()::text AS database_name')) {
+        return {
+          rows: [
+            {
+              database_name: 'hx_ci_system_test',
+              role_name: 'hx_ci_runner',
+              session_role_name: 'hx_ci_runner',
+              server_address: '127.0.0.1',
+              server_port: 5432,
+              schema_name: 'public',
+              search_path: 'public',
+              effective_schemas: ['public'],
+            },
+          ],
+        };
+      }
+      if (sql.includes("set_config('hustlexp.migration_session', $1, false)")) {
+        connection.sessionMarker = String(values?.[0] ?? '');
+        return {
+          rows: [
+            {
+              backend_pid: connection.backendPid,
+              session_marker: connection.sessionMarker,
+            },
+          ],
+        };
+      }
+      if (sql.includes("current_setting('hustlexp.migration_session', true)")) {
+        return {
+          rows: [
+            {
+              backend_pid: connection.backendPid,
+              session_marker: connection.sessionMarker,
+            },
+          ],
+        };
+      }
       return {
         rows:
           sql.startsWith('SELECT name, sha256') && existingSha256 !== undefined
@@ -133,9 +216,117 @@ function clientWithQueries(
   };
 }
 
+const BASELINE_ENTRY = Object.freeze({
+  name: 'constitutional_schema_v1',
+  sql: 'CREATE TABLE schema_versions(version TEXT PRIMARY KEY);',
+  sourcePath: '/constitutional-schema.sql',
+});
+
+type BaselineReceiptFixture = {
+  receiptCount: number;
+  singletonTrue: boolean;
+  receiptVersion: number;
+  baselineName: string;
+  baselineSha256: string;
+  provenance: 'APPLIED_FROM_EMPTY' | 'LEGACY_CATALOG_RECONCILED';
+  reconciliationSha256: string | null;
+  schemaVersionsExists: boolean;
+  immutableTriggerCount: number;
+  rejectionFunctionExists: boolean;
+  appliedAtPresent: boolean;
+};
+
+function clientWithBaselineCatalog(
+  options: {
+    receipt?: Partial<BaselineReceiptFixture> | null;
+    userObjectsExist?: boolean;
+  } = {}
+): MigrationClient & { queries: string[] } {
+  const client = clientWithQueries();
+  const query = client.query as ReturnType<typeof vi.fn>;
+  const baseQuery = query.getMockImplementation()!;
+  let receiptTableExists = options.receipt !== undefined && options.receipt !== null;
+  let schemaVersionsExists = options.receipt?.schemaVersionsExists ?? false;
+  let receipt: BaselineReceiptFixture | null = receiptTableExists
+    ? {
+        receiptCount: 1,
+        singletonTrue: true,
+        receiptVersion: 1,
+        baselineName: BASELINE_ENTRY.name,
+        baselineSha256: sha256(BASELINE_ENTRY.sql),
+        provenance: 'APPLIED_FROM_EMPTY',
+        reconciliationSha256: null,
+        schemaVersionsExists: true,
+        immutableTriggerCount: 2,
+        rejectionFunctionExists: true,
+        appliedAtPresent: true,
+        ...options.receipt,
+      }
+    : null;
+
+  query.mockImplementation(async (sql: string, values?: unknown[]) => {
+    if (sql.includes('AS receipt_table_exists')) {
+      client.queries.push(sql);
+      return { rows: [{ receipt_table_exists: receiptTableExists }] };
+    }
+    if (sql.includes('AS user_objects_exist')) {
+      client.queries.push(sql);
+      return { rows: [{ user_objects_exist: options.userObjectsExist ?? false }] };
+    }
+    if (sql === BASELINE_ENTRY.sql) {
+      schemaVersionsExists = true;
+      return baseQuery(sql, values);
+    }
+    if (sql.includes('CREATE TABLE public.hustlexp_constitutional_baseline_receipts')) {
+      client.queries.push(sql);
+      receiptTableExists = true;
+      return { rows: [] };
+    }
+    if (sql.includes('INSERT INTO public.hustlexp_constitutional_baseline_receipts')) {
+      client.queries.push(sql);
+      receipt = {
+        receiptCount: 1,
+        singletonTrue: true,
+        receiptVersion: Number(values?.[0]),
+        baselineName: String(values?.[1]),
+        baselineSha256: String(values?.[2]),
+        provenance: String(values?.[3]) as BaselineReceiptFixture['provenance'],
+        reconciliationSha256: null,
+        schemaVersionsExists,
+        immutableTriggerCount: 2,
+        rejectionFunctionExists: true,
+        appliedAtPresent: true,
+      };
+      return { rows: [] };
+    }
+    if (sql.includes('AS receipt_count')) {
+      client.queries.push(sql);
+      return {
+        rows: [
+          {
+            receipt_count: receipt?.receiptCount ?? 0,
+            singleton_true: receipt?.singletonTrue ?? null,
+            receipt_version: receipt?.receiptVersion ?? null,
+            baseline_name: receipt?.baselineName ?? null,
+            baseline_sha256: receipt?.baselineSha256 ?? null,
+            provenance: receipt?.provenance ?? null,
+            reconciliation_sha256: receipt?.reconciliationSha256 ?? null,
+            schema_versions_exists: receipt?.schemaVersionsExists ?? schemaVersionsExists,
+            immutable_trigger_count: receipt?.immutableTriggerCount ?? 0,
+            rejection_function_exists: receipt?.rejectionFunctionExists ?? false,
+            applied_at_present: receipt?.appliedAtPresent ?? null,
+          },
+        ],
+      };
+    }
+    return baseQuery(sql, values);
+  });
+  return client;
+}
+
 function runtime(overrides: Partial<MigrationRuntime> = {}): MigrationRuntime {
   return {
-    databaseUrl: 'postgres://automation-test',
+    databaseUrl: LOCAL_DATABASE_URL,
     migrationSpecs: [
       {
         name: ENGINE_AUTOMATION_MIGRATION,
@@ -314,6 +505,12 @@ describe('required engine automation migration', () => {
       '20261004_universal_v1_completion_notice_dispatch_v1',
       '20261005_universal_v1_occurrence_access_audit_v1',
       '20261006_stage1_legacy_authority_containment_v1',
+      '20261007_subscription_cancellation_recovery_v1',
+      '20261008_universal_v1_work_order_task_state_containment_v1',
+      '20261009_universal_v1_standardized_quote_readiness_v1',
+      '20261010_universal_v1_financial_security_event_expiry_v1',
+      '20261012_universal_v1_work_order_command_authority_v2',
+      '20261014_universal_v1_work_order_command_ports_v1',
     ]);
     const normalizePath = (candidatePath: string) => candidatePath.replaceAll('\\', '/');
     expect(actual.bootstrapSpec?.candidatePaths.map(normalizePath)).toContain(
@@ -367,7 +564,17 @@ describe('required engine automation migration', () => {
     const occurrenceAuditIndex = migrationSpecs.findIndex(
       ({ name }) => name === '20261005_universal_v1_occurrence_access_audit_v1'
     );
-    expect(occurrenceAuditIndex).toBe(migrationSpecs.length - 2);
+    expect(occurrenceAuditIndex).toBe(migrationSpecs.length - 8);
+    expect(migrationSpecs.slice(occurrenceAuditIndex).map(({ name }) => name)).toEqual([
+      '20261005_universal_v1_occurrence_access_audit_v1',
+      '20261006_stage1_legacy_authority_containment_v1',
+      '20261007_subscription_cancellation_recovery_v1',
+      '20261008_universal_v1_work_order_task_state_containment_v1',
+      '20261009_universal_v1_standardized_quote_readiness_v1',
+      '20261010_universal_v1_financial_security_event_expiry_v1',
+      '20261012_universal_v1_work_order_command_authority_v2',
+      '20261014_universal_v1_work_order_command_ports_v1',
+    ]);
     expect(assertionSql).toContain(
       `count(*)=${occurrenceAuditIndex} AND count(DISTINCT name)=${occurrenceAuditIndex}`
     );
@@ -424,23 +631,273 @@ describe('required engine automation migration', () => {
     ).rejects.toThrow(`Required migration ${ENGINE_AUTOMATION_MIGRATION} is unavailable`);
   });
 
+  it('executes the exact baseline only on an empty catalog and atomically writes its immutable receipt', async () => {
+    const client = clientWithBaselineCatalog();
+    await expect(
+      ensureConstitutionalBaseline(
+        client,
+        BASELINE_ENTRY,
+        localBaselineSession(client, BASELINE_ENTRY)
+      )
+    ).resolves.toBeUndefined();
+
+    const beginIndex = client.queries.indexOf('BEGIN');
+    const lockIndex = client.queries.findIndex((sql) =>
+      sql.includes("pg_advisory_xact_lock(hashtext('hustlexp-constitutional-bootstrap'))")
+    );
+    const emptyReadbackIndex = client.queries.findIndex((sql) =>
+      sql.includes('AS user_objects_exist')
+    );
+    const baselineIndex = client.queries.indexOf(BASELINE_ENTRY.sql);
+    const receiptDdlIndex = client.queries.findIndex((sql) =>
+      sql.includes('CREATE TABLE public.hustlexp_constitutional_baseline_receipts')
+    );
+    const receiptInsertIndex = client.queries.findIndex((sql) =>
+      sql.includes('INSERT INTO public.hustlexp_constitutional_baseline_receipts')
+    );
+    const receiptReadbackIndex = client.queries.findLastIndex((sql) =>
+      sql.includes('AS receipt_count')
+    );
+    const commitIndex = client.queries.lastIndexOf('COMMIT');
+    expect([
+      beginIndex,
+      lockIndex,
+      emptyReadbackIndex,
+      baselineIndex,
+      receiptDdlIndex,
+      receiptInsertIndex,
+      receiptReadbackIndex,
+      commitIndex,
+    ]).toEqual(
+      [
+        ...[
+          beginIndex,
+          lockIndex,
+          emptyReadbackIndex,
+          baselineIndex,
+          receiptDdlIndex,
+          receiptInsertIndex,
+          receiptReadbackIndex,
+          commitIndex,
+        ],
+      ].sort((left, right) => left - right)
+    );
+    expect(receiptDdlIndex).toBeGreaterThan(baselineIndex);
+    expect(client.queries[receiptDdlIndex]).toContain(
+      'BEFORE UPDATE OR DELETE ON public.hustlexp_constitutional_baseline_receipts'
+    );
+    expect(client.queries[receiptDdlIndex]).toContain(
+      'BEFORE TRUNCATE ON public.hustlexp_constitutional_baseline_receipts'
+    );
+    expect(client.queries.at(-1)).toBe('COMMIT');
+  });
+
+  it('replays only from an exact baseline SHA receipt under the advisory lock', async () => {
+    const client = clientWithBaselineCatalog({ receipt: {} });
+    await expect(
+      ensureConstitutionalBaseline(
+        client,
+        BASELINE_ENTRY,
+        localBaselineSession(client, BASELINE_ENTRY)
+      )
+    ).resolves.toBeUndefined();
+
+    expect(client.queries).not.toContain(BASELINE_ENTRY.sql);
+    expect(client.queries.some((sql) => sql.includes('AS user_objects_exist'))).toBe(false);
+    expect(
+      client.queries.some((sql) =>
+        sql.includes('CREATE TABLE public.hustlexp_constitutional_baseline_receipts')
+      )
+    ).toBe(false);
+    expect(client.queries.at(-1)).toBe('COMMIT');
+  });
+
+  it('accepts only a separately reconciled legacy receipt carrying a catalog digest', async () => {
+    const client = clientWithBaselineCatalog({
+      receipt: {
+        provenance: 'LEGACY_CATALOG_RECONCILED',
+        reconciliationSha256: 'b'.repeat(64),
+      },
+    });
+    await expect(
+      ensureConstitutionalBaseline(
+        client,
+        BASELINE_ENTRY,
+        localBaselineSession(client, BASELINE_ENTRY)
+      )
+    ).resolves.toBeUndefined();
+    expect(client.queries).not.toContain(BASELINE_ENTRY.sql);
+    expect(client.queries.at(-1)).toBe('COMMIT');
+  });
+
+  it('holds a legacy or partially initialized catalog that has no exact receipt', async () => {
+    const client = clientWithBaselineCatalog({ userObjectsExist: true });
+    await expect(
+      ensureConstitutionalBaseline(
+        client,
+        BASELINE_ENTRY,
+        localBaselineSession(client, BASELINE_ENTRY)
+      )
+    ).rejects.toThrow(
+      'CONSTITUTIONAL_BASELINE_PROVENANCE_MISSING:LEGACY_CATALOG_RECONCILIATION_REQUIRED'
+    );
+    expect(client.queries).not.toContain(BASELINE_ENTRY.sql);
+    expect(
+      client.queries.some((sql) =>
+        sql.includes('CREATE TABLE public.hustlexp_constitutional_baseline_receipts')
+      )
+    ).toBe(false);
+    expect(client.queries.at(-1)).toBe('ROLLBACK');
+  });
+
+  it.each([
+    ['baseline SHA drift', { baselineSha256: 'f'.repeat(64) }],
+    ['multiple receipt rows', { receiptCount: 2 }],
+    ['non-singleton receipt', { singletonTrue: false }],
+    ['missing immutable trigger', { immutableTriggerCount: 1 }],
+    ['missing schema_versions', { schemaVersionsExists: false }],
+    [
+      'unattested legacy reconciliation',
+      { provenance: 'LEGACY_CATALOG_RECONCILED', reconciliationSha256: null },
+    ],
+  ] as const)('rejects %s without executing baseline bytes', async (_label, receipt) => {
+    const client = clientWithBaselineCatalog({ receipt });
+    await expect(
+      ensureConstitutionalBaseline(
+        client,
+        BASELINE_ENTRY,
+        localBaselineSession(client, BASELINE_ENTRY)
+      )
+    ).rejects.toThrow('CONSTITUTIONAL_BASELINE_RECEIPT_MISMATCH');
+    expect(client.queries).not.toContain(BASELINE_ENTRY.sql);
+    expect(client.queries.at(-1)).toBe('ROLLBACK');
+  });
+
+  it('refuses direct raw writers before their first query without an issued session', async () => {
+    const migrationClient = clientWithQueries();
+    const fabricated = {} as ReturnType<typeof localMigrationSession>;
+
+    await expect(
+      applyEngineAutomationMigration(migrationClient, 'SELECT 1;', '/migration.sql', fabricated)
+    ).rejects.toThrow('MIGRATION_EXECUTION_REFUSED:OPAQUE_EXECUTION_SESSION_REQUIRED');
+    await expect(backfillLegacyTaskLocations(migrationClient, fabricated)).rejects.toThrow(
+      'MIGRATION_EXECUTION_REFUSED:OPAQUE_EXECUTION_SESSION_REQUIRED'
+    );
+    expect(migrationClient.query).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      label: 'SQL hash drift',
+      sql: 'SELECT 2;',
+      sourcePath: '/migration.sql',
+      migrationName: ENGINE_AUTOMATION_MIGRATION,
+    },
+    {
+      label: 'source-path substitution',
+      sql: 'SELECT 1;',
+      sourcePath: '/substituted.sql',
+      migrationName: ENGINE_AUTOMATION_MIGRATION,
+    },
+    {
+      label: 'migration-name substitution',
+      sql: 'SELECT 1;',
+      sourcePath: '/migration.sql',
+      migrationName: 'unauthorized_migration',
+    },
+  ])('refuses $label before BEGIN or any query', async ({ sql, sourcePath, migrationName }) => {
+    const migrationClient = clientWithQueries();
+    const session = localMigrationSession(migrationClient, [
+      {
+        name: ENGINE_AUTOMATION_MIGRATION,
+        sql: 'SELECT 1;',
+        sourcePath: '/migration.sql',
+      },
+    ]);
+
+    await expect(
+      applyEngineAutomationMigration(migrationClient, sql, sourcePath, session, migrationName)
+    ).rejects.toThrow('MIGRATION_NOT_IN_EXACT_AUTHORIZED_ARTIFACT');
+    expect(migrationClient.query).not.toHaveBeenCalled();
+  });
+
+  it('refuses an exact operation when the opaque session is rebound to another client', async () => {
+    const authorizedClient = clientWithQueries();
+    const substitutedClient = clientWithQueries();
+    const session = localMigrationSession(authorizedClient, [
+      {
+        name: ENGINE_AUTOMATION_MIGRATION,
+        sql: 'SELECT 1;',
+        sourcePath: '/migration.sql',
+      },
+    ]);
+
+    await expect(
+      applyEngineAutomationMigration(substitutedClient, 'SELECT 1;', '/migration.sql', session)
+    ).rejects.toThrow('CONNECTED_MIGRATION_CLIENT_MISMATCH');
+    expect(substitutedClient.query).not.toHaveBeenCalled();
+  });
+
   it('applies and records the migration atomically', async () => {
     const client = clientWithQueries();
     const sql = 'ALTER TABLE tasks ADD COLUMN demo TEXT;';
-    const outcome = await applyEngineAutomationMigration(client, sql, '/migration.sql');
+    const outcome = await applyEngineAutomationMigration(
+      client,
+      sql,
+      '/migration.sql',
+      localMigrationSession(client, [
+        { name: ENGINE_AUTOMATION_MIGRATION, sql, sourcePath: '/migration.sql' },
+      ])
+    );
     expect(outcome.status).toBe('applied');
     expect(outcome.sha256).toBe(sha256(sql));
     expect(client.queries).toContain(sql);
     expect(client.queries).toContain(
-      'INSERT INTO applied_migrations (name, sha256) VALUES ($1, $2)'
+      'INSERT INTO public.applied_migrations (name, sha256) VALUES ($1, $2)'
     );
     expect(client.queries.at(-1)).toBe('COMMIT');
+  });
+
+  it('issues no SQL after an ambiguous migration COMMIT', async () => {
+    const client = clientWithQueries();
+    const query = client.query as ReturnType<typeof vi.fn>;
+    const baseQuery = query.getMockImplementation()!;
+    const commitError = new Error('commit outcome ambiguous');
+    query.mockImplementation(async (sql: string, values?: unknown[]) => {
+      if (sql === 'COMMIT') {
+        client.queries.push(sql);
+        throw commitError;
+      }
+      return baseQuery(sql, values);
+    });
+    const sql = 'ALTER TABLE tasks ADD COLUMN ambiguous_demo TEXT;';
+
+    await expect(
+      applyEngineAutomationMigration(
+        client,
+        sql,
+        '/migration.sql',
+        localMigrationSession(client, [
+          { name: ENGINE_AUTOMATION_MIGRATION, sql, sourcePath: '/migration.sql' },
+        ])
+      )
+    ).rejects.toBe(commitError);
+
+    expect(client.queries.at(-1)).toBe('COMMIT');
+    expect(client.queries).not.toContain('ROLLBACK');
   });
 
   it('replays without executing the migration SQL', async () => {
     const sql = 'SHOULD NOT RUN';
     const client = clientWithQueries(sha256(sql));
-    const outcome = await applyEngineAutomationMigration(client, sql, '/migration.sql');
+    const outcome = await applyEngineAutomationMigration(
+      client,
+      sql,
+      '/migration.sql',
+      localMigrationSession(client, [
+        { name: ENGINE_AUTOMATION_MIGRATION, sql, sourcePath: '/migration.sql' },
+      ])
+    );
     expect(outcome.status).toBe('already_applied');
     expect(outcome.sha256).toBe(sha256(sql));
     expect(client.queries).not.toContain(sql);
@@ -450,7 +907,14 @@ describe('required engine automation migration', () => {
   it('fails closed when a legacy applied migration has no checksum evidence', async () => {
     const client = clientWithQueries(null);
     await expect(
-      applyEngineAutomationMigration(client, 'SELECT 1;', '/migration.sql')
+      applyEngineAutomationMigration(
+        client,
+        'SELECT 1;',
+        '/migration.sql',
+        localMigrationSession(client, [
+          { name: ENGINE_AUTOMATION_MIGRATION, sql: 'SELECT 1;', sourcePath: '/migration.sql' },
+        ])
+      )
     ).rejects.toThrow('MIGRATION_CHECKSUM_MISSING');
     expect(client.queries).not.toContain('SELECT 1;');
     expect(client.queries.at(-1)).toBe('ROLLBACK');
@@ -459,41 +923,70 @@ describe('required engine automation migration', () => {
   it('fails closed when the exact migration SQL drifts after application', async () => {
     const client = clientWithQueries(sha256('SELECT original;'));
     await expect(
-      applyEngineAutomationMigration(client, 'SELECT changed;', '/migration.sql')
+      applyEngineAutomationMigration(
+        client,
+        'SELECT changed;',
+        '/migration.sql',
+        localMigrationSession(client, [
+          {
+            name: ENGINE_AUTOMATION_MIGRATION,
+            sql: 'SELECT changed;',
+            sourcePath: '/migration.sql',
+          },
+        ])
+      )
     ).rejects.toThrow('MIGRATION_CHECKSUM_DRIFT');
     expect(client.queries).not.toContain('SELECT changed;');
     expect(client.queries.at(-1)).toBe('ROLLBACK');
   });
 
-  it('rolls back and preserves the original migration failure', async () => {
+  it('rolls back, preserves the original failure, and permits an exact retry', async () => {
     const client = clientWithQueries();
     const query = client.query as ReturnType<typeof vi.fn>;
-    query.mockImplementation(async (sql: string) => {
-      client.queries.push(sql);
-      if (sql === 'BROKEN SQL') throw new Error('migration exploded');
-      return { rows: [] };
+    const baseQuery = query.getMockImplementation()!;
+    let failMigration = true;
+    query.mockImplementation(async (sql: string, values?: unknown[]) => {
+      if (sql === 'BROKEN SQL' && failMigration) {
+        client.queries.push(sql);
+        failMigration = false;
+        throw new Error('migration exploded');
+      }
+      return baseQuery(sql, values);
     });
+    const session = localMigrationSession(client, [
+      {
+        name: ENGINE_AUTOMATION_MIGRATION,
+        sql: 'BROKEN SQL',
+        sourcePath: '/migration.sql',
+      },
+    ]);
     await expect(
-      applyEngineAutomationMigration(client, 'BROKEN SQL', '/migration.sql')
+      applyEngineAutomationMigration(client, 'BROKEN SQL', '/migration.sql', session)
     ).rejects.toThrow('migration exploded');
     expect(client.queries.at(-1)).toBe('ROLLBACK');
+
+    await expect(
+      applyEngineAutomationMigration(client, 'BROKEN SQL', '/migration.sql', session)
+    ).resolves.toMatchObject({ status: 'applied', migration: ENGINE_AUTOMATION_MIGRATION });
+    expect(client.queries.at(-1)).toBe('COMMIT');
   });
 
   it('atomically replaces legacy plaintext locations with authenticated ciphertext', async () => {
     const queries: Array<{ sql: string; values?: unknown[] }> = [];
-    const client: MigrationClient = {
-      connect: vi.fn(async () => undefined),
-      end: vi.fn(async () => undefined),
-      query: vi.fn(async (sql: string, values?: unknown[]) => {
-        queries.push({ sql, values });
-        if (sql.includes('SELECT task_id::text')) {
-          return { rows: [{ task_id: 'task-legacy-1', exact_location: '123 Main St' }] };
-        }
-        return { rows: [] };
-      }) as MigrationClient['query'],
-    };
+    const client = clientWithQueries();
+    const query = client.query as ReturnType<typeof vi.fn>;
+    const baseQuery = query.getMockImplementation()!;
+    query.mockImplementation(async (sql: string, values?: unknown[]) => {
+      queries.push({ sql, values });
+      if (sql.includes('SELECT task_id::text')) {
+        return { rows: [{ task_id: 'task-legacy-1', exact_location: '123 Main St' }] };
+      }
+      return baseQuery(sql, values);
+    });
 
-    await expect(backfillLegacyTaskLocations(client)).resolves.toBe(1);
+    await expect(backfillLegacyTaskLocations(client, localMigrationSession(client))).resolves.toBe(
+      1
+    );
     const update = queries.find(({ sql }) => sql.includes('UPDATE task_location_vault'));
     expect(update?.values?.[0]).toBe('task-legacy-1');
     expect(update?.values).not.toContain('123 Main St');

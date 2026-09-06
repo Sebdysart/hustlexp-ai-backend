@@ -20,6 +20,7 @@ import { UniversalV1WorkOrderApplication } from '../services/UniversalV1WorkOrde
 import {
   ExpressUniversalV1ProviderInterestPublicSchema,
   MaterializeUniversalV1WorkOrderPublicSchema,
+  UniversalV1WorkOrderPublicResultSchema,
   PlaceUniversalV1ConditionalHoldPublicSchema,
 } from '../services/UniversalV1WorkOrderContracts.js';
 import { UniversalV1WorkOrderError } from '../services/UniversalV1WorkOrderContracts.js';
@@ -347,7 +348,7 @@ export function createUniversalContractRouter(
       .mutation(async ({ ctx, input }) => {
         assertUniversalV1EstimateActor(ctx.user);
         try {
-          return await workOrders.expressProviderInterest(ctx.user.id, input);
+          return await workOrders.expressProviderInterest(ctx.user.id, input, ctx.actorAttestation);
         } catch (error) {
           throw universalV1EstimateRouteError(error);
         }
@@ -357,17 +358,22 @@ export function createUniversalContractRouter(
       .mutation(async ({ ctx, input }) => {
         assertUniversalV1EstimateActor(ctx.user);
         try {
-          return await workOrders.placeConditionalHold(ctx.user.id, input);
+          return await workOrders.placeConditionalHold(ctx.user.id, input, ctx.actorAttestation);
         } catch (error) {
           throw universalV1EstimateRouteError(error);
         }
       }),
     secureAndMaterializeFakeWorkOrder: protectedProcedure
       .input(MaterializeUniversalV1WorkOrderPublicSchema)
+      .output(UniversalV1WorkOrderPublicResultSchema)
       .mutation(async ({ ctx, input }) => {
         assertUniversalV1EstimateActor(ctx.user);
         try {
-          return await workOrders.secureAndMaterializeFakeWorkOrder(ctx.user.id, input);
+          return await workOrders.secureAndMaterializeFakeWorkOrder(
+            ctx.user.id,
+            input,
+            ctx.actorAttestation
+          );
         } catch (error) {
           throw universalV1EstimateRouteError(error);
         }
@@ -397,7 +403,7 @@ export function createUniversalContractRouter(
       .mutation(async ({ ctx, input }) => {
         assertUniversalV1EstimateActor(ctx.user);
         try {
-          return await changeOrders.proposeChangeOrder(ctx.user.id, input);
+          return await changeOrders.proposeChangeOrder(ctx.user.id, input, ctx.actorAttestation);
         } catch (error) {
           throw universalV1EstimateRouteError(error);
         }
@@ -407,7 +413,7 @@ export function createUniversalContractRouter(
       .mutation(async ({ ctx, input }) => {
         assertUniversalV1EstimateActor(ctx.user);
         try {
-          return await changeOrders.decideChangeOrder(ctx.user.id, input);
+          return await changeOrders.decideChangeOrder(ctx.user.id, input, ctx.actorAttestation);
         } catch (error) {
           throw universalV1EstimateRouteError(error);
         }
@@ -417,7 +423,11 @@ export function createUniversalContractRouter(
       .mutation(async ({ ctx, input }) => {
         assertUniversalV1EstimateActor(ctx.user);
         try {
-          return await changeOrders.authorizeAndMaterializeFakeChangeOrder(ctx.user.id, input);
+          return await changeOrders.authorizeAndMaterializeFakeChangeOrder(
+            ctx.user.id,
+            input,
+            ctx.actorAttestation
+          );
         } catch (error) {
           throw universalV1EstimateRouteError(error);
         }

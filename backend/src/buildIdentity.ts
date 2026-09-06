@@ -75,7 +75,7 @@ function isBuildIdentity(value: unknown): value is BuildIdentity {
 
 export function readBuildIdentity(
   path = resolve(process.cwd(), 'dist/hx-build-identity.json'),
-  artifactRoot = dirname(path),
+  artifactRoot = dirname(path)
 ): BuildIdentity {
   try {
     const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
@@ -84,8 +84,7 @@ export function readBuildIdentity(
       return {
         ...parsed,
         artifact_verified:
-          measuredArtifact.entryCount > 0
-          && measuredArtifact.digest === parsed.artifact_digest,
+          measuredArtifact.entryCount > 0 && measuredArtifact.digest === parsed.artifact_digest,
       };
     }
   } catch {
@@ -106,11 +105,16 @@ export function readBuildIdentity(
 
 export function isTrustedBuildIdentity(identity: BuildIdentity): boolean {
   return (
-    REVISION.test(identity.revision)
-    && identity.clean_source
-    && DIGEST.test(identity.artifact_digest)
-    && identity.artifact_verified
+    REVISION.test(identity.revision) &&
+    identity.clean_source &&
+    DIGEST.test(identity.artifact_digest) &&
+    identity.artifact_verified
   );
 }
 
-export const buildIdentity = readBuildIdentity();
+/**
+ * The process-owned executable measurement. Keep this exact object immutable:
+ * security-sensitive authorities bind to its reference rather than trusting a
+ * caller-created object that merely has the same fields.
+ */
+export const buildIdentity = Object.freeze(readBuildIdentity());

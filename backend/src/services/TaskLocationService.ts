@@ -13,11 +13,15 @@ const log = logger.child({ module: 'task', service: 'TaskLocationService' });
 const PROTECTED_LOCATION = 'Location protected until reservation';
 const ZIP_CODE = /\b\d{5}(?:-\d{4})?\b/g;
 const GPS_PAIR = /-?\d{1,3}\.\d{3,}\s*[,/]\s*-?\d{1,3}\.\d{3,}/;
-const STREET_ADDRESS = /^\s*\d{1,6}\s+.+\b(?:st(?:reet)?|ave(?:nue)?|rd|road|blvd|boulevard|dr(?:ive)?|ln|lane|ct|court|way|pl(?:ace)?|pkwy|parkway|hwy|highway)\b/i;
-const STREET_LEVEL_PART = /\b(?:st(?:reet)?|ave(?:nue)?|rd|road|blvd|boulevard|dr(?:ive)?|ln|lane|ct|court|way|pl(?:ace)?|pkwy|parkway|hwy|highway)\b/i;
+const STREET_ADDRESS =
+  /^\s*\d{1,6}\s+.+\b(?:st(?:reet)?|ave(?:nue)?|rd|road|blvd|boulevard|dr(?:ive)?|ln|lane|ct|court|way|pl(?:ace)?|pkwy|parkway|hwy|highway)\b/i;
+const STREET_LEVEL_PART =
+  /\b(?:st(?:reet)?|ave(?:nue)?|rd|road|blvd|boulevard|dr(?:ive)?|ln|lane|ct|court|way|pl(?:ace)?|pkwy|parkway|hwy|highway)\b/i;
 const UNIT_DETAIL = /^(?:apt|apartment|unit|suite|#)\s*[a-z0-9-]+$/i;
-const PUBLIC_GPS_PAIR = /(-?\d{1,3}\.\d{4,})\u00b0?[NSns]?\s*[,/]\s*(-?\d{1,3}\.\d{4,})\u00b0?[EWew]?/g;
-const PUBLIC_STREET_ADDRESS = /\b\d{1,5}\s+[A-Za-z0-9 .'#-]{2,50}?(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Way|Court|Ct|Place|Pl|Circle|Cir|Highway|Hwy)\b(?:\s*,?\s*(?:Apt|Apartment|Unit|Suite|#)\s*[A-Za-z0-9-]+)?/gi;
+const PUBLIC_GPS_PAIR =
+  /(-?\d{1,3}\.\d{4,})\u00b0?[NSns]?\s*[,/]\s*(-?\d{1,3}\.\d{4,})\u00b0?[EWew]?/g;
+const PUBLIC_STREET_ADDRESS =
+  /\b\d{1,5}\s+[A-Za-z0-9 .'#-]{2,50}?(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Way|Court|Ct|Place|Pl|Circle|Cir|Highway|Hwy)\b(?:\s*,?\s*(?:Apt|Apartment|Unit|Suite|#)\s*[A-Za-z0-9-]+)?/gi;
 
 function cleanAreaPart(part: string): string {
   return part.replace(ZIP_CODE, '').replace(/\s+/g, ' ').trim();
@@ -28,7 +32,10 @@ function cleanAreaPart(part: string): string {
  * feeds and dispatch offers. If an address cannot be generalized safely, fail
  * closed rather than echoing any part of it.
  */
-export function deriveRoughArea(exactLocation?: string, explicitRoughArea?: string): string | undefined {
+export function deriveRoughArea(
+  exactLocation?: string,
+  explicitRoughArea?: string
+): string | undefined {
   const source = (explicitRoughArea || exactLocation || '').trim();
   if (!source) return undefined;
   if (GPS_PAIR.test(source)) return PROTECTED_LOCATION;
@@ -50,7 +57,10 @@ export function deriveRoughArea(exactLocation?: string, explicitRoughArea?: stri
 
   if (safeParts.length === 0) return PROTECTED_LOCATION;
 
-  const area = safeParts.join(', ').replace(/\s+area$/i, '').trim();
+  const area = safeParts
+    .join(', ')
+    .replace(/\s+area$/i, '')
+    .trim();
   return area ? `${area} area` : PROTECTED_LOCATION;
 }
 
@@ -86,6 +96,10 @@ interface LocationReleaseRow extends StoredEncryptedTaskLocation {
   exact_location: string | null;
   location_fingerprint: string | null;
   expired_at: Date | string | null;
+  observed_at: Date | string;
+  universal_contract_version: number;
+  task_work_order_id: string | null;
+  universal_financial_security_current: boolean | null;
 }
 
 type LocationReleaseDecision =
@@ -102,7 +116,7 @@ function trustPolicyAllowsRelease(row: LocationReleaseRow): boolean {
 
 function assignmentReleaseDecision(
   row: LocationReleaseRow,
-  workerId: string,
+  workerId: string
 ): LocationReleaseDecision | null {
   if (row.worker_id !== workerId || row.task_state !== 'ACCEPTED') {
     return {
@@ -115,6 +129,16 @@ function assignmentReleaseDecision(
 }
 
 function policyReleaseDecision(row: LocationReleaseRow): LocationReleaseDecision | null {
+  if (
+    row.universal_contract_version === 1 &&
+    (row.task_work_order_id === null || row.universal_financial_security_current !== true)
+  ) {
+    return {
+      kind: 'error',
+      code: 'FINANCIAL_SECURITY_EXPIRED',
+      message: 'Exact location cannot be released after financial security expires.',
+    };
+  }
   if (row.escrow_state !== 'FUNDED') {
     return {
       kind: 'error',
@@ -155,10 +179,10 @@ function materialReleaseDecision(row: LocationReleaseRow): LocationReleaseDecisi
     };
   }
   if (
-    !row.location_ciphertext
-    || !row.location_nonce
-    || !row.location_auth_tag
-    || !row.location_key_id
+    !row.location_ciphertext ||
+    !row.location_nonce ||
+    !row.location_auth_tag ||
+    !row.location_key_id
   ) {
     return {
       kind: 'error',
@@ -171,19 +195,21 @@ function materialReleaseDecision(row: LocationReleaseRow): LocationReleaseDecisi
 
 function evaluateLocationRelease(
   row: LocationReleaseRow | undefined,
-  workerId: string,
+  workerId: string
 ): LocationReleaseDecision {
   if (!row) return { kind: 'error', code: 'NOT_FOUND', message: 'Task not found' };
-  return assignmentReleaseDecision(row, workerId)
-    ?? policyReleaseDecision(row)
-    ?? materialReleaseDecision(row)
-    ?? { kind: 'allowed' };
+  return (
+    assignmentReleaseDecision(row, workerId) ??
+    policyReleaseDecision(row) ??
+    materialReleaseDecision(row) ?? { kind: 'allowed' }
+  );
 }
 
 function cryptoErrorResult(error: TaskLocationCryptoError): ServiceResult<never> {
-  const message = error.code === 'INVALID_LOCATION'
-    ? error.message
-    : 'Exact-location protection is unavailable. No location data was stored or released.';
+  const message =
+    error.code === 'INVALID_LOCATION'
+      ? error.message
+      : 'Exact-location protection is unavailable. No location data was stored or released.';
   return { success: false, error: { code: error.code, message } };
 }
 
@@ -200,7 +226,11 @@ export const TaskLocationService = {
         const row = task.rows[0];
         if (!row) return { kind: 'error' as const, code: 'NOT_FOUND', message: 'Task not found' };
         if (row.poster_id !== params.posterId) {
-          return { kind: 'error' as const, code: 'FORBIDDEN', message: 'Only the task owner can set the service location.' };
+          return {
+            kind: 'error' as const,
+            code: 'FORBIDDEN',
+            message: 'Only the task owner can set the service location.',
+          };
         }
         if (row.worker_id || !['OPEN', 'MATCHING'].includes(row.state)) {
           return {
@@ -251,10 +281,17 @@ export const TaskLocationService = {
     } catch (error) {
       if (error instanceof TaskLocationCryptoError) return cryptoErrorResult(error);
       log.error(
-        { taskId: params.taskId, posterId: params.posterId, err: error instanceof Error ? error.message : String(error) },
+        {
+          taskId: params.taskId,
+          posterId: params.posterId,
+          err: error instanceof Error ? error.message : String(error),
+        },
         'Exact task location storage failed'
       );
-      return { success: false, error: { code: 'DB_ERROR', message: 'A database error occurred. Please try again.' } };
+      return {
+        success: false,
+        error: { code: 'DB_ERROR', message: 'A database error occurred. Please try again.' },
+      };
     }
   },
   releaseToReservedWorker: async (
@@ -263,11 +300,23 @@ export const TaskLocationService = {
     try {
       const result = await db.transaction(async (query) => {
         const locked = await query<LocationReleaseRow>(
-          `SELECT
+          `WITH observation AS (
+             SELECT clock_timestamp() AS observed_at
+           )
+           SELECT
              t.worker_id,
              t.state AS task_state,
              t.deadline,
              t.trust_tier_required,
+             t.universal_contract_version,
+             t.work_order_id AS task_work_order_id,
+             observation.observed_at,
+             CASE
+               WHEN t.universal_contract_version <> 1
+                 OR work_order.id IS NULL THEN NULL
+               ELSE financial_security.expires_at IS NOT NULL
+                 AND financial_security.expires_at > observation.observed_at
+             END AS universal_financial_security_current,
              (SELECT e.state FROM escrows e WHERE e.task_id = t.id ORDER BY e.created_at DESC LIMIT 1) AS escrow_state,
              (SELECT u.trust_tier FROM users u WHERE u.id = $2) AS worker_trust_tier,
              (SELECT u.trust_hold FROM users u WHERE u.id = $2) AS worker_trust_hold,
@@ -280,9 +329,14 @@ export const TaskLocationService = {
              v.location_key_id,
              v.location_fingerprint,
              v.expired_at
-           FROM tasks t
+           FROM observation
+           JOIN tasks t ON t.id = $1
+           LEFT JOIN task_work_orders work_order
+             ON work_order.id = t.work_order_id
+            AND work_order.task_id = t.id
+           LEFT JOIN task_financial_security_events financial_security
+             ON financial_security.id = work_order.financial_security_event_id
            LEFT JOIN task_location_vault v ON v.task_id = t.id
-           WHERE t.id = $1
            FOR UPDATE OF t`,
           [params.taskId, params.workerId]
         );
@@ -316,7 +370,11 @@ export const TaskLocationService = {
       }
 
       log.info(
-        { taskId: params.taskId, workerId: params.workerId, releasePolicy: 'engine_reserved_worker' },
+        {
+          taskId: params.taskId,
+          workerId: params.workerId,
+          releasePolicy: 'engine_reserved_worker',
+        },
         'Exact task location released'
       );
       return { success: true, data: { exactLocation: result.exactLocation } };
@@ -329,7 +387,11 @@ export const TaskLocationService = {
         return cryptoErrorResult(error);
       }
       log.error(
-        { taskId: params.taskId, workerId: params.workerId, err: error instanceof Error ? error.message : String(error) },
+        {
+          taskId: params.taskId,
+          workerId: params.workerId,
+          err: error instanceof Error ? error.message : String(error),
+        },
         'Exact task location release failed'
       );
       return {

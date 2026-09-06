@@ -39,6 +39,7 @@ const expectedGateSources = Object.freeze({
     'backend/tests/system/universal-v1-double-entry-ledger.pg.test.ts',
     'backend/tests/system/universal-v1-estimate-materialization.pg.test.ts',
     'backend/tests/system/universal-v1-relationship-origin.pg.test.ts',
+    'backend/tests/system/universal-v1-standardized-quote-readiness.pg.test.ts',
     'backend/tests/system/universal-v1-task-draft-claim.pg.test.ts',
     'backend/tests/system/universal-v1-task-draft-legacy-port.pg.test.ts',
     'backend/tests/system/universal-v1-task-draft-public.pg.test.ts',
@@ -110,6 +111,10 @@ test('required Vitest uses the bounded two-project config and cross-platform loa
   assert.match(requiredConfigSource, /maxWorkers: 4/u);
   assert.match(requiredConfigSource, /groupOrder: 0/u);
   assert.match(requiredConfigSource, /name: 'database-serial'/u);
+  const databaseProject = requiredConfigSource.slice(requiredConfigSource.indexOf("name: 'database-serial'"));
+  const isolatedProject = requiredConfigSource.slice(0, requiredConfigSource.indexOf("name: 'database-serial'"));
+  assert.match(databaseProject, /setupFiles:\s*\[\s*\.\.\.commonRequiredTestConfig\.setupFiles,\s*'\.\/backend\/tests\/disposable-database-runtime\.setup\.ts'/u);
+  assert.doesNotMatch(isolatedProject, /disposable-database-runtime\.setup\.ts/u);
   assert.match(requiredConfigSource, /backend\/tests\/invariants\/\*\*\/\*\.test\.ts/u);
   assert.match(requiredConfigSource, /backend\/tests\/system\/\*\*\/\*\.test\.ts/u);
   assert.match(requiredConfigSource, /fileParallelism: false/u);
@@ -197,7 +202,7 @@ test('required local test environment derives only fixed isolated database targe
     'postgresql://hx_ci_runner:hx_ci_password@127.0.0.1:5432/hx_ci_system_test'
   );
   assert.equal(environments.vitest.REDIS_URL, 'redis://127.0.0.1:16379');
-  assert.equal(environments.vitest.HX_ALLOW_CI_DB_RECREATE, undefined);
+  assert.equal(environments.vitest.HX_ALLOW_CI_DB_RECREATE, 'true');
   for (const gate of REQUIRED_TEST_GATES) {
     assert.equal(environments.vitest[gate], '1');
   }
@@ -225,7 +230,7 @@ test('required local tests reject remote, production, and mismatched test infras
   }
 });
 
-test('required local test gates are exact and do not grant database recreate authority', () => {
+test('required local test gates are exact and bind the container flag to non-admin targets', () => {
   assert.deepEqual(REQUIRED_TEST_GATES, [
     'HX_ALLOW_E2E_LIFECYCLE',
     'HX_ALLOW_E2E_LIQUIDITY_EXPANSION',
@@ -239,7 +244,7 @@ test('required local test gates are exact and do not grant database recreate aut
     Object.keys(environments.vitest)
       .filter((name) => name.startsWith('HX_ALLOW_'))
       .sort(),
-    [...REQUIRED_TEST_GATES].sort()
+    ['HX_ALLOW_CI_DB_RECREATE', ...REQUIRED_TEST_GATES].sort()
   );
 
   const withAmbientGates = requiredTestEnvironments({
@@ -255,7 +260,7 @@ test('required local test gates are exact and do not grant database recreate aut
     Object.keys(withAmbientGates.vitest)
       .filter((name) => name.startsWith('HX_ALLOW_'))
       .sort(),
-    [...REQUIRED_TEST_GATES].sort()
+    ['HX_ALLOW_CI_DB_RECREATE', ...REQUIRED_TEST_GATES].sort()
   );
   assert.equal(withAmbientGates.vitest.HX_ALLOW_E2E_LIFECYCLE, '1');
 });

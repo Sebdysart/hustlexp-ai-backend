@@ -1,0 +1,214 @@
+{
+  "schema_version": "hustlexp.branch-manifest.v1",
+  "observed_at": "2026-09-01T06:25:40.6833320-07:00",
+  "repository": "Sebdysart/hustlexp-ai-backend",
+  "status": "UNSIGNED_DRAFT_NOT_RELEASE_AUTHORITY",
+  "policy": {
+    "direct_merge_from_non_main_branch": false,
+    "salvage_method": "INDEPENDENTLY_REVIEWED_CHERRY_PICK_OR_CONTRACT_PRESERVING_REIMPLEMENTATION_ONLY",
+    "history_rewrite": false,
+    "artifact_rule": "NEVER_IMPORT_DOT_LOCAL_TOOLS_OR_BUNDLED_TOOLCHAINS",
+    "reverify_before_use": true
+  },
+  "local_working_branch": {
+    "name": "codex/universal-v1-backend-security-expiry-wip-20260831",
+    "sha": "36255e604e718320ccae7d4e3ac269ad09678205",
+    "classification": "ACTIVE_CANDIDATE",
+    "qualifier": "DIRTY_UNSIGNED_NONPROMOTABLE_RECONSTRUCTION_FROM_CURRENT_MAIN"
+  },
+  "remote_branches": [
+    {
+      "name": "main",
+      "sha": "d42975be9691c6dbe99f7580fac1b0d8258a3f7a",
+      "classification": "ACTIVE_CANDIDATE",
+      "qualifier": "PROTECTED_BASE_UNSIGNED_NOT_GREEN"
+    },
+
+    {
+      "name": "codex/d1-ci-baseline-green",
+      "sha": "714e111efa7ae8615313b79338f4a65f71f1df41",
+      "classification": "SALVAGE_BY_CHERRY_PICK"
+    },
+    {
+      "name": "codex/d1-ci-containment-signed",
+      "sha": "e5361d3ae96f52fb9c1c633bfc412c50026a1f2f",
+      "classification": "SALVAGE_BY_CHERRY_PICK"
+    },
+    {
+      "name": "codex/d1-ci-incident-recovery",
+      "sha": "2237494ea7217072286b78ab3c0bb2a8d6e514e3",
+      "classification": "SALVAGE_BY_CHERRY_PICK"
+    },
+    {
+      "name": "codex/release-authority-recovery",
+      "sha": "90b92c917b7f88e41780b07af506cba96c0ec60f",
+      "classification": "SALVAGE_BY_CHERRY_PICK"
+    },
+    {
+      "name": "codex/underwriting-01-authority-freeze-recovered",
+      "sha": "31a6b0252e445130fccdbfdc7aac31bca5b9c965",
+      "classification": "SALVAGE_BY_CHERRY_PICK"
+    },
+    {
+      "name": "codex/underwriting-02-neutral-lifecycle-recovered",
+      "sha": "df5d50ff389ae49a63a5e57c01d220a9b5e0ca83",
+      "classification": "SALVAGE_BY_CHERRY_PICK"
+    },
+    {
+      "name": "codex/underwriting-03-opportunity-privacy-recovered",
+      "sha": "178e428034de9e4bc53223d207d11bb06d7b1fec",
+      "classification": "SALVAGE_BY_CHERRY_PICK"
+    },
+    {
+      "name": "codex/underwriting-04-fse-operation-recovered",
+      "sha": "3c5d46cd33b58669c95159cf672ac91cbf9ed683",
+      "classification": "SALVAGE_BY_CHERRY_PICK"
+    },
+    {
+      "name": "codex/underwriting-05-work-order-recovered",
+      "sha": "9b18be6c10ff7220d1a1ea113e497e05fdb890cc",
+      "classification": "SALVAGE_BY_CHERRY_PICK"
+    },
+    {
+      "name": "codex/underwriting-06-completion-capture-recovered",
+      "sha": "e7104d8dd3affb8bb03d74d9470d82aafef5a27e",
+      "classification": "SALVAGE_BY_CHERRY_PICK"
+    },
+    {
+      "name": "codex/underwriting-07-settlement-close-recovered",
+      "sha": "78282f94ae0ccacf8eea4149e1101342ac095dc2",
+      "classification": "SALVAGE_BY_CHERRY_PICK"
+    },
+    {
+      "name": "codex/underwriting-08-exceptions-recovery-recovered",
+      "sha": "e775c7516b44cb1e38f93dcd23d97a20f6361d33",
+      "classification": "SALVAGE_BY_CHERRY_PICK"
+    },
+    {
+      "name": "feat/payment-hardening",
+      "sha": "8b05f3680ed29e774f3dc51db5186c94c6fa2a22",
+      "classification": "SALVAGE_BY_CHERRY_PICK"
+    },
+    {
+      "name": "feat/provider-os-foundation",
+      "sha": "162f56e5c8af0e62863b391cb50a9644722696ec",
+      "classification": "SALVAGE_BY_CHERRY_PICK"
+    },
+    {
+      "name": "fix/backend-setup-fixes",
+      "sha": "ce0e622c8ff2069239768d4172a12be531a90061",
+      "classification": "SALVAGE_BY_CHERRY_PICK"
+    },
+    {
+      "name": "fix/local-env-bootstrap",
+      "sha": "14a35640ca12c665e6a574cfce34194836ad4b27",
+      "classification": "SALVAGE_BY_CHERRY_PICK"
+    },
+    {
+      "name": "fix/outbox-worker",
+      "sha": "3920ed32a10624ba6309944285362d5c1080177a",
+      "classification": "SALVAGE_BY_CHERRY_PICK"
+    },
+    {
+      "name": "agent/development-environment-setup-24ad",
+      "sha": "4d6aaabcf62b29a03fced5289dd670b9ef9201d8",
+      "classification": "SALVAGE_BY_CHERRY_PICK"
+    },
+    {
+      "name": "agent/development-environment-setup-c309",
+      "sha": "20c402f0f277cf68d2310576209dff0dd62e74ab",
+      "classification": "SALVAGE_BY_CHERRY_PICK"
+    },
+    {
+      "name": "agent/offset-based-pagination-1c34",
+      "sha": "576a345e4de9a452e51c64b677df9fc50cb2905b",
+      "classification": "SALVAGE_BY_CHERRY_PICK"
+    },
+    {
+      "name": "devin/1772000686-audit-fixes",
+      "sha": "7ba42fb6cb975cede9cde732ffcf068553817728",
+      "classification": "SALVAGE_BY_CHERRY_PICK"
+    },
+
+    {
+      "name": "codex/documentation-goal-alignment",
+      "sha": "470a4ae8c480d3b46a85dec011839ea51897a1e6",
+      "classification": "EVIDENCE_ONLY"
+    },
+    {
+      "name": "codex/readme-charter-v1-1-candidate-20260825",
+      "sha": "73c44eee22fa79c2957583217e69aa972291776f",
+      "classification": "EVIDENCE_ONLY"
+    },
+    {
+      "name": "codex/readme-charter-v1-1-signed-20260825",
+      "sha": "2ba7d251bcee91bdbdb9296af70c448821495813",
+      "classification": "EVIDENCE_ONLY"
+    },
+    {
+      "name": "codex/regulated-trades-v1-1-held-candidate-20260825",
+      "sha": "73c44eee22fa79c2957583217e69aa972291776f",
+      "classification": "EVIDENCE_ONLY"
+    },
+    {
+      "name": "codex/universal-v1-charter-readme-20260825",
+      "sha": "2dfcf9b2cec4dab92d81f0489b5fb86df545ef85",
+      "classification": "EVIDENCE_ONLY"
+    },
+    {
+      "name": "feat/evidence-only-universal-v1-financial-authority-20260830",
+      "sha": "80776bf6296c8d000018b685d96fe23e0ca9d34d",
+      "classification": "EVIDENCE_ONLY",
+      "qualifier": "NO_MERGE_BASE_SYNTHETIC_LINEAGE_LOCAL_8939_TEST_RECEIPT_ONLY"
+    },
+    {
+      "name": "integrate/stage1-backbone",
+      "sha": "a3b9f54bda89c381538c2745fac79bed9605aafe",
+      "classification": "EVIDENCE_ONLY"
+    },
+    {
+      "name": "martin/local",
+      "sha": "73c1a3752d7d6d49295ef8601f875be8d1824e7d",
+      "classification": "EVIDENCE_ONLY"
+    },
+    {
+      "name": "release/v1.0",
+      "sha": "8caa788ccc37c24be0b8f506ede68e1f85a5599a",
+      "classification": "EVIDENCE_ONLY",
+      "qualifier": "OBSOLETE_RELEASE_LINE_NEVER_A_MERGE_SOURCE"
+    },
+
+    {
+      "name": "dev_matthew",
+      "sha": "26cf3a491f4b0d16399ff997f9598d54fcb58468",
+      "classification": "CONTAINED",
+      "qualifier": "PRESERVE_SHA_NEVER_IMPORT_BUNDLED_LOCAL_TOOLS"
+    },
+    {
+      "name": "payment/experiment",
+      "sha": "f0dcf6b6b18236d4ab24cbcf68f3d9d844983de5",
+      "classification": "CONTAINED"
+    },
+    {
+      "name": "stripe-implementation-quarantine",
+      "sha": "70eeb949e06d765f167780757dc336369d16d489",
+      "classification": "CONTAINED"
+    },
+
+    {
+      "name": "Laksh-demo-beta",
+      "sha": "5bdcf206324f6205ea539eadeeac52fbb7c27e94",
+      "classification": "ARCHIVE"
+    },
+    {
+      "name": "Roles/Anuj",
+      "sha": "07bd7f2627bb5331793f186d7df500fe7b3c60aa",
+      "classification": "ARCHIVE"
+    },
+    {
+      "name": "sebastian-SMSverifcation",
+      "sha": "5bdcf206324f6205ea539eadeeac52fbb7c27e94",
+      "classification": "ARCHIVE"
+    }
+  ]
+}

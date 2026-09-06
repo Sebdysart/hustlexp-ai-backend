@@ -11,19 +11,28 @@ const migration = read(
 );
 
 describe('Universal V1 purpose-bound Operations occurrence access audit migration', () => {
-  it('preserves append-only ordinal 139 and migration 138 identity before the migration 140 tail', () => {
-    expect(REQUIRED_MIGRATION_FILES).toHaveLength(140);
-    expect(REQUIRED_MIGRATION_FILES.at(-3)).toEqual({
+  it('preserves append-only ordinals 138-142 in exact order', () => {
+    expect(REQUIRED_MIGRATION_FILES).toHaveLength(146);
+    expect(REQUIRED_MIGRATION_FILES[137]).toEqual({
       name: '20261004_universal_v1_completion_notice_dispatch_v1',
       fileName: '20261004_universal_v1_completion_notice_dispatch_v1.sql',
     });
-    expect(REQUIRED_MIGRATION_FILES.at(-2)).toEqual({
+    expect(REQUIRED_MIGRATION_FILES[138]).toEqual({
       name: '20261005_universal_v1_occurrence_access_audit_v1',
       fileName: '20261005_universal_v1_occurrence_access_audit_v1.sql',
     });
-    expect(REQUIRED_MIGRATION_FILES.at(-1)).toEqual({
+    expect(REQUIRED_MIGRATION_FILES[139]).toEqual({
       name: '20261006_stage1_legacy_authority_containment_v1',
       fileName: '20261006_stage1_legacy_authority_containment_v1.sql',
+    });
+    expect(REQUIRED_MIGRATION_FILES[140]).toEqual({
+      name: '20261007_subscription_cancellation_recovery_v1',
+      fileName: '20261007_subscription_cancellation_recovery_v1.sql',
+    });
+    expect(REQUIRED_MIGRATION_FILES[141]).toEqual({
+      name: '20261008_universal_v1_work_order_task_state_containment_v1',
+      fileName:
+        '20261008_universal_v1_work_order_task_state_containment_v1.sql',
     });
   });
 

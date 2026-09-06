@@ -8,18 +8,22 @@ import {
   type UniversalV1FakeFinancialApplicationService,
 } from '../services/payment/UniversalV1FinancialApplicationService.js';
 
-interface WorkOrderCompensationCommandRow
-  extends Omit<WorkOrderCompensationCommand, 'amount_cents' | 'created_at'> {
+interface WorkOrderCompensationCommandRow extends Omit<
+  WorkOrderCompensationCommand,
+  'amount_cents' | 'created_at'
+> {
   amount_cents: string | number;
   created_at: string | Date;
 }
 
 export interface UniversalV1WorkOrderCompensationRepository {
-  claimDue(limit: number, minimumAgeSeconds: number): Promise<readonly WorkOrderCompensationCommand[]>;
+  claimDue(
+    limit: number,
+    minimumAgeSeconds: number
+  ): Promise<readonly WorkOrderCompensationCommand[]>;
 }
 
-export class PostgresUniversalV1WorkOrderCompensationRepository
-  implements UniversalV1WorkOrderCompensationRepository {
+export class PostgresUniversalV1WorkOrderCompensationRepository implements UniversalV1WorkOrderCompensationRepository {
   constructor(private readonly database: Database = db) {}
 
   async claimDue(
@@ -31,7 +35,7 @@ export class PostgresUniversalV1WorkOrderCompensationRepository
               task_id,scope_version_id,eligibility_decision_id,secured_event_id,
               secured_operation_id,void_operation_id,void_idempotency_key,
               amount_cents,currency,requested_by,created_at
-         FROM public.claim_universal_v1_work_order_compensations($1,$2)`,
+         FROM public.hxos_claim_universal_v1_work_order_compensation_v2($1,$2)`,
       [limit, minimumAgeSeconds]
     );
     return result.rows.map((row) => ({
@@ -72,17 +76,17 @@ export async function executeUniversalV1WorkOrderCompensation(
     occurredAt,
   });
   if (
-    result.operationId !== command.void_operation_id
-    || result.eventKind !== 'VOIDED'
-    || result.status !== 'SUCCEEDED'
-    || result.providerKind !== 'FAKE'
-    || result.taskDraftId !== command.task_draft_id
-    || result.taskId !== command.task_id
-    || result.eligibilityDecisionId !== command.eligibility_decision_id
-    || result.scopeVersionId !== command.scope_version_id
-    || result.predecessorEventId !== command.secured_event_id
-    || result.amountCents !== command.amount_cents
-    || result.currency !== command.currency
+    result.operationId !== command.void_operation_id ||
+    result.eventKind !== 'VOIDED' ||
+    result.status !== 'SUCCEEDED' ||
+    result.providerKind !== 'FAKE' ||
+    result.taskDraftId !== command.task_draft_id ||
+    result.taskId !== command.task_id ||
+    result.eligibilityDecisionId !== command.eligibility_decision_id ||
+    result.scopeVersionId !== command.scope_version_id ||
+    result.predecessorEventId !== command.secured_event_id ||
+    result.amountCents !== command.amount_cents ||
+    result.currency !== command.currency
   ) {
     throw new Error('WORK_ORDER_COMPENSATION_RESULT_IDENTITY_MISMATCH');
   }
@@ -98,9 +102,8 @@ export interface UniversalV1WorkOrderCompensationRunResult {
 
 export class UniversalV1WorkOrderCompensationWorker {
   constructor(
-    private readonly repository: UniversalV1WorkOrderCompensationRepository =
-      new PostgresUniversalV1WorkOrderCompensationRepository(),
-    private readonly createFinance: () => CompensationFinance = () =>
+    private readonly repository: UniversalV1WorkOrderCompensationRepository = new PostgresUniversalV1WorkOrderCompensationRepository(),
+    private readonly createFinance: () => CompensationFinance | Promise<CompensationFinance> = () =>
       createUniversalV1FakeFinancialApplicationService()
   ) {}
 
@@ -112,16 +115,16 @@ export class UniversalV1WorkOrderCompensationWorker {
       throw new Error('WORK_ORDER_COMPENSATION_LIMIT_INVALID');
     }
     if (
-      !Number.isInteger(minimumAgeSeconds)
-      || minimumAgeSeconds < 5
-      || minimumAgeSeconds > 3_600
+      !Number.isInteger(minimumAgeSeconds) ||
+      minimumAgeSeconds < 5 ||
+      minimumAgeSeconds > 3_600
     ) {
       throw new Error('WORK_ORDER_COMPENSATION_AGE_INVALID');
     }
     // Factory construction is the nonproduction fake-finance capability gate.
     // It precedes even the durable claim so production cannot acquire recovery
     // commands or perform provider I/O through this worker.
-    const finance = this.createFinance();
+    const finance = await this.createFinance();
     const commands = await this.repository.claimDue(limit, minimumAgeSeconds);
     let voided = 0;
     let replayed = 0;
@@ -191,10 +194,10 @@ export function startUniversalV1WorkOrderCompensationPoller(
       })
       .catch((error: unknown) => {
         consecutiveFailures += 1;
-        lastFailureCode = error instanceof Error
-          && error.message === 'WORK_ORDER_COMPENSATION_BATCH_INCOMPLETE'
-          ? 'BATCH_INCOMPLETE'
-          : 'BATCH_FAILED';
+        lastFailureCode =
+          error instanceof Error && error.message === 'WORK_ORDER_COMPENSATION_BATCH_INCOMPLETE'
+            ? 'BATCH_INCOMPLETE'
+            : 'BATCH_FAILED';
       })
       .finally(() => {
         inFlight = null;

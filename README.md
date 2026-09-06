@@ -6,7 +6,7 @@
 
 **Canonical authority:** [HustleXP Business and Universal V1 Charter v1.1.0](https://github.com/Sebdysart/HUSTLEXP-DOCS/blob/0b80c71e118d7cab70474bbbf6df778811fe4fe8/governance/HUSTLEXP_BUSINESS_AND_UNIVERSAL_V1_CHARTER.md)
 
-**Supported runtime:** Node.js 22, Hono/tRPC, PostgreSQL, Redis/BullMQ, API and worker roles.
+**Supported runtime:** Node.js 22, Hono/tRPC, PostgreSQL, Redis/BullMQ, and separate API, worker, and actor-attester processes.
 
 **Local start:** use the company `hustlexp-platform` repository for the canonical one-command synthetic stack. The host commands below are backend-only diagnostics against explicitly disposable PostgreSQL and Redis services; they are not a complete product stack.
 
@@ -16,7 +16,7 @@
 
 **Deployment authority:** no Git push, branch name, environment variable, historical receipt, or repository document authorizes production. A release requires the exact signed manifest, protected approvals, required green checks, environment approval, and matching API/worker runtime provenance.
 
-**Known limitations:** public `main` is in an active release-authority incident and contains bundled `.local-tools`; a local tree, branch name, or source-dated candidate observation is never release authority. Re-read the exact candidate signature, default-branch state, ruleset, approvals, hosted checks, deployment trigger, and runtime provenance at the decision boundary. Legacy Stripe-specific projections and Supabase writers remain under controlled migration; database-dependent cohorts require disposable PostgreSQL; the [Work Order database command boundary](docs/architecture/HUSTLEXP_WORK_ORDER_DATABASE_AUTHORITY_BOUNDARY.md) remains `EXTERNAL_DECISION_REQUIRED / RELEASE_BLOCKING`, so a successful disposable-database journey does not establish least-privilege release authority; no real processor adapter is certified; production intake/estimate promotion remains separately held.
+**Known limitations:** public `main` is in an active release-authority incident and contains bundled `.local-tools`; a local tree, branch name, or source-dated candidate observation is never release authority. Re-read the exact candidate signature, default-branch state, ruleset, approvals, hosted checks, deployment trigger, and runtime provenance at the decision boundary. Legacy Stripe-specific projections and Supabase writers remain under controlled migration; database-dependent cohorts require disposable PostgreSQL; the [Work Order database command boundary](docs/architecture/HUSTLEXP_WORK_ORDER_DATABASE_AUTHORITY_BOUNDARY.md) is `AUTHORIZED_LOCAL_NONPROD_IMPLEMENTATION_PENDING / RELEASE_BLOCKED_PENDING_IMPLEMENTATION_AND_INDEPENDENT_REVIEW`, so an owner-approved design or successful disposable-database journey does not establish least-privilege release authority; no real processor adapter is certified; production intake/estimate promotion remains separately held.
 
 The Charter is the sole authority for business promises, categories, lifecycle meaning, and production posture. [The Team Goal and Execution Contract](docs/HUSTLEXP_TEAM_ALIGNMENT.md), [the Current Backend Checkpoint](docs/HUSTLEXP_CURRENT_BACKEND_CHECKPOINT.md), [AGENTS.md](AGENTS.md), and Governor evidence govern engineering execution only and cannot create competing business strategy or authorize external effects.
 
@@ -100,6 +100,25 @@ Run workers in a second terminal:
 ```bash
 npm run dev:workers
 ```
+
+Each process needs its own environment and enrolled database LOGIN. Set
+`SERVICE_ROLE` to `api`, `worker`, or `attester` to match its entry point; the
+attester entry is `npm run dev:attester`. API and worker use `DATABASE_URL`.
+The attester uses only `HX_ACTOR_ATTESTER_DATABASE_URL`, leaves `DATABASE_URL`
+blank, and retains its separate authenticated internal HTTP transport.
+
+All three processes install the verified database runtime before using SQL or
+opening their listeners. Supply the eight role names, independently enrolled
+`HX_RUNTIME_DATABASE_*` target facts, and exact authenticated release/build
+evidence listed in `.env.template`. The template is an input inventory; copying
+it does not provision roles, enroll a target, or authorize startup. Startup
+verifies existing migration receipts and never applies migrations.
+
+The actor-attester pins request authorization to the same process-owned release
+evidence as database installation. Shutdown drains HTTP, closes its revocation
+Redis connection, then closes its own database runtime. A failure still attempts
+later resources and exits nonzero. These runtime checks do not establish that
+the full stack, release approvals, or isolated staging promotion are complete.
 
 Verification commands:
 

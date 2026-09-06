@@ -6,17 +6,17 @@ import { analyzeMigrationFile } from '../../../scripts/analyze-migration-safety.
 
 const migrationPath = resolve(
   process.cwd(),
-  'backend/database/migrations/20260906_universal_v1_estimate_acceptance_materialization.sql',
+  'backend/database/migrations/20260906_universal_v1_estimate_acceptance_materialization.sql'
 );
 const sql = readFileSync(migrationPath, 'utf8');
 
 describe('Universal V1 estimate acceptance and Task materialization migration', () => {
   it('is the append-only successor to the reviewed TaskDraft claim-import repair', () => {
     const materializationIndex = REQUIRED_MIGRATION_FILES.findIndex(
-      ({ name }) => name === '20260906_universal_v1_estimate_acceptance_materialization',
+      ({ name }) => name === '20260906_universal_v1_estimate_acceptance_materialization'
     );
 
-    expect(REQUIRED_MIGRATION_FILES).toHaveLength(140);
+    expect(REQUIRED_MIGRATION_FILES).toHaveLength(146);
     expect(materializationIndex).toBeGreaterThan(0);
     expect(REQUIRED_MIGRATION_FILES.slice(materializationIndex - 1)).toEqual([
       {
@@ -127,19 +127,43 @@ describe('Universal V1 estimate acceptance and Task materialization migration', 
         name: '20261006_stage1_legacy_authority_containment_v1',
         fileName: '20261006_stage1_legacy_authority_containment_v1.sql',
       },
+      {
+        name: '20261007_subscription_cancellation_recovery_v1',
+        fileName: '20261007_subscription_cancellation_recovery_v1.sql',
+      },
+      {
+        name: '20261008_universal_v1_work_order_task_state_containment_v1',
+        fileName: '20261008_universal_v1_work_order_task_state_containment_v1.sql',
+      },
+      {
+        name: '20261009_universal_v1_standardized_quote_readiness_v1',
+        fileName: '20261009_universal_v1_standardized_quote_readiness_v1.sql',
+      },
+      {
+        name: '20261010_universal_v1_financial_security_event_expiry_v1',
+        fileName: '20261010_universal_v1_financial_security_event_expiry_v1.sql',
+      },
+      {
+        name: '20261012_universal_v1_work_order_command_authority_v2',
+        fileName: '20261012_universal_v1_work_order_command_authority_v2.sql',
+      },
+      {
+        name: '20261014_universal_v1_work_order_command_ports_v1',
+        fileName: '20261014_universal_v1_work_order_command_ports_v1.sql',
+      },
     ]);
     expect(sql).not.toMatch(/^\s*(?:BEGIN|COMMIT);\s*$/gimu);
   });
 
   it('has no blocker under the repository migration-safety policy', () => {
     expect(
-      analyzeMigrationFile(migrationPath, sql).filter((issue) => issue.severity === 'BLOCKER'),
+      analyzeMigrationFile(migrationPath, sql).filter((issue) => issue.severity === 'BLOCKER')
     ).toEqual([]);
   });
 
   it('makes PROVIDER_ESTIMATE quote versions explicitly payment-free', () => {
     expect(sql).toContain(
-      'ADD COLUMN IF NOT EXISTS universal_contract_version SMALLINT NOT NULL DEFAULT 0',
+      'ADD COLUMN IF NOT EXISTS universal_contract_version SMALLINT NOT NULL DEFAULT 0'
     );
     expect(sql).toContain('ADD COLUMN IF NOT EXISTS payment_posture TEXT;');
     expect(sql).toContain("payment_posture = 'PAYMENT_FREE_ESTIMATE'");
@@ -156,58 +180,44 @@ describe('Universal V1 estimate acceptance and Task materialization migration', 
       expect(sql).toContain(`quote_version.${field} IS NULL`);
     }
     expect(sql).toContain(
-      'PROVIDER_ESTIMATE quote version must be payment-free and provider-neutral',
+      'PROVIDER_ESTIMATE quote version must be payment-free and provider-neutral'
     );
-    expect(sql).toContain(
-      'Universal V1 provider-estimate quote versions are append-only',
-    );
-    expect(sql).toContain(
-      'CREATE TRIGGER universal_provider_estimate_quote_versions_no_truncate',
-    );
+    expect(sql).toContain('Universal V1 provider-estimate quote versions are append-only');
+    expect(sql).toContain('CREATE TRIGGER universal_provider_estimate_quote_versions_no_truncate');
   });
 
   it('normalizes the estimate work category and includes it in the immutable digest', () => {
     expect(sql).toContain(
-      'ALTER TABLE public.provider_estimate_submissions\n  ADD COLUMN IF NOT EXISTS work_category_code TEXT;',
+      'ALTER TABLE public.provider_estimate_submissions\n  ADD COLUMN IF NOT EXISTS work_category_code TEXT;'
     );
     expect(sql).toContain('ALTER COLUMN work_category_code SET NOT NULL');
     expect(sql).toContain("work_category_code ~ '^[a-z][a-z0-9_]{1,63}$'");
     expect(sql).toContain("'workCategoryCode', NEW.work_category_code");
     expect(sql).toContain('routing.category_snapshot = NEW.work_category_code');
     expect(sql).toContain(
-      'precontract provider estimate requires reviewed work-category adoption evidence',
+      'precontract provider estimate requires reviewed work-category adoption evidence'
     );
     expect(sql).toContain(
-      'precontract provider-estimate quote version requires reviewed payment-posture adoption evidence',
+      'precontract provider-estimate quote version requires reviewed payment-posture adoption evidence'
     );
-    expect(sql).not.toMatch(
-      /UPDATE\s+(?:public\.)?provider_estimate_submissions\s+SET/iu,
-    );
+    expect(sql).not.toMatch(/UPDATE\s+(?:public\.)?provider_estimate_submissions\s+SET/iu);
     expect(sql).not.toMatch(/UPDATE\s+(?:public\.)?quote_versions\s+SET/iu);
   });
 
   it('requires exact official qualification only for credentialed trade routes', () => {
-    expect(sql).toContain(
-      "'CREDENTIALED_TRADE_REVIEW_REQUIRED' = ANY(route_reason_codes)",
-    );
+    expect(sql).toContain("'CREDENTIALED_TRADE_REVIEW_REQUIRED' = ANY(route_reason_codes)");
     expect(sql).toContain('FROM public.current_verified_trade_qualifications qualification');
+    expect(sql).toContain('qualification.provider_user_id = NEW.provider_user_id');
+    expect(sql).toContain('qualification.organization_id = NEW.provider_organization_id');
+    expect(sql).toContain('lower(permitted.category) = NEW.work_category_code');
     expect(sql).toContain(
-      'qualification.provider_user_id = NEW.provider_user_id',
-    );
-    expect(sql).toContain(
-      'qualification.organization_id = NEW.provider_organization_id',
-    );
-    expect(sql).toContain(
-      'lower(permitted.category) = NEW.work_category_code',
-    );
-    expect(sql).toContain(
-      'ordinary estimate\n-- routes remain available to GENERAL_SERVICE_PROVIDER providers',
+      'ordinary estimate\n-- routes remain available to GENERAL_SERVICE_PROVIDER providers'
     );
   });
 
   it('records the service exact write set as one immutable materialization fact', () => {
     const factBlock = sql.match(
-      /CREATE TABLE IF NOT EXISTS public\.task_estimate_acceptance_materializations \([\s\S]*?\n\);/u,
+      /CREATE TABLE IF NOT EXISTS public\.task_estimate_acceptance_materializations \([\s\S]*?\n\);/u
     )?.[0];
     expect(factBlock).toBeDefined();
     for (const field of [
@@ -236,13 +246,11 @@ describe('Universal V1 estimate acceptance and Task materialization migration', 
     expect(factBlock).toContain('poster_user_id,\n    idempotency_key');
     expect(factBlock).toContain('materialization_version = 1');
     expect(sql).toContain(
-      'BEFORE UPDATE OR DELETE ON public.task_estimate_acceptance_materializations',
+      'BEFORE UPDATE OR DELETE ON public.task_estimate_acceptance_materializations'
     );
+    expect(sql).toContain('BEFORE TRUNCATE ON public.task_estimate_acceptance_materializations');
     expect(sql).toContain(
-      'BEFORE TRUNCATE ON public.task_estimate_acceptance_materializations',
-    );
-    expect(sql).toContain(
-      'REVOKE ALL ON TABLE public.task_estimate_acceptance_materializations FROM PUBLIC',
+      'REVOKE ALL ON TABLE public.task_estimate_acceptance_materializations FROM PUBLIC'
     );
   });
 
@@ -250,22 +258,16 @@ describe('Universal V1 estimate acceptance and Task materialization migration', 
     expect(sql).toContain("prior_route.outcome = 'ESTIMATE_REQUIRED'");
     expect(sql).toContain('prior_route.decision_version = NEW.expected_draft_version');
     expect(sql).toContain("resulting_route.outcome = 'FULFILLMENT_CANDIDATE'");
-    expect(sql).toContain(
-      'resulting_route.supersedes_decision_id = prior_route.id',
-    );
-    expect(sql).toContain(
-      'resulting_route.decision_version = prior_route.decision_version + 1',
-    );
+    expect(sql).toContain('resulting_route.supersedes_decision_id = prior_route.id');
+    expect(sql).toContain('resulting_route.decision_version = prior_route.decision_version + 1');
     expect(sql).toContain('draft.active_routing_decision_id = resulting_route.id');
     expect(sql).toContain('draft.poster_user_id = NEW.poster_user_id');
     expect(sql).toContain('draft.task_id = NEW.task_id');
     expect(sql).toContain('estimate.quote_version_id = quote_version.id');
     expect(sql).toContain('quote.task_id = task.id');
+    expect(sql).toContain('quote.provider_user_id IS NOT DISTINCT FROM estimate.provider_user_id');
     expect(sql).toContain(
-      'quote.provider_user_id IS NOT DISTINCT FROM estimate.provider_user_id',
-    );
-    expect(sql).toContain(
-      'quote.provider_organization_id IS NOT DISTINCT FROM estimate.provider_organization_id',
+      'quote.provider_organization_id IS NOT DISTINCT FROM estimate.provider_organization_id'
     );
     expect(sql).toContain('quote_version.scope_version_id IS NULL');
     expect(sql).toContain('scope.scope_hash = estimate.scope_hash');
@@ -284,59 +286,49 @@ describe('Universal V1 estimate acceptance and Task materialization migration', 
     expect(sql).toContain("task.region_code = estimate.scope_snapshot ->> 'region_code'");
     expect(sql).toContain("task.risk_level = estimate.scope_snapshot ->> 'risk_level'");
     expect(sql).toContain('task.platform_margin_cents =');
-    expect(sql).toContain("upper(task.currency) = estimate.currency");
+    expect(sql).toContain('upper(task.currency) = estimate.currency');
     expect(sql).toContain("task.state = 'OPEN'");
     expect(sql).toContain('task.worker_id IS NULL');
     expect(sql).toContain('task.work_order_id IS NULL');
-    expect(sql).toContain('CREATE CONSTRAINT TRIGGER task_estimate_acceptance_materialization_guard');
+    expect(sql).toContain(
+      'CREATE CONSTRAINT TRIGGER task_estimate_acceptance_materialization_guard'
+    );
     expect(sql).toContain('DEFERRABLE INITIALLY DEFERRED');
   });
 
   it('makes the TaskDraft-to-Task binding one-time and commit-time exact', () => {
     expect(sql).toContain(
-      'CREATE UNIQUE INDEX IF NOT EXISTS task_drafts_universal_task_binding_unique',
+      'CREATE UNIQUE INDEX IF NOT EXISTS task_drafts_universal_task_binding_unique'
+    );
+    expect(sql).toContain('WHERE universal_contract_version = 1 AND task_id IS NOT NULL');
+    expect(sql).toContain('Universal V1 TaskDraft Task binding is one-time and immutable');
+    expect(sql).toContain(
+      'Universal V1 TaskDraft binding requires its exact immutable materialization fact'
     );
     expect(sql).toContain(
-      'WHERE universal_contract_version = 1 AND task_id IS NOT NULL',
-    );
-    expect(sql).toContain(
-      'Universal V1 TaskDraft Task binding is one-time and immutable',
-    );
-    expect(sql).toContain(
-      'Universal V1 TaskDraft binding requires its exact immutable materialization fact',
-    );
-    expect(sql).toContain(
-      'CREATE CONSTRAINT TRIGGER universal_task_draft_materialization_presence_guard',
+      'CREATE CONSTRAINT TRIGGER universal_task_draft_materialization_presence_guard'
     );
     expect(sql).toMatch(
-      /materialization\.task_draft_id = NEW\.id[\s\S]*?materialization\.task_id = NEW\.task_id[\s\S]*?materialization\.poster_user_id = NEW\.poster_user_id/u,
+      /materialization\.task_draft_id = NEW\.id[\s\S]*?materialization\.task_id = NEW\.task_id[\s\S]*?materialization\.poster_user_id = NEW\.poster_user_id/u
     );
   });
 
   it('uses provider-neutral task posture and rejects every legacy escrow binding', () => {
     expect(sql).toContain("'universal_financial_security'");
-    expect(sql).toContain(
-      "universal_payment_posture = 'PAYMENT_CREATION_FROZEN'",
-    );
-    expect(sql).toContain(
-      "task.payment_method = 'universal_financial_security'",
-    );
-    expect(sql).toContain(
-      "task.universal_payment_posture = 'PAYMENT_CREATION_FROZEN'",
-    );
+    expect(sql).toContain("universal_payment_posture = 'PAYMENT_CREATION_FROZEN'");
+    expect(sql).toContain("task.payment_method = 'universal_financial_security'");
+    expect(sql).toContain("task.universal_payment_posture = 'PAYMENT_CREATION_FROZEN'");
     expect(sql).toContain('Universal V1 Task cannot bind a legacy escrow');
-    expect(sql).toContain(
-      'BEFORE INSERT OR UPDATE OF task_id ON public.escrows',
-    );
+    expect(sql).toContain('BEFORE INSERT OR UPDATE OF task_id ON public.escrows');
     expect(sql).toMatch(
-      /NOT EXISTS \([\s\S]*?FROM public\.escrows escrow[\s\S]*?escrow\.task_id = task\.id/u,
+      /NOT EXISTS \([\s\S]*?FROM public\.escrows escrow[\s\S]*?escrow\.task_id = task\.id/u
     );
   });
 
   it('creates no assignment, escrow, financial event, or capability grant', () => {
     expect(sql).not.toMatch(/INSERT\s+INTO\s+(?:public\.)?escrows/iu);
     expect(sql).not.toMatch(
-      /INSERT\s+INTO\s+(?:public\.)?task_financial_(?:operations|security_events)/iu,
+      /INSERT\s+INTO\s+(?:public\.)?task_financial_(?:operations|security_events)/iu
     );
     expect(sql).not.toMatch(/UPDATE\s+(?:public\.)?tasks\s+SET\s+worker_id/iu);
     expect(sql).not.toMatch(/GRANT\s+/iu);

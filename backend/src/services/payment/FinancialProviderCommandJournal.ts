@@ -1,14 +1,18 @@
-import { createHash } from 'node:crypto';
+import {
+  canonicalFinancialProviderRequestJson,
+  FinancialProviderRequestCanonicalizationError,
+} from './FinancialProviderRequestCanonicalization.js';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { db, type Database, type QueryFn } from '../../db.js';
 import type { FinancialOperationKind, FinancialProviderKind } from './FinancialProviderPorts.js';
+import { decodeFakeFinancialDurableRequest } from './FakeFinancialDurableRequest.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9:_-]{16,128}$/u;
 const RELEASE_DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const RELEASE_ID = /^[a-z0-9][a-z0-9._-]{7,127}$/u;
 const REVISION = /^[0-9a-f]{40}$/u;
-const MAX_CANONICAL_REQUEST_BYTES = 65_536;
 
 const OPERATION_KINDS = new Set<FinancialOperationKind>([
   'PREPARE_PAYMENT_METHOD',
@@ -45,14 +49,6 @@ const LIFECYCLE_OPERATION_KINDS = new Set<FinancialOperationKind>([
   'PAYOUT',
   'OBSERVE_BANK_SETTLEMENT',
 ]);
-
-type CanonicalJson =
-  | null
-  | boolean
-  | number
-  | string
-  | CanonicalJson[]
-  | { [key: string]: CanonicalJson };
 
 export type FinancialProviderCommandActorKind =
   | 'NAMED_OPERATOR'
@@ -175,8 +171,7 @@ export interface DurableFakeFinancialCommandDispatchEvidence {
   readonly fakeOperationEventId: string;
 }
 
-export interface DurableFakeFinancialCommandEvidence
-  extends DurableFakeFinancialCommandDispatchEvidence {
+export interface DurableFakeFinancialCommandEvidence extends DurableFakeFinancialCommandDispatchEvidence {
   readonly preparedCommandId: string;
 }
 
@@ -227,6 +222,7 @@ interface PreparedFinancialProviderCommand {
   idempotencyKey: string;
   providerExpectedVersion: number;
   canonicalRequestJson: string;
+  canonicalCommandIdentityJson: string;
   requestSha256: string;
   commandIdentitySha256: string;
   evidence: NormalizedEvidence;
@@ -252,66 +248,15 @@ function sha256(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
-function invalidRequest(): never {
-  throw new FinancialProviderCommandJournalError('REQUEST_INVALID');
-}
-
-function canonicalize(
-  value: unknown,
-  ancestors: Set<object>,
-  allowUndefined: boolean
-): CanonicalJson | undefined {
-  if (value === undefined) {
-    if (allowUndefined) return undefined;
-    return invalidRequest();
-  }
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') {
-    return value;
-  }
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value) || !Number.isSafeInteger(value)) return invalidRequest();
-    return Object.is(value, -0) ? 0 : value;
-  }
-  if (typeof value !== 'object') return invalidRequest();
-  if (ancestors.has(value)) return invalidRequest();
-  ancestors.add(value);
-  try {
-    if (Array.isArray(value)) {
-      return value.map((entry) => {
-        const normalized = canonicalize(entry, ancestors, false);
-        if (normalized === undefined) return invalidRequest();
-        return normalized;
-      });
-    }
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) return invalidRequest();
-    if (Object.getOwnPropertySymbols(value).length > 0) return invalidRequest();
-    const normalized: { [key: string]: CanonicalJson } = {};
-    for (const key of Object.keys(value).sort()) {
-      if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
-        return invalidRequest();
-      }
-      const descriptor = Object.getOwnPropertyDescriptor(value, key);
-      if (!descriptor || descriptor.get || descriptor.set) return invalidRequest();
-      const child = canonicalize(descriptor.value, ancestors, true);
-      if (child !== undefined) normalized[key] = child;
-    }
-    return normalized;
-  } finally {
-    ancestors.delete(value);
-  }
-}
-
 function exactCanonicalRequest(value: unknown): string {
-  const normalized = canonicalize(value, new Set<object>(), false);
-  if (!normalized || Array.isArray(normalized) || typeof normalized !== 'object') {
-    return invalidRequest();
+  try {
+    return canonicalFinancialProviderRequestJson(value);
+  } catch (error) {
+    if (error instanceof FinancialProviderRequestCanonicalizationError) {
+      throw new FinancialProviderCommandJournalError(error.reason);
+    }
+    throw error;
   }
-  const json = JSON.stringify(normalized);
-  if (Buffer.byteLength(json, 'utf8') > MAX_CANONICAL_REQUEST_BYTES) {
-    throw new FinancialProviderCommandJournalError('REQUEST_TOO_LARGE');
-  }
-  return json;
 }
 
 /** Exact digest shared by PREPARED and REQUESTED authority boundaries. */
@@ -399,7 +344,7 @@ function normalizeRelease(
   };
 }
 
-function prepareFinancialProviderCommand<TRequest>(
+export function prepareFinancialProviderCommand<TRequest>(
   input: RecordFinancialProviderCommandInput<TRequest>
 ): PreparedFinancialProviderCommand {
   if (!OPERATION_KINDS.has(input.operationKind)) {
@@ -443,6 +388,7 @@ function prepareFinancialProviderCommand<TRequest>(
   return {
     ...identity,
     canonicalRequestJson,
+    canonicalCommandIdentityJson: JSON.stringify(identity),
     commandIdentitySha256: sha256(JSON.stringify(identity)),
   };
 }
@@ -503,6 +449,37 @@ export class PostgresFinancialProviderCommandJournal implements FinancialProvide
     input: RecordFinancialProviderCommandInput<TRequest>
   ): Promise<FinancialProviderCommandReceipt> {
     const command = prepareFinancialProviderCommand(input);
+    if (command.providerKind === 'FAKE' && LIFECYCLE_OPERATION_KINDS.has(command.operationKind)) {
+      decodeFakeFinancialDurableRequest(
+        command.operationKind,
+        command.canonicalRequestJson,
+        command.requestSha256
+      );
+      return this.database.transaction(async (query) => {
+        let rows: Array<CommandRow & { idempotency_replayed: boolean }>;
+        try {
+          const result = await query<CommandRow & { idempotency_replayed: boolean }>(
+            `SELECT ${COMMAND_SELECT}, idempotency_replayed
+               FROM public.hxos_request_fake_financial_command_v13($1,$2)`,
+            [command.canonicalRequestJson, command.canonicalCommandIdentityJson]
+          );
+          rows = result.rows;
+        } catch (error) {
+          for (const reason of ['IDEMPOTENCY_CONFLICT', 'OPERATION_VERSION_CONFLICT'] as const) {
+            if (error instanceof Error && error.message === `HXUV1-FINREQ-13-${reason}`) {
+              throw new FinancialProviderCommandJournalError(reason);
+            }
+          }
+          throw error;
+        }
+        const row = rows[0];
+        if (rows.length !== 1 || !row || typeof row.idempotency_replayed !== 'boolean') {
+          throw new FinancialProviderCommandJournalError('PERSISTENCE_INCOMPLETE');
+        }
+        assertStoredIdentity(row, command, 'PERSISTENCE_IDENTITY_MISMATCH');
+        return receiptFromRow(row, row.idempotency_replayed);
+      });
+    }
     return this.database.transaction(async (query) => this.recordInTransaction(query, command));
   }
 
@@ -556,19 +533,12 @@ export class PostgresFinancialProviderCommandJournal implements FinancialProvide
     }
 
     const inserted = await query<CommandRow>(
-      `INSERT INTO public.financial_provider_command_journal (
-         operation_kind, operation_id, provider_kind, idempotency_key,
-         provider_expected_version, request_sha256, command_identity_sha256,
-         prepared_financial_command_id, prepared_authority_sha256,
-         task_draft_id, task_id, work_order_id, related_operation_id,
-         amount_cents, currency, recorded_actor_id, recorded_actor_kind,
-         release_manifest_digest, release_id, release_revision,
-         release_environment, release_authentication_status
-       ) VALUES (
-         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
-       )
-       RETURNING ${COMMAND_SELECT}`,
+      `SELECT ${COMMAND_SELECT}
+         FROM public.hxos_record_financial_provider_command_v1(
+           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23
+         )`,
       [
+        randomUUID(),
         command.operationKind,
         command.operationId,
         command.providerKind,
@@ -711,9 +681,7 @@ export class JournaledFinancialProviderInvoker {
       throw new FinancialProviderCommandJournalError('REQUEST_REPLAY_ADAPTER_REFUSED');
     }
     if (LIFECYCLE_OPERATION_KINDS.has(input.operationKind)) {
-      throw new FinancialProviderCommandJournalError(
-        'FOREGROUND_DISPATCH_COORDINATOR_REQUIRED'
-      );
+      throw new FinancialProviderCommandJournalError('FOREGROUND_DISPATCH_COORDINATOR_REQUIRED');
     }
     const result = await invokeAdapter(exactCanonicalRequest, receipt);
     return { command: receipt, result };

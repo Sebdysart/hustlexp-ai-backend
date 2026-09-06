@@ -6,11 +6,19 @@ import { pathToFileURL } from 'node:url';
 import pg from 'pg';
 import {
   applyEngineAutomationMigration,
+  authorizeEngineAutomationMigrationPlanOnConnectedClient,
+  backfillLegacyTaskLocations,
+  ensureConstitutionalBaseline,
   loadMigrationSql,
   productionMigrationRuntime,
-  runEngineAutomationMigration,
 } from '../dist/backend/src/jobs/engine-automation-migration.js';
 import { REQUIRED_MIGRATION_FILES } from '../dist/backend/src/jobs/engine-automation-migration-files.js';
+import { engineMigrationArtifactDigest } from '../dist/backend/src/jobs/engine-migration-manifest.js';
+import {
+  assertMigrationExecutionAuthorized,
+  completeMigrationExecutionSession,
+} from '../dist/backend/src/jobs/migration-execution-authority.js';
+import { assertTaskLocationCryptoConfigured } from '../dist/backend/src/services/TaskLocationCrypto.js';
 import { validatePreparationPolicy } from './prepare-test-databases.mjs';
 
 const { Client } = pg;
@@ -22,6 +30,9 @@ export const MIGRATION_VERIFICATION_DATABASES = Object.freeze({
 const MIGRATION_VERIFICATION_DATABASE_SET = new Set(
   Object.values(MIGRATION_VERIFICATION_DATABASES)
 );
+const MIGRATION_VERIFICATION_DATABASE_ROLE = 'hx_ci_runner';
+const MIGRATION_VERIFICATION_DATABASE_PORT = '5432';
+const MIGRATION_VERIFICATION_DATABASE_HOSTS = new Set(['127.0.0.1', '[::1]']);
 
 const TASK_DRAFT_CLAIM_UPGRADE_IDS = Object.freeze({
   canonicalUnclaimed: 'f3000000-0000-4000-8000-000000000001',
@@ -77,6 +88,106 @@ function databaseUrl(adminDatabaseUrl, name) {
   const url = new URL(adminDatabaseUrl);
   url.pathname = `/${name}`;
   return url.toString();
+}
+
+function refuseMigrationExecutionTarget(reason) {
+  throw new Error(`Refusing migration verification execution target: ${reason}`);
+}
+
+/**
+ * Produce the complete local-only authority tuple for an engine-write target.
+ * The recreate-only admin database is deliberately absent from the allowlist.
+ */
+export function migrationVerificationExecutionEnvironment(value) {
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return refuseMigrationExecutionTarget('DATABASE_URL_INVALID');
+  }
+  if (!['postgres:', 'postgresql:'].includes(parsed.protocol)) {
+    return refuseMigrationExecutionTarget('DATABASE_URL_PROTOCOL_INVALID');
+  }
+  const databaseName = parsed.pathname.replace(/^\//u, '');
+  if (!MIGRATION_VERIFICATION_DATABASE_SET.has(databaseName)) {
+    return refuseMigrationExecutionTarget('DATABASE_NAME_NOT_ALLOWLISTED');
+  }
+  if (parsed.username !== MIGRATION_VERIFICATION_DATABASE_ROLE) {
+    return refuseMigrationExecutionTarget('DATABASE_ROLE_NOT_ALLOWLISTED');
+  }
+  if (!MIGRATION_VERIFICATION_DATABASE_HOSTS.has(parsed.hostname)) {
+    return refuseMigrationExecutionTarget('DATABASE_HOST_NOT_ALLOWLISTED');
+  }
+  if (
+    (parsed.port || MIGRATION_VERIFICATION_DATABASE_PORT) !== MIGRATION_VERIFICATION_DATABASE_PORT
+  ) {
+    return refuseMigrationExecutionTarget('DATABASE_PORT_NOT_ALLOWLISTED');
+  }
+  if (parsed.search || parsed.hash) {
+    return refuseMigrationExecutionTarget('DATABASE_URL_MUST_BE_EXACT');
+  }
+  return Object.freeze({
+    NODE_ENV: 'test',
+    HX_ENVIRONMENT: 'local',
+    SERVICE_ROLE: 'migration',
+    HX_ALLOW_CI_DB_RECREATE: 'true',
+    HXOS_LOCAL_TEST_DATABASE_NAME: databaseName,
+    HXOS_LOCAL_TEST_DATABASE_ROLE: MIGRATION_VERIFICATION_DATABASE_ROLE,
+  });
+}
+
+async function authorizeCanonicalMigrationPlan(client, runtime, url) {
+  assert.equal(runtime.databaseUrl, url, 'runtime must bind the exact authorized database URL');
+  const authority = assertMigrationExecutionAuthorized({
+    env: migrationVerificationExecutionEnvironment(url),
+    migrationArtifactDigest: await engineMigrationArtifactDigest(),
+    databaseUrl: url,
+  });
+  return authorizeEngineAutomationMigrationPlanOnConnectedClient(client, runtime, authority);
+}
+
+async function finishCanonicalMigrationPlan(client, plan) {
+  const backfilledLocationCount = await backfillLegacyTaskLocations(client, plan.session);
+  assert.ok(Number.isInteger(backfilledLocationCount) && backfilledLocationCount >= 0);
+  const receipt = completeMigrationExecutionSession(plan.session, client);
+  assert.equal(
+    receipt.operationCount,
+    plan.migrations.length + (plan.baseline ? 1 : 0) + 1,
+    'migration receipt must cover baseline, every migration, and location backfill exactly once'
+  );
+  return receipt;
+}
+
+async function consumeCanonicalMigrationPlan(client, runtime, url, expectedStatus) {
+  const plan = await authorizeCanonicalMigrationPlan(client, runtime, url);
+  assert.ok(plan.baseline, 'canonical engine plan must include the constitutional baseline');
+  await ensureConstitutionalBaseline(client, plan.baseline, plan.session);
+  const outcomes = [];
+  for (const migration of plan.migrations) {
+    const outcome = await applyEngineAutomationMigration(
+      client,
+      migration.sql,
+      migration.sourcePath,
+      plan.session,
+      migration.name
+    );
+    assert.equal(outcome.status, expectedStatus);
+    outcomes.push(outcome);
+  }
+  await finishCanonicalMigrationPlan(client, plan);
+  return outcomes;
+}
+
+async function runCanonicalMigrationPlan(url, expectedStatus) {
+  const runtime = productionMigrationRuntime();
+  runtime.databaseUrl = url;
+  const client = runtime.createClient(url);
+  await client.connect();
+  try {
+    return await consumeCanonicalMigrationPlan(client, runtime, url, expectedStatus);
+  } finally {
+    await client.end();
+  }
 }
 
 function executableSql(sql) {
@@ -1271,12 +1382,10 @@ async function loadRegisteredMigration(name) {
 }
 
 async function verifyFresh(url) {
-  process.env.DATABASE_URL = url;
-  const first = await runEngineAutomationMigration();
+  const first = await runCanonicalMigrationPlan(url, 'applied');
   assert.equal(first.length, REQUIRED_MIGRATION_FILES.length);
-  assert.ok(first.every((outcome) => outcome.status === 'applied'));
-  const replay = await runEngineAutomationMigration();
-  assert.ok(replay.every((outcome) => outcome.status === 'already_applied'));
+  const replay = await runCanonicalMigrationPlan(url, 'already_applied');
+  assert.equal(replay.length, REQUIRED_MIGRATION_FILES.length);
   await assertExactRegistry(url);
   await assertHardAssignmentAliasContainment(url);
   await assertLegacyEscrowContainment(url);
@@ -1292,23 +1401,24 @@ async function verifyUpgrade(url) {
   let occurrenceAccessAuditSql = null;
   await client.connect();
   try {
-    const baseline = await readFile(
-      path.resolve('backend/database/constitutional-schema.sql'),
-      'utf8'
-    );
-    await client.query(baseline);
+    const plan = await authorizeCanonicalMigrationPlan(client, runtime, url);
+    assert.ok(plan.baseline, 'upgrade plan must include the constitutional baseline');
+    await ensureConstitutionalBaseline(client, plan.baseline, plan.session);
 
     const splitIndex = runtime.migrationSpecs.findIndex(
       (spec) => spec.name === '20260720_offline_action_sync_contract'
     );
     assert.ok(splitIndex > 0, 'upgrade split migration must be registered');
 
-    for (const spec of runtime.migrationSpecs.slice(0, splitIndex)) {
-      const migration = await loadMigrationSql(runtime, spec);
+    for (let index = 0; index < splitIndex; index += 1) {
+      const spec = runtime.migrationSpecs[index];
+      const migration = plan.migrations[index];
+      assert.equal(migration.name, spec.name, 'authorized pre-split plan order must be exact');
       const outcome = await applyEngineAutomationMigration(
         client,
         migration.sql,
         migration.sourcePath,
+        plan.session,
         spec.name
       );
       assert.equal(outcome.status, 'applied');
@@ -1328,7 +1438,10 @@ async function verifyUpgrade(url) {
     let historicalLegacyEscrowBeforeContainment = null;
     let completionNoticeRawReplayProven = false;
     let completionEraUpgradeAssertionsProven = false;
-    for (const spec of runtime.migrationSpecs.slice(splitIndex)) {
+    for (let index = splitIndex; index < runtime.migrationSpecs.length; index += 1) {
+      const spec = runtime.migrationSpecs[index];
+      const migration = plan.migrations[index];
+      assert.equal(migration.name, spec.name, 'authorized tail plan order must be exact');
       if (spec.name === '20260901_universal_v1_lead_ingress_port') {
         const before = await client.query('SELECT COUNT(*)::integer AS count FROM leads');
         legacyLeadCountBeforePort = before.rows[0].count;
@@ -1343,7 +1456,6 @@ async function verifyUpgrade(url) {
           )
         `);
       }
-      const migration = await loadMigrationSql(runtime, spec);
       if (spec.name === OCCURRENCE_ACCESS_AUDIT_MIGRATION) {
         occurrenceAccessAuditSql = migration.sql;
         const completionEraAssertions = executableSql(
@@ -1383,14 +1495,18 @@ async function verifyUpgrade(url) {
           )
         );
         await client.query('BEGIN');
+        let transactionStarted = true;
         try {
           await client.query(claimUpgradeSeed);
           await client.query(
             'SET CONSTRAINTS task_draft_legacy_import_receipt_presence_guard IMMEDIATE'
           );
+          transactionStarted = false;
           await client.query('COMMIT');
         } catch (error) {
-          await client.query('ROLLBACK').catch(() => undefined);
+          if (transactionStarted) {
+            await client.query('ROLLBACK').catch(() => undefined);
+          }
           throw error;
         }
         taskDraftClaimUpgradeBaseline = await taskDraftClaimUpgradeSnapshot(client);
@@ -1431,7 +1547,13 @@ async function verifyUpgrade(url) {
           );
         `);
         await assert.rejects(
-          applyEngineAutomationMigration(client, migration.sql, migration.sourcePath, spec.name),
+          applyEngineAutomationMigration(
+            client,
+            migration.sql,
+            migration.sourcePath,
+            plan.session,
+            spec.name
+          ),
           /HXUV1-TD-CLAIM-4/u,
           'upgrade must refuse a canonical orphan claim instead of synthesizing evidence'
         );
@@ -1469,7 +1591,13 @@ async function verifyUpgrade(url) {
           'migration-121 nullable CHECK must admit the controlled partial audit fixture'
         );
         await assert.rejects(
-          applyEngineAutomationMigration(client, migration.sql, migration.sourcePath, spec.name),
+          applyEngineAutomationMigration(
+            client,
+            migration.sql,
+            migration.sourcePath,
+            plan.session,
+            spec.name
+          ),
           (error) =>
             error?.code === 'P0001' && error?.message === PARTIAL_COMPLETION_RECEIPT_UPGRADE_ERROR,
           'migration 138 must refuse partial legacy completion-receipt audit truth by name'
@@ -1506,6 +1634,7 @@ async function verifyUpgrade(url) {
         client,
         migration.sql,
         migration.sourcePath,
+        plan.session,
         spec.name
       );
       assert.equal(outcome.status, 'applied');
@@ -1745,6 +1874,8 @@ async function verifyUpgrade(url) {
       }
     }
 
+    await finishCanonicalMigrationPlan(client, plan);
+
     const recoveryContract = executableSql(
       await readFile(
         path.resolve('backend/tests/integration/quote-payment-recovery-contract.pg.sql'),
@@ -1752,17 +1883,6 @@ async function verifyUpgrade(url) {
       )
     );
     await client.query(recoveryContract);
-
-    for (const spec of runtime.migrationSpecs) {
-      const migration = await loadMigrationSql(runtime, spec);
-      const outcome = await applyEngineAutomationMigration(
-        client,
-        migration.sql,
-        migration.sourcePath,
-        spec.name
-      );
-      assert.equal(outcome.status, 'already_applied');
-    }
     assert.ok(
       recoveredHistoricalLegacyEscrow,
       'upgrade must exercise legacy escrow recovery before ledger replay'
@@ -1780,6 +1900,8 @@ async function verifyUpgrade(url) {
   } finally {
     await client.end();
   }
+  const replay = await runCanonicalMigrationPlan(url, 'already_applied');
+  assert.equal(replay.length, REQUIRED_MIGRATION_FILES.length);
   await assertExactRegistry(url);
   await assertHardAssignmentAliasContainment(url);
   await assertLegacyEscrowContainment(url, recoveredHistoricalLegacyEscrow);
@@ -1787,9 +1909,18 @@ async function verifyUpgrade(url) {
 }
 
 async function verifyRecoveryTimestampPrecision(url) {
-  const fixtureClient = new Client({ connectionString: url });
+  const runtime = productionMigrationRuntime();
+  runtime.databaseUrl = url;
+  const fixtureClient = runtime.createClient(url);
   await fixtureClient.connect();
   try {
+    const replay = await consumeCanonicalMigrationPlan(
+      fixtureClient,
+      runtime,
+      url,
+      'already_applied'
+    );
+    assert.equal(replay.length, REQUIRED_MIGRATION_FILES.length);
     await fixtureClient.query(`
       INSERT INTO users(id, email, full_name, default_mode)
       VALUES (
@@ -1929,6 +2060,7 @@ async function verifyRecoveryTimestampPrecision(url) {
 export async function main(env = process.env) {
   const adminDatabaseUrl = env.DATABASE_URL?.trim();
   assertMigrationVerificationAuthority(env, adminDatabaseUrl);
+  assertTaskLocationCryptoConfigured();
   const authorityEnv = Object.freeze({
     NODE_ENV: env.NODE_ENV,
     HX_ALLOW_CI_DB_RECREATE: env.HX_ALLOW_CI_DB_RECREATE,

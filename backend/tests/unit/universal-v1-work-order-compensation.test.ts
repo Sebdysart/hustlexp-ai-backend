@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  PostgresUniversalV1WorkOrderCompensationRepository,
   startUniversalV1WorkOrderCompensationPoller,
   UniversalV1WorkOrderCompensationWorker,
 } from '../../src/jobs/universal-v1-work-order-compensation-worker.js';
@@ -106,30 +107,64 @@ function successfulVoid(replayed: boolean = false) {
   };
 }
 
-function financeExecutionMock(voidReplayed: boolean = false) {
-  return vi.fn()
-    .mockResolvedValueOnce({
-      id: ids.preparedEvent,
-      operationId: deterministicUuid(key, 'prepare'),
-      externalReference: 'fake_prepare',
-    })
-    .mockResolvedValueOnce({
-      id: ids.authorizedEvent,
-      operationId: deterministicUuid(key, 'authorize'),
-      externalReference: 'fake_authorize',
-    })
-    .mockResolvedValueOnce({
-      id: ids.securedEvent,
-      operationId: deterministicUuid(key, 'secure'),
-      externalReference: 'fake_secure',
-    })
-    .mockResolvedValueOnce(successfulVoid(voidReplayed));
+function financeRequestMock() {
+  const kinds = ['PREPARE_PAYMENT_METHOD', 'AUTHORIZE', 'SECURE'];
+  const labels = ['prepare', 'authorize', 'secure'];
+  const suffixes = ['prep', 'auth', 'secure'];
+  const events = [ids.preparedEvent, ids.authorizedEvent, ids.securedEvent];
+  return {
+    requestFinancialEvent: vi.fn().mockResolvedValue({}),
+    readPredecessor: vi.fn(async (selector: any) => {
+      const n = kinds.indexOf(selector.operationKind);
+      return {
+        predecessor: {
+          operationKind: kinds[n],
+          operationId: deterministicUuid(key, labels[n]!),
+          idempotencyKey: key + ':' + suffixes[n],
+          lifecycleExpectedVersion: n,
+          taskDraftId: ids.draft,
+          taskId: ids.task,
+          scopeVersionId: ids.scope,
+          eligibilityDecisionId: ids.eligibility,
+          financialEventId: events[n],
+          predecessorEventId: n === 0 ? null : events[n - 1],
+          amountCents: n === 0 ? null : 12000,
+          currency: n === 0 ? null : 'USD',
+          externalReference: n === 0 ? 'fake_prepare' : null,
+          expiresAt: hold.hold_expires_at,
+        },
+      };
+    }),
+  };
+}
+function actorAttestation(...tokens: string[]) {
+  const issue = vi.fn();
+  for (const token of tokens) issue.mockResolvedValueOnce({ actor_assertion_token: token });
+  return { issue } as never;
 }
 
 describe('Universal V1 WorkOrder compensation', () => {
-  it('claims and materializes one exact fake VOID when finalization fails', async () => {
+  it('claims only through the worker-scoped v2 command port', async () => {
+    const createdAt = '2026-08-31T00:00:00.000Z';
+    const query = vi.fn().mockResolvedValue({
+      rows: [{ ...compensation, amount_cents: '12000', created_at: new Date(createdAt) }],
+      rowCount: 1,
+    });
+    const repository = new PostgresUniversalV1WorkOrderCompensationRepository({ query } as never);
+
+    await expect(repository.claimDue(5, 30)).resolves.toEqual([
+      { ...compensation, created_at: createdAt },
+    ]);
+    expect(query).toHaveBeenCalledTimes(1);
+    const [sql, params] = query.mock.calls[0] as [string, unknown[]];
+    expect(sql).toContain('public.hxos_claim_universal_v1_work_order_compensation_v2($1,$2)');
+    expect(sql).not.toContain('FROM public.claim_universal_v1_work_order_compensations(');
+    expect(params).toEqual([5, 30]);
+  });
+
+  it('claims and queues one exact fake VOID when finalization fails', async () => {
     const finalizeError = Object.assign(new Error('INJECTED_FINALIZE_FAILURE'), { code: 'XX999' });
-    const executeFinancialEvent = financeExecutionMock();
+    const finance = financeRequestMock();
     const repository = {
       prepareMaterialization: vi.fn().mockResolvedValue(phase),
       finalizeMaterialization: vi.fn().mockRejectedValue(finalizeError),
@@ -141,23 +176,42 @@ describe('Universal V1 WorkOrder compensation', () => {
     const application = new UniversalV1WorkOrderApplication(
       { workOrder: vi.fn().mockResolvedValue(hold) } as never,
       repository as never,
-      () => ({ executeFinancialEvent }) as never
+      () => finance as never,
+      {
+        read: vi
+          .fn()
+          .mockResolvedValueOnce({ state: 'PREPARED', phase, observedAt: new Date().toISOString() })
+          .mockResolvedValueOnce({ state: 'PREPARED', phase, observedAt: new Date().toISOString() })
+          .mockResolvedValueOnce({
+            state: 'COMPENSATION_CLAIM',
+            phase,
+            compensation: { ...compensation, reason_code: 'FINALIZATION_FAILED' },
+            voidProgress: null,
+          }),
+      }
     );
 
-    await expect(application.secureAndMaterializeFakeWorkOrder(ids.poster, {
-      conditional_hold_id: ids.hold,
-      expected_eligibility_version: 2,
-      idempotency_key: key,
-      client_ts: new Date().toISOString(),
-    })).rejects.toBe(finalizeError);
+    const recoveryToken = '3'.repeat(64);
+    await expect(
+      application.secureAndMaterializeFakeWorkOrder(
+        ids.poster,
+        {
+          conditional_hold_id: ids.hold,
+          expected_eligibility_version: 2,
+          idempotency_key: key,
+          client_ts: new Date().toISOString(),
+        },
+        actorAttestation('2'.repeat(64), recoveryToken)
+      )
+    ).resolves.toMatchObject({ status: 'COMPENSATING', stage: 'COMPENSATION' });
 
     expect(repository.claimMaterializationCompensation).toHaveBeenCalledWith(
       phase,
       ids.securedEvent,
-      ids.poster
+      recoveryToken
     );
-    expect(executeFinancialEvent).toHaveBeenCalledTimes(4);
-    expect(executeFinancialEvent.mock.calls[3]![0]).toMatchObject({
+    expect(finance.requestFinancialEvent).toHaveBeenCalledTimes(1);
+    expect(finance.requestFinancialEvent.mock.calls[0]![0]).toMatchObject({
       operationKind: 'VOID',
       operationId: deterministicUuid(key, 'void'),
       idempotencyKey: `${key}:void`,
@@ -179,7 +233,7 @@ describe('Universal V1 WorkOrder compensation', () => {
       hard_assignment_created: false as const,
       payment_creation_performed: false as const,
     };
-    const executeFinancialEvent = financeExecutionMock();
+    const finance = financeRequestMock();
     const repository = {
       prepareMaterialization: vi.fn().mockResolvedValue(phase),
       finalizeMaterialization: vi.fn().mockRejectedValue(new Error('AMBIGUOUS_COMMIT')),
@@ -188,28 +242,50 @@ describe('Universal V1 WorkOrder compensation', () => {
     const application = new UniversalV1WorkOrderApplication(
       { workOrder: vi.fn().mockResolvedValue(hold) } as never,
       repository as never,
-      () => ({ executeFinancialEvent }) as never
+      () => finance as never,
+      {
+        read: vi
+          .fn()
+          .mockResolvedValue({ state: 'PREPARED', phase, observedAt: new Date().toISOString() }),
+      }
     );
 
-    await expect(application.secureAndMaterializeFakeWorkOrder(ids.poster, {
-      conditional_hold_id: ids.hold,
-      expected_eligibility_version: 2,
-      idempotency_key: key,
-      client_ts: new Date().toISOString(),
-    })).resolves.toEqual(result);
-    expect(executeFinancialEvent).toHaveBeenCalledTimes(3);
+    await expect(
+      application.secureAndMaterializeFakeWorkOrder(
+        ids.poster,
+        {
+          conditional_hold_id: ids.hold,
+          expected_eligibility_version: 2,
+          idempotency_key: key,
+          client_ts: new Date().toISOString(),
+        },
+        actorAttestation('4'.repeat(64), '5'.repeat(64), '6'.repeat(64))
+      )
+    ).resolves.toEqual({ status: 'MATERIALIZED', ...result });
+    expect(finance.requestFinancialEvent).not.toHaveBeenCalled();
   });
 
   it('drains exact claims idempotently and gates before acquiring commands', async () => {
-    const executeFinancialEvent = vi.fn()
+    const executeFinancialEvent = vi
+      .fn()
       .mockResolvedValueOnce(successfulVoid(false))
       .mockResolvedValueOnce(successfulVoid(true));
-    const createFinance = vi.fn(() => ({ executeFinancialEvent }));
+    const createFinance = vi.fn(async () => ({ executeFinancialEvent }));
     const repository = { claimDue: vi.fn().mockResolvedValue([compensation]) };
     const worker = new UniversalV1WorkOrderCompensationWorker(repository, createFinance as never);
 
-    await expect(worker.runOnce()).resolves.toEqual({ claimed: 1, voided: 1, replayed: 0, failed: 0 });
-    await expect(worker.runOnce()).resolves.toEqual({ claimed: 1, voided: 0, replayed: 1, failed: 0 });
+    await expect(worker.runOnce()).resolves.toEqual({
+      claimed: 1,
+      voided: 1,
+      replayed: 0,
+      failed: 0,
+    });
+    await expect(worker.runOnce()).resolves.toEqual({
+      claimed: 1,
+      voided: 0,
+      replayed: 1,
+      failed: 0,
+    });
     expect(createFinance.mock.invocationCallOrder[0]).toBeLessThan(
       repository.claimDue.mock.invocationCallOrder[0]!
     );
@@ -224,31 +300,51 @@ describe('Universal V1 WorkOrder compensation', () => {
 
   it('refuses poller startup before scheduling when the capability gate is closed', () => {
     const runOnce = vi.fn();
-    expect(() => startUniversalV1WorkOrderCompensationPoller(500, {
-      worker: { runOnce },
-      assertAuthorized: () => { throw new Error('CAPABILITY_DENIED'); },
-    })).toThrow('CAPABILITY_DENIED');
+    expect(() =>
+      startUniversalV1WorkOrderCompensationPoller(500, {
+        worker: { runOnce },
+        assertAuthorized: () => {
+          throw new Error('CAPABILITY_DENIED');
+        },
+      })
+    ).toThrow('CAPABILITY_DENIED');
     expect(runOnce).not.toHaveBeenCalled();
   });
 
   it('stops scheduling and drains the exact in-flight compensation batch', async () => {
     vi.useFakeTimers();
     try {
-      let finish!: (value: { claimed: number; voided: number; replayed: number; failed: number }) => void;
-      const runOnce = vi.fn(() => new Promise<{
+      let finish!: (value: {
         claimed: number;
         voided: number;
         replayed: number;
         failed: number;
-      }>((resolve) => { finish = resolve; }));
-      const handle = startUniversalV1WorkOrderCompensationPoller(500, {
-        worker: { runOnce },
-        assertAuthorized: vi.fn(),
-      }, { workerId: 'work-order-compensation:test' });
+      }) => void;
+      const runOnce = vi.fn(
+        () =>
+          new Promise<{
+            claimed: number;
+            voided: number;
+            replayed: number;
+            failed: number;
+          }>((resolve) => {
+            finish = resolve;
+          })
+      );
+      const handle = startUniversalV1WorkOrderCompensationPoller(
+        500,
+        {
+          worker: { runOnce },
+          assertAuthorized: vi.fn(),
+        },
+        { workerId: 'work-order-compensation:test' }
+      );
       await vi.advanceTimersByTimeAsync(0);
       expect(runOnce).toHaveBeenCalledTimes(1);
       let stopped = false;
-      const stopping = handle.stop().then(() => { stopped = true; });
+      const stopping = handle.stop().then(() => {
+        stopped = true;
+      });
       await Promise.resolve();
       expect(stopped).toBe(false);
       finish({ claimed: 1, voided: 1, replayed: 0, failed: 0 });
@@ -262,10 +358,13 @@ describe('Universal V1 WorkOrder compensation', () => {
   });
 
   it('registers migration 131 with an immutable claim and exact narrow DB guards', () => {
-    const migration = readFileSync(new URL(
-      '../../database/migrations/20260925_universal_v1_work_order_compensation_v1.sql',
-      import.meta.url
-    ), 'utf8');
+    const migration = readFileSync(
+      new URL(
+        '../../database/migrations/20260925_universal_v1_work_order_compensation_v1.sql',
+        import.meta.url
+      ),
+      'utf8'
+    );
     expect(REQUIRED_MIGRATION_FILES[129]).toEqual({
       name: '20260924_universal_v1_task_draft_route_context_v1',
       fileName: '20260924_universal_v1_task_draft_route_context_v1.sql',
@@ -286,7 +385,8 @@ describe('Universal V1 WorkOrder compensation', () => {
       "checked_provider_kind = 'FAKE'",
       "bridge.fake_operation_kind = 'SECURE'",
       "void_event.provider_kind = 'FAKE'",
-    ]) expect(migration).toContain(proof);
+    ])
+      expect(migration).toContain(proof);
     expect(migration).toContain('BEFORE UPDATE OR DELETE');
     expect(migration).toContain('BEFORE TRUNCATE');
     expect(migration).not.toMatch(/APPROVED_PROVIDER[^\n]*=|payment_intent|stripe_/iu);

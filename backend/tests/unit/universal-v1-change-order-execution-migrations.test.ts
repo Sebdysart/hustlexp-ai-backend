@@ -19,8 +19,8 @@ const executionSql = readFileSync(executionPath, 'utf8');
 
 describe('Universal V1 change-order and execution migration chain', () => {
   it('is one exact, ordered, runner-owned transaction tail', () => {
-    expect(REQUIRED_MIGRATION_FILES).toHaveLength(140);
-    expect(REQUIRED_MIGRATION_FILES.slice(-22)).toEqual([
+    expect(REQUIRED_MIGRATION_FILES).toHaveLength(146);
+    expect(REQUIRED_MIGRATION_FILES.slice(118)).toEqual([
       {
         name: '20260911_universal_v1_change_order_application',
         fileName: '20260911_universal_v1_change_order_application.sql',
@@ -108,6 +108,30 @@ describe('Universal V1 change-order and execution migration chain', () => {
       {
         name: '20261006_stage1_legacy_authority_containment_v1',
         fileName: '20261006_stage1_legacy_authority_containment_v1.sql',
+      },
+      {
+        name: '20261007_subscription_cancellation_recovery_v1',
+        fileName: '20261007_subscription_cancellation_recovery_v1.sql',
+      },
+      {
+        name: '20261008_universal_v1_work_order_task_state_containment_v1',
+        fileName: '20261008_universal_v1_work_order_task_state_containment_v1.sql',
+      },
+      {
+        name: '20261009_universal_v1_standardized_quote_readiness_v1',
+        fileName: '20261009_universal_v1_standardized_quote_readiness_v1.sql',
+      },
+      {
+        name: '20261010_universal_v1_financial_security_event_expiry_v1',
+        fileName: '20261010_universal_v1_financial_security_event_expiry_v1.sql',
+      },
+      {
+        name: '20261012_universal_v1_work_order_command_authority_v2',
+        fileName: '20261012_universal_v1_work_order_command_authority_v2.sql',
+      },
+      {
+        name: '20261014_universal_v1_work_order_command_ports_v1',
+        fileName: '20261014_universal_v1_work_order_command_ports_v1.sql',
       },
     ]);
     for (const sql of [changeOrderSql, executionSql]) {

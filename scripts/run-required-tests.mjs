@@ -122,7 +122,6 @@ export const FIXED_SYNTHETIC_TEST_PROVIDER_ENV = Object.freeze({
   HX_LIVE_PROVIDER_ACCESS: 'false',
   HX_TELEMETRY_EXPORT_MODE: 'disabled',
   HX_FAKE_FINANCIAL_PROVIDER_ENABLED: 'true',
-  HX_FAKE_FINANCIAL_WEBHOOK_SECRET: 'required-tests-fake-webhook-hmac-v1',
   HXOS_ALLOW_LOCAL_TEST_IDENTITY: 'true',
   HXOS_LOCAL_TEST_IDENTITY_SECRET: 'required-tests-identity-provider-v1',
   HXOS_ALLOW_LOCAL_TEST_SCREENING: 'true',
@@ -239,19 +238,17 @@ export function requiredTestEnvironments(env = process.env) {
     TASK_LOCATION_ENCRYPTION_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
     TASK_LOCATION_ENCRYPTION_KEY_ID: 'hx-required-tests-location-v1',
   };
-  const vitest = withoutKeys(
-    {
-      ...base,
-      NODE_ENV: 'test',
-      DATABASE_URL: urls.invariant,
-      LOCAL_TEST_DB_URL: urls.system,
-      REDIS_URL: LOOPBACK_REDIS_URL,
-      TASK_LOCATION_ENCRYPTION_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
-      TASK_LOCATION_ENCRYPTION_KEY_ID: 'hx-required-tests-location-v1',
-      ...Object.fromEntries(REQUIRED_TEST_GATES.map((name) => [name, '1'])),
-    },
-    ['HX_ALLOW_CI_DB_RECREATE']
-  );
+  const vitest = {
+    ...base,
+    NODE_ENV: 'test',
+    DATABASE_URL: urls.invariant,
+    LOCAL_TEST_DB_URL: urls.system,
+    REDIS_URL: LOOPBACK_REDIS_URL,
+    HX_ALLOW_CI_DB_RECREATE: 'true',
+    TASK_LOCATION_ENCRYPTION_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+    TASK_LOCATION_ENCRYPTION_KEY_ID: 'hx-required-tests-location-v1',
+    ...Object.fromEntries(REQUIRED_TEST_GATES.map((name) => [name, '1'])),
+  };
   return { prepare, vitest };
 }
 

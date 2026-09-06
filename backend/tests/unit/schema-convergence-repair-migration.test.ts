@@ -12,6 +12,7 @@ const LAUNCH = read('backend/database/launch-schema.sql');
 const FINGERPRINT = read('backend/tests/integration/hxos-catalog-fingerprint.sql');
 const RUNNER = [
   read('backend/src/jobs/engine-automation-migration.ts'),
+  read('backend/src/jobs/engine-automation-migration-files-foundation.ts'),
   read('backend/src/jobs/engine-automation-migration-files.ts'),
 ].join('\n');
 const UPGRADE_ASSERT = read('backend/tests/integration/upgrade-convergence-assert.pg.sql');
@@ -66,7 +67,7 @@ describe('HX/OS clean and upgraded schema convergence repair', () => {
     const occurrenceAuditIndex = REQUIRED_MIGRATION_FILES.findIndex(
       ({ name }) => name === '20261005_universal_v1_occurrence_access_audit_v1'
     );
-    expect(occurrenceAuditIndex).toBe(REQUIRED_MIGRATION_FILES.length - 2);
+    expect(occurrenceAuditIndex).toBe(138);
     expect(UPGRADE_ASSERT).toContain(
       `count(*)=${occurrenceAuditIndex} AND count(DISTINCT name)=${occurrenceAuditIndex}`
     );

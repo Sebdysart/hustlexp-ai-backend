@@ -18,7 +18,6 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { TRPCError } from '@trpc/server';
 
 // ---------------------------------------------------------------------------
 // Mocks — must be declared before any imports that pull those modules
@@ -209,6 +208,7 @@ function makeTaskRow(overrides: Record<string, unknown> = {}) {
     poster_id: 'poster-1',
     worker_id: null,
     template_slug: 'standard_physical',
+    universal_contract_version: 0,
     ...overrides,
   };
 }
@@ -222,6 +222,7 @@ describe('assignWorker — transaction locking (FIX 1)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockQuery.mockReset();
     // transaction delegates to the callback with db.query as the txn fn
     mockTransaction.mockImplementation(async (fn) => fn(db.query));
     resolver = getAssignWorkerResolver();
@@ -292,7 +293,9 @@ describe('assignWorker — transaction locking (FIX 1)', () => {
 
     await expect(
       resolver({ ctx: makeCtx(), input: { taskId: 'task-1', workerId: 'worker-2' } })
-    ).rejects.toThrow(TRPCError);
+    ).rejects.toMatchObject({ name: 'TRPCError', code: 'PRECONDITION_FAILED', message: 'Task must be OPEN to assign a worker, current: ACCEPTED' });
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(mockInvalidateTask).not.toHaveBeenCalled();
 
     // No application UPDATE calls — we bailed at state check
     const updateCalls = mockQuery.mock.calls.filter(([sql]) =>
@@ -350,7 +353,9 @@ describe('assignWorker — transaction locking (FIX 1)', () => {
 
     await expect(
       resolver({ ctx: makeCtx(), input: { taskId: 'task-1', workerId: 'worker-1' } })
-    ).rejects.toThrow(TRPCError);
+    ).rejects.toMatchObject({ name: 'TRPCError', code: 'FORBIDDEN', message: 'Only the task poster can assign workers' });
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(mockInvalidateTask).not.toHaveBeenCalled();
 
     // Transaction IS entered (FOR UPDATE is the first statement inside)
     expect(mockTransaction).toHaveBeenCalledOnce();
@@ -364,10 +369,12 @@ describe('assignWorker — transaction locking (FIX 1)', () => {
 
     await expect(
       resolver({ ctx: makeCtx(), input: { taskId: 'task-1', workerId: 'worker-1' } })
-    ).rejects.toThrow(TRPCError);
+    ).rejects.toMatchObject({ name: 'TRPCError', code: 'FORBIDDEN', message: 'Only the task poster can assign workers' });
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(mockInvalidateTask).not.toHaveBeenCalled();
   });
 
-  it('throws PRECONDITION_FAILED and rolls back when tasks UPDATE affects 0 rows', async () => {
+  it('propagates PRECONDITION_FAILED when the final tasks UPDATE affects zero rows', async () => {
     // This simulates the edge case where the FOR UPDATE check passed but the final
     // UPDATE tasks returns rowCount=0 (state changed by another process after lock check)
     // SECURITY FIX: no pre-tx slug mock — FOR UPDATE is first and includes template_slug
@@ -381,6 +388,8 @@ describe('assignWorker — transaction locking (FIX 1)', () => {
 
     await expect(
       resolver({ ctx: makeCtx(), input: { taskId: 'task-1', workerId: 'worker-1' } })
-    ).rejects.toThrow(TRPCError);
+    ).rejects.toMatchObject({ name: 'TRPCError', code: 'PRECONDITION_FAILED', message: 'Task is no longer in OPEN state — concurrent assignment detected' });
+    expect(mockQuery).toHaveBeenCalledTimes(6);
+    expect(mockInvalidateTask).not.toHaveBeenCalled();
   });
 });

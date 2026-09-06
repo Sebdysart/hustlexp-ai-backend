@@ -33,12 +33,23 @@ describe('engine automation production container contract', () => {
     expect(pkg.scripts['db:migrate:apply']).toBe(
       'node dist/backend/src/jobs/migration-command.js'
     );
+    const migrationCommand = read('backend/src/jobs/migration-command.ts');
+    expect(migrationCommand).toContain('runEngineAutomationMigrationWithReceipt');
+    expect(migrationCommand).toContain('receipt');
+    expect(migrationCommand).toContain("receiptType: 'migration-execution-diagnostic-v1'");
+    expect(migrationCommand).toContain('acceptanceEligible: false');
+    expect(migrationCommand).not.toContain("receiptType: 'migration-execution-v1'");
+    expect(migrationCommand).not.toContain('assertMigrationExecutionAuthorized');
 
     const workers = read('backend/src/jobs/workers.ts');
-    expect(workers).toContain('runStartupMigrations(log)');
+    expect(workers).toContain(
+      'runStartupMigrations(log, productionStartupMigrationRuntime(db.readQuery))',
+    );
     expect(workers).not.toContain('runEngineAutomationMigration');
     const server = read('backend/src/serverStartup.ts');
-    expect(server).toContain('runStartupMigrations(startLog)');
+    expect(server).toContain(
+      'runStartupMigrations(startLog, productionStartupMigrationRuntime(db.readQuery))',
+    );
     expect(server).not.toContain('runEngineAutomationMigration');
     expect(server).toContain("throw error");
 
@@ -54,13 +65,16 @@ describe('engine automation production container contract', () => {
     expect(procfile).toContain('worker: npm run start:workers');
   });
 
-  it('keeps the API as the default role and requires real health from both runtimes', () => {
+  it('requires an exact process role and real health from both runtimes', () => {
     const dockerfile = read('Dockerfile');
     expect(dockerfile).toContain("require('http').get('http://localhost:3000/health'");
     expect(dockerfile).not.toContain("process.env.SERVICE_ROLE==='worker'){process.exit(0)");
 
     const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
-    expect(pkg.scripts.start).toContain('else node dist/backend/src/server.js');
+    expect(pkg.scripts.start).toContain('case "$SERVICE_ROLE"');
+    expect(pkg.scripts.start).toContain('api) node dist/backend/src/server.js');
+    expect(pkg.scripts.start).toContain('exit 64');
+    expect(pkg.scripts.start).not.toContain('else node dist/backend/src/server.js');
 
     const railway = JSON.parse(read('railway.json')) as {
       deploy: Record<string, unknown>;

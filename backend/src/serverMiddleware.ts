@@ -19,7 +19,9 @@ export function validateProductionCors(): void {
   if (origins.length === 0) {
     console.error('❌ CRITICAL: ALLOWED_ORIGINS is not set in production');
     console.error('   Set ALLOWED_ORIGINS to your frontend domain(s)');
-    console.error('   Example: ALLOWED_ORIGINS=https://app.hustlexp.com,https://admin.hustlexp.com');
+    console.error(
+      '   Example: ALLOWED_ORIGINS=https://app.hustlexp.com,https://admin.hustlexp.com'
+    );
     process.exit(1);
   }
   if (origins.includes('*')) {
@@ -44,7 +46,10 @@ function clientIp(headers: { get(name: string): string | undefined }): string {
   if (cloudflare) return cloudflare.trim();
   const forwarded = headers.get('x-forwarded-for');
   if (forwarded) {
-    const parts = forwarded.split(',').map((value) => value.trim()).filter(Boolean);
+    const parts = forwarded
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean);
     if (parts.length > 0) return parts[parts.length - 1];
   }
   return headers.get('x-real-ip') || 'unknown';
@@ -65,10 +70,17 @@ function allowedOrigins(): string[] {
 }
 
 export function registerCoreMiddleware(app: HustleApp): void {
-  app.use('*', bodyLimit({
+  const generalBodyLimit = bodyLimit({
     maxSize: 10 * 1024 * 1024,
     onError: (context) => context.json({ error: 'Request body too large', maxSize: '10MB' }, 413),
-  }));
+  });
+  // The financial webhook owns a 16 KiB streaming limit and cancels excess input.
+  // The generic limit would prebuffer a chunked body before that handler runs.
+  app.use('*', (context, next) =>
+    context.req.method === 'POST' && context.req.path === '/webhooks/fake-financial'
+      ? next()
+      : generalBodyLimit(context, next)
+  );
   app.use('*', requestIdMiddleware);
   app.use('*', serverTimingMiddleware);
   app.use('*', compress());
@@ -85,26 +97,32 @@ export function registerCoreMiddleware(app: HustleApp): void {
     const duration = Date.now() - start;
     const status = context.res.status;
     const level = status >= 500 ? 'error' : status >= 400 ? 'warn' : 'info';
-    logger[level]({
-      requestId: context.get('requestId'),
-      method: context.req.method,
-      path: context.req.path,
-      status,
-      duration,
-      ip: clientIp({ get: (name) => context.req.header(name) }),
-    }, `${context.req.method} ${context.req.path} → ${status} (${duration}ms)`);
+    logger[level](
+      {
+        requestId: context.get('requestId'),
+        method: context.req.method,
+        path: context.req.path,
+        status,
+        duration,
+        ip: clientIp({ get: (name) => context.req.header(name) }),
+      },
+      `${context.req.method} ${context.req.path} → ${status} (${duration}ms)`
+    );
   });
   const origins = allowedOrigins();
-  app.use('*', cors({
-    origin: (requestOrigin) => {
-      if (!requestOrigin) return config.app.isDevelopment ? origins[0] : null;
-      return origins.includes(requestOrigin) ? requestOrigin : null;
-    },
-    allowMethods: ['GET', 'POST', 'OPTIONS'],
-    allowHeaders: ['Content-Type', 'Authorization', 'X-HustleXP-Platform'],
-    credentials: true,
-    maxAge: 3600,
-  }));
+  app.use(
+    '*',
+    cors({
+      origin: (requestOrigin) => {
+        if (!requestOrigin) return config.app.isDevelopment ? origins[0] : null;
+        return origins.includes(requestOrigin) ? requestOrigin : null;
+      },
+      allowMethods: ['GET', 'POST', 'OPTIONS'],
+      allowHeaders: ['Content-Type', 'Authorization', 'X-HustleXP-Platform'],
+      credentials: true,
+      maxAge: 3600,
+    })
+  );
   app.use('*', httpMetricsMiddleware());
   registerSpecificRateLimits(app);
 }

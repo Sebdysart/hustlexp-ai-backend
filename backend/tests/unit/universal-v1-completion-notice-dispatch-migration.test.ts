@@ -14,8 +14,8 @@ const sql = readFileSync(path, 'utf8');
 
 describe('Universal V1 completion-notice dispatch migration', () => {
   it('preserves the exact append-only ordinal 138 registry identity', () => {
-    expect(REQUIRED_MIGRATION_FILES).toHaveLength(140);
-    expect(REQUIRED_MIGRATION_FILES.at(-3)).toEqual({
+    expect(REQUIRED_MIGRATION_FILES).toHaveLength(146);
+    expect(REQUIRED_MIGRATION_FILES[137]).toEqual({
       name: '20261004_universal_v1_completion_notice_dispatch_v1',
       fileName: '20261004_universal_v1_completion_notice_dispatch_v1.sql',
     });

@@ -19,7 +19,7 @@ describe('legacy escrow insert containment migration', () => {
     const containmentIndex = REQUIRED_MIGRATION_FILES.findIndex(
       ({ name }) => name === '20260923_legacy_escrow_insert_containment_v1'
     );
-    expect(REQUIRED_MIGRATION_FILES).toHaveLength(140);
+    expect(REQUIRED_MIGRATION_FILES).toHaveLength(146);
     expect(REQUIRED_MIGRATION_FILES.slice(containmentIndex - 1, containmentIndex + 1)).toEqual([
       {
         name: '20260920_financial_provider_command_recovery_v1',

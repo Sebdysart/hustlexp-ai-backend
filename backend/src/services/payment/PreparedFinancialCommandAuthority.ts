@@ -1,10 +1,13 @@
 import { createHash } from 'node:crypto';
+import { z } from 'zod';
+import { FakeFinancialPreparationPayloadSchema } from '../../auth/financial-preparation-command-contract.js';
+import {
+  UniversalV1ActorAttestationResponseSchema,
+  type UniversalV1ActorAttestationHandle,
+} from '../../auth/universal-v1-actor-attestation-contracts.js';
 
-import { db, type Database, type QueryFn } from '../../db.js';
-import type {
-  FinancialOperationKind,
-  FinancialProviderKind,
-} from './FinancialProviderPorts.js';
+import { db, type Database } from '../../db.js';
+import type { FinancialOperationKind, FinancialProviderKind } from './FinancialProviderPorts.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9:_-]{16,128}$/u;
@@ -52,8 +55,7 @@ export interface PrepareUniversalV1FinancialCommandInput {
   readonly recordedBy: string;
 }
 
-export interface PreparedUniversalV1FinancialCommandReceipt
-  extends PrepareUniversalV1FinancialCommandInput {
+export interface PreparedUniversalV1FinancialCommandReceipt extends PrepareUniversalV1FinancialCommandInput {
   readonly preparedCommandId: string;
   readonly commandState: 'PREPARED';
   readonly eventKind:
@@ -92,6 +94,8 @@ export interface PreparedUniversalV1FinancialCommandReceipt
 }
 
 export type PreparedFinancialCommandAuthorityErrorReason =
+  | 'ACTOR_ATTESTATION_REQUIRED'
+  | 'ACTOR_ATTESTATION_INVALID'
   | 'OPERATION_KIND_INVALID'
   | 'OPERATION_ID_INVALID'
   | 'APPROVED_PROVIDER_REFUSED'
@@ -118,7 +122,8 @@ export class PreparedFinancialCommandAuthorityError extends Error {
 export interface UniversalV1PreparedFinancialCommandAuthority {
   /** Resolves only after the database-validated PREPARED fact has committed. */
   prepare(
-    input: PrepareUniversalV1FinancialCommandInput
+    input: PrepareUniversalV1FinancialCommandInput,
+    attestation?: UniversalV1ActorAttestationHandle
   ): Promise<PreparedUniversalV1FinancialCommandReceipt>;
 }
 
@@ -361,133 +366,180 @@ function assertStoredRequest(
   }
 }
 
-const PREPARED_SELECT = `
-  prepared_command_id, command_state, operation_kind, event_kind, operation_id,
-  provider_kind, idempotency_key, provider_expected_version,
-  lifecycle_expected_version, provider_request_sha256, task_draft_id, task_id, eligibility_decision_id,
-  eligibility_decision_version, eligibility_valid_until, scope_version_id,
-  scope_version, scope_hash, work_order_id, work_order_materialization_version,
-  work_order_execution_contract_version, change_order_id, change_order_version,
-  predecessor_event_id, predecessor_operation_id, predecessor_event_kind,
-  predecessor_status, predecessor_lifecycle_version, completion_fact_id,
-  completion_version, related_operation_id, amount_cents, currency, recorded_by,
-  occurred_at, request_identity_sha256, authority_context_sha256, prepared_at`;
+const preparedEventKinds = [
+  'PAYMENT_METHOD_PREPARED',
+  'AUTHORIZED',
+  'SECURED',
+  'VOIDED',
+  'ADJUSTMENT_AUTHORIZED',
+  'CAPTURED',
+  'REFUNDED',
+  'REVERSED',
+  'SETTLEMENT_OBSERVED',
+  'FUNDING_OBSERVED',
+  'PROVIDER_RELEASED',
+  'PAYOUT_OBSERVED',
+  'BANK_SETTLEMENT_OBSERVED',
+] as const;
+const operationEvent: Readonly<
+  Record<PreparedFinancialOperationKind, (typeof preparedEventKinds)[number]>
+> = {
+  PREPARE_PAYMENT_METHOD: 'PAYMENT_METHOD_PREPARED',
+  AUTHORIZE: 'AUTHORIZED',
+  SECURE: 'SECURED',
+  VOID: 'VOIDED',
+  ADJUST: 'ADJUSTMENT_AUTHORIZED',
+  CAPTURE: 'CAPTURED',
+  REFUND: 'REFUNDED',
+  REVERSAL: 'REVERSED',
+  SETTLE: 'SETTLEMENT_OBSERVED',
+  FUND: 'FUNDING_OBSERVED',
+  PROVIDER_RELEASE: 'PROVIDER_RELEASED',
+  PAYOUT: 'PAYOUT_OBSERVED',
+  OBSERVE_BANK_SETTLEMENT: 'BANK_SETTLEMENT_OBSERVED',
+};
+const storedUuid = z
+  .string()
+  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+const storedHash = z
+  .string()
+  .regex(SHA256)
+  .refine((value) => value !== '0'.repeat(64));
+const storedVersion = z.number().int().safe().nonnegative();
+const storedPositiveVersion = z.number().int().safe().positive();
+const storedTimestamp = z.string().datetime({ offset: true });
+const preparedRowSchema = z
+  .object({
+    prepared_command_id: storedUuid,
+    command_state: z.literal('PREPARED'),
+    operation_kind: FakeFinancialPreparationPayloadSchema.shape.operationKind,
+    event_kind: z.enum(preparedEventKinds),
+    operation_id: storedUuid,
+    provider_kind: z.literal('FAKE'),
+    idempotency_key: z.string().regex(IDEMPOTENCY_KEY),
+    provider_expected_version: storedVersion,
+    lifecycle_expected_version: storedVersion,
+    provider_request_sha256: storedHash,
+    task_draft_id: storedUuid,
+    task_id: storedUuid.nullable(),
+    eligibility_decision_id: storedUuid.nullable(),
+    eligibility_decision_version: storedPositiveVersion.nullable(),
+    eligibility_valid_until: storedTimestamp.nullable(),
+    scope_version_id: storedUuid.nullable(),
+    scope_version: storedPositiveVersion.nullable(),
+    scope_hash: storedHash.nullable(),
+    work_order_id: storedUuid.nullable(),
+    work_order_materialization_version: storedPositiveVersion.nullable(),
+    work_order_execution_contract_version: z.union([z.literal(0), z.literal(1)]).nullable(),
+    change_order_id: storedUuid.nullable(),
+    change_order_version: storedPositiveVersion.nullable(),
+    predecessor_event_id: storedUuid.nullable(),
+    predecessor_operation_id: storedUuid.nullable(),
+    predecessor_event_kind: z.enum(preparedEventKinds).nullable(),
+    predecessor_status: z
+      .enum(['REQUESTED', 'SUCCEEDED', 'DECLINED', 'FAILED', 'RETRYABLE_FAILURE'])
+      .nullable(),
+    predecessor_lifecycle_version: storedVersion.nullable(),
+    completion_fact_id: storedUuid.nullable(),
+    completion_version: storedPositiveVersion.nullable(),
+    related_operation_id: storedUuid.nullable(),
+    amount_cents: storedPositiveVersion.nullable(),
+    currency: z
+      .string()
+      .regex(/^[A-Z]{3}$/u)
+      .nullable(),
+    recorded_by: storedUuid,
+    occurred_at: storedTimestamp,
+    request_identity_sha256: storedHash,
+    authority_context_sha256: storedHash,
+    prepared_at: storedTimestamp,
+  })
+  .strict()
+  .refine((row) => {
+    if (operationEvent[row.operation_kind] !== row.event_kind) return false;
+    const completeOrAbsent = (values: unknown[]) =>
+      values.every((value) => value === null) || values.every((value) => value !== null);
+    return (
+      completeOrAbsent([
+        row.task_id,
+        row.eligibility_decision_id,
+        row.eligibility_decision_version,
+        row.eligibility_valid_until,
+        row.scope_version_id,
+        row.scope_version,
+        row.scope_hash,
+      ]) &&
+      completeOrAbsent([
+        row.work_order_id,
+        row.work_order_materialization_version,
+        row.work_order_execution_contract_version,
+      ]) &&
+      completeOrAbsent([row.change_order_id, row.change_order_version]) &&
+      completeOrAbsent([row.completion_fact_id, row.completion_version]) &&
+      completeOrAbsent([
+        row.predecessor_event_id,
+        row.predecessor_operation_id,
+        row.predecessor_event_kind,
+        row.predecessor_status,
+        row.predecessor_lifecycle_version,
+      ])
+    );
+  });
 
-/**
- * Independently committing PostgreSQL preparation authority. The transaction
- * locks all conflict identities before replay checks and the insert trigger
- * independently validates the canonical lifecycle rows under row locks.
- */
-export class PostgresUniversalV1PreparedFinancialCommandAuthority
-  implements UniversalV1PreparedFinancialCommandAuthority {
+const preparedResponseSchema = z
+  .object({
+    prepared_command: preparedRowSchema,
+    idempotency_replayed: z.boolean(),
+    actor_request_sha256: z.string().regex(SHA256),
+    actor_assertion_id: z.string().uuid(),
+    target_authority_id: z.string().uuid(),
+  })
+  .strict();
+
+/** One actor-attested sealed command; no runtime table access or actor fallback. */
+export class PostgresUniversalV1PreparedFinancialCommandAuthority implements UniversalV1PreparedFinancialCommandAuthority {
   constructor(private readonly database: Database = db) {}
-
   async prepare(
-    rawInput: PrepareUniversalV1FinancialCommandInput
+    rawInput: PrepareUniversalV1FinancialCommandInput,
+    attestation?: UniversalV1ActorAttestationHandle
   ): Promise<PreparedUniversalV1FinancialCommandReceipt> {
-    const input = normalizeInput(rawInput);
-    return this.database.transaction(async (query) =>
-      this.prepareInTransaction(query, input)
+    const input = Object.freeze(normalizeInput(rawInput));
+    if (!attestation)
+      throw new PreparedFinancialCommandAuthorityError('ACTOR_ATTESTATION_REQUIRED');
+    const { recordedBy: _callerActor, ...intent } = input;
+    const payload = Object.freeze(FakeFinancialPreparationPayloadSchema.parse(intent));
+    const parsed = UniversalV1ActorAttestationResponseSchema.safeParse(
+      await attestation.issue({
+        commandKind: 'PREPARE_FAKE_FINANCIAL_COMMAND',
+        commandPayload: payload,
+      })
     );
-  }
-
-  private async prepareInTransaction(
-    query: QueryFn,
-    input: NormalizedInput
-  ): Promise<PreparedUniversalV1FinancialCommandReceipt> {
-    const locks = [
-      `draft-version:${input.taskDraftId}:${input.lifecycleExpectedVersion}`,
-      `idempotency:${input.idempotencyKey}`,
-      `operation-version:${input.providerKind}:${input.operationKind}:${input.operationId}:${input.providerExpectedVersion}`,
-    ].sort();
-    for (const lock of locks) {
-      await query(
-        `SELECT pg_advisory_xact_lock(
-           hashtext('universal-v1-prepared-financial-command-v1'), hashtext($1)
-         )`,
-        [lock]
+    if (
+      !parsed.success ||
+      parsed.data.command_kind !== 'PREPARE_FAKE_FINANCIAL_COMMAND' ||
+      parsed.data.actor_assertion_token === '0'.repeat(64) ||
+      parsed.data.canonical_request_sha256 === '0'.repeat(64) ||
+      Date.parse(parsed.data.assertion_expires_at) <= Date.now()
+    )
+      throw new PreparedFinancialCommandAuthorityError('ACTOR_ATTESTATION_INVALID');
+    const assertion = Object.freeze(parsed.data);
+    return this.database.transaction(async (query) => {
+      const result = await query(
+        'SELECT * FROM public.hxos_prepare_authenticated_fake_financial_command_v13($1,$2)',
+        [assertion.actor_assertion_token, payload]
       );
-    }
-
-    const byIdempotency = await query<PreparedCommandRow>(
-      `SELECT ${PREPARED_SELECT}
-         FROM public.universal_v1_prepared_financial_commands
-        WHERE idempotency_key=$1`,
-      [input.idempotencyKey]
-    );
-    if (byIdempotency.rows[0]) {
-      assertStoredRequest(byIdempotency.rows[0], input, 'IDEMPOTENCY_CONFLICT');
-      return receiptFromRow(byIdempotency.rows[0], true);
-    }
-
-    const byOperationVersion = await query<PreparedCommandRow>(
-      `SELECT ${PREPARED_SELECT}
-         FROM public.universal_v1_prepared_financial_commands
-        WHERE provider_kind=$1
-          AND operation_kind=$2
-          AND operation_id=$3
-          AND provider_expected_version=$4`,
-      [
-        input.providerKind,
-        input.operationKind,
-        input.operationId,
-        input.providerExpectedVersion,
-      ]
-    );
-    if (byOperationVersion.rows[0]) {
-      assertStoredRequest(byOperationVersion.rows[0], input, 'OPERATION_VERSION_CONFLICT');
-      return receiptFromRow(byOperationVersion.rows[0], true);
-    }
-
-    const byLifecycleVersion = await query<PreparedCommandRow>(
-      `SELECT ${PREPARED_SELECT}
-         FROM public.universal_v1_prepared_financial_commands
-        WHERE task_draft_id=$1 AND lifecycle_expected_version=$2`,
-      [input.taskDraftId, input.lifecycleExpectedVersion]
-    );
-    if (byLifecycleVersion.rows[0]) {
-      assertStoredRequest(byLifecycleVersion.rows[0], input, 'LIFECYCLE_VERSION_CONFLICT');
-      return receiptFromRow(byLifecycleVersion.rows[0], true);
-    }
-
-    const inserted = await query<PreparedCommandRow>(
-      `INSERT INTO public.universal_v1_prepared_financial_commands (
-         operation_kind, operation_id, provider_kind, idempotency_key,
-         provider_expected_version, lifecycle_expected_version, provider_request_sha256, task_draft_id,
-         task_id, eligibility_decision_id, scope_version_id, change_order_id,
-         predecessor_event_id, completion_fact_id, related_operation_id,
-         amount_cents, currency, recorded_by
-       ) VALUES (
-         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18
-       )
-       RETURNING ${PREPARED_SELECT}`,
-      [
-        input.operationKind,
-        input.operationId,
-        input.providerKind,
-        input.idempotencyKey,
-        input.providerExpectedVersion,
-        input.lifecycleExpectedVersion,
-        input.providerRequestSha256,
-        input.taskDraftId,
-        input.taskId,
-        input.eligibilityDecisionId,
-        input.scopeVersionId,
-        input.changeOrderId,
-        input.predecessorEventId,
-        input.completionFactId,
-        input.relatedOperationId,
-        input.amountCents,
-        input.currency,
-        input.recordedBy,
-      ]
-    );
-    const row = inserted.rows[0];
-    if (!row) {
-      throw new PreparedFinancialCommandAuthorityError('PERSISTENCE_INCOMPLETE');
-    }
-    assertStoredRequest(row, input, 'PERSISTENCE_IDENTITY_MISMATCH');
-    return receiptFromRow(row, false);
+      if (result.rows.length !== 1 || result.rowCount !== 1)
+        throw new PreparedFinancialCommandAuthorityError('PERSISTENCE_INCOMPLETE');
+      const response = preparedResponseSchema.safeParse(result.rows[0]);
+      if (
+        !response.success ||
+        response.data.actor_request_sha256 !== assertion.canonical_request_sha256
+      )
+        throw new PreparedFinancialCommandAuthorityError('PERSISTENCE_IDENTITY_MISMATCH');
+      const row: PreparedCommandRow = response.data.prepared_command;
+      assertStoredRequest(row, input, 'PERSISTENCE_IDENTITY_MISMATCH');
+      return Object.freeze(receiptFromRow(row, response.data.idempotency_replayed));
+    });
   }
 }
 
@@ -512,11 +564,16 @@ function deterministicUuid(value: unknown): string {
 }
 
 /** Test-only authority; runtime factories always select PostgreSQL validation. */
-export class InMemoryUniversalV1PreparedFinancialCommandAuthority
-  implements UniversalV1PreparedFinancialCommandAuthority {
+export class InMemoryUniversalV1PreparedFinancialCommandAuthority implements UniversalV1PreparedFinancialCommandAuthority {
   private readonly byIdempotency = new Map<string, PreparedUniversalV1FinancialCommandReceipt>();
-  private readonly byOperationVersion = new Map<string, PreparedUniversalV1FinancialCommandReceipt>();
-  private readonly byLifecycleVersion = new Map<string, PreparedUniversalV1FinancialCommandReceipt>();
+  private readonly byOperationVersion = new Map<
+    string,
+    PreparedUniversalV1FinancialCommandReceipt
+  >();
+  private readonly byLifecycleVersion = new Map<
+    string,
+    PreparedUniversalV1FinancialCommandReceipt
+  >();
 
   constructor(private readonly now: () => Date = () => new Date()) {}
 
@@ -531,10 +588,12 @@ export class InMemoryUniversalV1PreparedFinancialCommandAuthority
       input.providerExpectedVersion,
     ].join(':');
     const lifecycleKey = `${input.taskDraftId}:${input.lifecycleExpectedVersion}`;
-    const candidates: Array<[
-      PreparedUniversalV1FinancialCommandReceipt | undefined,
-      'IDEMPOTENCY_CONFLICT' | 'OPERATION_VERSION_CONFLICT' | 'LIFECYCLE_VERSION_CONFLICT',
-    ]> = [
+    const candidates: Array<
+      [
+        PreparedUniversalV1FinancialCommandReceipt | undefined,
+        'IDEMPOTENCY_CONFLICT' | 'OPERATION_VERSION_CONFLICT' | 'LIFECYCLE_VERSION_CONFLICT',
+      ]
+    > = [
       [this.byIdempotency.get(input.idempotencyKey), 'IDEMPOTENCY_CONFLICT'],
       [this.byOperationVersion.get(operationKey), 'OPERATION_VERSION_CONFLICT'],
       [this.byLifecycleVersion.get(lifecycleKey), 'LIFECYCLE_VERSION_CONFLICT'],
@@ -573,21 +632,23 @@ export class InMemoryUniversalV1PreparedFinancialCommandAuthority
       ...input,
       preparedCommandId: deterministicUuid({ type: 'prepared-financial-command', input }),
       commandState: 'PREPARED',
-      eventKind: ({
-        PREPARE_PAYMENT_METHOD: 'PAYMENT_METHOD_PREPARED',
-        AUTHORIZE: 'AUTHORIZED',
-        SECURE: 'SECURED',
-        VOID: 'VOIDED',
-        ADJUST: 'ADJUSTMENT_AUTHORIZED',
-        CAPTURE: 'CAPTURED',
-        REFUND: 'REFUNDED',
-        REVERSAL: 'REVERSED',
-        SETTLE: 'SETTLEMENT_OBSERVED',
-        FUND: 'FUNDING_OBSERVED',
-        PROVIDER_RELEASE: 'PROVIDER_RELEASED',
-        PAYOUT: 'PAYOUT_OBSERVED',
-        OBSERVE_BANK_SETTLEMENT: 'BANK_SETTLEMENT_OBSERVED',
-      } as const)[input.operationKind],
+      eventKind: (
+        {
+          PREPARE_PAYMENT_METHOD: 'PAYMENT_METHOD_PREPARED',
+          AUTHORIZE: 'AUTHORIZED',
+          SECURE: 'SECURED',
+          VOID: 'VOIDED',
+          ADJUST: 'ADJUSTMENT_AUTHORIZED',
+          CAPTURE: 'CAPTURED',
+          REFUND: 'REFUNDED',
+          REVERSAL: 'REVERSED',
+          SETTLE: 'SETTLEMENT_OBSERVED',
+          FUND: 'FUNDING_OBSERVED',
+          PROVIDER_RELEASE: 'PROVIDER_RELEASED',
+          PAYOUT: 'PAYOUT_OBSERVED',
+          OBSERVE_BANK_SETTLEMENT: 'BANK_SETTLEMENT_OBSERVED',
+        } as const
+      )[input.operationKind],
       eligibilityDecisionVersion: null,
       eligibilityValidUntil: null,
       scopeVersion: null,

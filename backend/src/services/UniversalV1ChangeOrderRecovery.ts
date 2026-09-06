@@ -1042,3 +1042,6 @@ export class UniversalV1ChangeOrderRecoveryService {
     };
   }
 }
+
+// Shared projection mapper; the restricted observation adapter validates the full receipt first.
+export { mapClaim as mapChangeOrderRecoveryObservation };

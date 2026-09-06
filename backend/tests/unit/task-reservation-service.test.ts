@@ -17,6 +17,7 @@ vi.mock('../../src/logger', () => {
 
 import { db } from '../../src/db';
 import { TaskReservationService, buildReservationRequestHash } from '../../src/services/TaskReservationService';
+import { commitReservation } from '../../src/services/TaskReservationRepository';
 
 const query = vi.mocked(db.query);
 const TASK_ID = '550e8400-e29b-41d4-a716-446655440000';
@@ -72,6 +73,7 @@ function eligibleTask(overrides: Record<string, unknown> = {}) {
     liquidity_is_test: false,
     local_test_liquidity_ready: false,
     offer_decision_ready: true,
+    universal_contract_version: 0,
     ...overrides,
   };
 }
@@ -98,14 +100,25 @@ function eligibleWorker(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function legacyReservationAuthority(
+  universalContractVersion: number | string | bigint | null | undefined = 0,
+) {
+  return {
+    rows: [{ universal_contract_version: universalContractVersion }],
+    rowCount: 1,
+  } as never;
+}
+
 describe('TaskReservationService.reserve', () => {
   it('creates an engine-owned reservation for a funded eligible task', async () => {
     query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // advisory lock
+      .mockResolvedValueOnce(legacyReservationAuthority()) // pre-replay task authority lock
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // idempotency lookup
       .mockResolvedValueOnce({ rows: [eligibleTask()], rowCount: 1 } as never) // task lock + escrow
       .mockResolvedValueOnce({ rows: [eligibleWorker()], rowCount: 1 } as never) // worker lock
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // active conflict check
+      .mockResolvedValueOnce({ rows: [{ universal_contract_version: 0 }], rowCount: 1 } as never) // commit authority
       .mockResolvedValueOnce({ rows: [{ id: TASK_ID, state: 'ACCEPTED', worker_id: WORKER_ID }], rowCount: 1 } as never) // task update
       .mockResolvedValueOnce({ rows: [{ id: 'reservation-1' }], rowCount: 1 } as never) // reservation insert
       .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // request witness insert
@@ -129,6 +142,7 @@ describe('TaskReservationService.reserve', () => {
   it('commits a Service Business assignment while preserving the actual fulfiller and organization payee boundary', async () => {
     query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce(legacyReservationAuthority())
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({ rows: [eligibleTask()], rowCount: 1 } as never)
       .mockResolvedValueOnce({
@@ -142,6 +156,7 @@ describe('TaskReservationService.reserve', () => {
         fulfiller_user_id: WORKER_ID,
       }], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce({ rows: [{ universal_contract_version: 0 }], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [{
         assignment_id: 'service-assignment-1',
         fulfiller_user_id: WORKER_ID,
@@ -176,6 +191,7 @@ describe('TaskReservationService.reserve', () => {
   it('rejects Service Business acceptance when the verified crew no longer resolves to the requested fulfiller', async () => {
     query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce(legacyReservationAuthority())
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({ rows: [eligibleTask()], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [eligibleWorker()], rowCount: 1 } as never)
@@ -201,13 +217,19 @@ describe('TaskReservationService.reserve', () => {
       ...businessParams,
       serviceBusiness: { ...businessParams.serviceBusiness, organizationId: ACTOR_ID },
     });
+    const otherActorHash = buildReservationRequestHash({
+      ...params,
+      actorId: ORGANIZATION_ID,
+    });
     expect(businessHash).not.toBe(individualHash);
     expect(otherOrganizationHash).not.toBe(businessHash);
+    expect(otherActorHash).not.toBe(individualHash);
   });
 
   it('allows a fully verified Tier 1 worker to reserve a low-risk green-lane task', async () => {
     query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce(legacyReservationAuthority())
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({
         rows: [eligibleTask({ risk_level: 'LOW', trust_tier_required: 1 })],
@@ -215,6 +237,7 @@ describe('TaskReservationService.reserve', () => {
       } as never)
       .mockResolvedValueOnce({ rows: [eligibleWorker({ trust_tier: 1 })], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce({ rows: [{ universal_contract_version: 0 }], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [{ id: TASK_ID, state: 'ACCEPTED', worker_id: WORKER_ID }], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [{ id: 'reservation-tier-1' }], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
@@ -228,6 +251,7 @@ describe('TaskReservationService.reserve', () => {
   it('does not let Tier 1 cross the medium-risk Home Ready boundary', async () => {
     query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce(legacyReservationAuthority())
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({
         rows: [eligibleTask({ risk_level: 'MEDIUM', trust_tier_required: 1 })],
@@ -248,12 +272,16 @@ describe('TaskReservationService.reserve', () => {
     const requestHash = buildReservationRequestHash(params);
     query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // advisory lock
+      .mockResolvedValueOnce(legacyReservationAuthority()) // pre-replay task authority lock
       .mockResolvedValueOnce({
         rows: [{
           request_hash: requestHash,
           reservation_id: 'reservation-1',
-          task_id: TASK_ID,
-          hustler_id: WORKER_ID,
+          request_task_id: TASK_ID,
+          request_hustler_id: WORKER_ID,
+          requested_by: ACTOR_ID,
+          reservation_task_id: TASK_ID,
+          reservation_hustler_id: WORKER_ID,
           reservation_status: 'ACTIVE',
         }],
         rowCount: 1,
@@ -269,8 +297,18 @@ describe('TaskReservationService.reserve', () => {
   it('rejects reuse of an idempotency key for a different reservation', async () => {
     query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce(legacyReservationAuthority())
       .mockResolvedValueOnce({
-        rows: [{ request_hash: 'different-hash', reservation_id: 'reservation-1' }],
+        rows: [{
+          request_hash: 'different-hash',
+          reservation_id: 'reservation-1',
+          request_task_id: TASK_ID,
+          request_hustler_id: WORKER_ID,
+          requested_by: ACTOR_ID,
+          reservation_task_id: TASK_ID,
+          reservation_hustler_id: WORKER_ID,
+          reservation_status: 'ACTIVE',
+        }],
         rowCount: 1,
       } as never);
 
@@ -281,9 +319,43 @@ describe('TaskReservationService.reserve', () => {
     expect(query.mock.calls.some(([sql]) => String(sql).includes('UPDATE tasks'))).toBe(false);
   });
 
+  it.each([
+    ['cross-actor', { requested_by: ORGANIZATION_ID }],
+    ['wrong task', { request_task_id: ORGANIZATION_ID }],
+    ['wrong worker', { reservation_hustler_id: ORGANIZATION_ID }],
+    ['inactive reservation', { reservation_status: 'CANCELLED' }],
+  ])('rejects a %s replay witness', async (_label, override) => {
+    const requestHash = buildReservationRequestHash(params);
+    query
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce(legacyReservationAuthority())
+      .mockResolvedValueOnce({
+        rows: [{
+          request_hash: requestHash,
+          reservation_id: 'reservation-1',
+          request_task_id: TASK_ID,
+          request_hustler_id: WORKER_ID,
+          requested_by: ACTOR_ID,
+          reservation_task_id: TASK_ID,
+          reservation_hustler_id: WORKER_ID,
+          reservation_status: 'ACTIVE',
+          ...override,
+        }],
+        rowCount: 1,
+      } as never);
+
+    await expect(TaskReservationService.reserve(params)).resolves.toMatchObject({
+      success: false,
+      error: { code: 'IDEMPOTENCY_CONFLICT' },
+    });
+    expect(query.mock.calls.some(([sql]) => /^\s*(?:INSERT|UPDATE|DELETE)\b/iu.test(String(sql))))
+      .toBe(false);
+  });
+
   it('rejects an unfunded task', async () => {
     query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce(legacyReservationAuthority())
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({ rows: [eligibleTask({ escrow_state: 'PENDING' })], rowCount: 1 } as never);
 
@@ -293,9 +365,49 @@ describe('TaskReservationService.reserve', () => {
     expect(result.error.code).toBe('TASK_NOT_FUNDED');
   });
 
+  it.each([
+    ['Universal V1', 1],
+    ['unknown authority', null],
+  ])('holds %s reservations before reading a replay witness', async (_label, version) => {
+    query
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce(legacyReservationAuthority(version));
+
+    const result = await TaskReservationService.reserve(params);
+
+    expect(result).toMatchObject({
+      success: false,
+      error: {
+        code: 'LEGACY_RESERVATION_AUTHORITY_HELD',
+        details: { authority: 'UNIVERSAL_V1_RESERVATION_COMMAND_PORT_REQUIRED' },
+      },
+    });
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(String(query.mock.calls[1][0])).toContain('universal_contract_version');
+    expect(String(query.mock.calls[1][0])).toContain('FOR UPDATE');
+    expect(query.mock.calls.every(([sql]) => !/^\s*(?:INSERT|UPDATE|DELETE)\b/iu.test(String(sql)))).toBe(true);
+  });
+
+  it('holds direct commit callers with unknown authority before assignment or reservation SQL', async () => {
+    const directQuery = vi.fn().mockResolvedValueOnce({
+      rows: [{ universal_contract_version: null }],
+      rowCount: 1,
+    });
+
+    await expect(commitReservation(
+      directQuery as any,
+      params,
+      buildReservationRequestHash(params),
+    )).resolves.toMatchObject({ kind: 'error', code: 'LEGACY_RESERVATION_AUTHORITY_HELD' });
+
+    expect(directQuery).toHaveBeenCalledTimes(1);
+    expect(String(directQuery.mock.calls[0][0])).toMatch(/^\s*SELECT/iu);
+  });
+
   it('returns an actionable precondition before the database acceptance trigger when no current offer exists', async () => {
     query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce(legacyReservationAuthority())
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({ rows: [eligibleTask({ offer_decision_ready: false })], rowCount: 1 } as never);
 
@@ -311,6 +423,7 @@ describe('TaskReservationService.reserve', () => {
   it('requires an explicit accepted offer action for controlled TEST reservation', async () => {
     query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce(legacyReservationAuthority())
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({ rows: [eligibleTask({
         automation_classification: 'CONTROLLED_TEST',
@@ -333,6 +446,7 @@ describe('TaskReservationService.reserve', () => {
   it('rejects a hustler below the task trust requirement', async () => {
     query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce(legacyReservationAuthority())
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({ rows: [eligibleTask({ trust_tier_required: 3 })], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [eligibleWorker({ trust_tier: 2 })], rowCount: 1 } as never);
@@ -346,6 +460,7 @@ describe('TaskReservationService.reserve', () => {
   it('rejects a hustler who cannot receive an automatic payout', async () => {
     query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce(legacyReservationAuthority())
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({ rows: [eligibleTask()], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [eligibleWorker({ stripe_connect_id: null, payouts_enabled: false })], rowCount: 1 } as never);
@@ -360,6 +475,7 @@ describe('TaskReservationService.reserve', () => {
   it('rejects a minor from canonical engine reservation', async () => {
     query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce(legacyReservationAuthority())
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({ rows: [eligibleTask()], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [eligibleWorker({ is_minor: true })], rowCount: 1 } as never);
@@ -374,6 +490,7 @@ describe('TaskReservationService.reserve', () => {
   it('rejects a second active task for the same hustler', async () => {
     query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce(legacyReservationAuthority())
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({ rows: [eligibleTask()], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [eligibleWorker()], rowCount: 1 } as never)
@@ -388,6 +505,7 @@ describe('TaskReservationService.reserve', () => {
   it('rejects a task that another hustler already reserved', async () => {
     query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce(legacyReservationAuthority())
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({
         rows: [eligibleTask({ state: 'ACCEPTED', worker_id: '550e8400-e29b-41d4-a716-446655440099' })],
@@ -403,6 +521,7 @@ describe('TaskReservationService.reserve', () => {
   it('blocks in-home tasks from autonomous reservation', async () => {
     query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce(legacyReservationAuthority())
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({ rows: [eligibleTask({ risk_level: 'IN_HOME' })], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [eligibleWorker({ trust_tier: 4 })], rowCount: 1 } as never);
@@ -416,6 +535,7 @@ describe('TaskReservationService.reserve', () => {
   it('enforces the existing Pro-plan gate for high-risk tasks', async () => {
     query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce(legacyReservationAuthority())
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({ rows: [eligibleTask({ risk_level: 'HIGH', trust_tier_required: 3 })], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [eligibleWorker({ trust_tier: 3, plan: 'free' })], rowCount: 1 } as never)
@@ -430,6 +550,7 @@ describe('TaskReservationService.reserve', () => {
   it('enforces a current background check for high-value tasks', async () => {
     query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce(legacyReservationAuthority())
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({ rows: [eligibleTask({ price: 50001 })], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [eligibleWorker()], rowCount: 1 } as never)
@@ -444,6 +565,7 @@ describe('TaskReservationService.reserve', () => {
   it('enforces category policy screening even below the legacy high-value threshold', async () => {
     query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce(legacyReservationAuthority())
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({ rows: [eligibleTask({ background_check_required: true })], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [eligibleWorker()], rowCount: 1 } as never);
@@ -457,6 +579,7 @@ describe('TaskReservationService.reserve', () => {
   it('rejects controlled-TEST screening provenance on a production task', async () => {
     query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce(legacyReservationAuthority())
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({ rows: [eligibleTask({ background_check_required: true })], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [eligibleWorker({
@@ -485,6 +608,7 @@ describe('TaskReservationService.reserve', () => {
     });
     query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce(legacyReservationAuthority())
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({ rows: [eligibleTask({
         automation_classification: 'CONTROLLED_TEST',
@@ -503,6 +627,7 @@ describe('TaskReservationService.reserve', () => {
       .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce({ rows: [{ universal_contract_version: 0 }], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [{ id: TASK_ID, state: 'ACCEPTED', worker_id: WORKER_ID }], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [{ id: 'reservation-1' }], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
@@ -529,6 +654,7 @@ describe('TaskReservationService.reserve', () => {
     });
     query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce(legacyReservationAuthority())
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({ rows: [eligibleTask({
         automation_classification: 'CONTROLLED_TEST',
@@ -547,7 +673,6 @@ describe('TaskReservationService.reserve', () => {
 
   it('rejects a missing canonical engine task', async () => {
     query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
     await expect(TaskReservationService.reserve(params)).resolves.toMatchObject({
       success: false, error: { code: 'NOT_FOUND' },
@@ -556,6 +681,7 @@ describe('TaskReservationService.reserve', () => {
 
   it('blocks poster self-assignment', async () => {
     query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce(legacyReservationAuthority())
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({ rows: [eligibleTask({ poster_id: WORKER_ID })], rowCount: 1 } as never);
     await expect(TaskReservationService.reserve(params)).resolves.toMatchObject({
@@ -565,6 +691,7 @@ describe('TaskReservationService.reserve', () => {
 
   it('rejects missing and ineligible hustler accounts', async () => {
     query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce(legacyReservationAuthority())
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({ rows: [eligibleTask()], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
@@ -573,6 +700,7 @@ describe('TaskReservationService.reserve', () => {
     });
 
     query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce(legacyReservationAuthority())
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({ rows: [eligibleTask()], rowCount: 1 } as never)
       .mockResolvedValueOnce({
@@ -586,10 +714,12 @@ describe('TaskReservationService.reserve', () => {
 
   it('fails closed when the canonical task update loses a reservation race', async () => {
     query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce(legacyReservationAuthority())
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({ rows: [eligibleTask()], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [eligibleWorker()], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+      .mockResolvedValueOnce({ rows: [{ universal_contract_version: 0 }], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
     await expect(TaskReservationService.reserve(params)).resolves.toMatchObject({
       success: false, error: { code: 'RESERVATION_CONFLICT' },

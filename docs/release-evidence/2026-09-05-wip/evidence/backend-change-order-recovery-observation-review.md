@@ -1,0 +1,15 @@
+# Scoped worker recovery observation checkpoint
+
+The restricted worker can now observe one exact ChangeOrder recovery lease through a sealed database command. The command binds the current database/release, proposal, lease owner, immutable witness hash and Work Order. It refuses proposal or fulfillment contention and returns no work for an expired or terminalized lease. It grants no financial effect or terminal-write authority.
+
+The projection preserves amendment and compensation precedence, correlates outcomes to the latest dispatch attempt and retains all thirteen legacy recovery states. Customer revocation after dispatch admission remains reconcile-only. The TypeScript adapter validates every receipt, freezes the result and rechecks installed worker authority before commit. Its causal mapping excludes a simultaneous revocation reason when the selected observation requires different evidence.
+
+Validation: 210 unit tests across six complete files and 251 PostgreSQL/Redis tests across four complete financial/readiness cohorts pass with no failures, skips or todos. Compilation, expanded test types, zero-warning source lint, exact patch reproduction and unchanged unrelated source inventory pass. Two fresh database catalog captures reproduce the predecessor transactionally and restore the new catalog after rollback: 152 functions and 343 triggers.
+
+The three new PostgreSQL cases cover worker-only access and binding/lock contention, revoked-customer observation through both SQL and the typed adapter, and progression from unresolved admission through provider outcome, lifecycle event and completed amendment. All thirteen decoder states have unit coverage. Full PostgreSQL coverage of compensation observations and expired/terminal leases remains outstanding. Installed runtime identity and historical setup are synthetic fixtures; normal signed process startup and scheduled-worker recovery remain unproven.
+
+The latest complete required gate still reports 27 failures and 33 skips on earlier source. This checkpoint does not replace that gate. Remaining work includes compensation winner creation, worker-derived reversal provenance, terminal recording and races, scheduled-worker integration, remaining callers, current-Docs product behavior, all thirteen end-to-end journeys, independent review and staging. Production effects NONE; customer money and hard assignment FROZEN.
+
+The first complete financial/readiness run exposed a canonical-name defect (222 passes, 29 failures): PostgreSQL stores the legacy pre-expiry helper at its 63-byte identifier limit. The custody declaration was corrected to that physical name without editing frozen SQL or changing the function body. All four actual role-verification cases then passed; the final complete cohort receipt follows the correction.
+
+Recorded 2026-09-06T01:11:40.352Z. [Exact manifest](backend-change-order-recovery-observation-review-manifest.json). [Incremental patch](backend-change-order-recovery-observation-review.patch).

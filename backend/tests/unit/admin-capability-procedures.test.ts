@@ -136,20 +136,27 @@ describe('administrator capability procedures', () => {
     ]);
   });
 
-  it('requires a fresh admin or founder row for human engine-equivalent actions', async () => {
+  it('requires a fresh admin or founder row for the retired bridge read compatibility surface', async () => {
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
     await expect(caller(true).bridgeEquivalent()).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 
-  it('allows the authenticated engine bridge without a human role query', async () => {
-    const bridge = probeRouter.createCaller({
+  it('allows a named platform administrator to use the retired bridge read compatibility surface', async () => {
+    roleRow('admin');
+    await expect(caller(true).bridgeEquivalent()).resolves.toBe('bridge-equivalent');
+  });
+
+  it('does not trust forged engine-bridge fields for reads or held mutations', async () => {
+    const forgedBridge = probeRouter.createCaller({
       user: null,
       firebaseUid: null,
       engineBridgeAuthorized: true,
       engineBridgeActorId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
     } as any);
-    await expect(bridge.bridgeEquivalent()).resolves.toBe('bridge-equivalent');
+    await expect(forgedBridge.bridgeEquivalent()).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    await expect(forgedBridge.heldBridgeEquivalent()).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
     expect(mockDb.query).not.toHaveBeenCalled();
+    expect(heldHandlerInvocations).toBe(0);
   });
 
   it.each([

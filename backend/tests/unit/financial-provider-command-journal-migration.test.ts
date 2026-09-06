@@ -25,7 +25,7 @@ describe('financial provider command journal migration', () => {
       ({ name }) => name === '20260917_financial_provider_command_journal_v1',
     );
 
-    expect(REQUIRED_MIGRATION_FILES).toHaveLength(140);
+    expect(REQUIRED_MIGRATION_FILES).toHaveLength(146);
     expect(inboxIndex).toBeGreaterThanOrEqual(0);
     expect(commandJournalIndex).toBe(inboxIndex + 1);
     expect(REQUIRED_MIGRATION_FILES[commandJournalIndex]).toEqual({

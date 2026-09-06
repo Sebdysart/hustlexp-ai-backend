@@ -5,7 +5,6 @@
  * - getMySubscription: pro plan (999999 limit), unknown plan fallback
  * - subscribe: user not found
  * - cancel: stripeSubId null path, pauseResult.rowCount > 0 path
- * - cancel: err instanceof Error vs not in Stripe cancel catch
  * - confirmSubscription: Stripe not configured
  * - plan || 'free' fallback
  * - RECURRING_TASK_LIMITS[plan] ?? 0 for unknown plan
@@ -13,9 +12,15 @@
 import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 import { enableControlledStripePaymentTestCohortV7 } from '../helpers/payment-underwriting-v7';
 
-vi.mock('../../src/db', () => ({
-  db: { query: vi.fn() },
-}));
+vi.mock('../../src/db', () => {
+  const query = vi.fn();
+  return {
+    db: {
+      query,
+      transaction: vi.fn(async (work: (queryFn: typeof query) => Promise<unknown>) => work(query)),
+    },
+  };
+});
 
 vi.mock('../../src/auth/firebase', () => ({
   firebaseAuth: { verifyIdToken: vi.fn() },
@@ -46,12 +51,24 @@ vi.mock('../../src/services/RevenueService', () => ({
 }));
 
 import { db } from '../../src/db';
-import { subscriptionRouter } from '../../src/routers/subscription';
+import { router } from '../../src/trpc';
+import {
+  legacySubscriptionProcedures,
+  subscriptionRouter,
+} from '../../src/routers/subscription';
 
 const mockDb = vi.mocked(db);
+const legacySubscriptionRouter = router(legacySubscriptionProcedures);
 
 function makeCaller(userId = 'test-uid') {
   return subscriptionRouter.createCaller({
+    user: { id: userId, default_mode: 'poster' } as any,
+    firebaseUid: 'fb-uid',
+  });
+}
+
+function makeLegacyCaller(userId = 'test-uid') {
+  return legacySubscriptionRouter.createCaller({
     user: { id: userId, default_mode: 'poster' } as any,
     firebaseUid: 'fb-uid',
   });
@@ -78,7 +95,8 @@ describe('subscription.getMySubscription branches', () => {
 
     const result = await makeCaller().getMySubscription();
     expect(result.recurringTaskLimit).toBe(999999);
-    expect(result.canCreateRecurringTask).toBe(true);
+    expect(result.canCreateRecurringTask).toBe(false);
+    expect(result.recurringTaskCreationHeldReason).toBe('CONTROLLED_V2_AUTHORITY_REQUIRED');
   });
 
   it('falls back to 0 limit for unknown plan', async () => {
@@ -111,6 +129,7 @@ describe('subscription.getMySubscription branches', () => {
 
 describe('subscription.cancel branches', () => {
   it('skips Stripe cancel when stripeSubId is null', async () => {
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any); // advisory lock
     mockDb.query.mockResolvedValueOnce({
       rows: [{ stripe_subscription_id: null }],
       rowCount: 1,
@@ -126,6 +145,7 @@ describe('subscription.cancel branches', () => {
   });
 
   it('handles pauseResult.rowCount 0 (no series to cancel)', async () => {
+    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any); // advisory lock
     mockDb.query.mockResolvedValueOnce({
       rows: [{ stripe_subscription_id: null }],
       rowCount: 1,
@@ -147,7 +167,7 @@ describe('subscription.subscribe branches', () => {
     } as any);
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
 
-    const result = await makeCaller().subscribe({ plan: 'pro', interval: 'year' });
+    const result = await makeLegacyCaller().subscribe({ plan: 'pro', interval: 'year' });
     expect(result.success).toBe(true);
     expect(result.recurringTaskLimit).toBe(999999);
   });

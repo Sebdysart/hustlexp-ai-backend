@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-const ISSUER = 'hxos-local-certification';
-const AUDIENCE = 'hustlexp-engine-test';
+export const LOCAL_CERTIFICATION_TOKEN_ISSUER = 'hxos-local-certification';
+export const LOCAL_CERTIFICATION_TOKEN_AUDIENCE = 'hustlexp-engine-test';
 const TOKEN_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const SUBJECT_RE = /^hxos-local-(poster|hustler)-[a-z0-9_-]{8,64}$/;
 const MAX_TOKEN_CHARS = 5_000;
@@ -32,7 +32,7 @@ export interface LocalCertificationIdentity {
 function parseSegment<T>(segment: string): T | null {
   try {
     const value: unknown = JSON.parse(Buffer.from(segment, 'base64url').toString('utf8'));
-    return value && typeof value === 'object' && !Array.isArray(value) ? value as T : null;
+    return value && typeof value === 'object' && !Array.isArray(value) ? (value as T) : null;
   } catch {
     return null;
   }
@@ -40,17 +40,19 @@ function parseSegment<T>(segment: string): T | null {
 
 export function localCertificationAuthEnabled(env: Environment = process.env): boolean {
   const secret = env.HXOS_LOCAL_TEST_AUTH_SECRET?.trim() ?? '';
-  return env.NODE_ENV !== 'production'
-    && env.HXOS_ALLOW_LOCAL_TEST_AUTH === 'true'
-    && env.ENGINE_API_MODE === 'test'
-    && env.STRIPE_MODE === 'test'
-    && secret.length >= 32;
+  return (
+    env.NODE_ENV !== 'production' &&
+    env.HXOS_ALLOW_LOCAL_TEST_AUTH === 'true' &&
+    env.ENGINE_API_MODE === 'test' &&
+    env.STRIPE_MODE === 'test' &&
+    secret.length >= 32
+  );
 }
 
 export function verifyLocalCertificationToken(
   token: string,
   env: Environment = process.env,
-  nowSeconds: number = Math.floor(Date.now() / 1000),
+  nowSeconds: number = Math.floor(Date.now() / 1000)
 ): LocalCertificationIdentity | null {
   if (!localCertificationAuthEnabled(env)) return null;
   if (!TOKEN_RE.test(token) || token.length > MAX_TOKEN_CHARS) return null;
@@ -72,7 +74,12 @@ export function verifyLocalCertificationToken(
   }
   if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) return null;
 
-  if (payload.iss !== ISSUER || payload.aud !== AUDIENCE || payload.hxos_test !== true) return null;
+  if (
+    payload.iss !== LOCAL_CERTIFICATION_TOKEN_ISSUER ||
+    payload.aud !== LOCAL_CERTIFICATION_TOKEN_AUDIENCE ||
+    payload.hxos_test !== true
+  )
+    return null;
   if (typeof payload.sub !== 'string' || !SUBJECT_RE.test(payload.sub)) return null;
   if (!Number.isInteger(payload.iat) || !Number.isInteger(payload.exp)) return null;
   const issuedAt = payload.iat as number;

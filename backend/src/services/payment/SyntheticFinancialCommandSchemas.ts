@@ -204,8 +204,7 @@ export const syntheticProviderAccountEstablishmentCommandSchema = z
 
 export const SYNTHETIC_FINANCIAL_OBSERVATION_VERSION =
   'HX_SYNTHETIC_FINANCIAL_OBSERVATION_V1' as const;
-export const SYNTHETIC_FINANCIAL_OBSERVATION_KIND =
-  'FINANCIAL_OPERATION_OBSERVED' as const;
+export const SYNTHETIC_FINANCIAL_OBSERVATION_KIND = 'FINANCIAL_OPERATION_OBSERVED' as const;
 
 const observedFinancialOperationKind = z.enum([
   'PREPARE_PAYMENT_METHOD',
@@ -249,12 +248,19 @@ export const syntheticFinancialObservationSchema = z
     providerEventReference: z.string().trim().min(3).max(255),
     operationId: z.string().uuid(),
     operationKind: observedFinancialOperationKind,
-    predecessorProviderVersion: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER - 1),
+    predecessorProviderVersion: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(Number.MAX_SAFE_INTEGER - 1),
     observedProviderVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     observedState: providerFinancialObservationStateSchema,
     externalReference: z.string().trim().min(3).max(256),
     amountCents: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable(),
-    currency: z.string().regex(/^[A-Z]{3}$/u).nullable(),
+    currency: z
+      .string()
+      .regex(/^[A-Z]{3}$/u)
+      .nullable(),
     providerOccurredAt: z.string().datetime(),
   })
   .strict()
@@ -268,9 +274,9 @@ export const syntheticFinancialObservationSchema = z
     }
     const nonValueOperation = value.operationKind === 'PREPARE_PAYMENT_METHOD';
     if (
-      (value.amountCents === null) !== (value.currency === null)
-      || (nonValueOperation && value.amountCents !== null)
-      || (!nonValueOperation && value.amountCents === null)
+      (value.amountCents === null) !== (value.currency === null) ||
+      (nonValueOperation && value.amountCents !== null) ||
+      (!nonValueOperation && value.amountCents === null)
     ) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -282,11 +288,18 @@ export const syntheticFinancialObservationSchema = z
 
 export const signedSyntheticWebhookIngressSchema = z
   .object({
+    keyId: z
+      .string()
+      .uuid()
+      .refine((value) => value === value.toLowerCase()),
     rawBody: z
       .string()
       .min(2)
       .max(16 * 1024),
-    signature: z.string().regex(/^[0-9a-fA-F]{64}$/u),
+    signature: z
+      .string()
+      .regex(/^[0-9a-fA-F]{64}$/u)
+      .transform((value) => value.toLowerCase()),
   })
   .strict();
 
@@ -310,7 +323,5 @@ export type SyntheticReconciliationRouteCommand = z.infer<
 export type ProviderFinancialObservationState = z.infer<
   typeof providerFinancialObservationStateSchema
 >;
-export type SyntheticFinancialObservation = z.infer<
-  typeof syntheticFinancialObservationSchema
->;
+export type SyntheticFinancialObservation = z.infer<typeof syntheticFinancialObservationSchema>;
 export type SyntheticFinancialJobEnvelope = z.infer<typeof syntheticFinancialJobEnvelopeSchema>;

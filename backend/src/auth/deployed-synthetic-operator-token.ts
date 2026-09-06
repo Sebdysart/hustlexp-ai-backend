@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-const ISSUER = 'hxos-deployed-synthetic-operator';
-const AUDIENCE = 'hustlexp-nonprod-operations';
+export const DEPLOYED_SYNTHETIC_OPERATOR_TOKEN_ISSUER = 'hxos-deployed-synthetic-operator';
+export const DEPLOYED_SYNTHETIC_OPERATOR_TOKEN_AUDIENCE = 'hustlexp-nonprod-operations';
 const KEY_ID = 'hxos-nonprod-operator-v1';
 const TOKEN_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u;
 const SUBJECT_RE = /^hxos-(staging|preview)-operator-[a-z0-9][a-z0-9_-]{7,63}$/u;
@@ -46,7 +46,7 @@ export interface DeployedSyntheticOperatorIdentity {
 function parseSegment<T>(segment: string): T | null {
   try {
     const value: unknown = JSON.parse(Buffer.from(segment, 'base64url').toString('utf8'));
-    return value && typeof value === 'object' && !Array.isArray(value) ? value as T : null;
+    return value && typeof value === 'object' && !Array.isArray(value) ? (value as T) : null;
   } catch {
     return null;
   }
@@ -58,17 +58,17 @@ function deployedEnvironment(env: Environment): 'staging' | 'preview' | null {
     : null;
 }
 
-export function deployedSyntheticOperatorAuthEnabled(
-  env: Environment = process.env,
-): boolean {
+export function deployedSyntheticOperatorAuthEnabled(env: Environment = process.env): boolean {
   const secret = env.HX_SYNTHETIC_OPERATOR_AUTH_SECRET?.trim() ?? '';
-  return env.NODE_ENV === 'production'
-    && deployedEnvironment(env) !== null
-    && env.ENGINE_API_MODE === 'test'
-    && env.STRIPE_MODE === 'test'
-    && env.HX_PAYMENT_CREATION_MODE === 'frozen'
-    && env.HX_SYNTHETIC_OPERATOR_AUTH_MODE === 'signed_hmac'
-    && secret.length >= 32;
+  return (
+    env.NODE_ENV === 'production' &&
+    deployedEnvironment(env) !== null &&
+    env.ENGINE_API_MODE === 'test' &&
+    env.STRIPE_MODE === 'test' &&
+    env.HX_PAYMENT_CREATION_MODE === 'frozen' &&
+    env.HX_SYNTHETIC_OPERATOR_AUTH_MODE === 'signed_hmac' &&
+    secret.length >= 32
+  );
 }
 
 /**
@@ -80,7 +80,7 @@ export function deployedSyntheticOperatorAuthEnabled(
 export function verifyDeployedSyntheticOperatorToken(
   token: string,
   env: Environment = process.env,
-  nowSeconds: number = Math.floor(Date.now() / 1000),
+  nowSeconds: number = Math.floor(Date.now() / 1000)
 ): DeployedSyntheticOperatorIdentity | null {
   const environment = deployedEnvironment(env);
   if (!environment || !deployedSyntheticOperatorAuthEnabled(env)) return null;
@@ -91,12 +91,13 @@ export function verifyDeployedSyntheticOperatorToken(
   const header = parseSegment<JwtHeader>(encodedHeader);
   const payload = parseSegment<JwtPayload>(encodedPayload);
   if (
-    !header
-    || !payload
-    || header.alg !== 'HS256'
-    || header.typ !== 'JWT'
-    || header.kid !== KEY_ID
-  ) return null;
+    !header ||
+    !payload ||
+    header.alg !== 'HS256' ||
+    header.typ !== 'JWT' ||
+    header.kid !== KEY_ID
+  )
+    return null;
 
   const signed = `${encodedHeader}.${encodedPayload}`;
   const expected = createHmac('sha256', env.HX_SYNTHETIC_OPERATOR_AUTH_SECRET!.trim())
@@ -111,26 +112,28 @@ export function verifyDeployedSyntheticOperatorToken(
   if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) return null;
 
   if (
-    payload.iss !== ISSUER
-    || payload.aud !== AUDIENCE
-    || payload.environment !== environment
-    || payload.hxos_synthetic_operator !== true
-    || typeof payload.sub !== 'string'
-    || typeof payload.operator_name !== 'string'
-    || !SUBJECT_RE.test(payload.sub)
-    || !payload.sub.startsWith(`hxos-${environment}-operator-`)
-    || !NAME_RE.test(payload.operator_name)
-    || (payload.mfa_method !== 'totp' && payload.mfa_method !== 'webauthn')
-    || !Number.isSafeInteger(payload.iat)
-    || !Number.isSafeInteger(payload.auth_time)
-    || !Number.isSafeInteger(payload.exp)
-  ) return null;
+    payload.iss !== DEPLOYED_SYNTHETIC_OPERATOR_TOKEN_ISSUER ||
+    payload.aud !== DEPLOYED_SYNTHETIC_OPERATOR_TOKEN_AUDIENCE ||
+    payload.environment !== environment ||
+    payload.hxos_synthetic_operator !== true ||
+    typeof payload.sub !== 'string' ||
+    typeof payload.operator_name !== 'string' ||
+    !SUBJECT_RE.test(payload.sub) ||
+    !payload.sub.startsWith(`hxos-${environment}-operator-`) ||
+    !NAME_RE.test(payload.operator_name) ||
+    (payload.mfa_method !== 'totp' && payload.mfa_method !== 'webauthn') ||
+    !Number.isSafeInteger(payload.iat) ||
+    !Number.isSafeInteger(payload.auth_time) ||
+    !Number.isSafeInteger(payload.exp)
+  )
+    return null;
 
   const issuedAt = payload.iat as number;
   const authenticatedAt = payload.auth_time as number;
   const expiresAt = payload.exp as number;
   if (issuedAt > nowSeconds + CLOCK_SKEW_SECONDS) return null;
-  if (authenticatedAt > issuedAt || nowSeconds - authenticatedAt > MAX_LIFETIME_SECONDS) return null;
+  if (authenticatedAt > issuedAt || nowSeconds - authenticatedAt > MAX_LIFETIME_SECONDS)
+    return null;
   if (expiresAt <= nowSeconds - CLOCK_SKEW_SECONDS) return null;
   if (expiresAt <= issuedAt || expiresAt - issuedAt > MAX_LIFETIME_SECONDS) return null;
 

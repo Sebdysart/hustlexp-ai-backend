@@ -366,7 +366,7 @@ describe('Money Path: Task Price Validation', () => {
     it('should accept exactly $15.00 for STANDARD tasks', async () => {
       db.query.mockResolvedValueOnce({
         rowCount: 1,
-        rows: [{ id: 'task-new', title: 'Test', price: 1500, state: 'OPEN' }],
+        rows: [{ id: 'task-new', version: '1', title: 'Test', price: 1500, state: 'OPEN' }],
       });
       db.query.mockResolvedValue({ rowCount: 0, rows: [] });
 
@@ -380,12 +380,15 @@ describe('Money Path: Task Price Validation', () => {
       });
 
       expect(result.success).toBe(true);
+      expect(result.data).toMatchObject({ price: 1500, version: 1 });
     });
 
     it('should accept exactly $15.00 for LIVE tasks', async () => {
       db.query.mockResolvedValueOnce({
         rowCount: 1,
-        rows: [{ id: 'task-new', title: 'Live Test', price: 1500, state: 'OPEN', mode: 'LIVE' }],
+        rows: [{
+          id: 'task-new', version: '1', title: 'Live Test', price: 1500, state: 'OPEN', mode: 'LIVE',
+        }],
       });
       db.query.mockResolvedValue({ rowCount: 0, rows: [] });
 
@@ -400,6 +403,7 @@ describe('Money Path: Task Price Validation', () => {
       });
 
       expect(result.success).toBe(true);
+      expect(result.data).toMatchObject({ price: 1500, version: 1, mode: 'LIVE' });
     });
   });
 

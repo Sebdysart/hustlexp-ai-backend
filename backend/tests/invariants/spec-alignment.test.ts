@@ -519,7 +519,7 @@ describe('SPEC ALIGNMENT: Escrow State Machine (PRODUCT_SPEC §4.2, §4.3)', () 
   });
 });
 
-describe('SPEC ALIGNMENT: Price Minimums (PRODUCT_SPEC §3.5)', () => {
+describe('LEGACY TASK CREATE: non-authorizing compatibility price floor', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     db.query.mockReset();
@@ -541,15 +541,15 @@ describe('SPEC ALIGNMENT: Price Minimums (PRODUCT_SPEC §3.5)', () => {
     });
 
     it('should accept STANDARD task with price = $15.00 (1500 cents)', async () => {
-      // Mock all the dependencies
-      db.query.mockResolvedValueOnce({ rows: [{ allowed: true }] }); // PlanService
       db.query.mockResolvedValueOnce({
         rows: [{
           id: 'task-1',
+          version: '1',
           state: 'OPEN',
           price: 1500,
         }],
       });
+      db.query.mockResolvedValue({ rowCount: 0, rows: [] });
 
       const result = await TaskService.create({
         posterId: 'poster-1',
@@ -557,23 +557,24 @@ describe('SPEC ALIGNMENT: Price Minimums (PRODUCT_SPEC §3.5)', () => {
         description: 'Test description',
         price: 1500, // $15.00
         mode: 'STANDARD',
+        regionCode: 'US-WA',
+        category: 'moving',
       });
 
-      // Should not fail on price validation
-      if (!result.success) {
-        expect(result.error?.code).not.toBe('PRICE_TOO_LOW');
-      }
+      expect(result.success).toBe(true);
+      expect(result.data).toMatchObject({ price: 1500, version: 1 });
     });
 
     it('should accept STANDARD task with price > $15.00', async () => {
-      db.query.mockResolvedValueOnce({ rows: [{ allowed: true }] });
       db.query.mockResolvedValueOnce({
         rows: [{
           id: 'task-1',
+          version: '1',
           state: 'OPEN',
           price: 2000,
         }],
       });
+      db.query.mockResolvedValue({ rowCount: 0, rows: [] });
 
       const result = await TaskService.create({
         posterId: 'poster-1',
@@ -581,11 +582,12 @@ describe('SPEC ALIGNMENT: Price Minimums (PRODUCT_SPEC §3.5)', () => {
         description: 'Test description',
         price: 2000, // $20.00
         mode: 'STANDARD',
+        regionCode: 'US-WA',
+        category: 'moving',
       });
 
-      if (!result.success) {
-        expect(result.error?.code).not.toBe('PRICE_TOO_LOW');
-      }
+      expect(result.success).toBe(true);
+      expect(result.data).toMatchObject({ price: 2000, version: 1 });
     });
   });
 
@@ -606,14 +608,16 @@ describe('SPEC ALIGNMENT: Price Minimums (PRODUCT_SPEC §3.5)', () => {
     });
 
     it('should accept LIVE task with price = $15.00 (1500 cents)', async () => {
-      db.query.mockResolvedValueOnce({ rows: [{ allowed: true }] });
       db.query.mockResolvedValueOnce({
         rows: [{
           id: 'task-1',
+          version: '1',
           state: 'OPEN',
           price: 1500,
+          mode: 'LIVE',
         }],
       });
+      db.query.mockResolvedValue({ rowCount: 0, rows: [] });
 
       const result = await TaskService.create({
         posterId: 'poster-1',
@@ -621,22 +625,24 @@ describe('SPEC ALIGNMENT: Price Minimums (PRODUCT_SPEC §3.5)', () => {
         description: 'Test description',
         price: 1500, // $15.00
         mode: 'LIVE',
+        regionCode: 'US-WA',
+        category: 'moving',
       });
 
-      if (!result.success) {
-        expect(result.error?.code).not.toBe('LIVE_2_VIOLATION');
-      }
+      expect(result.success).toBe(true);
+      expect(result.data).toMatchObject({ price: 1500, version: 1, mode: 'LIVE' });
     });
   });
 
   describe('Edge Cases', () => {
     it('should fallback to minimum price when price = 0 (Scoper AI pathway)', async () => {
-      // When price=0, TaskService invokes Scoper AI. If AI fails, it falls back to min price (500 cents).
-      // This is correct behavior per PRODUCT_SPEC §3.5 — price=0 triggers AI pricing, not rejection.
+      // price=0 delegates pricing to Scoper AI. When AI is unavailable, the
+      // contained legacy template policy supplies its 1,500-cent compatibility
+      // floor. This does not define or authorize Universal V1 pricing.
       // Mock the DB INSERT for task creation
       db.query.mockResolvedValueOnce({
         rowCount: 1,
-        rows: [{ id: 'task-new', title: 'Test Task', price: 500, state: 'OPEN' }],
+        rows: [{ id: 'task-new', version: '1', title: 'Test Task', price: 1500, state: 'OPEN' }],
       });
       // Mock downstream calls (notifications, etc.)
       db.query.mockResolvedValue({ rowCount: 0, rows: [] });
@@ -650,8 +656,8 @@ describe('SPEC ALIGNMENT: Price Minimums (PRODUCT_SPEC §3.5)', () => {
         category: 'moving',
       });
 
-      // price=0 triggers Scoper AI fallback to $5.00 minimum, so task IS created
       expect(result.success).toBe(true);
+      expect(result.data).toMatchObject({ price: 1500, version: 1 });
     });
 
     it('should reject negative price', async () => {

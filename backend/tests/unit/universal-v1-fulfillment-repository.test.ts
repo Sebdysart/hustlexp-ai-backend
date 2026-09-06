@@ -321,11 +321,11 @@ describe('PostgresUniversalV1FulfillmentRepository', () => {
         ) {
           return { rows: [], rowCount: 0 };
         }
-        if (sql.includes('INSERT INTO public.universal_v1_fake_terminal_lifecycle_intents')) {
+        if (sql.includes('public.hxos_record_fake_terminal_lifecycle_intent_v1')) {
           terminalIntent = {
             terminal_intent_id: ids.terminalIntent,
-            idempotency_key: parameters[7],
-            request_sha256: parameters[8],
+            idempotency_key: parameters[8],
+            request_sha256: parameters[9],
             terminal_path: path,
             work_order_id: ids.workOrder,
             task_draft_id: ids.draft,

@@ -5,7 +5,11 @@ import {
   parseUniversalV1TaskDraft,
   type SanitizedTaskDraftAnswer,
 } from '../../src/services/UniversalV1TaskDraftParser';
-import type { TaskDraftCategory } from '../../src/services/UniversalV1TaskDraftIngress';
+import {
+  UNIVERSAL_V1_ASSEMBLY_SCOPE_CLASS,
+  UNIVERSAL_V1_ITEM_COUNT_CLASS,
+  type TaskDraftCategory,
+} from '../../src/services/UniversalV1TaskDraftIngress';
 
 const ALL_CATEGORIES: TaskDraftCategory[] = [
   'moving',
@@ -80,11 +84,14 @@ describe('UniversalV1TaskDraftParser', () => {
       size_weight: 'heavy',
       access: 'stairs',
       move_type: 'transport',
+      workers_needed: 'one',
       fragile: false,
     });
 
     expect(result.missing_questions).toEqual(['Preferred day / time?']);
-    expect(result.safetyEvidence).toBe('Heavy (needs two)\nStairs\nTransport to another address');
+    expect(result.safetyEvidence).toBe(
+      'Heavy (needs two)\nStairs\nTransport to another address\nOne'
+    );
     expect(result.risk_flags).toEqual(['Heavy items (2+ people)', 'Stairs / constrained access']);
   });
 
@@ -132,6 +139,42 @@ describe('UniversalV1TaskDraftParser', () => {
     expect(result.title).toBe('Assemble a six drawer dresser near downtown');
     expect(result.scope_summary).toBe('Assemble a six drawer dresser near downtown');
     expect(JSON.stringify(result)).not.toMatch(/@|\b\d{3}[-.) ]\d{3}/u);
+  });
+
+  it('requires exact standardized furniture scope questions before scope is complete', () => {
+    const ordinaryAnswers = {
+      item: 'six drawer dresser',
+      new_in_box: true,
+      tools_included: true,
+      old_item_removal: false,
+      timing: 'Saturday morning',
+    };
+    expect(parse('furniture_assembly', 'Assemble a dresser', ordinaryAnswers).missing_questions)
+      .toEqual([
+        'Is this exactly one standard flat-pack furniture item?',
+        'How many furniture items need assembly?',
+      ]);
+    expect(parse('furniture_assembly', 'Assemble a dresser', {
+      ...ordinaryAnswers,
+      assembly_scope_class: UNIVERSAL_V1_ASSEMBLY_SCOPE_CLASS,
+      item_count_class: UNIVERSAL_V1_ITEM_COUNT_CLASS,
+    }).missing_questions).toEqual([]);
+  });
+
+  it('offers truthful non-base furniture answers without pretending they are base scope', () => {
+    const result = parse('furniture_assembly', 'Assemble a custom furniture set', {
+      assembly_scope_class: 'OTHER_OR_CUSTOM',
+      item_count_class: 'MULTIPLE',
+      item: 'custom shelving set',
+      new_in_box: false,
+      tools_included: false,
+      old_item_removal: false,
+      timing: 'Saturday morning',
+    });
+
+    expect(result.missing_questions).toEqual([]);
+    expect(result.safetyEvidence).toContain('Other or custom assembly scope');
+    expect(result.safetyEvidence).toContain('Multiple items');
   });
 
   it('returns byte-for-byte equivalent values for identical inputs', () => {

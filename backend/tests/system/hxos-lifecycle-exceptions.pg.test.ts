@@ -19,6 +19,8 @@ import { TaskReservationService } from '../../src/services/TaskReservationServic
 import { TaskScopeService } from '../../src/services/TaskScopeService.js';
 import { TaskService } from '../../src/services/TaskService.js';
 import type { CreateTaskParams } from '../../src/services/TaskServiceShared.js';
+import { canonicalTaskVersion } from '../../src/services/TaskVersion.js';
+import { taskRouter } from '../../src/routers/task.js';
 import { UnattendedCompletionSweepService } from '../../src/services/UnattendedCompletionSweepService.js';
 import { grantScreeningConsent } from '../../src/services/WorkerScreeningRightsService.js';
 import {
@@ -27,7 +29,7 @@ import {
   LOCAL_CERTIFICATION_SCREENING_PROVIDER,
   LOCAL_CERTIFICATION_SCREENING_PURPOSE,
 } from '../../src/services/WorkerScreeningRightsPolicy.js';
-import type { ServiceResult } from '../../src/types.js';
+import type { ServiceResult, User } from '../../src/types.js';
 
 const enabled = process.env.HX_ALLOW_E2E_LIFECYCLE === '1';
 const describePg = enabled ? describe : describe.skip;
@@ -372,6 +374,86 @@ describePg('HX/OS PostgreSQL lifecycle exceptions', () => {
     }), params.label);
   }
 
+  it('round-trips a PostgreSQL BIGINT task version through public read and cancellation commands', async () => {
+    const label = 'trpc-version-cancel';
+    const created = successData(await TaskService.create({
+      posterId,
+      title: 'HX exception public version boundary',
+      description: 'Controlled public API and PostgreSQL version-boundary cancellation proof.',
+      price: 8_900,
+      hustlerPayoutCents: 7_000,
+      platformMarginCents: 1_900,
+      requirements: 'Remain open until the poster submits the exact observed version.',
+      location: '102 Version Boundary Avenue, Seattle, WA 98101',
+      roughArea: `Seattle ${runLetters}, WA`,
+      regionCode: 'US-WA',
+      category: 'moving',
+      deadline: new Date(Date.now() + 4 * 60 * 60_000),
+      dispatchExpiresAt: new Date(Date.now() + 60 * 60_000),
+      requiresProof: true,
+      riskLevel: 'LOW',
+      mode: 'STANDARD',
+      automationClassification: 'CONTROLLED_TEST',
+      proofSteps: ['Confirm the task remains open before cancellation.'],
+      estimatedDurationMinutes: 60,
+      requiredTools: ['general hand tools'],
+      clientIdempotencyKey: `${label}-${runId}`,
+    }), `${label} create`);
+
+    const rawBefore = await db.query<{ state: string; version: string }>(
+      'SELECT state,version FROM tasks WHERE id=$1',
+      [created.id],
+    );
+    expect(rawBefore.rows[0]).toMatchObject({ state: 'OPEN' });
+    expect(typeof rawBefore.rows[0].version).toBe('string');
+
+    const poster = await db.query<User>('SELECT * FROM users WHERE id=$1', [posterId]);
+    const caller = taskRouter.createCaller({
+      user: { ...poster.rows[0], is_admin: false },
+      firebaseUid: null,
+      ip: '127.0.0.1',
+    });
+    const observed = await caller.getById({ taskId: created.id });
+    expect(observed).toMatchObject({
+      id: created.id,
+      state: 'OPEN',
+      version: canonicalTaskVersion(rawBefore.rows[0].version),
+      viewer_role: 'poster',
+    });
+    expect(typeof observed.version).toBe('number');
+
+    const cancelled = await caller.cancel({
+      taskId: created.id,
+      expectedVersion: observed.version,
+    });
+    expect(cancelled).toMatchObject({
+      id: created.id,
+      state: 'CANCELLED',
+      version: observed.version + 1,
+    });
+
+    const observedAfter = await caller.getById({ taskId: created.id });
+    expect(observedAfter).toMatchObject({
+      id: created.id,
+      state: 'CANCELLED',
+      version: observed.version + 1,
+      viewer_role: 'poster',
+    });
+    await expect(caller.cancel({
+      taskId: created.id,
+      expectedVersion: observed.version,
+    })).rejects.toMatchObject({ code: 'CONFLICT' });
+
+    const rawAfter = await db.query<{ state: string; version: string }>(
+      'SELECT state,version FROM tasks WHERE id=$1',
+      [created.id],
+    );
+    expect(rawAfter.rows[0]).toEqual({
+      state: 'CANCELLED',
+      version: String(observed.version + 1),
+    });
+  });
+
   it('proves race, privacy, scope, retake, dispute, timeout, and no-supply exceptions', async () => {
     const race = await createFundedTask('reservation-race');
     await expect(TaskLocationService.releaseToReservedWorker({ taskId: race.taskId, workerId: firstWorkerId }))
@@ -399,13 +481,17 @@ describePg('HX/OS PostgreSQL lifecycle exceptions', () => {
     ]);
     const winnerId = firstWorkerId;
     const loserId = secondWorkerId;
-    const reservationState = await db.query<{ worker_id: string; active_count: number }>(
-      `SELECT t.worker_id,
+    const reservationState = await db.query<{
+      worker_id: string;
+      active_count: number;
+      version: number | string | bigint;
+    }>(
+      `SELECT t.worker_id, t.version,
               (SELECT COUNT(*)::int FROM task_reservations r WHERE r.task_id=t.id AND r.status='ACTIVE') AS active_count
        FROM tasks t WHERE t.id=$1`,
       [race.taskId],
     );
-    expect(reservationState.rows[0]).toEqual({ worker_id: winnerId, active_count: 1 });
+    expect(reservationState.rows[0]).toEqual(expect.objectContaining({ worker_id: winnerId, active_count: 1 }));
     await expect(TaskLocationService.releaseToReservedWorker({ taskId: race.taskId, workerId: loserId }))
       .resolves.toMatchObject({ success: false, error: { code: 'LOCATION_NOT_RELEASED' } });
     expect(successData(
@@ -417,7 +503,11 @@ describePg('HX/OS PostgreSQL lifecycle exceptions', () => {
       [race.taskId],
     );
     expect(access.rows).toEqual([{ worker_id: winnerId, access_reason: 'engine_reserved_worker' }]);
-    successData(await TaskService.cancel(race.taskId, posterId), 'race cancel');
+    successData(await TaskService.cancelByPoster({
+      taskId: race.taskId,
+      posterId,
+      expectedVersion: canonicalTaskVersion(reservationState.rows[0].version),
+    }), 'race cancel');
     const cancelledVault = await db.query<{
       expired_at: Date | null;
       expiration_reason: string;

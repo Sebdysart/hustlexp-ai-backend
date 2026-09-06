@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   releaseManifestDigest,
   type ReleaseManifestEvidence,
+  type ReleaseManifestV2,
 } from '../../src/releaseManifest';
 
 // config.ts snapshots process.env at module evaluation, so these cases must
@@ -485,7 +486,7 @@ describe('validateConfig', () => {
     expect(result.errors.some((e) => e.includes('FIREBASE_PROJECT_ID'))).toBe(true);
     expect(result.errors.some((e) => e.includes('STRIPE_SECRET_KEY'))).toBe(true);
     expect(result.errors).toContain(
-      'UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN must be configured together when using the legacy REST alternate',
+      'UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN must be configured together when using the legacy REST alternate'
     );
     expect(result.errors.some((e) => e.includes('TAX_TIN_ENCRYPTION_KEY'))).toBe(true);
   });
@@ -494,7 +495,8 @@ describe('validateConfig', () => {
     process.env.DATABASE_URL = 'postgres://localhost:5432/prod';
     process.env.NODE_ENV = 'production';
     process.env.REDIS_URL = 'https://not-a-redis-transport.example.test';
-    process.env.UPSTASH_REDIS_REST_URL = 'http://user:password@redis-rest.example.test?token=leaked';
+    process.env.UPSTASH_REDIS_REST_URL =
+      'http://user:password@redis-rest.example.test?token=leaked';
     process.env.UPSTASH_REDIS_REST_TOKEN = 'separate-token';
     vi.resetModules();
     const { validateConfig } = await import('../../src/config');
@@ -502,10 +504,10 @@ describe('validateConfig', () => {
     const result = validateConfig();
 
     expect(result.errors).toContain(
-      'REDIS_URL (or legacy UPSTASH_REDIS_URL) must use redis: or rediss: with a hostname',
+      'REDIS_URL (or legacy UPSTASH_REDIS_URL) must use redis: or rediss: with a hostname'
     );
     expect(result.errors).toContain(
-      'UPSTASH_REDIS_REST_URL must be an HTTPS URL without embedded credentials, query, or fragment',
+      'UPSTASH_REDIS_REST_URL must be an HTTPS URL without embedded credentials, query, or fragment'
     );
   });
 
@@ -780,7 +782,7 @@ describe('validateConfig', () => {
 
     expect(exitSpy).toHaveBeenCalledWith(1);
     expect(result.errors).toContain(
-      'HX_PAYMENT_CREATION_MODE=enabled is forbidden while underwriting decisions remain unresolved',
+      'HX_PAYMENT_CREATION_MODE=enabled is forbidden while underwriting decisions remain unresolved'
     );
   });
 
@@ -811,9 +813,9 @@ describe('validateConfig', () => {
   const syntheticRevision = 'a'.repeat(40);
   const syntheticDigest = (value: string) => `sha256:${value.repeat(64)}`;
 
-  function syntheticManifest(environment: 'staging' | 'preview') {
+  function syntheticManifest(environment: 'staging' | 'preview'): ReleaseManifestV2 {
     return {
-      version: 1,
+      version: 2,
       environment,
       releaseId: `${environment}-20260826-001`,
       createdAt: '2026-08-26T12:00:00.000Z',
@@ -847,8 +849,24 @@ describe('validateConfig', () => {
         fixtures: {
           revision: 'd'.repeat(40),
           artifactDigest: syntheticDigest('9'),
-          imageEvidence: 'VERIFIED_IMMUTABLE_IMAGE',
-          imageDigest: syntheticDigest('a'),
+          providerImageEvidence: 'VERIFIED_IMMUTABLE_IMAGE',
+          providerImageDigest: syntheticDigest('a'),
+          databaseImageEvidence: 'VERIFIED_IMMUTABLE_IMAGE',
+          databaseImageDigest: syntheticDigest('b'),
+        },
+      },
+      infrastructure: {
+        revision: 'e'.repeat(40),
+        artifactDigest: syntheticDigest('c'),
+        desiredTopologyDigest: syntheticDigest('d'),
+      },
+      databaseTargets: {
+        api: { component: 'api', environment, databaseTargetDigest: syntheticDigest('e') },
+        worker: { component: 'worker', environment, databaseTargetDigest: syntheticDigest('f') },
+        attester: {
+          component: 'attester',
+          environment,
+          databaseTargetDigest: syntheticDigest('1'),
         },
       },
       capabilities: {
@@ -863,20 +881,36 @@ describe('validateConfig', () => {
       promotion: {
         baseManifestDigest: null,
         changedComponents: ['backend', 'worker', 'web', 'migration', 'policy', 'fixtures'],
+        infrastructureChanged: true,
       },
-      health: {
-        backend: { component: 'backend', path: '/health' },
-        worker: { component: 'worker', path: '/health' },
-        web: { component: 'web', path: '/version.json' },
+      acceptance: {
+        backend: { kind: 'http', component: 'backend', path: '/health' },
+        worker: { kind: 'http', component: 'worker', path: '/health' },
+        web: { kind: 'http', component: 'web', path: '/version.json' },
+        migration: {
+          kind: 'receipt',
+          component: 'migration',
+          receiptType: 'migration-execution-v1',
+        },
+        policy: { kind: 'receipt', component: 'policy', receiptType: 'canonical-policy-digest-v1' },
+        fixtures: { kind: 'receipt', component: 'fixtures', receiptType: 'fixture-seed-v1' },
+        infrastructure: {
+          kind: 'readback',
+          binding: 'infrastructure',
+          receiptType: 'infrastructure-readback-v1',
+        },
       },
     };
   }
 
   function configureSyntheticDeployment(environment: 'staging' | 'preview') {
+    delete process.env.HX_FAKE_FINANCIAL_WEBHOOK_SECRET;
     for (const name of Object.keys(process.env)) {
       if (
-        /^(?:AI_ROUTE_|OPENAI_|DEEPSEEK_|GROQ_|ALIBABA_|ANTHROPIC_|GOOGLE_|GCP_|AZURE_|AWS_|R2_|FIREBASE_|TWILIO_|SENDGRID_|CHECKR_|TURNSTILE_|SENTRY_|DATADOG_|DD_|STRIPE_(?!MODE$)|PLAID_|DWOLLA_|ADYEN_|BRAINTREE_|PAYPAL_|SQUARE_|BANK_)/u.test(name)
-        || /^HXOS_(?:ALLOW_)?LOCAL_TEST_/u.test(name)
+        /^(?:AI_ROUTE_|OPENAI_|DEEPSEEK_|GROQ_|ALIBABA_|ANTHROPIC_|GOOGLE_|GCP_|AZURE_|AWS_|R2_|FIREBASE_|TWILIO_|SENDGRID_|CHECKR_|TURNSTILE_|SENTRY_|DATADOG_|DD_|STRIPE_(?!MODE$)|PLAID_|DWOLLA_|ADYEN_|BRAINTREE_|PAYPAL_|SQUARE_|BANK_)/u.test(
+          name
+        ) ||
+        /^HXOS_(?:ALLOW_)?LOCAL_TEST_/u.test(name)
       ) {
         delete process.env[name];
       }
@@ -884,12 +918,13 @@ describe('validateConfig', () => {
     delete process.env.GITHUB_SHA;
     delete process.env.SOURCE_VERSION;
     delete process.env.HX_BUILD_REVISION;
-    const apiHost = environment === 'staging'
-      ? 'api.staging.example.invalid'
-      : 'api-pr-123.example.invalid';
-    const webOrigin = environment === 'staging'
-      ? 'https://web.staging.example.invalid'
-      : 'https://web-pr-123.example.invalid';
+    delete process.env.HX_RELEASE_PROMOTION_MODE;
+    const apiHost =
+      environment === 'staging' ? 'api.staging.example.invalid' : 'api-pr-123.example.invalid';
+    const webOrigin =
+      environment === 'staging'
+        ? 'https://web.staging.example.invalid'
+        : 'https://web-pr-123.example.invalid';
     Object.assign(process.env, {
       NODE_ENV: 'production',
       HX_ENVIRONMENT: environment,
@@ -917,8 +952,8 @@ describe('validateConfig', () => {
       HX_TELEMETRY_EXPORT_MODE: 'disabled',
       HX_SYNTHETIC_OPERATOR_AUTH_MODE: 'signed_hmac',
       HX_SYNTHETIC_OPERATOR_AUTH_SECRET: 'synthetic-operator-auth-secret-v1',
-      HX_FAKE_FINANCIAL_WEBHOOK_SECRET: 'synthetic-fake-webhook-secret-v1',
-      DATABASE_URL: 'postgresql://synthetic:synthetic@postgres.railway.internal:5432/hustlexp_nonprod',
+      DATABASE_URL:
+        'postgresql://synthetic:synthetic@postgres.railway.internal:5432/hustlexp_nonprod',
       REDIS_URL: 'redis://redis.railway.internal:6379',
       UPSTASH_REDIS_URL: 'redis://redis.railway.internal:6379',
       QUEUE_HMAC_SECRET: 'synthetic-queue-hmac-secret-0000000000000000',
@@ -943,6 +978,7 @@ describe('validateConfig', () => {
       RAILWAY_GIT_COMMIT_SHA: syntheticRevision,
       HX_RELEASE_MANIFEST_JSON: JSON.stringify(syntheticManifest(environment)),
     });
+    if (environment === 'staging') process.env.HX_RELEASE_PROMOTION_MODE = 'INITIAL';
     return {
       schema_version: 1 as const,
       service: 'hustlexp-engine' as const,
@@ -957,7 +993,7 @@ describe('validateConfig', () => {
   }
 
   function authenticatedSyntheticRelease(
-    environment: 'staging' | 'preview',
+    environment: 'staging' | 'preview'
   ): ReleaseManifestEvidence {
     const manifest = syntheticManifest(environment);
     return {
@@ -980,7 +1016,26 @@ describe('validateConfig', () => {
   }
 
   it.each(['staging', 'preview'] as const)(
-    'accepts exact %s with production runtime safety and no live provider credential',
+    'requires financial webhook key custody outside the %s runtime environment',
+    async (environment) => {
+      const identity = configureSyntheticDeployment(environment);
+      vi.resetModules();
+      const { validateConfig } = await import('../../src/config');
+      const input = { identity, release: authenticatedSyntheticRelease(environment) };
+      expect(
+        validateConfig(input).errors.some((error) =>
+          error.includes('HX_FAKE_FINANCIAL_WEBHOOK_SECRET')
+        )
+      ).toBe(false);
+      process.env.HX_FAKE_FINANCIAL_WEBHOOK_SECRET = 'retired-runtime-webhook-secret-at-least-32';
+      expect(validateConfig(input).errors).toContain(
+        'HX_FAKE_FINANCIAL_WEBHOOK_SECRET must be absent; financial webhook verification is sealed in PostgreSQL'
+      );
+    }
+  );
+
+  it.each(['staging', 'preview'] as const)(
+    'rejects caller-shaped %s identity before Railway enrollment can grant authority',
     async (environment) => {
       const identity = configureSyntheticDeployment(environment);
       vi.resetModules();
@@ -989,12 +1044,15 @@ describe('validateConfig', () => {
         identity,
         release: authenticatedSyntheticRelease(environment),
       });
-      expect(exitSpy).not.toHaveBeenCalled();
-      expect(result).toEqual({ valid: true, errors: [], warnings: [] });
-    },
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(result.valid).toBe(false);
+      expect(result.errors).toContain(
+        'NONPRODUCTION_FAKE_FINANCE_REFUSED:MODULE_MEASURED_BUILD_IDENTITY_REQUIRED'
+      );
+    }
   );
 
-  it('isolates a synthetic Railway identity from ambient CI revision sources', async () => {
+  it('isolates ambient CI revisions but never promotes a caller-shaped Railway identity', async () => {
     process.env.GITHUB_SHA = 'a'.repeat(40);
     process.env.SOURCE_VERSION = 'b'.repeat(40);
     process.env.HX_BUILD_REVISION = 'c'.repeat(40);
@@ -1011,8 +1069,11 @@ describe('validateConfig', () => {
       identity,
       release: authenticatedSyntheticRelease('staging'),
     });
-    expect(exitSpy).not.toHaveBeenCalled();
-    expect(result).toEqual({ valid: true, errors: [], warnings: [] });
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContain(
+      'NONPRODUCTION_FAKE_FINANCE_REFUSED:MODULE_MEASURED_BUILD_IDENTITY_REQUIRED'
+    );
   });
 
   it('fails deployed synthetic startup without an exact release manifest', async () => {
@@ -1035,7 +1096,9 @@ describe('validateConfig', () => {
       release: authenticatedSyntheticRelease('staging'),
     });
     expect(exitSpy).toHaveBeenCalledWith(1);
-    expect(result.errors).toContain('NODE_ENV must be production for deployed synthetic nonproduction');
+    expect(result.errors).toContain(
+      'NODE_ENV must be production for deployed synthetic nonproduction'
+    );
   });
 
   it('does not treat HX_ENVIRONMENT=production as the synthetic staging branch', async () => {
@@ -1062,7 +1125,9 @@ describe('validateConfig', () => {
       release: authenticatedSyntheticRelease('staging'),
     });
     expect(exitSpy).toHaveBeenCalledWith(1);
-    expect(result.errors.join('\n')).toMatch(/STRIPE_SECRET_KEY.*absent|FIREBASE_PROJECT_ID.*absent/u);
+    expect(result.errors.join('\n')).toMatch(
+      /STRIPE_SECRET_KEY.*absent|FIREBASE_PROJECT_ID.*absent/u
+    );
   });
 
   it.each([
@@ -1094,7 +1159,9 @@ describe('validateConfig', () => {
     const result = validateConfig({ identity });
     expect(exitSpy).toHaveBeenCalledWith(1);
     expect(result.errors).toContain('HX_AI_PROVIDER_MODE must be deterministic');
-    expect(result.errors).toContain('S3_ENDPOINT must be the isolated Railway bucket origin https://storage.railway.app');
+    expect(result.errors).toContain(
+      'S3_ENDPOINT must be the isolated Railway bucket origin https://storage.railway.app'
+    );
   });
 
   it('requires a named UUID completion-delivery sink actor in deployed synthetic nonproduction', async () => {

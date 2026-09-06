@@ -117,11 +117,11 @@ afterEach(() => {
 // ===========================================================================
 
 describe('processStripeEventJob', () => {
-  describe('frozen positive-effect containment', () => {
+  describe('frozen canonical-effect containment', () => {
     it.each([
       'customer.subscription.created',
       'checkout.session.completed',
-      'invoice.payment_failed',
+      'payment_intent.succeeded',
     ])('retains %s without invoking its canonical-effect handler', async (type) => {
       vi.stubEnv('NODE_ENV', 'production');
       vi.stubEnv('ENGINE_API_MODE', 'production');
@@ -176,19 +176,85 @@ describe('processStripeEventJob', () => {
       expect(String(mockDb.query.mock.calls[2]?.[0])).toContain("result = 'success'");
     });
 
-    it('allows only a negative canceled subscription update while frozen', async () => {
+    it.each([
+      ['customer.subscription.created', 'active'],
+      ['customer.subscription.created', 'canceled'],
+      ['customer.subscription.created', 'unpaid'],
+      ['customer.subscription.updated', 'active'],
+      ['customer.subscription.updated', 'canceled'],
+      ['customer.subscription.updated', 'unpaid'],
+      ['customer.subscription.deleted', 'active'],
+      ['customer.subscription.deleted', 'canceled'],
+      ['customer.subscription.deleted', 'unpaid'],
+      ['customer.subscription.deleted', ''],
+    ])('contains every %s status %j while frozen', async (type, status) => {
       vi.stubEnv('NODE_ENV', 'production');
       vi.stubEnv('ENGINE_API_MODE', 'production');
       vi.stubEnv('STRIPE_MODE', 'live');
       vi.stubEnv('STRIPE_SECRET_KEY', 'sk_live_forbidden');
       vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'enabled');
-      const subscription = { id: 'sub_cancel', status: 'canceled' };
-      setupClaim('customer.subscription.updated', subscription);
+      const subscription = { id: 'sub_contained', status };
+      setupClaim(type, subscription);
 
-      await processStripeEventJob(makeJob('customer.subscription.updated', subscription));
+      await processStripeEventJob(makeJob(type, subscription));
 
-      expect(processSubscriptionEvent).toHaveBeenCalledOnce();
-      expect(String(mockDb.query.mock.calls[1]?.[0])).toContain("result = 'success'");
+      expect(processSubscriptionEvent).not.toHaveBeenCalled();
+      expect(mockDb.query).toHaveBeenCalledTimes(2);
+      expect(String(mockDb.query.mock.calls[1]?.[0])).toContain('PAYMENT_CREATION_FROZEN');
+      expect(mockDb.query.mock.calls[1]?.[1]).toEqual(['evt_test_123']);
+      expect(String(mockDb.query.mock.calls[1]?.[0])).not.toContain("result = 'success'");
+    });
+
+    it('retains invoice.payment_failed evidence without extending plan authority', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('ENGINE_API_MODE', 'production');
+      vi.stubEnv('STRIPE_MODE', 'live');
+      vi.stubEnv('STRIPE_SECRET_KEY', 'sk_live_forbidden');
+      const invoice = {
+        id: 'in_failed',
+        metadata: { user_id: 'user-negative' },
+      };
+      setupClaim('invoice.payment_failed', invoice);
+
+      await processStripeEventJob(makeJob('invoice.payment_failed', invoice));
+
+      expect(mockDb.query).toHaveBeenCalledTimes(2);
+      expect(String(mockDb.query.mock.calls[1]?.[0])).toContain('PAYMENT_CREATION_FROZEN');
+      expect(mockDb.query.mock.calls.some(
+        (call) => String(call[0]).includes('plan_expires_at = GREATEST'),
+      )).toBe(false);
+    });
+
+    it.each([
+      ['all-positive', true, true, true],
+      ['mixed', true, false, false],
+      ['all-negative', false, false, false],
+      ['missing', undefined, undefined, undefined],
+    ])('contains %s Connect capability observations while frozen', async (
+      _label,
+      detailsSubmitted,
+      payoutsEnabled,
+      chargesEnabled,
+    ) => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('ENGINE_API_MODE', 'production');
+      vi.stubEnv('STRIPE_MODE', 'live');
+      vi.stubEnv('STRIPE_SECRET_KEY', 'sk_live_forbidden');
+      const account = {
+        id: 'acct_contained',
+        details_submitted: detailsSubmitted,
+        payouts_enabled: payoutsEnabled,
+        charges_enabled: chargesEnabled,
+      };
+      setupClaim('account.updated', account);
+
+      await processStripeEventJob(makeJob('account.updated', account));
+
+      expect(mockDb.query).toHaveBeenCalledTimes(2);
+      expect(String(mockDb.query.mock.calls[1]?.[0])).toContain('PAYMENT_CREATION_FROZEN');
+      expect(mockDb.query.mock.calls.some(
+        (call) => String(call[0]).includes('stripe_connect_status'),
+      )).toBe(false);
     });
   });
   // -------------------------------------------------------------------------

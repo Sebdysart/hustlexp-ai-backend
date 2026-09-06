@@ -6,11 +6,13 @@ import {
   UniversalV1EstimateScopeSchema,
 } from './UniversalV1EstimateContracts.js';
 import { UniversalV1ChangeOrderScopeSchema } from './UniversalV1ChangeOrderContracts.js';
+import { readinessStateProjection } from './UniversalV1StandardizedQuotePostgresSql.js';
 
 export type UniversalV1OccurrencePerspective = 'CUSTOMER' | 'PROVIDER' | 'OPERATIONS';
 
 export type UniversalV1OccurrenceNextAction =
   | 'ACKNOWLEDGE_WORK_ORDER'
+  | 'ACCEPT_STANDARDIZED_QUOTE'
   | 'CONTINUE_EXECUTION'
   | 'DECIDE_COMPLETION'
   | 'ESTABLISH_ELIGIBILITY'
@@ -26,10 +28,13 @@ export type UniversalV1OccurrenceNextAction =
   | 'MONITOR_WORK_ORDER_MATERIALIZATION'
   | 'NO_ACTION'
   | 'OCCURRENCE_COMPLETE'
+  | 'PREPARE_OR_RENEW_FAKE_PAYMENT_METHOD'
+  | 'PREPARE_STANDARDIZED_QUOTE'
   | 'RESOLVE_ELIGIBILITY_BLOCKERS'
   | 'RESOLVE_ROUTING'
   | 'REVIEW_ESTIMATE'
   | 'REVIEW_PROVIDER_INTEREST'
+  | 'REVIEW_STANDARDIZED_ROUTE'
   | 'ROUTE_DRAFT'
   | 'START_TRAVEL_OR_WORK'
   | 'START_WORK'
@@ -43,6 +48,7 @@ export type UniversalV1OccurrenceNextAction =
   | 'WAIT_FOR_PROVIDER_ESTIMATE'
   | 'WAIT_FOR_PROVIDER_INTEREST'
   | 'WAIT_FOR_FINANCIAL_COMPLETION'
+  | 'WAIT_FOR_ELIGIBILITY'
   | 'WAIT_FOR_ROUTING'
   | 'WAIT_FOR_RECONCILIATION'
   | 'WAIT_FOR_TASK_MATERIALIZATION'
@@ -104,6 +110,27 @@ export interface RawUniversalV1OccurrenceRow {
   route_category: string | null;
   route_service_cell: string | null;
   route_created_at: Timestamp | null;
+  standardized_quote_id: string | null;
+  standardized_quote_version: number | null;
+  standardized_quote_kind: string | null;
+  standardized_quote_work_category: string | null;
+  standardized_quote_customer_total_cents: number | string | null;
+  standardized_quote_currency: string | null;
+  standardized_quote_valid_until: Timestamp | null;
+  standardized_quote_created_at: Timestamp | null;
+  standardized_quote_routing_current: boolean | null;
+  standardized_quote_unexpired: boolean | null;
+  standardized_acceptance_id: string | null;
+  standardized_acceptance_version: number | null;
+  standardized_acceptance_accepted_at: Timestamp | null;
+  standardized_readiness_id: string | null;
+  standardized_readiness_version: number | null;
+  standardized_readiness_provider_kind: string | null;
+  standardized_readiness_chain_head: boolean | null;
+  standardized_readiness_unexpired: boolean | null;
+  standardized_readiness_routing_current: boolean | null;
+  standardized_readiness_expires_at: Timestamp | null;
+  standardized_readiness_created_at: Timestamp | null;
   provider_user_id: string | null;
   provider_organization_id: string | null;
   provider_class: string | null;
@@ -274,6 +301,43 @@ export interface UniversalV1CommercialProjection {
     official_source_checked_at: string;
     permitted_work_categories: readonly string[];
   } | null;
+  standardized_quote: {
+    quote: {
+      quote_version_id: string;
+      quote_version: number;
+      quote_kind: 'STANDARDIZED_SCOPE_FIXED_PRICE';
+      work_category_code: string;
+      customer_total_cents: number;
+      currency: 'usd';
+      valid_until: string;
+      created_at: string;
+    } | null;
+    acceptance: {
+      acceptance_fact_id: string;
+      acceptance_version: 1;
+      accepted_at: string;
+    } | null;
+    readiness: {
+      readiness_fact_id: string;
+      readiness_version: number;
+      provider_kind: 'FAKE';
+      current_status: 'CURRENT' | 'EXPIRED' | 'SUPERSEDED' | 'ROUTE_REVIEW_REQUIRED';
+      is_current: boolean;
+      expires_at: string;
+      created_at: string;
+    } | null;
+    routing_current: boolean;
+    acceptance_open: boolean;
+    price_locked: boolean;
+    fake_payment_method_ready: boolean;
+    actionable_state:
+      | 'PREPARE_QUOTE_OR_REVIEW_ROUTE'
+      | 'ACCEPT_QUOTE'
+      | 'REQUOTE_OR_REVIEW_ROUTE'
+      | 'ROUTE_REVIEW_REQUIRED_AFTER_ACCEPTANCE'
+      | 'PREPARE_OR_RENEW_FAKE_PAYMENT_METHOD'
+      | 'READY_FOR_PROVIDER_DISCOVERY';
+  };
   estimate: {
     invitation: {
       invitation_id: string;
@@ -727,6 +791,136 @@ function assertFrozenUnassignedBoundary(row: RawUniversalV1OccurrenceRow): void 
   ) return readUnavailable();
 }
 
+function standardizedQuoteProjection(
+  row: RawUniversalV1OccurrenceRow,
+): UniversalV1CommercialProjection['standardized_quote'] {
+  const quoteObserved = [
+    row.standardized_quote_id,
+    row.standardized_quote_version,
+    row.standardized_quote_kind,
+    row.standardized_quote_work_category,
+    row.standardized_quote_customer_total_cents,
+    row.standardized_quote_currency,
+    row.standardized_quote_valid_until,
+    row.standardized_quote_created_at,
+    row.standardized_quote_routing_current,
+    row.standardized_quote_unexpired,
+  ];
+  const acceptanceObserved = [
+    row.standardized_acceptance_id,
+    row.standardized_acceptance_version,
+    row.standardized_acceptance_accepted_at,
+  ];
+  const readinessObserved = [
+    row.standardized_readiness_id,
+    row.standardized_readiness_version,
+    row.standardized_readiness_provider_kind,
+    row.standardized_readiness_chain_head,
+    row.standardized_readiness_unexpired,
+    row.standardized_readiness_routing_current,
+    row.standardized_readiness_expires_at,
+    row.standardized_readiness_created_at,
+  ];
+
+  if (quoteObserved.every((value) => value === null)) {
+    if (
+      acceptanceObserved.some((value) => value !== null)
+      || readinessObserved.some((value) => value !== null)
+    ) return readUnavailable();
+    return {
+      quote: null,
+      acceptance: null,
+      readiness: null,
+      routing_current: false,
+      acceptance_open: false,
+      price_locked: false,
+      fake_payment_method_ready: false,
+      actionable_state: 'PREPARE_QUOTE_OR_REVIEW_ROUTE',
+    };
+  }
+  if (
+    quoteObserved.some((value) => value === null)
+    || row.standardized_quote_kind !== 'STANDARDIZED_SCOPE_FIXED_PRICE'
+    || row.standardized_quote_currency !== 'usd'
+  ) return readUnavailable();
+
+  const quote = {
+    quote_version_id: nonemptyString(row.standardized_quote_id),
+    quote_version: positiveVersion(row.standardized_quote_version),
+    quote_kind: 'STANDARDIZED_SCOPE_FIXED_PRICE' as const,
+    work_category_code: nonemptyString(row.standardized_quote_work_category),
+    customer_total_cents: cents(row.standardized_quote_customer_total_cents as number | string),
+    currency: 'usd' as const,
+    valid_until: iso(row.standardized_quote_valid_until as Timestamp),
+    created_at: iso(row.standardized_quote_created_at as Timestamp),
+  };
+  const routingCurrent = row.standardized_quote_routing_current === true;
+  const quoteUnexpired = row.standardized_quote_unexpired === true;
+
+  let acceptance: UniversalV1CommercialProjection['standardized_quote']['acceptance'] = null;
+  if (acceptanceObserved.some((value) => value !== null)) {
+    if (
+      acceptanceObserved.some((value) => value === null)
+      || row.standardized_acceptance_version !== 1
+      || !row.standardized_acceptance_accepted_at
+    ) return readUnavailable();
+    const acceptedAt = iso(row.standardized_acceptance_accepted_at);
+    if (new Date(acceptedAt).getTime() > new Date(quote.valid_until).getTime()) {
+      return readUnavailable();
+    }
+    acceptance = {
+      acceptance_fact_id: nonemptyString(row.standardized_acceptance_id),
+      acceptance_version: 1,
+      accepted_at: acceptedAt,
+    };
+  }
+
+  let readiness: UniversalV1CommercialProjection['standardized_quote']['readiness'] = null;
+  if (readinessObserved.some((value) => value !== null)) {
+    if (
+      !acceptance
+      || readinessObserved.some((value) => value === null)
+      || row.standardized_readiness_provider_kind !== 'FAKE'
+    ) return readUnavailable();
+    const currentStatus = !routingCurrent || row.standardized_readiness_routing_current !== true
+      ? 'ROUTE_REVIEW_REQUIRED'
+      : row.standardized_readiness_chain_head !== true
+        ? 'SUPERSEDED'
+        : row.standardized_readiness_unexpired !== true
+          ? 'EXPIRED'
+          : 'CURRENT';
+    readiness = {
+      readiness_fact_id: nonemptyString(row.standardized_readiness_id),
+      readiness_version: positiveVersion(row.standardized_readiness_version),
+      provider_kind: 'FAKE',
+      current_status: currentStatus,
+      is_current: currentStatus === 'CURRENT',
+      expires_at: iso(row.standardized_readiness_expires_at as Timestamp),
+      created_at: iso(row.standardized_readiness_created_at as Timestamp),
+    };
+  }
+
+  const acceptanceOpen = !acceptance && routingCurrent && quoteUnexpired;
+  const fakePaymentMethodReady = routingCurrent && readiness?.is_current === true;
+  const actionableState = !acceptance
+    ? acceptanceOpen ? 'ACCEPT_QUOTE' : 'REQUOTE_OR_REVIEW_ROUTE'
+    : !routingCurrent
+      ? 'ROUTE_REVIEW_REQUIRED_AFTER_ACCEPTANCE'
+      : fakePaymentMethodReady
+        ? 'READY_FOR_PROVIDER_DISCOVERY'
+        : 'PREPARE_OR_RENEW_FAKE_PAYMENT_METHOD';
+  return {
+    quote,
+    acceptance,
+    readiness,
+    routing_current: routingCurrent,
+    acceptance_open: acceptanceOpen,
+    price_locked: acceptance !== null,
+    fake_payment_method_ready: fakePaymentMethodReady,
+    actionable_state: actionableState,
+  };
+}
+
 function commercialProjection(
   perspective: UniversalV1OccurrencePerspective,
   row: RawUniversalV1OccurrenceRow,
@@ -931,6 +1125,7 @@ function commercialProjection(
       command_rechecks_current_authority: true,
     },
     trade_qualification: tradeQualification(row),
+    standardized_quote: standardizedQuoteProjection(row),
     estimate: {
       invitation,
       submission,
@@ -990,6 +1185,26 @@ function nextAction(
         ? 'REVIEW_ESTIMATE'
         : perspective === 'PROVIDER' ? 'WAIT_FOR_ESTIMATE_DECISION' : 'MONITOR_CUSTOMER_DECISION';
     }
+  }
+
+  if (row.route_outcome === 'FULFILLMENT_CANDIDATE' && !row.task_id) {
+    const standardized = standardizedQuoteProjection(row);
+    if (perspective === 'CUSTOMER') {
+      switch (standardized.actionable_state) {
+        case 'PREPARE_QUOTE_OR_REVIEW_ROUTE': return 'PREPARE_STANDARDIZED_QUOTE';
+        case 'ACCEPT_QUOTE': return 'ACCEPT_STANDARDIZED_QUOTE';
+        case 'REQUOTE_OR_REVIEW_ROUTE':
+        case 'ROUTE_REVIEW_REQUIRED_AFTER_ACCEPTANCE':
+          return 'REVIEW_STANDARDIZED_ROUTE';
+        case 'PREPARE_OR_RENEW_FAKE_PAYMENT_METHOD':
+          return 'PREPARE_OR_RENEW_FAKE_PAYMENT_METHOD';
+        case 'READY_FOR_PROVIDER_DISCOVERY': return 'WAIT_FOR_PROVIDER_INTEREST';
+      }
+    }
+    if (perspective === 'PROVIDER') {
+      return row.interest_id ? 'WAIT_FOR_ELIGIBILITY' : 'EXPRESS_INTEREST';
+    }
+    return 'MONITOR_PROVIDER_INTEREST';
   }
 
   if (!row.task_id) {
@@ -1381,6 +1596,8 @@ function occurrenceSql(perspective: UniversalV1OccurrencePerspective): string {
   return `
     WITH authorized_draft AS (
       SELECT draft.id, draft.status, draft.updated_at, draft.task_id,
+             draft.ingress_origin,
+             draft.poster_user_id,
              draft.active_routing_decision_id
         FROM public.task_drafts draft
        WHERE draft.id = $1
@@ -1399,9 +1616,38 @@ function occurrenceSql(perspective: UniversalV1OccurrencePerspective): string {
            route.category_snapshot AS route_category,
            route.service_cell_snapshot AS route_service_cell,
            route.created_at AS route_created_at,
+           standardized_quote.id AS standardized_quote_id,
+           standardized_quote.quote_version AS standardized_quote_version,
+           standardized_quote.quote_kind AS standardized_quote_kind,
+           standardized_quote.work_category_code AS standardized_quote_work_category,
+           standardized_quote.customer_total_cents
+             AS standardized_quote_customer_total_cents,
+           standardized_quote.currency AS standardized_quote_currency,
+           standardized_quote.valid_until AS standardized_quote_valid_until,
+           standardized_quote.created_at AS standardized_quote_created_at,
+           standardized_quote.routing_current AS standardized_quote_routing_current,
+           standardized_quote.quote_unexpired AS standardized_quote_unexpired,
+           standardized_acceptance.id AS standardized_acceptance_id,
+           standardized_acceptance.acceptance_version
+             AS standardized_acceptance_version,
+           standardized_acceptance.accepted_at AS standardized_acceptance_accepted_at,
+           standardized_readiness.id AS standardized_readiness_id,
+           standardized_readiness.readiness_version
+             AS standardized_readiness_version,
+           standardized_readiness.provider_kind
+             AS standardized_readiness_provider_kind,
+           standardized_readiness.readiness_chain_head
+             AS standardized_readiness_chain_head,
+           standardized_readiness.readiness_unexpired
+             AS standardized_readiness_unexpired,
+           standardized_readiness.routing_current
+             AS standardized_readiness_routing_current,
+           standardized_readiness.expires_at AS standardized_readiness_expires_at,
+           standardized_readiness.created_at AS standardized_readiness_created_at,
            provider_key.provider_user_id,
            provider_key.provider_organization_id,
-           eligibility.provider_class,
+           COALESCE(eligibility.provider_class, interest.provider_class_snapshot)
+             AS provider_class,
            qualification.provider_class AS qualification_provider_class,
            qualification.credential_type AS qualification_credential_type,
            qualification.issuing_authority AS qualification_issuing_authority,
@@ -1515,6 +1761,98 @@ function occurrenceSql(perspective: UniversalV1OccurrencePerspective): string {
       LEFT JOIN public.tasks task
         ON task.id = draft.task_id
        AND task.universal_contract_version = 1
+      LEFT JOIN LATERAL (
+        SELECT quote.id, quote.quote_version, quote.quote_kind,
+               quote.work_category_code, quote.customer_total_cents,
+               quote.currency, quote.valid_until, quote.created_at,
+               EXISTS (
+                 SELECT 1
+                   FROM public.task_routing_decisions current_route
+                   JOIN public.universal_v1_service_cell_authorities cell
+                     ON cell.id = current_route.service_cell_authority_id
+                    AND cell.authority_version = quote.service_cell_authority_version
+                  WHERE current_route.id = draft.active_routing_decision_id
+                    AND current_route.id = quote.routing_decision_id
+                    AND current_route.task_draft_id = draft.id
+                    AND draft.ingress_origin = 'BACKEND_POSTGRESQL'
+                    AND draft.status = 'account_claimed'
+                    AND draft.task_id IS NULL
+                    AND EXISTS (
+                      SELECT 1
+                        FROM public.users actor
+                       WHERE actor.id = draft.poster_user_id
+                         AND actor.default_mode = 'poster'
+                         AND actor.account_status = 'ACTIVE'
+                         AND actor.is_minor IS FALSE
+                         AND COALESCE(actor.is_banned, FALSE) IS FALSE
+                    )
+                    AND current_route.decision_version = quote.routing_decision_version
+                    AND current_route.outcome = 'FULFILLMENT_CANDIDATE'
+                    AND current_route.policy_version = 'universal-v1-intake-1.2.0'
+                    AND current_route.category_snapshot = quote.work_category_code
+                    AND current_route.service_cell_snapshot = quote.region_code
+                    AND cell.id = quote.service_cell_authority_id
+                    AND cell.authority_environment = quote.environment_class
+                    AND cell.routing_availability = 'ACTIVE'
+                    AND cell.is_test IS TRUE
+                    AND cell.authority_kind = 'SYNTHETIC_FIXTURE'
+                    AND cell.effective_from <= clock_timestamp()
+                    AND (cell.expires_at IS NULL OR cell.expires_at > clock_timestamp())
+                    AND NOT EXISTS (
+                      SELECT 1
+                        FROM public.universal_v1_service_cell_authorities successor
+                       WHERE successor.supersedes_authority_id = cell.id
+                    )
+                    AND EXISTS (
+                      SELECT 1
+                        FROM public.universal_v1_relationship_origins origin
+                       WHERE origin.id = quote.relationship_origin_id
+                         AND origin.task_draft_id = draft.id
+                         AND origin.origin_version = quote.relationship_origin_version
+                         AND origin.origin_kind = 'MARKETPLACE'
+                         AND origin.routing_state = 'ROUTING_READY'
+                         AND cardinality(origin.hold_reason_codes) = 0
+                         AND NOT EXISTS (
+                           SELECT 1
+                             FROM public.universal_v1_relationship_origins successor
+                            WHERE successor.supersedes_origin_id = origin.id
+                         )
+                    )
+               ) AS routing_current,
+               quote.valid_until > clock_timestamp() AS quote_unexpired
+          FROM public.task_draft_standardized_quote_versions quote
+         WHERE quote.task_draft_id = draft.id
+           AND NOT EXISTS (
+             SELECT 1
+               FROM public.task_draft_standardized_quote_versions successor
+              WHERE successor.supersedes_quote_version_id = quote.id
+           )
+         ORDER BY quote.quote_version DESC
+         LIMIT 1
+      ) standardized_quote ON TRUE
+      LEFT JOIN public.task_draft_standardized_quote_acceptance_facts
+        standardized_acceptance
+        ON standardized_acceptance.task_draft_id = draft.id
+       AND standardized_acceptance.quote_version_id = standardized_quote.id
+       AND standardized_acceptance.accepted_by_user_id = draft.poster_user_id
+      LEFT JOIN LATERAL (
+        SELECT readiness.id, readiness.readiness_version,
+               readiness.provider_kind, readiness.expires_at,
+               readiness.created_at,
+               ${readinessStateProjection}
+          FROM public.task_draft_payment_method_readiness_facts readiness
+         WHERE readiness.task_draft_id = draft.id
+           AND readiness.acceptance_fact_id = standardized_acceptance.id
+           AND readiness.quote_version_id = standardized_quote.id
+           AND readiness.prepared_by_user_id = draft.poster_user_id
+           AND NOT EXISTS (
+             SELECT 1
+               FROM public.task_draft_payment_method_readiness_facts successor
+              WHERE successor.supersedes_readiness_fact_id = readiness.id
+           )
+         ORDER BY readiness.readiness_version DESC
+         LIMIT 1
+      ) standardized_readiness ON TRUE
       LEFT JOIN LATERAL (
         SELECT candidate.provider_user_id, candidate.provider_organization_id
           FROM (
@@ -1659,7 +1997,8 @@ function occurrenceSql(perspective: UniversalV1OccurrencePerspective): string {
        AND scope.task_id = task.id
        AND scope.universal_contract_version = 1
       LEFT JOIN LATERAL (
-        SELECT interest.id, interest.status, interest.created_at
+        SELECT interest.id, interest.status, interest.created_at,
+               interest.provider_class_snapshot
           FROM public.task_applications interest
          WHERE interest.interest_routing_decision_id = route.id
            AND interest.interest_routing_decision_version = route.decision_version

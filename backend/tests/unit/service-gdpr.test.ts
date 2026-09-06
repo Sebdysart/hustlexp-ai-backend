@@ -89,7 +89,7 @@ vi.mock('../../src/services/EscrowService', () => ({
 
 vi.mock('../../src/services/TaskService', () => ({
   TaskService: {
-    cancel: vi.fn().mockResolvedValue({ success: true }),
+    cancelForInternalPurpose: vi.fn().mockResolvedValue({ success: true }),
   },
 }));
 
@@ -132,7 +132,7 @@ beforeEach(() => {
   // Restore default mock implementations that vi.resetAllMocks() cleared
   vi.mocked(EscrowService.refund).mockResolvedValue({ success: true } as never);
   vi.mocked(EscrowService.partialRefund).mockResolvedValue({ success: true } as never);
-  vi.mocked(TaskService.cancel).mockResolvedValue({ success: true } as never);
+  vi.mocked(TaskService.cancelForInternalPurpose).mockResolvedValue({ success: true } as never);
   vi.mocked(NotificationService.createNotification).mockResolvedValue({ success: true } as never);
   // Auth helpers must return Promises; vi.resetAllMocks() clears their implementations.
   // revokeUserSessions result has .catch() called on it — must be a Promise.
@@ -391,6 +391,45 @@ describe('GDPRService.executeDeletion', () => {
     }
   });
 
+  it('audits and preserves an erasure request when canonical application facts exist', async () => {
+    const pastDeadline = new Date(Date.now() - 86400000);
+    mockDb.query
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 'req-held',
+          user_id: 'user-held',
+          status: 'pending',
+          request_type: 'deletion',
+          deadline: pastDeadline,
+          immutable_application_facts_present: true,
+        }],
+        rowCount: 1,
+      } as never)
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
+
+    const result = await GDPRService.executeDeletion('req-held');
+
+    expect(result).toMatchObject({
+      success: false,
+      error: {
+        code: 'GDPR_IMMUTABLE_APPLICATION_AUTHORITY_HELD',
+        details: {
+          requestId: 'req-held',
+          authority: 'UNIVERSAL_V1_PRIVACY_RETENTION_DECISION_REQUIRED',
+        },
+      },
+    });
+    expect(mockDb.query).toHaveBeenCalledTimes(2);
+    const [auditSql, auditParams] = mockDb.query.mock.calls[1] as [string, unknown[]];
+    expect(auditSql).toContain("'{executionHold}'");
+    expect(auditSql).toContain("status IN ('pending', 'rejected')");
+    expect(auditSql).not.toContain("status = 'processing'");
+    expect(auditParams).toContain('GDPR_IMMUTABLE_APPLICATION_AUTHORITY_HELD');
+    expect(mockDb.serializableTransaction).not.toHaveBeenCalled();
+    expect(mockTaskService.cancelForInternalPurpose).not.toHaveBeenCalled();
+    expect(mockNotification.createNotification).not.toHaveBeenCalled();
+  });
+
   it('executes deletion after grace period and sends notification', async () => {
     const pastDeadline = new Date(Date.now() - 86400000); // 1 day ago
 
@@ -539,7 +578,7 @@ describe('GDPRService.executeDeletion', () => {
     // 4. (inside deleteAndAnonymizeUserData) SELECT email idempotency check
     mockDb.query.mockResolvedValueOnce({ rows: [{ email: 'test@example.com' }], rowCount: 1 } as never);
     // 5. SELECT open poster tasks — one task returned
-    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'task-poster-1' }], rowCount: 1 } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'task-poster-1', version: '1' }], rowCount: 1 } as never);
     // 5. SELECT escrows for poster task — PENDING escrow with PI id
     mockDb.query.mockResolvedValueOnce({
       rows: [{ id: 'escrow-pending-1', state: 'PENDING', stripe_payment_intent_id: 'pi_test_pending' }],
@@ -575,7 +614,7 @@ describe('GDPRService.executeDeletion', () => {
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // processing
     mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: null }], rowCount: 1 } as never); // firebase_uid
     mockDb.query.mockResolvedValueOnce({ rows: [{ email: 'test@example.com' }], rowCount: 1 } as never); // email idempotency
-    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'task-poster-2' }], rowCount: 1 } as never); // poster tasks
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'task-poster-2', version: '1' }], rowCount: 1 } as never); // poster tasks
     mockDb.query.mockResolvedValueOnce({
       rows: [{ id: 'escrow-pending-2', state: 'PENDING', stripe_payment_intent_id: null }],
       rowCount: 1,
@@ -606,7 +645,7 @@ describe('GDPRService.executeDeletion', () => {
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // processing
     mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: null }], rowCount: 1 } as never); // firebase_uid
     mockDb.query.mockResolvedValueOnce({ rows: [{ email: 'test@example.com' }], rowCount: 1 } as never); // email idempotency
-    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'task-poster-3' }], rowCount: 1 } as never); // poster tasks
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'task-poster-3', version: '1' }], rowCount: 1 } as never); // poster tasks
     mockDb.query.mockResolvedValueOnce({
       rows: [{ id: 'escrow-pending-3', state: 'PENDING', stripe_payment_intent_id: 'pi_already_cancelled' }],
       rowCount: 1,
@@ -632,9 +671,9 @@ describe('GDPRService.executeDeletion', () => {
     mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'req-1' }], rowCount: 1 } as never);
     mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-uid-1' }], rowCount: 1 } as never);
     mockDb.query.mockResolvedValueOnce({ rows: [{ email: 'test@example.com' }], rowCount: 1 } as never);
-    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'task-active-1' }], rowCount: 1 } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'task-active-1', version: '1' }], rowCount: 1 } as never);
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // mark rejected
-    mockTaskService.cancel.mockResolvedValueOnce({
+    mockTaskService.cancelForInternalPurpose.mockResolvedValueOnce({
       success: false,
       error: { code: 'DB_ERROR', message: 'task cancellation unavailable' },
     } as never);
@@ -655,7 +694,7 @@ describe('GDPRService.executeDeletion', () => {
     mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'req-1' }], rowCount: 1 } as never);
     mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: 'firebase-uid-1' }], rowCount: 1 } as never);
     mockDb.query.mockResolvedValueOnce({ rows: [{ email: 'test@example.com' }], rowCount: 1 } as never);
-    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'task-active-1' }], rowCount: 1 } as never);
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'task-active-1', version: '1' }], rowCount: 1 } as never);
     mockDb.query.mockResolvedValueOnce({
       rows: [{ id: 'escrow-active-1', state: 'FUNDED', stripe_payment_intent_id: 'pi_funded' }],
       rowCount: 1,
@@ -709,7 +748,7 @@ describe('GDPRService.executeDeletion', () => {
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // processing
     mockDb.query.mockResolvedValueOnce({ rows: [{ firebase_uid: null }], rowCount: 1 } as never); // firebase_uid
     mockDb.query.mockResolvedValueOnce({ rows: [{ email: 'test@example.com' }], rowCount: 1 } as never); // email idempotency
-    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'task-poster-4' }], rowCount: 1 } as never); // poster tasks
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: 'task-poster-4', version: '1' }], rowCount: 1 } as never); // poster tasks
     mockDb.query.mockResolvedValueOnce({
       rows: [{ id: 'escrow-dispute-1', state: 'LOCKED_DISPUTE', stripe_payment_intent_id: null }],
       rowCount: 1,
@@ -1065,6 +1104,29 @@ function setupDeletionMocksWithCapture() {
 
   return { serializableQuery };
 }
+
+describe('Universal V1 application-fact retention boundary', () => {
+  it('scrubs exact legacy content without deleting an absent table or fabricating FK actors', async () => {
+    const { serializableQuery } = setupDeletionMocksWithCapture();
+
+    await expect(GDPRService.executeDeletion('req-d54')).resolves.toMatchObject({ success: true });
+
+    const calls = serializableQuery.mock.calls as [string, unknown[]][];
+    expect(calls.some(([sql]) => /\btask_assignments\b/iu.test(sql))).toBe(false);
+
+    const proofScrub = calls.find(([sql]) => /UPDATE proofs/iu.test(sql));
+    expect(proofScrub).toBeDefined();
+    expect(proofScrub![0]).not.toMatch(/SET\s+submitter_id/iu);
+    expect(proofScrub![1]).toEqual(['user-d54']);
+
+    const applicationScrub = calls.find(([sql]) => /UPDATE task_applications/iu.test(sql));
+    expect(applicationScrub).toBeDefined();
+    expect(applicationScrub![0].split(/\bWHERE\b/iu)[0]).not.toMatch(/hustler_id\s*=/iu);
+    expect(applicationScrub![0]).toContain('universal_contract_version = 0');
+    expect(applicationScrub![0]).toContain('opportunity_contract_version = 0');
+    expect(applicationScrub![1]).toEqual(['user-d54']);
+  });
+});
 
 describe('D54-1: deleteAndAnonymizeUserData — tax_forms deletion', () => {
   it('deletes tax_forms rows for the user', async () => {

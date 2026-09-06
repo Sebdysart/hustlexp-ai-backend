@@ -35,6 +35,10 @@ export default defineConfig({
         test: {
           ...commonRequiredTestConfig,
           name: 'database-serial',
+          setupFiles: [
+            ...commonRequiredTestConfig.setupFiles,
+            './backend/tests/disposable-database-runtime.setup.ts',
+          ],
           include: ['backend/tests/invariants/**/*.test.ts', 'backend/tests/system/**/*.test.ts'],
           // These files share two prepared PostgreSQL databases and include
           // cross-database journeys. They must never be sharded or overlap.

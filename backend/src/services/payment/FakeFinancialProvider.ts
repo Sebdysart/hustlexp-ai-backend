@@ -2,6 +2,13 @@ import { createHash } from 'node:crypto';
 
 import { buildIdentity, type BuildIdentity } from '../../buildIdentity.js';
 import { db, type Database } from '../../db.js';
+import { assertConfiguredNonproductionDatabaseTarget } from '../../jobs/nonproduction-database-target.js';
+import {
+  FAKE_FINANCIAL_OUTBOX_V13_SQL_SHA256,
+  WORK_ORDER_BOOTSTRAP_SEAL_SQL_SHA256,
+  WORK_ORDER_FAKE_FINANCIAL_V12_SQL_SHA256,
+  WORK_ORDER_ORDINAL146_SQL_SHA256,
+} from '../../jobs/work-order-command-role-authority.js';
 import { readReleaseManifest, type ReleaseManifestEvidence } from '../../releaseManifest.js';
 import type {
   AdjustmentAuthorizationCommand,
@@ -30,16 +37,25 @@ import { canonicalFinancialProviderRequestSha256 } from './FinancialProviderComm
 import {
   assertNonproductionFakeFinanceAuthorized,
   nonproductionFakeFinanceEnabled,
+  type NonproductionFinancialAuthorizationOptions,
 } from './NonproductionFinancialAuthorization.js';
 
 export type { FakeFinancialScenario } from './FakeFinancialScenarioPolicy.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
-
 type FakeScenarioInput = { readonly scenario?: FakeFinancialScenario };
 type FakeInput<T extends FinancialOperationCommand> = T & FakeScenarioInput;
 
+export type FakeFinancialProjectionContractVersion = 1 | 2;
+function assertProjectionContractVersion(
+  value: unknown
+): asserts value is FakeFinancialProjectionContractVersion {
+  if (value !== 1 && value !== 2)
+    throw new Error('FAKE_FINANCIAL_PROJECTION_CONTRACT_VERSION_INVALID');
+}
+
 export interface FakeFinancialRepositoryCommand {
+  readonly projectionContractVersion: FakeFinancialProjectionContractVersion;
   readonly operationId: string;
   readonly operationKind: FinancialOperationKind;
   readonly idempotencyKey: string;
@@ -59,6 +75,7 @@ export interface FakeFinancialRepositoryCommand {
 }
 
 export interface StoredFakeFinancialOperation extends FinancialOperationResult {
+  readonly projectionContractVersion: FakeFinancialProjectionContractVersion;
   readonly eventId: string;
   readonly scenario: FakeFinancialScenario;
   readonly idempotencyKey: string;
@@ -68,7 +85,6 @@ export interface StoredFakeFinancialOperation extends FinancialOperationResult {
   readonly responseSha256: string;
   readonly relatedOperationId: string | null;
   readonly metadata: Readonly<Record<string, unknown>>;
-  readonly recordedAt: string;
 }
 
 export interface FakeFinancialOperationRepository {
@@ -147,12 +163,16 @@ function stateFor(
   kind: FinancialOperationKind,
   scenario: FakeFinancialScenario,
   expectedVersion: number,
-  authenticated?: boolean
+  authenticated: boolean | undefined,
+  projectionContractVersion: FakeFinancialProjectionContractVersion
 ): FinancialOperationState {
   if (kind === 'INGEST_WEBHOOK' && authenticated !== true) return 'REJECTED';
   if (scenario === 'DECLINE') return 'DECLINED';
   if (scenario === 'TIMEOUT') return 'PENDING';
-  if (scenario === 'RETRY') return expectedVersion === 0 ? 'RETRYABLE_FAILURE' : 'SUCCEEDED';
+  if (scenario === 'RETRY') {
+    if (expectedVersion === 0) return 'RETRYABLE_FAILURE';
+    if (projectionContractVersion === 1) return 'SUCCEEDED';
+  }
   if (
     scenario === 'DELAYED_SETTLEMENT' &&
     ['SETTLE', 'FUND', 'PROVIDER_RELEASE', 'PAYOUT', 'OBSERVE_BANK_SETTLEMENT'].includes(kind)
@@ -174,8 +194,55 @@ function stateFor(
   return 'SUCCEEDED';
 }
 
-function retryableFor(state: FinancialOperationState, scenario: FakeFinancialScenario): boolean {
-  return state === 'RETRYABLE_FAILURE' || (state === 'PENDING' && scenario === 'TIMEOUT');
+function retryableFor(
+  state: FinancialOperationState,
+  scenario: FakeFinancialScenario,
+  projectionContractVersion: FakeFinancialProjectionContractVersion
+): boolean {
+  return (
+    state === 'RETRYABLE_FAILURE' ||
+    (state === 'PENDING' && (projectionContractVersion === 2 || scenario === 'TIMEOUT'))
+  );
+}
+
+const FAKE_FINANCIAL_SECURITY_TTL_MS = 15 * 60 * 1000;
+
+function fakeFinancialSecurityExpiresAt(
+  operationKind: FinancialOperationKind,
+  state: FinancialOperationState,
+  recordedAt: Date
+): string | null {
+  if (state !== 'SUCCEEDED' || !['AUTHORIZE', 'SECURE', 'ADJUST'].includes(operationKind)) {
+    return null;
+  }
+  return new Date(recordedAt.getTime() + FAKE_FINANCIAL_SECURITY_TTL_MS).toISOString();
+}
+
+function assertStoredFakeFinancialObservation(
+  operationKind: FinancialOperationKind,
+  state: FinancialOperationState,
+  recordedAtValue: string,
+  expiresAt: string | null,
+  expiryDisposition?: 'LEGACY_EXPIRY_UNPROVEN'
+): void {
+  const recordedAt = new Date(recordedAtValue);
+  if (!Number.isFinite(recordedAt.getTime())) {
+    throw new Error('FAKE_FINANCIAL_RECORDED_AT_INVALID');
+  }
+  const expectedExpiry = fakeFinancialSecurityExpiresAt(operationKind, state, recordedAt);
+  if (
+    expectedExpiry !== null &&
+    expiresAt === null &&
+    expiryDisposition === 'LEGACY_EXPIRY_UNPROVEN'
+  ) {
+    return;
+  }
+  if (expiryDisposition !== undefined) {
+    throw new Error('FAKE_FINANCIAL_EXPIRY_DISPOSITION_INVALID');
+  }
+  if (expiresAt !== expectedExpiry) {
+    throw new Error('FAKE_FINANCIAL_EXPIRY_INVALID');
+  }
 }
 
 export class InMemoryFakeFinancialOperationRepository implements FakeFinancialOperationRepository {
@@ -183,7 +250,10 @@ export class InMemoryFakeFinancialOperationRepository implements FakeFinancialOp
   private readonly latestByOperation = new Map<string, StoredFakeFinancialOperation>();
   private readonly storedEvents: StoredFakeFinancialOperation[] = [];
 
+  constructor(private readonly now: () => Date = () => new Date()) {}
+
   async execute(command: FakeFinancialRepositoryCommand): Promise<StoredFakeFinancialOperation> {
+    assertProjectionContractVersion(command.projectionContractVersion);
     const replay = this.byIdempotency.get(command.idempotencyKey);
     if (replay) {
       if (
@@ -204,7 +274,18 @@ export class InMemoryFakeFinancialOperationRepository implements FakeFinancialOp
       throw new Error('FAKE_FINANCIAL_OPERATION_IDENTITY_CONFLICT');
     }
 
+    const observedAt = this.now();
+    if (!Number.isFinite(observedAt.getTime())) {
+      throw new Error('FAKE_FINANCIAL_RECORDED_AT_INVALID');
+    }
+    const recordedAt = observedAt.toISOString();
+    const expiresAt = fakeFinancialSecurityExpiresAt(
+      command.operationKind,
+      command.state,
+      observedAt
+    );
     const record: StoredFakeFinancialOperation = {
+      projectionContractVersion: command.projectionContractVersion,
       eventId: deterministicEventId(command.operationId, currentVersion + 1),
       operationId: command.operationId,
       operationKind: command.operationKind,
@@ -224,7 +305,8 @@ export class InMemoryFakeFinancialOperationRepository implements FakeFinancialOp
       responseSha256: command.responseSha256,
       relatedOperationId: command.relatedOperationId,
       metadata: command.metadata,
-      recordedAt: new Date().toISOString(),
+      recordedAt,
+      expiresAt,
     };
     this.byIdempotency.set(command.idempotencyKey, record);
     this.latestByOperation.set(command.operationId, record);
@@ -243,6 +325,8 @@ export class InMemoryFakeFinancialOperationRepository implements FakeFinancialOp
 }
 
 interface EventRow {
+  projection_contract_column_present: boolean;
+  projection_contract_version: unknown;
   event_id: string;
   operation_id: string;
   operation_kind: FinancialOperationKind;
@@ -261,10 +345,42 @@ interface EventRow {
   retryable: boolean;
   metadata: Record<string, unknown>;
   recorded_at: Date | string;
+  expires_at: Date | string | null;
+  expiry_disposition?: 'LEGACY_EXPIRY_UNPROVEN' | null;
 }
 
-function mapEventRow(row: EventRow, replayed: boolean): StoredFakeFinancialOperation {
+function mapEventRow(
+  row: EventRow,
+  replayed: boolean,
+  allowLegacyExpiryDisposition = false
+): StoredFakeFinancialOperation {
+  // Only a verified pre-column row is legacy v1. A versioned schema must
+  // supply a numeric supported value; NULL/missing/string versions fail closed.
+  let projectionContractVersion: unknown;
+  if (
+    row.projection_contract_column_present === false &&
+    row.projection_contract_version === null
+  ) {
+    projectionContractVersion = 1;
+  } else if (row.projection_contract_column_present === true) {
+    projectionContractVersion = row.projection_contract_version;
+  } else throw new Error('FAKE_FINANCIAL_PROJECTION_SCHEMA_PROVENANCE_INVALID');
+  assertProjectionContractVersion(projectionContractVersion);
+  const recordedAt = new Date(row.recorded_at).toISOString();
+  const expiresAt = row.expires_at === null ? null : new Date(row.expires_at).toISOString();
+  const expiryDisposition =
+    allowLegacyExpiryDisposition && row.expiry_disposition === 'LEGACY_EXPIRY_UNPROVEN'
+      ? row.expiry_disposition
+      : undefined;
+  assertStoredFakeFinancialObservation(
+    row.operation_kind,
+    row.state,
+    recordedAt,
+    expiresAt,
+    expiryDisposition
+  );
   return {
+    projectionContractVersion,
     eventId: row.event_id,
     operationId: row.operation_id,
     operationKind: row.operation_kind,
@@ -284,7 +400,9 @@ function mapEventRow(row: EventRow, replayed: boolean): StoredFakeFinancialOpera
     responseSha256: row.response_sha256,
     relatedOperationId: row.related_operation_id,
     metadata: row.metadata,
-    recordedAt: new Date(row.recorded_at).toISOString(),
+    recordedAt,
+    expiresAt,
+    ...(expiryDisposition === 'LEGACY_EXPIRY_UNPROVEN' ? { expiryDisposition } : {}),
   };
 }
 
@@ -292,6 +410,10 @@ export class PostgresFakeFinancialOperationRepository implements FakeFinancialOp
   constructor(private readonly database: Database = db) {}
 
   async execute(command: FakeFinancialRepositoryCommand): Promise<StoredFakeFinancialOperation> {
+    // This contained legacy writer cannot persist v2 provenance. The sealed
+    // admitted worker owns all new v2 database execution.
+    if (command.projectionContractVersion !== 1)
+      throw new Error('FAKE_FINANCIAL_LEGACY_WRITER_REQUIRES_CONTRACT_V1');
     return this.database.transaction(async (query) => {
       await query(
         `SELECT pg_advisory_xact_lock(hashtext('fake-financial-operation'), hashtext($1))`,
@@ -302,8 +424,16 @@ export class PostgresFakeFinancialOperationRepository implements FakeFinancialOp
                 amount_cents, currency, related_operation_id, external_reference,
                 idempotency_key, identity_sha256, request_sha256,
                 provider_request_sha256, response_sha256,
-                retryable, metadata, recorded_at
-         FROM hxos_fake_financial_operation_events_v1
+                retryable, metadata, recorded_at, expires_at,
+                to_jsonb(hxos_fake_financial_operation_events_v1) ? 'projection_contract_version' AS projection_contract_column_present,
+                to_jsonb(hxos_fake_financial_operation_events_v1)->'projection_contract_version' AS projection_contract_version,
+                (
+                  SELECT disposition
+                    FROM public.hxos_fake_financial_legacy_expiry_dispositions_v9 legacy
+                   WHERE legacy.fake_operation_event_id =
+                         hxos_fake_financial_operation_events_v1.event_id
+                ) AS expiry_disposition
+         FROM public.hxos_fake_financial_operation_events_v1
          WHERE idempotency_key = $1`,
         [command.idempotencyKey]
       );
@@ -319,14 +449,14 @@ export class PostgresFakeFinancialOperationRepository implements FakeFinancialOp
 
       const identity = await query<{ identity_sha256: string }>(
         `SELECT identity_sha256
-         FROM hxos_fake_financial_operations_v1
+         FROM public.hxos_fake_financial_operations_v1
          WHERE operation_id = $1
          FOR UPDATE`,
         [command.operationId]
       );
       const version = await query<{ version: number }>(
         `SELECT COALESCE(MAX(event_version), 0)::INTEGER AS version
-         FROM hxos_fake_financial_operation_events_v1
+         FROM public.hxos_fake_financial_operation_events_v1
          WHERE operation_id = $1`,
         [command.operationId]
       );
@@ -339,7 +469,7 @@ export class PostgresFakeFinancialOperationRepository implements FakeFinancialOp
       }
       if (!identity.rows[0]) {
         await query(
-          `INSERT INTO hxos_fake_financial_operations_v1
+          `INSERT INTO public.hxos_fake_financial_operations_v1
              (operation_id, operation_kind, identity_sha256, external_reference,
               amount_cents, currency, related_operation_id)
            VALUES ($1, $2, $3, $4, $5, $6, $7)`,
@@ -355,18 +485,53 @@ export class PostgresFakeFinancialOperationRepository implements FakeFinancialOp
         );
       }
 
+      const causalBoundary = await query<{ operation_id: string }>(
+        `SELECT operation_id,
+                pg_sleep_until(
+                  date_trunc('milliseconds', created_at) + interval '1 millisecond'
+                ) AS causal_wait
+           FROM public.hxos_fake_financial_operations_v1
+          WHERE operation_id = $1`,
+        [command.operationId]
+      );
+      if (!causalBoundary.rows[0]) {
+        throw new Error('FAKE_FINANCIAL_OPERATION_MISSING');
+      }
+
       const inserted = await query<EventRow>(
-        `INSERT INTO hxos_fake_financial_operation_events_v1
+        `WITH observation AS (
+           -- node-postgres exposes TIMESTAMPTZ through JavaScript Date, whose
+           -- exact transport precision is milliseconds. Persist that canonical
+           -- provider observation once, after the database clock has reached an
+           -- actual millisecond boundary causally after the exact operation
+           -- creation time. Derive expiry from that same value so the immutable
+           -- raw/canonical bridge can require exact equality without flooring an
+           -- event into the causal past.
+           SELECT date_trunc('milliseconds', clock_timestamp()) AS recorded_at
+         )
+         INSERT INTO public.hxos_fake_financial_operation_events_v1
            (operation_id, operation_kind, event_version, state, scenario,
             amount_cents, currency, related_operation_id, external_reference,
-             idempotency_key, identity_sha256, request_sha256,
-             provider_request_sha256, response_sha256, retryable, metadata)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb)
+            idempotency_key, identity_sha256, request_sha256,
+            provider_request_sha256, response_sha256, retryable, metadata,
+            recorded_at, expires_at)
+         SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                $13, $14, $15, $16::jsonb, observation.recorded_at,
+                CASE
+                  WHEN $4 = 'SUCCEEDED'
+                   AND $2 IN ('AUTHORIZE', 'SECURE', 'ADJUST')
+                  THEN observation.recorded_at + interval '15 minutes'
+                  ELSE NULL
+                END
+           FROM observation
          RETURNING event_id, operation_id, operation_kind, event_version, state, scenario,
                    amount_cents, currency, related_operation_id, external_reference,
                    idempotency_key, identity_sha256, request_sha256,
                    provider_request_sha256, response_sha256,
-                   retryable, metadata, recorded_at`,
+                   retryable, metadata, recorded_at, expires_at,
+                to_jsonb(hxos_fake_financial_operation_events_v1) ? 'projection_contract_version' AS projection_contract_column_present,
+                to_jsonb(hxos_fake_financial_operation_events_v1)->'projection_contract_version' AS projection_contract_version,
+                   NULL::TEXT AS expiry_disposition`,
         [
           command.operationId,
           command.operationKind,
@@ -396,13 +561,21 @@ export class PostgresFakeFinancialOperationRepository implements FakeFinancialOp
               amount_cents, currency, related_operation_id, external_reference,
               idempotency_key, identity_sha256, request_sha256,
               provider_request_sha256, response_sha256,
-              retryable, metadata, recorded_at
-         FROM hxos_fake_financial_operation_events_v1
+              retryable, metadata, recorded_at, expires_at,
+                to_jsonb(hxos_fake_financial_operation_events_v1) ? 'projection_contract_version' AS projection_contract_column_present,
+                to_jsonb(hxos_fake_financial_operation_events_v1)->'projection_contract_version' AS projection_contract_version,
+              (
+                SELECT disposition
+                  FROM public.hxos_fake_financial_legacy_expiry_dispositions_v9 legacy
+                 WHERE legacy.fake_operation_event_id =
+                       hxos_fake_financial_operation_events_v1.event_id
+              ) AS expiry_disposition
+         FROM public.hxos_fake_financial_operation_events_v1
         WHERE idempotency_key = $1`,
       [idempotencyKey]
     );
     const row = result.rows[0];
-    return row ? mapEventRow(row, false) : null;
+    return row ? mapEventRow(row, false, true) : null;
   }
 }
 
@@ -473,6 +646,11 @@ function projectStoredFakeFinancialOperation(
     externalReference: event.externalReference,
     idempotencyReplayed,
     retryable: event.retryable,
+    recordedAt: event.recordedAt,
+    expiresAt: event.expiresAt,
+    ...(event.expiryDisposition === 'LEGACY_EXPIRY_UNPROVEN'
+      ? { expiryDisposition: event.expiryDisposition }
+      : {}),
   };
   if (event.operationKind !== 'REFRESH_PROVIDER_ACCOUNT_STATE') return base;
   const providerId = event.metadata.providerId;
@@ -498,6 +676,18 @@ function projectStoredFakeFinancialOperation(
   };
 }
 
+/** PostgreSQL normalizes UUID columns; request hash bytes retain literal case. */
+function sameStoredUuid(left: unknown, right: unknown): boolean {
+  return (
+    left === right ||
+    (typeof left === 'string' &&
+      typeof right === 'string' &&
+      UUID.test(left) &&
+      UUID.test(right) &&
+      left.toLowerCase() === right.toLowerCase())
+  );
+}
+
 /**
  * Proves that a raw fake-provider event is the exact result of the committed
  * request. This is a read/reconstruction boundary; it never enters an adapter.
@@ -509,6 +699,7 @@ export function resultFromExactStoredFakeFinancialOperation(
   expectedProviderRequestSha256: string,
   idempotencyReplayed = true
 ): FinancialOperationResult | ProviderAccountStateResult {
+  assertProjectionContractVersion(event.projectionContractVersion);
   const exactRequest = exactRequestObject(exactRequestValue);
   const scenario = exactRequest.scenario ?? 'SUCCESS';
   if (!isFakeFinancialScenario(scenario)) {
@@ -556,15 +747,24 @@ export function resultFromExactStoredFakeFinancialOperation(
     operationKind,
     scenario,
     exactExpectedVersion,
-    typeof metadata.authenticated === 'boolean' ? metadata.authenticated : undefined
+    typeof metadata.authenticated === 'boolean' ? metadata.authenticated : undefined,
+    event.projectionContractVersion
   );
   const response = {
     state: expectedState,
-    retryable: retryableFor(expectedState, scenario),
+    retryable: retryableFor(expectedState, scenario, event.projectionContractVersion),
+    ...(event.projectionContractVersion === 2 ? { projectionContractVersion: 2 } : {}),
     externalReference: externalReference(operationKind, operationId),
   } as const;
+  assertStoredFakeFinancialObservation(
+    operationKind,
+    expectedState,
+    event.recordedAt,
+    event.expiresAt,
+    event.expiryDisposition
+  );
   if (
-    event.operationId !== operationId ||
+    !sameStoredUuid(event.operationId, operationId) ||
     event.operationKind !== operationKind ||
     event.providerKind !== 'FAKE' ||
     event.idempotencyKey !== idempotencyKey ||
@@ -572,7 +772,7 @@ export function resultFromExactStoredFakeFinancialOperation(
     event.scenario !== scenario ||
     event.amountCents !== exactAmountCents ||
     event.currency !== exactCurrency ||
-    event.relatedOperationId !== exactRelatedOperationId ||
+    !sameStoredUuid(event.relatedOperationId, exactRelatedOperationId) ||
     event.state !== response.state ||
     event.retryable !== response.retryable ||
     event.externalReference !== response.externalReference ||
@@ -589,7 +789,14 @@ export function resultFromExactStoredFakeFinancialOperation(
 }
 
 export class FakeFinancialProvider implements FinancialProviderPorts {
-  constructor(private readonly repository: FakeFinancialOperationRepository) {}
+  // Default v1 preserves the contained legacy adapter. The v2 model is used
+  // with repositories that persist its version; sealed SQL owns v2 DB writes.
+  constructor(
+    private readonly repository: FakeFinancialOperationRepository,
+    private readonly projectionContractVersion: FakeFinancialProjectionContractVersion = 1
+  ) {
+    assertProjectionContractVersion(projectionContractVersion);
+  }
 
   private async execute(
     kind: FinancialOperationKind,
@@ -606,7 +813,8 @@ export class FakeFinancialProvider implements FinancialProviderPorts {
       kind,
       scenario,
       input.expectedVersion,
-      typeof metadata.authenticated === 'boolean' ? metadata.authenticated : undefined
+      typeof metadata.authenticated === 'boolean' ? metadata.authenticated : undefined,
+      this.projectionContractVersion
     );
     const identity = {
       operationId: input.operationId,
@@ -626,10 +834,12 @@ export class FakeFinancialProvider implements FinancialProviderPorts {
     } as const;
     const response = {
       state,
-      retryable: retryableFor(state, scenario),
+      retryable: retryableFor(state, scenario, this.projectionContractVersion),
+      ...(this.projectionContractVersion === 2 ? { projectionContractVersion: 2 } : {}),
       externalReference: externalReference(kind, input.operationId),
     } as const;
     const stored = await this.repository.execute({
+      projectionContractVersion: this.projectionContractVersion,
       operationId: input.operationId,
       operationKind: kind,
       idempotencyKey: input.idempotencyKey,
@@ -782,21 +992,166 @@ export class FakeFinancialProvider implements FinancialProviderPorts {
   }
 }
 
-export function createDatabaseBackedFakeFinancialProvider(
-  database: Database = db,
-  environment: NodeJS.ProcessEnv = process.env,
-  release: ReleaseManifestEvidence = readReleaseManifest(),
-  identity: BuildIdentity = buildIdentity
-): FakeFinancialProvider {
-  const component =
-    environment.SERVICE_ROLE?.trim().toLowerCase() === 'worker' ? 'worker' : 'backend';
-  assertNonproductionFakeFinanceAuthorized({
-    env: environment,
-    release,
-    identity,
-    component,
+type LiveFakeFinancialDatabaseCapabilityBinding = Readonly<{
+  database: Database;
+}>;
+
+const issuedLiveFakeFinancialDatabaseCapabilities = new WeakMap<
+  object,
+  LiveFakeFinancialDatabaseCapabilityBinding
+>();
+
+export interface LiveFakeFinancialDatabaseCapability {
+  readonly databaseTarget: string;
+  readonly environment: 'local' | 'preview' | 'staging';
+}
+
+const LOCAL_FAKE_FINANCE_DATABASES = new Set([
+  'hx_ci_invariant_test',
+  'hx_ci_system_test',
+  'hx_ci_fresh_test',
+  'hx_ci_upgrade_test',
+]);
+
+function fakeFinancialDatabaseTargetEnvironment(
+  options: NonproductionFinancialAuthorizationOptions,
+  databaseUrl: string
+): NodeJS.ProcessEnv | Record<string, string | undefined> {
+  const ambientEnvironment = process.env.HX_ENVIRONMENT?.trim().toLowerCase();
+  if (ambientEnvironment === 'preview' || ambientEnvironment === 'staging') {
+    return process.env;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(databaseUrl);
+  } catch {
+    throw new Error('NONPRODUCTION_FAKE_FINANCE_REFUSED:DATABASE_URL_INVALID');
+  }
+  let databaseName: string;
+  let roleName: string;
+  try {
+    databaseName = decodeURIComponent(parsed.pathname.replace(/^\//u, ''));
+    roleName = decodeURIComponent(parsed.username);
+  } catch {
+    throw new Error('NONPRODUCTION_FAKE_FINANCE_REFUSED:DATABASE_URL_ENCODING_INVALID');
+  }
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/gu, '');
+  const port = parsed.port ? Number(parsed.port) : 5432;
+  const exactRequiredTestTarget =
+    process.env.VITEST === 'true' &&
+    process.env.HX_ALLOW_CI_DB_RECREATE === 'true' &&
+    LOCAL_FAKE_FINANCE_DATABASES.has(databaseName) &&
+    roleName === 'hx_ci_runner' &&
+    (hostname === '127.0.0.1' || hostname === '::1') &&
+    port === 5432;
+  const exactPlatformTarget =
+    databaseName === 'hustlexp_startup_test' &&
+    roleName === 'hustlexp_local_runner' &&
+    (hostname === '127.0.0.1' || hostname === '::1' || hostname === 'postgres') &&
+    port === 5432;
+  if (!exactRequiredTestTarget && !exactPlatformTarget) {
+    throw new Error('NONPRODUCTION_FAKE_FINANCE_REFUSED:LOCAL_DATABASE_TARGET_NOT_ALLOWLISTED');
+  }
+  const localOptions = options.env ?? {};
+  return {
+    ...localOptions,
+    ...process.env,
+    HX_ENVIRONMENT: 'local',
+    ...(exactRequiredTestTarget || exactPlatformTarget
+      ? {
+          HXOS_LOCAL_TEST_DATABASE_NAME: databaseName,
+          HXOS_LOCAL_TEST_DATABASE_ROLE: roleName,
+        }
+      : {}),
+  };
+}
+
+/**
+ * Issue a one-use capability only through the globally installed, sealed
+ * runtime data plane. The data plane rechecks the exact target activation tip
+ * and all four transitive SQL digests before this application read executes;
+ * no Pool or physical client can be substituted by a caller.
+ */
+export async function issueLiveFakeFinancialDatabaseCapability(
+  options: NonproductionFinancialAuthorizationOptions = {}
+): Promise<LiveFakeFinancialDatabaseCapability> {
+  const manifest = assertNonproductionFakeFinanceAuthorized(options);
+  const databaseUrl = process.env.DATABASE_URL?.trim();
+  if (!databaseUrl) {
+    throw new Error('NONPRODUCTION_FAKE_FINANCE_REFUSED:AMBIENT_DATABASE_URL_REQUIRED');
+  }
+  const targetEnvironment = fakeFinancialDatabaseTargetEnvironment(options, databaseUrl);
+  assertConfiguredNonproductionDatabaseTarget(targetEnvironment, databaseUrl);
+  let schema: {
+    rows: Array<{
+      operations_relation: string;
+      events_relation: string;
+      ordinal146_sql_sha256: string;
+      v12_sql_sha256: string;
+      seal_sql_sha256: string;
+      v13_sql_sha256: string;
+    }>;
+    rowCount: number;
+  };
+  try {
+    schema = await db.readQuery<{
+      operations_relation: string;
+      events_relation: string;
+      ordinal146_sql_sha256: string;
+      v12_sql_sha256: string;
+      seal_sql_sha256: string;
+      v13_sql_sha256: string;
+    }>(
+      `SELECT runtime.fake_financial_operations_relation AS operations_relation,
+              runtime.fake_financial_operation_events_relation AS events_relation,
+              runtime.ordinal146_sql_sha256,
+              runtime.v12_sql_sha256,
+              runtime.seal_sql_sha256,
+              runtime.v13_sql_sha256
+         FROM public.hxos_read_universal_v1_fake_financial_runtime_authority_v13() runtime`,
+      []
+    );
+  } catch (error) {
+    throw new Error(
+      'NONPRODUCTION_FAKE_FINANCE_REFUSED:LIVE_FAKE_FINANCE_SEALED_AUTHORITY_REQUIRED',
+      { cause: error }
+    );
+  }
+  const row = schema.rows[0];
+  if (
+    schema.rowCount !== 1 ||
+    schema.rows.length !== 1 ||
+    row?.operations_relation !== 'public.hxos_fake_financial_operations_v1' ||
+    row.events_relation !== 'public.hxos_fake_financial_operation_events_v1' ||
+    row.ordinal146_sql_sha256 !== WORK_ORDER_ORDINAL146_SQL_SHA256 ||
+    row.v12_sql_sha256 !== WORK_ORDER_FAKE_FINANCIAL_V12_SQL_SHA256 ||
+    row.seal_sql_sha256 !== WORK_ORDER_BOOTSTRAP_SEAL_SQL_SHA256 ||
+    row.v13_sql_sha256 !== FAKE_FINANCIAL_OUTBOX_V13_SQL_SHA256
+  ) {
+    throw new Error(
+      'NONPRODUCTION_FAKE_FINANCE_REFUSED:LIVE_FAKE_FINANCE_SEALED_AUTHORITY_REQUIRED'
+    );
+  }
+  const capability = Object.freeze<LiveFakeFinancialDatabaseCapability>({
+    databaseTarget: `sha256:${createHash('sha256')
+      .update(`hustlexp-fake-finance-database-target-v1\n${databaseUrl}\n`)
+      .digest('hex')}`,
+    environment: manifest.environment as LiveFakeFinancialDatabaseCapability['environment'],
   });
-  return new FakeFinancialProvider(new PostgresFakeFinancialOperationRepository(database));
+  issuedLiveFakeFinancialDatabaseCapabilities.set(capability, Object.freeze({ database: db }));
+  return capability;
+}
+
+export function createDatabaseBackedFakeFinancialProvider(
+  capability: LiveFakeFinancialDatabaseCapability
+): FakeFinancialProvider {
+  const binding = issuedLiveFakeFinancialDatabaseCapabilities.get(capability);
+  if (!binding) {
+    throw new Error('NONPRODUCTION_FAKE_FINANCE_REFUSED:OPAQUE_LIVE_DATABASE_CAPABILITY_REQUIRED');
+  }
+  issuedLiveFakeFinancialDatabaseCapabilities.delete(capability);
+  return new FakeFinancialProvider(new PostgresFakeFinancialOperationRepository(binding.database));
 }
 
 export function fakeFinancialProviderEnabled(

@@ -1,6 +1,8 @@
 /**
- * RecurringTask Router Extra Unit Tests
+ * Legacy RecurringSeries Procedure Unit Tests
  *
+ * Keeps the unregistered contract-v1 implementation auditable for migration
+ * compatibility without exercising it through the public recurringTask router.
  * Covers branches NOT tested by recurringTask-router.test.ts:
  * - create (success, FORBIDDEN tier < 3, BAD_REQUEST limit reached)
  * - getById (success, NOT_FOUND)
@@ -46,9 +48,11 @@ vi.mock('../../src/logger', () => ({
 // ---------------------------------------------------------------------------
 
 import { db } from '../../src/db';
-import { recurringTaskRouter } from '../../src/routers/recurringTask';
+import { recurringSeriesProcedures } from '../../src/routers/recurringSeriesRoutes';
+import { router } from '../../src/trpc';
 
 const mockDb = vi.mocked(db);
+const legacyRecurringSeriesRouter = router(recurringSeriesProcedures);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -60,7 +64,7 @@ const OCC_UUID     = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
 const POSTER_UUID  = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
 
 function makeCaller(plan = 'premium', trustTier = 3) {
-  return recurringTaskRouter.createCaller({
+  return legacyRecurringSeriesRouter.createCaller({
     user: {
       id: POSTER_UUID,
       email: 'poster@hustlexp.com',

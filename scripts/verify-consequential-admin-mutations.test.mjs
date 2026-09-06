@@ -28,9 +28,9 @@ test('the exact consequential-admin inventory covers every current administrator
     queryCount: 72,
     classifications: {
       READ: 72,
-      BOUNDED_SINGLE_OPERATOR: 58,
+      BOUNDED_SINGLE_OPERATOR: 41,
       TWO_PERSON: 7,
-      HELD: 14,
+      HELD: 31,
       FORBIDDEN: 1,
     },
   });

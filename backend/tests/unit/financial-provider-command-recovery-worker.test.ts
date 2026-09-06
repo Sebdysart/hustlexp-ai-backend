@@ -425,7 +425,12 @@ describe('fake financial command recovery poller', () => {
       { workerId: 'fake-financial-recovery:unit' }
     );
     await Promise.resolve();
-    expect(handle.health()).toMatchObject({ status: 'healthy', inFlight: true });
+    expect(handle.health()).toMatchObject({
+      status: 'degraded',
+      inFlight: true,
+      consecutiveFailures: 0,
+      lastFailureCode: 'STARTUP_PENDING',
+    });
 
     let stopped = false;
     const stop = handle.stop().then(() => {
@@ -450,6 +455,47 @@ describe('fake financial command recovery poller', () => {
       lastFailureCode: null,
     });
     expect(assertAuthorized).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not report healthy until its first successful tick settles', async () => {
+    vi.useFakeTimers();
+    let finishBatch!: (result: FinancialProviderCommandRecoveryRunResult) => void;
+    const runOnce = vi.fn(
+      () =>
+        new Promise<FinancialProviderCommandRecoveryRunResult>((resolve) => {
+          finishBatch = resolve;
+        })
+    );
+    const handle = startNonproductionFakeFinancialCommandRecoveryPoller(500, {
+      worker: { runOnce },
+      assertAuthorized: vi.fn(),
+    });
+
+    await Promise.resolve();
+    expect(handle.health()).toEqual({
+      status: 'degraded',
+      inFlight: true,
+      consecutiveFailures: 0,
+      lastFailureCode: 'STARTUP_PENDING',
+    });
+
+    finishBatch({
+      claimed: 0,
+      reconciled: 0,
+      outcomeObserved: 0,
+      outcomeUnknown: 0,
+      failed: 0,
+      persistenceErrors: 0,
+    });
+    await vi.waitFor(() => expect(handle.health().inFlight).toBe(false));
+
+    expect(handle.health()).toEqual({
+      status: 'healthy',
+      inFlight: false,
+      consecutiveFailures: 0,
+      lastFailureCode: null,
+    });
+    await handle.stop();
   });
 
   it('reports persistence failures as degraded and gates capability before timer creation', async () => {
@@ -870,6 +916,57 @@ describe('nonproduction fake financial command recovery worker', () => {
       2,
       expect.objectContaining({ excludeCommandIds: [ids.command] })
     );
+  });
+
+  it('converges bounded legacy expiry compensation before source recovery can terminalize', async () => {
+    const { calls, executor, repository, authorize } = dependencies();
+    const compensation = {
+      runOnce: vi.fn(async (limit?: number) => {
+        calls.push(`LEGACY_COMPENSATION:${limit}`);
+      }),
+    };
+    const recovery = new NonproductionFakeFinancialCommandRecoveryWorker(
+      repository,
+      executor,
+      { environment: 'staging', leaseOwnerId: ids.owner, batchLimit: 7 },
+      authorize,
+      compensation
+    );
+
+    await expect(recovery.runOnce()).resolves.toMatchObject({
+      outcomeObserved: 1,
+      persistenceErrors: 0,
+    });
+    expect(compensation.runOnce).toHaveBeenCalledWith(7);
+    expect(calls.indexOf('LEGACY_COMPENSATION:7')).toBeLessThan(calls.indexOf('CLAIM_ONE'));
+    expect(calls.indexOf('LEGACY_COMPENSATION:7')).toBeLessThan(calls.indexOf('OUTCOME_COMMITTED'));
+  });
+
+  it('degrades without claiming source recovery when legacy compensation cannot converge', async () => {
+    const { executor, repository, authorize } = dependencies();
+    const compensation = {
+      runOnce: vi.fn(async () => {
+        throw new Error('LEGACY_COMPENSATION_FAILED');
+      }),
+    };
+    const recovery = new NonproductionFakeFinancialCommandRecoveryWorker(
+      repository,
+      executor,
+      { environment: 'staging', leaseOwnerId: ids.owner },
+      authorize,
+      compensation
+    );
+
+    await expect(recovery.runOnce()).resolves.toEqual({
+      claimed: 0,
+      reconciled: 0,
+      outcomeObserved: 0,
+      outcomeUnknown: 0,
+      failed: 0,
+      persistenceErrors: 1,
+    });
+    expect(repository.claimRecoverable).not.toHaveBeenCalled();
+    expect(executor.reconcile).not.toHaveBeenCalled();
   });
 
   it('reports the wired fake-only seams and the remaining lifecycle blocker', () => {

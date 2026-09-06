@@ -135,3 +135,43 @@ test('database execution is transactionally read-only and rolls back a failed ga
   assert.equal(failedCommands[0], 'BEGIN READ ONLY');
   assert.equal(failedCommands.at(-1), 'ROLLBACK');
 });
+
+test('commit ambiguity emits no later SQL and preserves the commit error', async () => {
+  const commands = [];
+  const commitError = new Error('commit transport failed');
+
+  await assert.rejects(
+    () =>
+      verifyWithReadOnlyClient({
+        query: async (sql) => {
+          commands.push(sql);
+          if (sql === 'COMMIT') throw commitError;
+          return { rows: [{ count: 1 }] };
+        },
+      }),
+    (error) => error === commitError
+  );
+
+  assert.deepEqual(commands.slice(-2), [ROLE_READINESS_CHECKS.at(-1).sql, 'COMMIT']);
+  assert.equal(commands.includes('ROLLBACK'), false);
+});
+
+test('rollback failure cannot replace the original readiness failure', async () => {
+  const original = new Error('role query failed');
+  const rollback = new Error('rollback transport failed');
+
+  await assert.rejects(
+    () =>
+      verifyWithReadOnlyClient({
+        query: async (sql) => {
+          if (sql === ROLE_READINESS_CHECKS[0].sql) throw original;
+          if (sql === 'ROLLBACK') throw rollback;
+          return { rows: [{ count: 1 }] };
+        },
+      }),
+    (error) => {
+      assert.equal(error.message, 'poster: role readiness query failed');
+      return true;
+    }
+  );
+});

@@ -23,6 +23,13 @@ const PROVIDER_EVENT_REPAIR_SQL = readFileSync(
 const RUNNER = [
   readFileSync(resolve(process.cwd(), 'backend/src/jobs/engine-automation-migration.ts'), 'utf8'),
   readFileSync(
+    resolve(
+      process.cwd(),
+      'backend/src/jobs/engine-automation-migration-files-foundation.ts'
+    ),
+    'utf8'
+  ),
+  readFileSync(
     resolve(process.cwd(), 'backend/src/jobs/engine-automation-migration-files.ts'),
     'utf8'
   ),

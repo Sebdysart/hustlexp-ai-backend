@@ -1,4 +1,5 @@
 import { createServer, type Server } from 'node:http';
+import type { FakeFinancialPublisherHandle } from './fake-financial-publisher-runtime.js';
 import {
   buildIdentity as runtimeBuildIdentity,
   isTrustedBuildIdentity,
@@ -38,6 +39,7 @@ interface WorkerHealthServerOptions {
   trustedIdentity?: (identity: BuildIdentity) => boolean;
   financialReadiness?: () => Promise<NonproductionFinancialBootstrapReadiness>;
   dependencyReadiness?: () => Promise<WorkerDependencyReadiness>;
+  fakeFinancialPublisherHealth?: () => ReturnType<FakeFinancialPublisherHandle['status']> | null;
   providerEventReplayHealth?: () => WorkerProviderEventReplayHealth | null;
   fakeFinancialCommandRecoveryHealth?: () => WorkerFakeFinancialCommandRecoveryHealth | null;
   workOrderCompensationHealth?: () => WorkerWorkOrderCompensationHealth | null;
@@ -194,6 +196,7 @@ export async function startWorkerHealthServer(
     environment
   );
   const providerEventReplayHealth = options.providerEventReplayHealth ?? (() => null);
+  const fakeFinancialPublisherHealth = options.fakeFinancialPublisherHealth ?? (() => null);
   const fakeFinancialCommandRecoveryHealth =
     options.fakeFinancialCommandRecoveryHealth ?? (() => null);
   const workOrderCompensationHealth = options.workOrderCompensationHealth ?? (() => null);
@@ -261,6 +264,34 @@ export async function startWorkerHealthServer(
       settleBeforeDeadline(financialReadiness, readinessTimeoutMs, unavailableFinancialBootstrap),
       settleBeforeDeadline(dependencyReadiness, readinessTimeoutMs, unavailableDependencies),
     ]);
+    let publisherHealth: ReturnType<FakeFinancialPublisherHandle['status']> | null = null;
+    try {
+      publisherHealth = fakeFinancialPublisherHealth();
+    } catch {
+      publisherHealth = null;
+    }
+    const publisherFailure = publisherHealth?.lastResult;
+    const publisherHealthy =
+      publisherHealth !== null &&
+      !publisherHealth.stopped &&
+      publisherHealth.consecutiveFailures === 0 &&
+      publisherFailure !== null &&
+      publisherFailure !== undefined &&
+      publisherFailure.persistenceErrors === 0 &&
+      publisherFailure.retryableFailures === 0 &&
+      publisherFailure.terminalFailures === 0;
+    const publisherReadiness = nonproductionFinancialPollersRequired
+      ? {
+          status: publisherHealthy ? 'healthy' : publisherHealth?.stopped ? 'stopped' : 'degraded',
+          inFlight: publisherHealth?.running ?? false,
+          consecutiveFailures: publisherHealth?.consecutiveFailures ?? 1,
+          lastFailureCode: publisherHealthy
+            ? null
+            : publisherHealth === null
+              ? 'WORKER_NOT_STARTED'
+              : 'PUBLICATION_UNCONFIRMED',
+        }
+      : { status: 'disabled', inFlight: false, consecutiveFailures: 0, lastFailureCode: null };
     let replayHealth: WorkerProviderEventReplayHealth | null = null;
     try {
       replayHealth = providerEventReplayHealth();
@@ -346,11 +377,11 @@ export async function startWorkerHealthServer(
       financialBootstrap.ready &&
       dependencies.database === 'ok' &&
       dependencies.redis === 'ok' &&
+      (!nonproductionFinancialPollersRequired || publisherHealthy) &&
       (!nonproductionFinancialPollersRequired || replayReadiness.status === 'healthy') &&
       (!nonproductionFinancialPollersRequired || recoveryReadiness.status === 'healthy') &&
       (!nonproductionFinancialPollersRequired || compensationReadiness.status === 'healthy') &&
-      (!nonproductionFinancialPollersRequired ||
-        changeOrderRecoveryReadiness.status === 'healthy');
+      (!nonproductionFinancialPollersRequired || changeOrderRecoveryReadiness.status === 'healthy');
     response.writeHead(ready ? 200 : 503);
     response.end(
       JSON.stringify({
@@ -362,6 +393,7 @@ export async function startWorkerHealthServer(
         releaseManifest,
         nonproductionFinancialBootstrap: financialBootstrap,
         dependencies,
+        fakeFinancialPublisher: publisherReadiness,
         providerEventReplay: replayReadiness,
         fakeFinancialCommandRecovery: recoveryReadiness,
         workOrderCompensation: compensationReadiness,

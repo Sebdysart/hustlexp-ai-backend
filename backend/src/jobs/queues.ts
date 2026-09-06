@@ -1,8 +1,8 @@
 /**
  * BullMQ Queue Configuration v1.0.0
- * 
+ *
  * SYSTEM GUARANTEES: Idempotency, Auditability, Backpressure
- * 
+ *
  * Queue topology by failure domain:
  * - critical_payments: Stripe webhooks, escrow state, XP awards (STRICT idempotency)
  * - critical_trust: Trust tier recalculations, fraud signals
@@ -10,16 +10,22 @@
  * - exports: CSV/PDF generation, R2 uploads, signed URL creation
  * - maintenance: Cleanup, TTL expiry, backfills
  * - synthetic_finance: signed nonproduction fake-value lifecycle commands only
- * 
+ *
  * Hard rule: Payment and XP awarding must run in critical_payments only.
  * All handlers must be idempotent by construction (at-least-once processing assumed).
- * 
+ *
  * @see ARCHITECTURE.md §2.4 (Outbox pattern)
  */
 
 import { Queue, QueueOptions, Worker, WorkerOptions, Job, JobsOptions } from 'bullmq';
 import Redis from 'ioredis';
 import { createHmac } from 'crypto';
+import {
+  FAKE_FINANCIAL_OUTBOX_QUEUE,
+  FAKE_FINANCIAL_OUTBOX_JOB,
+  type FakeFinancialOutboxPublication,
+  type FakeFinancialOutboxTransport,
+} from './fake-financial-outbox-publisher.js';
 import { config } from '../config.js';
 import { logger as rootLogger } from '../logger.js';
 
@@ -32,18 +38,20 @@ const dlqLog = rootLogger.child({ subsystem: 'dlq-monitor' });
 /**
  * Create Redis connection for BullMQ
  * BullMQ requires ioredis-compatible connection (TCP, not REST API)
- * 
+ *
  * REDIS_URL is the canonical portable connection. UPSTASH_REDIS_URL remains a
  * legacy alias resolved centrally by config.ts. REST credentials are a
  * separate compatibility transport and are never valid BullMQ inputs.
  */
 function createRedisConnection(): Redis {
   if (!config.redis.url) {
-    throw new Error('Redis configuration missing (REDIS_URL or legacy UPSTASH_REDIS_URL required for BullMQ).');
+    throw new Error(
+      'Redis configuration missing (REDIS_URL or legacy UPSTASH_REDIS_URL required for BullMQ).'
+    );
   }
-  
+
   const redisUrl = config.redis.url;
-  
+
   // Create ioredis client (BullMQ-compatible)
   // Upstash requires TLS for direct connections
   const redis = new Redis(redisUrl, {
@@ -57,7 +65,7 @@ function createRedisConnection(): Redis {
     // a vendor hostname and silently rewrite a redis:// connection.
     ...(redisUrl.startsWith('rediss://') ? { tls: {} } : {}),
   });
-  
+
   return redis;
 }
 
@@ -319,29 +327,27 @@ const queueInstances = new Map<QueueName, Queue>();
 // Tracks every ioredis connection created by getQueue / createWorker so they
 // can all be cleanly disconnected on graceful shutdown (W-06 fix).
 const connectionInstances = new Map<string, Redis>();
+const activeFakeFinancialPublishes = new Map<AbortController, Promise<unknown>>();
 export const BULLMQ_SHUTDOWN_TIMEOUT_MS = 5_000;
 
 let closeAllConnectionsPromise: Promise<void> | undefined;
 
 async function runWithShutdownDeadline(
   operation: () => Promise<unknown> | unknown,
-  timeoutLabel: string,
+  timeoutLabel: string
 ): Promise<void> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_resolve, reject) => {
     timeout = setTimeout(() => {
-      reject(new Error(
-        `${timeoutLabel}: resource did not close within ${BULLMQ_SHUTDOWN_TIMEOUT_MS}ms`,
-      ));
+      reject(
+        new Error(`${timeoutLabel}: resource did not close within ${BULLMQ_SHUTDOWN_TIMEOUT_MS}ms`)
+      );
     }, BULLMQ_SHUTDOWN_TIMEOUT_MS);
     timeout.unref();
   });
 
   try {
-    await Promise.race([
-      Promise.resolve().then(operation),
-      deadline,
-    ]);
+    await Promise.race([Promise.resolve().then(operation), deadline]);
   } finally {
     if (timeout) clearTimeout(timeout);
   }
@@ -351,7 +357,7 @@ async function quitRedisConnection(connectionKey: string, connection: Redis): Pr
   try {
     await runWithShutdownDeadline(
       () => connection.quit(),
-      `BULLMQ_REDIS_QUIT_TIMEOUT:${connectionKey}`,
+      `BULLMQ_REDIS_QUIT_TIMEOUT:${connectionKey}`
     );
   } catch (quitError) {
     try {
@@ -362,7 +368,7 @@ async function quitRedisConnection(connectionKey: string, connection: Redis): Pr
     } catch (disconnectError) {
       throw new AggregateError(
         [quitError, disconnectError],
-        `Redis ${connectionKey} failed graceful quit and forced disconnect`,
+        `Redis ${connectionKey} failed graceful quit and forced disconnect`
       );
     }
     throw quitError;
@@ -370,6 +376,10 @@ async function quitRedisConnection(connectionKey: string, connection: Redis): Pr
 }
 
 async function closeTrackedConnections(): Promise<void> {
+  // Cancel and settle scoped producers before draining shared queue resources.
+  const publishes = [...activeFakeFinancialPublishes.entries()];
+  for (const [controller] of publishes) controller.abort();
+  await Promise.allSettled(publishes.map(([, operation]) => operation));
   // Snapshot and clear synchronously so concurrent/later close calls cannot
   // operate on the same resources twice.
   const queues = [...queueInstances.entries()];
@@ -379,10 +389,9 @@ async function closeTrackedConnections(): Promise<void> {
 
   const errors: unknown[] = [];
   const queueResults = await Promise.allSettled(
-    queues.map(([queueName, queue]) => runWithShutdownDeadline(
-      () => queue.close(),
-      `BULLMQ_QUEUE_CLOSE_TIMEOUT:${queueName}`,
-    )),
+    queues.map(([queueName, queue]) =>
+      runWithShutdownDeadline(() => queue.close(), `BULLMQ_QUEUE_CLOSE_TIMEOUT:${queueName}`)
+    )
   );
   queueResults.forEach((result, index) => {
     if (result.status === 'rejected') {
@@ -393,9 +402,7 @@ async function closeTrackedConnections(): Promise<void> {
   });
 
   const connectionResults = await Promise.allSettled(
-    connections.map(([connectionKey, connection]) => (
-      quitRedisConnection(connectionKey, connection)
-    )),
+    connections.map(([connectionKey, connection]) => quitRedisConnection(connectionKey, connection))
   );
   connectionResults.forEach((result, index) => {
     if (result.status === 'rejected') {
@@ -406,7 +413,10 @@ async function closeTrackedConnections(): Promise<void> {
   });
 
   if (errors.length > 0) {
-    throw new AggregateError(errors, 'Failed to close one or more BullMQ queues or Redis connections');
+    throw new AggregateError(
+      errors,
+      'Failed to close one or more BullMQ queues or Redis connections'
+    );
   }
 }
 
@@ -458,12 +468,120 @@ export async function enqueueJob(
   queueName: QueueName,
   jobName: string,
   data: Record<string, unknown>,
-  options: JobsOptions & { jobId: string },
+  options: JobsOptions & { jobId: string }
 ): Promise<Job> {
   if (!options?.jobId?.trim()) {
     throw new Error('QUEUE_JOB_ID_REQUIRED: one-off jobs require a deterministic jobId');
   }
   return getQueue(queueName).add(jobName, data, options);
+}
+
+/**
+ * A bounded, independently owned producer socket for each durable v13 claim.
+ * Redis acceptance can be uncertain on disconnect; only stored-job readback is
+ * returned. The publisher reconciles the same deterministic ID after lease expiry.
+ */
+export function createFakeFinancialOutboxTransport(
+  options: {
+    redisUrl?: string;
+    prefix?: string;
+    deadlineMs?: number;
+  } = {}
+): FakeFinancialOutboxTransport {
+  const redisUrl = options.redisUrl ?? config.redis.url;
+  if (!redisUrl || !['redis:', 'rediss:'].includes(new URL(redisUrl).protocol)) {
+    throw new Error('FAKE_FINANCIAL_OUTBOX_REDIS_CONFIGURATION_INVALID');
+  }
+  const prefix = options.prefix ?? 'bull';
+  const deadlineMs = options.deadlineMs ?? 5_000;
+  if (
+    !/^[A-Za-z0-9_-]{1,100}$/u.test(prefix) ||
+    !Number.isInteger(deadlineMs) ||
+    deadlineMs < 100 ||
+    deadlineMs > 10_000
+  ) {
+    throw new Error('FAKE_FINANCIAL_OUTBOX_TRANSPORT_OPTIONS_INVALID');
+  }
+  return {
+    publish: async (claim: FakeFinancialOutboxPublication, signal?: AbortSignal) => {
+      if (closeAllConnectionsPromise || signal?.aborted)
+        throw new Error('FAKE_FINANCIAL_OUTBOX_TRANSPORT_STOPPED');
+      if (
+        claim.queue_name !== FAKE_FINANCIAL_OUTBOX_QUEUE ||
+        claim.job_name !== FAKE_FINANCIAL_OUTBOX_JOB
+      ) {
+        throw new Error('FAKE_FINANCIAL_OUTBOX_TRANSPORT_IDENTITY_INVALID');
+      }
+      const controller = new AbortController();
+      const connection = new Redis(redisUrl, {
+        lazyConnect: true,
+        enableOfflineQueue: false,
+        maxRetriesPerRequest: 0,
+        retryStrategy: () => null,
+        autoResendUnfulfilledCommands: false,
+        connectTimeout: deadlineMs,
+        commandTimeout: deadlineMs,
+        ...(redisUrl.startsWith('rediss://') ? { tls: {} } : {}),
+      });
+      // Connection errors are returned through the operation, never raw logged
+      // (URLs and broker details can contain credentials).
+      connection.on('error', () => undefined);
+      const abort = () => {
+        controller.abort();
+        connection.disconnect(false);
+      };
+      signal?.addEventListener('abort', abort, { once: true });
+      controller.signal.addEventListener('abort', () => connection.disconnect(false), {
+        once: true,
+      });
+      const deadline = setTimeout(abort, deadlineMs);
+      let queue: Queue | undefined;
+      const operation = (async () => {
+        try {
+          await connection.connect();
+          if (controller.signal.aborted) throw new Error('FAKE_FINANCIAL_OUTBOX_TRANSPORT_STOPPED');
+          queue = new Queue(FAKE_FINANCIAL_OUTBOX_QUEUE, {
+            prefix,
+            connection: connection as unknown as QueueOptions['connection'],
+          });
+          queue.on('error', () => undefined);
+          await queue.add(FAKE_FINANCIAL_OUTBOX_JOB, claim.job_payload, {
+            jobId: claim.bullmq_job_id,
+            attempts: 64,
+            backoff: { type: 'fixed', delay: 5_000 },
+            // Keep identity available across publisher acknowledgement loss and restart.
+            removeOnComplete: false,
+            removeOnFail: false,
+          });
+          const stored = await queue.getJob(claim.bullmq_job_id);
+          const state = stored ? await stored.getState() : null;
+          if (controller.signal.aborted) throw new Error('FAKE_FINANCIAL_OUTBOX_TRANSPORT_STOPPED');
+          return stored
+            ? {
+                id: stored.id,
+                queueName: stored.queueName,
+                name: stored.name,
+                data: stored.data as unknown,
+                opts: stored.opts as unknown,
+                state,
+                attemptsMade: stored.attemptsMade,
+              }
+            : null;
+        } finally {
+          clearTimeout(deadline);
+          signal?.removeEventListener('abort', abort);
+          connection.disconnect(false);
+          if (queue) await queue.close().catch(() => undefined);
+        }
+      })();
+      activeFakeFinancialPublishes.set(controller, operation);
+      try {
+        return await operation;
+      } finally {
+        activeFakeFinancialPublishes.delete(controller);
+      }
+    },
+  };
 }
 
 /**
@@ -475,7 +593,7 @@ export async function enqueueRepeatableJob(
   queueName: QueueName,
   jobName: string,
   data: Record<string, unknown>,
-  pattern: string,
+  pattern: string
 ): Promise<Job> {
   if (!pattern.trim()) {
     throw new Error('QUEUE_REPEAT_PATTERN_REQUIRED');
@@ -494,7 +612,7 @@ export async function enqueueRepeatableJob(
 /**
  * Generate idempotency key for events
  * Format: {event_type}:{aggregate_id}:{event_version}
- * 
+ *
  * This ensures same event can be processed twice without duplicate side effects
  */
 export function generateIdempotencyKey(
@@ -557,7 +675,7 @@ export function parseIdempotencyKey(key: string): {
  */
 export function createWorker(
   queueName: QueueName,
-  processor: (job: Job) => Promise<void>,
+  processor: (job: Job) => Promise<unknown>,
   options?: Partial<WorkerOptions>
 ): Worker {
   if (closeAllConnectionsPromise) {
@@ -582,22 +700,21 @@ export function createWorker(
   const removeOnFailOverride: Partial<WorkerOptions> =
     queueName === 'critical_payments' ? { removeOnFail: { count: -1 } } : {};
 
-  const worker = new Worker(
-    queueName,
-    processor,
-    {
-      connection: connection as unknown as WorkerOptions['connection'],
-      ...queueConfig.workerOptions,
-      ...removeOnFailOverride,
-      ...options,
-    }
-  );
+  const worker = new Worker(queueName, processor, {
+    connection: connection as unknown as WorkerOptions['connection'],
+    ...queueConfig.workerOptions,
+    ...removeOnFailOverride,
+    ...options,
+  });
 
   // DLQ monitoring: log a CRITICAL alert whenever a job exhausts all retries.
   // This fires only on the final failure (attemptsMade === job.opts.attempts).
   worker.on('failed', (job: Job | undefined, error: Error) => {
     if (!job) {
-      dlqLog.error({ queue: queueName, err: error.message }, 'CRITICAL: BullMQ job failed — no job context available (possible stalled job)');
+      dlqLog.error(
+        { queue: queueName, err: error.message },
+        'CRITICAL: BullMQ job failed — no job context available (possible stalled job)'
+      );
       return;
     }
 
@@ -615,7 +732,7 @@ export function createWorker(
           err: error.message,
           errorStack: error.stack,
         },
-        `CRITICAL: Job ${job.id} (${job.name}) in queue "${queueName}" has exhausted all ${maxAttempts} retries and moved to DLQ. Manual intervention required.`,
+        `CRITICAL: Job ${job.id} (${job.name}) in queue "${queueName}" has exhausted all ${maxAttempts} retries and moved to DLQ. Manual intervention required.`
       );
     } else {
       // Transient failure — will be retried; log at warn level only
@@ -628,7 +745,7 @@ export function createWorker(
           maxAttempts,
           err: error.message,
         },
-        `Job ${job.id} (${job.name}) failed attempt ${job.attemptsMade}/${maxAttempts} — will retry`,
+        `Job ${job.id} (${job.name}) failed attempt ${job.attemptsMade}/${maxAttempts} — will retry`
       );
     }
   });

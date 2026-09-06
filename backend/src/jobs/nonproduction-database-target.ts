@@ -1,12 +1,25 @@
 import { isIP } from 'node:net';
 
-import type { MigrationClient } from './engine-automation-migration.js';
-
 type Environment = NodeJS.ProcessEnv | Record<string, string | undefined>;
+
+/** Query-only structural boundary used by target attestation. */
+export interface NonproductionDatabaseQueryClient {
+  query<Row extends Record<string, unknown> = Record<string, unknown>>(
+    sql: string,
+    values?: unknown[]
+  ): Promise<{ rows: Row[] }>;
+}
 
 const POSTGRES_PROTOCOLS = new Set(['postgres:', 'postgresql:']);
 const LOCAL_DATABASE_MARKER = /(?:^|[_-])(?:test|e2e|startup)(?:$|[_-])/iu;
 const LOCAL_ROLE_MARKER = /(?:^|[_-])(?:test|e2e|startup|local|ci)(?:$|[_-])/iu;
+const LOCAL_CI_DATABASES = new Set([
+  'hx_ci_invariant_test',
+  'hx_ci_system_test',
+  'hx_ci_fresh_test',
+  'hx_ci_upgrade_test',
+]);
+const LOCAL_STAGE1_DATABASE = /^hx_ci_stage1_containment_[a-f0-9]{20}$/u;
 
 export interface ExpectedNonproductionDatabaseTarget {
   environment: 'local' | 'preview' | 'staging';
@@ -16,11 +29,13 @@ export interface ExpectedNonproductionDatabaseTarget {
   hostname: string;
   port: number;
   serverAddress: string | null;
+  allowLocalContainerAddress: boolean;
 }
 
 export interface ObservedNonproductionDatabaseIdentity {
   databaseName: string;
   roleName: string;
+  sessionRoleName: string;
   serverAddress: string;
   serverPort: number;
   schemaName: string;
@@ -30,6 +45,7 @@ export interface ObservedNonproductionDatabaseIdentity {
 interface DatabaseIdentityRow extends Record<string, unknown> {
   database_name: string;
   role_name: string;
+  session_role_name: string;
   server_address: string;
   server_port: number | string;
   schema_name: string;
@@ -55,7 +71,10 @@ function decoded(value: string, reason: string): string {
 }
 
 function normalizedHostname(value: string): string {
-  return value.trim().toLowerCase().replace(/^\[|\]$/gu, '');
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/gu, '');
 }
 
 function normalizedAddress(value: string): string {
@@ -70,14 +89,16 @@ function isLoopback(value: string): boolean {
 function isPrivateRfc1918(value: string): boolean {
   const octets = normalizedAddress(value).split('.').map(Number);
   if (
-    octets.length !== 4
-    || octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)
+    octets.length !== 4 ||
+    octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)
   ) {
     return false;
   }
-  return octets[0] === 10
-    || (octets[0] === 172 && (octets[1] ?? 0) >= 16 && (octets[1] ?? 0) <= 31)
-    || (octets[0] === 192 && octets[1] === 168);
+  return (
+    octets[0] === 10 ||
+    (octets[0] === 172 && (octets[1] ?? 0) >= 16 && (octets[1] ?? 0) <= 31) ||
+    (octets[0] === 192 && octets[1] === 168)
+  );
 }
 
 function exactEnvironment(env: Environment): ExpectedNonproductionDatabaseTarget['environment'] {
@@ -109,7 +130,10 @@ function parseDatabaseUrl(databaseUrl: string): {
   }
   if (!POSTGRES_PROTOCOLS.has(parsed.protocol)) return refuse('DATABASE_URL_PROTOCOL_INVALID');
 
-  const databaseName = decoded(parsed.pathname.replace(/^\//u, ''), 'DATABASE_NAME_ENCODING_INVALID');
+  const databaseName = decoded(
+    parsed.pathname.replace(/^\//u, ''),
+    'DATABASE_NAME_ENCODING_INVALID'
+  );
   const roleName = decoded(parsed.username, 'DATABASE_ROLE_ENCODING_INVALID');
   const hostname = normalizedHostname(parsed.hostname);
   if (!databaseName || databaseName.includes('/')) return refuse('DATABASE_NAME_INVALID');
@@ -133,7 +157,7 @@ function parseDatabaseUrl(databaseUrl: string): {
  */
 export function assertConfiguredNonproductionDatabaseTarget(
   env: Environment,
-  databaseUrl: string,
+  databaseUrl: string
 ): ExpectedNonproductionDatabaseTarget {
   if (!databaseUrl.trim()) return refuse('DATABASE_URL_REQUIRED');
   const environment = exactEnvironment(env);
@@ -146,7 +170,10 @@ export function assertConfiguredNonproductionDatabaseTarget(
     }
     const databaseName = requiredBinding(env, 'HXOS_LOCAL_TEST_DATABASE_NAME');
     const roleName = requiredBinding(env, 'HXOS_LOCAL_TEST_DATABASE_ROLE');
-    if (!LOCAL_DATABASE_MARKER.test(databaseName)) {
+    if (
+      !LOCAL_DATABASE_MARKER.test(databaseName) &&
+      !LOCAL_STAGE1_DATABASE.test(databaseName)
+    ) {
       return refuse('LOCAL_DATABASE_NAME_NOT_ALLOWLISTED');
     }
     if (!LOCAL_ROLE_MARKER.test(roleName)) {
@@ -154,6 +181,13 @@ export function assertConfiguredNonproductionDatabaseTarget(
     }
     if (parsed.databaseName !== databaseName) return refuse('LOCAL_DATABASE_NAME_MISMATCH');
     if (parsed.roleName !== roleName) return refuse('LOCAL_DATABASE_ROLE_MISMATCH');
+    const allowLocalContainerAddress =
+      env.HX_ALLOW_CI_DB_RECREATE === 'true' &&
+      parsed.roleName === 'hx_ci_runner' &&
+      parsed.port === 5432 &&
+      isLoopback(parsed.hostname) &&
+      (LOCAL_CI_DATABASES.has(parsed.databaseName) ||
+        LOCAL_STAGE1_DATABASE.test(parsed.databaseName));
 
     return {
       environment,
@@ -163,6 +197,7 @@ export function assertConfiguredNonproductionDatabaseTarget(
       hostname: parsed.hostname,
       port: parsed.port,
       serverAddress: null,
+      allowLocalContainerAddress,
     };
   }
 
@@ -171,7 +206,7 @@ export function assertConfiguredNonproductionDatabaseTarget(
   const hostname = normalizedHostname(requiredBinding(env, 'HX_NONPRODUCTION_DATABASE_HOST'));
   const port = parsePort(
     requiredBinding(env, 'HX_NONPRODUCTION_DATABASE_PORT'),
-    'HX_NONPRODUCTION_DATABASE_PORT_INVALID',
+    'HX_NONPRODUCTION_DATABASE_PORT_INVALID'
   );
   const configuredAddress = env.HX_NONPRODUCTION_DATABASE_SERVER_ADDRESS?.trim();
   const serverAddress = configuredAddress ? normalizedAddress(configuredAddress) : null;
@@ -195,13 +230,14 @@ export function assertConfiguredNonproductionDatabaseTarget(
     hostname,
     port,
     serverAddress,
+    allowLocalContainerAddress: false,
   };
 }
 
 /** Verify the actual PostgreSQL identity on the exact connected session. */
 export async function assertConnectedNonproductionDatabaseTarget(
-  client: MigrationClient,
-  expected: ExpectedNonproductionDatabaseTarget,
+  client: NonproductionDatabaseQueryClient,
+  expected: ExpectedNonproductionDatabaseTarget
 ): Promise<ObservedNonproductionDatabaseIdentity> {
   // Pin unqualified canonical and fake-finance objects to public on this exact
   // session. This neutralizes role defaults before any migration statement.
@@ -209,11 +245,12 @@ export async function assertConnectedNonproductionDatabaseTarget(
   const result = await client.query<DatabaseIdentityRow>(
     `SELECT current_database()::text AS database_name,
             current_user::text AS role_name,
+            session_user::text AS session_role_name,
             COALESCE(host(inet_server_addr()), 'local_socket') AS server_address,
             COALESCE(inet_server_port(), 0)::integer AS server_port,
             current_schema()::text AS schema_name,
             current_setting('search_path')::text AS search_path,
-            current_schemas(false)::text[] AS effective_schemas`,
+            current_schemas(false)::text[] AS effective_schemas`
   );
   if (result.rows.length !== 1) return refuse('LIVE_IDENTITY_ROW_COUNT_INVALID');
 
@@ -224,26 +261,37 @@ export async function assertConnectedNonproductionDatabaseTarget(
     return refuse('LIVE_DATABASE_NAME_MISMATCH');
   }
   if (row.role_name !== expected.roleName) return refuse('LIVE_DATABASE_ROLE_MISMATCH');
+  if (row.session_role_name !== expected.roleName) {
+    return refuse('LIVE_DATABASE_SESSION_ROLE_MISMATCH');
+  }
   if (!Number.isInteger(serverPort) || serverPort !== expected.port) {
     return refuse('LIVE_DATABASE_PORT_MISMATCH');
   }
   if (row.schema_name !== 'public') return refuse('LIVE_SCHEMA_NAME_MISMATCH');
-  if (row.search_path !== 'public'
-      || !Array.isArray(row.effective_schemas)
-      || row.effective_schemas.length !== 1
-      || row.effective_schemas[0] !== 'public') {
+  if (
+    row.search_path !== 'public' ||
+    !Array.isArray(row.effective_schemas) ||
+    row.effective_schemas.length !== 1 ||
+    row.effective_schemas[0] !== 'public'
+  ) {
     return refuse('LIVE_SEARCH_PATH_MISMATCH');
   }
 
   if (expected.environment === 'local') {
-    if (
-      (expected.hostname === 'postgres' && !isPrivateRfc1918(serverAddress))
-      || (expected.hostname !== 'postgres' && !isLoopback(serverAddress))
-    ) {
+    const localAddressMatches =
+      (expected.hostname === 'postgres' && isPrivateRfc1918(serverAddress)) ||
+      (expected.hostname !== 'postgres' &&
+        (isLoopback(serverAddress) ||
+          (expected.allowLocalContainerAddress && isPrivateRfc1918(serverAddress))));
+    if (!localAddressMatches) {
       return refuse('LIVE_LOCAL_DATABASE_ADDRESS_MISMATCH');
     }
   } else {
-    if (serverAddress === 'local_socket' || isIP(serverAddress) === 0 || isLoopback(serverAddress)) {
+    if (
+      serverAddress === 'local_socket' ||
+      isIP(serverAddress) === 0 ||
+      isLoopback(serverAddress)
+    ) {
       return refuse('LIVE_NONPRODUCTION_DATABASE_ADDRESS_INVALID');
     }
     if (expected.serverAddress && serverAddress !== expected.serverAddress) {
@@ -254,6 +302,7 @@ export async function assertConnectedNonproductionDatabaseTarget(
   return {
     databaseName: row.database_name,
     roleName: row.role_name,
+    sessionRoleName: row.session_role_name,
     serverAddress,
     serverPort,
     schemaName: row.schema_name,

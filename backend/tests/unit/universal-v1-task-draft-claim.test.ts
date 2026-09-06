@@ -55,6 +55,8 @@ const COMPLETE_POSTER: User = {
   daily_active_minutes: 0,
   consecutive_active_days: 0,
   account_status: 'ACTIVE',
+  created_at: new Date(NOW),
+  updated_at: new Date(NOW),
 };
 
 function input(overrides: Record<string, unknown> = {}) {
@@ -99,18 +101,16 @@ function event(requestHash: string, overrides: Record<string, unknown> = {}) {
 function dependencies() {
   return {
     now: () => NOW,
-    randomUuid: vi.fn()
-      .mockReturnValueOnce(CORRELATION)
-      .mockReturnValueOnce(EVENT),
+    randomUuid: vi.fn().mockReturnValueOnce(CORRELATION).mockReturnValueOnce(EVENT),
     transaction: mocks.transaction,
   };
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.transaction.mockImplementation(async (
-    callback: (query: typeof mocks.query) => Promise<unknown>,
-  ) => callback(mocks.query));
+  mocks.transaction.mockImplementation(
+    async (callback: (query: typeof mocks.query) => Promise<unknown>) => callback(mocks.query)
+  );
 });
 
 describe('Universal V1 canonical TaskDraft claim', () => {
@@ -144,8 +144,9 @@ describe('Universal V1 canonical TaskDraft claim', () => {
   });
 
   it('rejects unknown fields before opening a transaction', async () => {
-    expect(UniversalV1TaskDraftClaimSchema.safeParse(input({ actor_user_id: USER })).success)
-      .toBe(false);
+    expect(UniversalV1TaskDraftClaimSchema.safeParse(input({ actor_user_id: USER })).success).toBe(
+      false
+    );
     expect(mocks.transaction).not.toHaveBeenCalled();
   });
 
@@ -155,13 +156,16 @@ describe('Universal V1 canonical TaskDraft claim', () => {
       .mockResolvedValueOnce({ rows: [], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [draft()], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [], rowCount: 0 });
-    await expect(claimUniversalV1TaskDraft(
-      input({ client_ts: NOW - 10 * 60 * 1_000 - 1 }),
-      USER,
-      dependencies(),
-    )).rejects.toMatchObject({ code: 'BAD_REQUEST' });
-    expect(mocks.query.mock.calls.map(([sql]) => String(sql)).join('\n'))
-      .not.toMatch(/^\s*(?:INSERT|UPDATE|DELETE)\b/imu);
+    await expect(
+      claimUniversalV1TaskDraft(
+        input({ client_ts: NOW - 10 * 60 * 1_000 - 1 }),
+        USER,
+        dependencies()
+      )
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    expect(mocks.query.mock.calls.map(([sql]) => String(sql)).join('\n')).not.toMatch(
+      /^\s*(?:INSERT|UPDATE|DELETE)\b/imu
+    );
   });
 
   it('records one immutable versioned claim and no task, assignment, or money write', async () => {
@@ -173,17 +177,16 @@ describe('Universal V1 canonical TaskDraft claim', () => {
       .mockResolvedValueOnce({ rows: [], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [{ id: DRAFT }], rowCount: 1 });
 
-    await expect(claimUniversalV1TaskDraft(input(), USER, dependencies()))
-      .resolves.toMatchObject({
-        ok: true,
-        draft_id: DRAFT,
-        status: 'account_claimed',
-        claim_version: 1,
-        claim_event_id: EVENT,
-        replayed: false,
-        payment_creation_frozen: true,
-        hard_assignment_created: false,
-      });
+    await expect(claimUniversalV1TaskDraft(input(), USER, dependencies())).resolves.toMatchObject({
+      ok: true,
+      draft_id: DRAFT,
+      status: 'account_claimed',
+      claim_version: 1,
+      claim_event_id: EVENT,
+      replayed: false,
+      payment_creation_frozen: true,
+      hard_assignment_created: false,
+    });
 
     const sql = mocks.query.mock.calls.map(([statement]) => String(statement)).join('\n');
     expect(sql).toContain('INSERT INTO task_draft_account_claim_events');
@@ -204,12 +207,11 @@ describe('Universal V1 canonical TaskDraft claim', () => {
       })
       .mockResolvedValueOnce({ rows: [event(requestHash)], rowCount: 1 });
 
-    await expect(claimUniversalV1TaskDraft(request, USER, dependencies()))
-      .resolves.toMatchObject({
-        replayed: true,
-        claim_event_id: EVENT,
-        correlation_id: CORRELATION,
-      });
+    await expect(claimUniversalV1TaskDraft(request, USER, dependencies())).resolves.toMatchObject({
+      replayed: true,
+      claim_event_id: EVENT,
+      correlation_id: CORRELATION,
+    });
     expect(mocks.query).toHaveBeenCalledTimes(4);
   });
 
@@ -224,8 +226,9 @@ describe('Universal V1 canonical TaskDraft claim', () => {
       })
       .mockResolvedValueOnce({ rows: [event('0'.repeat(64))], rowCount: 1 });
 
-    await expect(claimUniversalV1TaskDraft(request, USER, dependencies()))
-      .rejects.toMatchObject({ code: 'CONFLICT' });
+    await expect(claimUniversalV1TaskDraft(request, USER, dependencies())).rejects.toMatchObject({
+      code: 'CONFLICT',
+    });
   });
 
   it('fails closed for an invalid capability, imported draft, or another owner', async () => {
@@ -233,11 +236,9 @@ describe('Universal V1 canonical TaskDraft claim', () => {
       .mockResolvedValueOnce({ rows: [], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [draft()], rowCount: 1 });
-    await expect(claimUniversalV1TaskDraft(
-      input({ card_token: 'd'.repeat(64) }),
-      USER,
-      dependencies(),
-    )).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(
+      claimUniversalV1TaskDraft(input({ card_token: 'd'.repeat(64) }), USER, dependencies())
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
 
     mocks.query
       .mockResolvedValueOnce({ rows: [], rowCount: 1 })
@@ -246,8 +247,9 @@ describe('Universal V1 canonical TaskDraft claim', () => {
         rows: [draft({ ingress_origin: 'LEGACY_SUPABASE_TASK_DRAFT_PUBLIC' })],
         rowCount: 1,
       });
-    await expect(claimUniversalV1TaskDraft(input(), USER, dependencies()))
-      .rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(claimUniversalV1TaskDraft(input(), USER, dependencies())).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+    });
 
     mocks.query
       .mockResolvedValueOnce({ rows: [], rowCount: 1 })
@@ -257,8 +259,9 @@ describe('Universal V1 canonical TaskDraft claim', () => {
         rowCount: 1,
       })
       .mockResolvedValueOnce({ rows: [], rowCount: 0 });
-    await expect(claimUniversalV1TaskDraft(input(), USER, dependencies()))
-      .rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(claimUniversalV1TaskDraft(input(), USER, dependencies())).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+    });
   });
 
   it('recovers an already claimed draft after browser idempotency-key loss without writing', async () => {
@@ -275,37 +278,46 @@ describe('Universal V1 canonical TaskDraft claim', () => {
         rowCount: 1,
       });
 
-    await expect(claimUniversalV1TaskDraft(
-      input({ idempotency_key: 'claim:device:replacement' }),
-      USER,
-      dependencies(),
-    )).resolves.toMatchObject({
+    await expect(
+      claimUniversalV1TaskDraft(
+        input({ idempotency_key: 'claim:device:replacement' }),
+        USER,
+        dependencies()
+      )
+    ).resolves.toMatchObject({
       replayed: true,
       claim_event_id: EVENT,
       correlation_id: CORRELATION,
     });
     expect(mocks.query).toHaveBeenCalledTimes(5);
-    expect(mocks.query.mock.calls.map(([sql]) => String(sql)).join('\n'))
-      .not.toMatch(/^\s*(?:INSERT|UPDATE|DELETE)\b/imu);
+    expect(mocks.query.mock.calls.map(([sql]) => String(sql)).join('\n')).not.toMatch(
+      /^\s*(?:INSERT|UPDATE|DELETE)\b/imu
+    );
   });
 });
 
 describe('TaskDraft claim migration contract', () => {
-  const sql = readFileSync(resolve(
-    __dirname,
-    '../../database/migrations/20260903_universal_v1_task_draft_account_claim.sql',
-  ), 'utf8');
-  const repairSql = readFileSync(resolve(
-    __dirname,
-    '../../database/migrations/20260905_universal_v1_task_draft_legacy_claim_import_repair.sql',
-  ), 'utf8');
+  const sql = readFileSync(
+    resolve(
+      __dirname,
+      '../../database/migrations/20260903_universal_v1_task_draft_account_claim.sql'
+    ),
+    'utf8'
+  );
+  const repairSql = readFileSync(
+    resolve(
+      __dirname,
+      '../../database/migrations/20260905_universal_v1_task_draft_legacy_claim_import_repair.sql'
+    ),
+    'utf8'
+  );
 
   it('is the exact account-claim segment after the public TaskDraft port', () => {
     const claimIndex = REQUIRED_MIGRATION_FILES.findIndex(
-      ({ name }) => name === '20260903_universal_v1_task_draft_account_claim',
+      ({ name }) => name === '20260903_universal_v1_task_draft_account_claim'
     );
 
-    expect(REQUIRED_MIGRATION_FILES).toHaveLength(140);
+    expect(REQUIRED_MIGRATION_FILES).toHaveLength(146);
     expect(claimIndex).toBeGreaterThan(0);
     expect(REQUIRED_MIGRATION_FILES.slice(claimIndex - 1)).toEqual([
       {
@@ -428,17 +440,41 @@ describe('TaskDraft claim migration contract', () => {
         name: '20261006_stage1_legacy_authority_containment_v1',
         fileName: '20261006_stage1_legacy_authority_containment_v1.sql',
       },
+      {
+        name: '20261007_subscription_cancellation_recovery_v1',
+        fileName: '20261007_subscription_cancellation_recovery_v1.sql',
+      },
+      {
+        name: '20261008_universal_v1_work_order_task_state_containment_v1',
+        fileName: '20261008_universal_v1_work_order_task_state_containment_v1.sql',
+      },
+      {
+        name: '20261009_universal_v1_standardized_quote_readiness_v1',
+        fileName: '20261009_universal_v1_standardized_quote_readiness_v1.sql',
+      },
+      {
+        name: '20261010_universal_v1_financial_security_event_expiry_v1',
+        fileName: '20261010_universal_v1_financial_security_event_expiry_v1.sql',
+      },
+      {
+        name: '20261012_universal_v1_work_order_command_authority_v2',
+        fileName: '20261012_universal_v1_work_order_command_authority_v2.sql',
+      },
+      {
+        name: '20261014_universal_v1_work_order_command_ports_v1',
+        fileName: '20261014_universal_v1_work_order_command_ports_v1.sql',
+      },
     ]);
   });
 
   it('makes claim evidence append-only and binds aggregate transition both ways', () => {
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS public.task_draft_account_claim_events');
     expect(sql).toContain(
-      'CREATE TABLE IF NOT EXISTS public.task_draft_precontract_claim_observations',
+      'CREATE TABLE IF NOT EXISTS public.task_draft_precontract_claim_observations'
     );
     expect(sql).toContain('PRECONTRACT_UNVERIFIED_NO_CANONICAL_EVENT');
     expect(sql).toContain(
-      'canonical precontract claim-like state requires reviewed adoption evidence',
+      'canonical precontract claim-like state requires reviewed adoption evidence'
     );
     expect(sql).toContain('UNIQUE (task_draft_id)');
     expect(sql).toContain('task_draft_account_claim_events_immutable');
@@ -448,23 +484,22 @@ describe('TaskDraft claim migration contract', () => {
     expect(sql).toContain('task_draft_account_claim_presence_guard');
     expect(sql).toContain('BEFORE INSERT OR UPDATE ON public.task_drafts');
     expect(sql).toMatch(
-      /CREATE CONSTRAINT TRIGGER task_draft_account_claim_presence_guard[\s\S]*?DEFERRABLE INITIALLY DEFERRED/u,
+      /CREATE CONSTRAINT TRIGGER task_draft_account_claim_presence_guard[\s\S]*?DEFERRABLE INITIALLY DEFERRED/u
     );
     expect(sql).toContain("OLD.ingress_origin <> 'BACKEND_POSTGRESQL'");
     expect(sql).toContain('REVOKE ALL ON TABLE public.task_draft_account_claim_events FROM PUBLIC');
   });
 
   it('does not grant assignment or financial authority', () => {
-    const consequentialTable = /(?:tasks|task_work_orders|task_financial_operations|task_financial_security_events|escrows|payments|stripe_events|hxos_fake_financial_)/iu;
+    const consequentialTable =
+      /(?:tasks|task_work_orders|task_financial_operations|task_financial_security_events|escrows|payments|stripe_events|hxos_fake_financial_)/iu;
     expect(sql).not.toMatch(new RegExp(`INSERT INTO ${consequentialTable.source}`, 'iu'));
     expect(sql).not.toMatch(new RegExp(`UPDATE ${consequentialTable.source}`, 'iu'));
     expect(sql).not.toMatch(/GRANT\s+(?:INSERT|UPDATE|DELETE)/iu);
   });
 
   it('repairs only receipt-backed legacy claim imports and closes noncanonical insert gaps', () => {
-    expect(repairSql).toContain(
-      "NEW.ingress_origin = 'LEGACY_SUPABASE_TASK_DRAFT_PUBLIC'",
-    );
+    expect(repairSql).toContain("NEW.ingress_origin = 'LEGACY_SUPABASE_TASK_DRAFT_PUBLIC'");
     expect(repairSql).toContain('20260902 deferred receipt guard proves the exact receipt');
     expect(repairSql).toContain('OR NEW.poster_user_id IS NOT NULL');
     expect(repairSql).toContain('record_legacy_task_draft_claim_observation');
@@ -474,9 +509,7 @@ describe('TaskDraft claim migration contract', () => {
     expect(repairSql).toContain('HXUV1-TD-CLAIM-6');
     expect(repairSql).toContain('HXUV1-TD-CLAIM-7');
     expect(repairSql).toContain('provider "claim" is only EXPRESS_INTEREST');
-    expect(repairSql).not.toMatch(
-      /INSERT INTO public\.task_draft_account_claim_events/iu,
-    );
+    expect(repairSql).not.toMatch(/INSERT INTO public\.task_draft_account_claim_events/iu);
     const consequentialTable = [
       'task_applications',
       'task_reservations',
@@ -491,10 +524,9 @@ describe('TaskDraft claim migration contract', () => {
       'quote_payments',
       'stripe_events',
     ].join('|');
-    expect(repairSql).not.toMatch(new RegExp(
-      `(?:INSERT\\s+INTO|UPDATE)\\s+(?:public\\.)?(?:${consequentialTable})\\b`,
-      'iu',
-    ));
+    expect(repairSql).not.toMatch(
+      new RegExp(`(?:INSERT\\s+INTO|UPDATE)\\s+(?:public\\.)?(?:${consequentialTable})\\b`, 'iu')
+    );
     expect(repairSql).not.toMatch(/\b(?:DELETE|TRUNCATE)\b/iu);
     expect(repairSql).not.toMatch(/GRANT\s+(?:INSERT|UPDATE|DELETE)/iu);
   });

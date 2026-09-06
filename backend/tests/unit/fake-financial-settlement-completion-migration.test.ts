@@ -2,20 +2,14 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import { REQUIRED_MIGRATION_FILES } from '../../src/jobs/engine-automation-migration-files.js';
+import { CANONICAL_FAKE_FINANCIAL_MIGRATION_FILES } from '../../src/jobs/nonproduction-fake-financial-execution.js';
+
 const migrationName = '20260910_fake_financial_settlement_completion_v3';
 const migration = readFileSync(
   resolve(process.cwd(), `backend/database/migrations/${migrationName}.sql`),
   'utf8'
 );
-const nonproductionRegistry = readFileSync(
-  resolve(process.cwd(), 'backend/src/jobs/nonproduction-financial-migration.ts'),
-  'utf8'
-);
-const productionRegistry = readFileSync(
-  resolve(process.cwd(), 'backend/src/jobs/engine-automation-migration-files.ts'),
-  'utf8'
-);
-
 describe('fake financial settlement completion v3 migration', () => {
   it('adds the two missing provider-neutral operations through append-only evidence', () => {
     expect(migration).toContain("'PROVIDER_RELEASE'");
@@ -28,11 +22,25 @@ describe('fake financial settlement completion v3 migration', () => {
   });
 
   it('is registered only in the exact nonproduction fake migration chain', () => {
-    expect(nonproductionRegistry).toContain(migrationName);
+    const fakeMigrationNames = CANONICAL_FAKE_FINANCIAL_MIGRATION_FILES.map(
+      ({ name }) => name
+    );
+    const migrationIndex = fakeMigrationNames.indexOf(migrationName);
+
+    expect(migrationIndex).toBeGreaterThan(0);
+    expect(CANONICAL_FAKE_FINANCIAL_MIGRATION_FILES[migrationIndex]).toEqual({
+      name: migrationName,
+      fileName: `${migrationName}.sql`,
+      evidenceTable: 'hxos_fake_financial_schema_evidence_v3',
+    });
+    expect(fakeMigrationNames[migrationIndex - 1]).toBe(
+      '20260903_fake_financial_provider_account_refresh_v2'
+    );
     expect(
-      nonproductionRegistry.indexOf('20260903_fake_financial_provider_account_refresh_v2')
-    ).toBeLessThan(nonproductionRegistry.indexOf(migrationName));
-    expect(productionRegistry).not.toContain(migrationName);
+      REQUIRED_MIGRATION_FILES.some(
+        ({ name, fileName }) => name === migrationName || fileName === `${migrationName}.sql`
+      )
+    ).toBe(false);
   });
 
   it('does not add processor-specific or production-money authority', () => {

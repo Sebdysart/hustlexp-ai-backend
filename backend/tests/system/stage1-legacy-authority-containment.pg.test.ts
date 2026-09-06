@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -10,6 +9,10 @@ import {
   productionMigrationRuntime,
   runEngineAutomationMigration,
 } from '../../src/jobs/engine-automation-migration.js';
+import {
+  assertMigrationExecutionAuthorized,
+  authorizeMigrationExecutionPlan,
+} from '../../src/jobs/migration-execution-authority.js';
 
 const enabled = process.env.HX_ALLOW_TASK_DRAFT_INGRESS_PG === '1';
 const describePg = enabled ? describe : describe.skip;
@@ -22,6 +25,29 @@ const contaminationSql = readFileSync(
   resolve(process.cwd(), 'backend/tests/fixtures/stage1-main-d42975b-contamination.sql'),
   'utf8'
 );
+const freshProofDatabaseName = 'hx_ci_fresh_test';
+const upgradeProofDatabaseName = 'hx_ci_upgrade_test';
+
+function localMigrationSession(client: object, exactDatabaseUrl: string) {
+  const authority = assertMigrationExecutionAuthorized({
+    env: {
+      HX_ENVIRONMENT: 'local',
+      NODE_ENV: 'test',
+      HX_ALLOW_CI_DB_RECREATE: 'true',
+    },
+    migrationArtifactDigest: `sha256:${'a'.repeat(64)}`,
+    databaseUrl: exactDatabaseUrl,
+  });
+  return authorizeMigrationExecutionPlan(authority, {
+    databaseUrl: exactDatabaseUrl,
+    client,
+    migrations: [{
+      name: containmentName,
+      sql: containmentSql,
+      sourcePath: resolve(process.cwd(), containmentPath),
+    }],
+  });
+}
 
 const retiredReceipts = [
   ['20260819_ops_web_hardening', '66ffbbe8ff05748c684fef2df4b500e2371556bfdc4adfc0222b38bebe7bdaa1'],
@@ -99,7 +125,7 @@ function assertDisposableDatabase(value: string): URL {
 }
 
 function exactIdentifier(value: string): string {
-  if (!/^hx_ci_stage1_containment_[a-f0-9]{20}$/u.test(value)) {
+  if (value !== freshProofDatabaseName && value !== upgradeProofDatabaseName) {
     throw new Error('Refusing an unrecognized disposable Stage-1 containment database identifier');
   }
   return `"${value}"`;
@@ -245,11 +271,10 @@ async function containmentSnapshot(pool: pg.Pool): Promise<unknown> {
 }
 
 async function withDisposableProofDatabase(
+  proofDatabaseName: typeof freshProofDatabaseName | typeof upgradeProofDatabaseName,
   run: (pool: pg.Pool, databaseUrl: URL) => Promise<void>
 ): Promise<void> {
   const sourceUrl = assertDisposableDatabase(databaseUrl);
-  const proofDatabaseName =
-    `hx_ci_stage1_containment_${randomUUID().replaceAll('-', '').slice(0, 20)}`;
   const quotedProofDatabase = exactIdentifier(proofDatabaseName);
   const adminUrl = new URL(sourceUrl);
   adminUrl.pathname = '/postgres';
@@ -260,6 +285,7 @@ async function withDisposableProofDatabase(
   let databaseCreated = false;
 
   try {
+    await adminPool.query(`DROP DATABASE IF EXISTS ${quotedProofDatabase} WITH (FORCE)`);
     await adminPool.query(`CREATE DATABASE ${quotedProofDatabase}`);
     databaseCreated = true;
     proofPool = new pg.Pool({ connectionString: proofUrl.toString(), max: 2 });
@@ -311,14 +337,19 @@ async function assertPartialSchemaContainmentRollback(options: {
   expectedCode: 'HXUV1S140-5' | 'HXUV1S140-6';
   expectedColumnCountSql: string;
 }): Promise<void> {
-  await withDisposableProofDatabase(async (proofPool, proofUrl) => {
+  await withDisposableProofDatabase(freshProofDatabaseName, async (proofPool, proofUrl) => {
     const runtime = productionMigrationRuntime();
+    const containmentMigrationIndex = runtime.migrationSpecs.findIndex(
+      ({ name }) => name === containmentName
+    );
+    expect(containmentMigrationIndex).toBeGreaterThan(0);
+    const preContainmentSpecs = runtime.migrationSpecs.slice(0, containmentMigrationIndex);
     const canonical = await runEngineAutomationMigration({
       ...runtime,
       databaseUrl: proofUrl.toString(),
-      migrationSpecs: runtime.migrationSpecs.slice(0, -1),
+      migrationSpecs: preContainmentSpecs,
     });
-    expect(canonical).toHaveLength(139);
+    expect(canonical).toHaveLength(preContainmentSpecs.length);
     expect(canonical.every(({ status }) => status === 'applied')).toBe(true);
 
     await proofPool.query(`
@@ -345,6 +376,7 @@ async function assertPartialSchemaContainmentRollback(options: {
           migrationConnection as never,
           containmentSql,
           resolve(process.cwd(), containmentPath),
+          localMigrationSession(migrationConnection, proofUrl.toString()),
           containmentName
         );
         return undefined;
@@ -417,7 +449,7 @@ describePg('Stage-1 contaminated-main PostgreSQL upgrade containment', () => {
     'preserves legacy rows and receipts while making every retired writer and bypass inert',
     async () => {
       const sourceUrl = assertDisposableDatabase(databaseUrl);
-      const proofDatabaseName = `hx_ci_stage1_containment_${randomUUID().replaceAll('-', '').slice(0, 20)}`;
+      const proofDatabaseName = upgradeProofDatabaseName;
       const quotedProofDatabase = exactIdentifier(proofDatabaseName);
       const adminUrl = new URL(sourceUrl);
       adminUrl.pathname = '/postgres';
@@ -428,16 +460,20 @@ describePg('Stage-1 contaminated-main PostgreSQL upgrade containment', () => {
       let databaseCreated = false;
 
       try {
+        await adminPool.query(`DROP DATABASE IF EXISTS ${quotedProofDatabase} WITH (FORCE)`);
         await adminPool.query(`CREATE DATABASE ${quotedProofDatabase}`);
         databaseCreated = true;
         proofPool = new pg.Pool({ connectionString: proofUrl.toString(), max: 2 });
 
         const runtime = productionMigrationRuntime();
-        expect(runtime.migrationSpecs.at(-1)?.name).toBe(containmentName);
+        const containmentMigrationIndex = runtime.migrationSpecs.findIndex(
+          ({ name }) => name === containmentName
+        );
         const commonMigrationIndex = runtime.migrationSpecs.findIndex(
           ({ name }) => name === '20260819_quote_payments'
         );
         expect(commonMigrationIndex).toBe(102);
+        expect(containmentMigrationIndex).toBeGreaterThan(commonMigrationIndex);
 
         const commonChain = await runEngineAutomationMigration({
           ...runtime,
@@ -553,12 +589,16 @@ describePg('Stage-1 contaminated-main PostgreSQL upgrade containment', () => {
           seedClient.release();
         }
 
+        const preContainmentCandidateSpecs = runtime.migrationSpecs.slice(
+          commonMigrationIndex + 1,
+          containmentMigrationIndex
+        );
         const postStage1CandidateChain = await runEngineAutomationMigration({
           ...runtime,
           databaseUrl: proofUrl.toString(),
-          migrationSpecs: runtime.migrationSpecs.slice(commonMigrationIndex + 1, -1),
+          migrationSpecs: preContainmentCandidateSpecs,
         });
-        expect(postStage1CandidateChain).toHaveLength(36);
+        expect(postStage1CandidateChain).toHaveLength(preContainmentCandidateSpecs.length);
         expect(
           postStage1CandidateChain.every(({ status }) => status === 'applied')
         ).toBe(true);
@@ -593,6 +633,7 @@ describePg('Stage-1 contaminated-main PostgreSQL upgrade containment', () => {
               migrationConnection as never,
               containmentSql,
               resolve(process.cwd(), containmentPath),
+              localMigrationSession(migrationConnection, proofUrl.toString()),
               containmentName
             );
           } finally {
@@ -600,6 +641,15 @@ describePg('Stage-1 contaminated-main PostgreSQL upgrade containment', () => {
           }
         })();
         expect(applied.status).toBe('applied');
+
+        const postContainmentSpecs = runtime.migrationSpecs.slice(containmentMigrationIndex + 1);
+        const postContainmentChain = await runEngineAutomationMigration({
+          ...runtime,
+          databaseUrl: proofUrl.toString(),
+          migrationSpecs: postContainmentSpecs,
+        });
+        expect(postContainmentChain).toHaveLength(postContainmentSpecs.length);
+        expect(postContainmentChain.every(({ status }) => status === 'applied')).toBe(true);
 
         const receipts = await proofPool.query<{ name: string; sha256: string }>(
           `SELECT name, btrim(sha256) AS sha256
@@ -912,6 +962,7 @@ describePg('Stage-1 contaminated-main PostgreSQL upgrade containment', () => {
               replayConnection as never,
               containmentSql,
               resolve(process.cwd(), containmentPath),
+              localMigrationSession(replayConnection, proofUrl.toString()),
               containmentName
             );
           } finally {

@@ -52,29 +52,49 @@ const ids = {
 };
 
 function preparation(
-  overrides: Partial<Extract<ExecuteUniversalV1FinancialEventCommand, { operationKind: 'PREPARE_PAYMENT_METHOD' }>> = {}
+  overrides: Partial<
+    Extract<ExecuteUniversalV1FinancialEventCommand, { operationKind: 'PREPARE_PAYMENT_METHOD' }>
+  > = {}
 ): Extract<ExecuteUniversalV1FinancialEventCommand, { operationKind: 'PREPARE_PAYMENT_METHOD' }> {
   return {
-    operationKind: 'PREPARE_PAYMENT_METHOD', providerKind: 'FAKE', operationId: ids.prepare,
-    idempotencyKey: 'app:prepare:coordinator-hold:0001', providerExpectedVersion: 0,
-    lifecycleExpectedVersion: 0, taskDraftId: ids.draft, taskId: ids.task,
-    eligibilityDecisionId: ids.eligibility, scopeVersionId: ids.scope,
-    recordedBy: ids.actor, occurredAt: '1999-01-01T00:00:00.000Z',
-    customerId: 'synthetic-customer-1', ...overrides,
+    operationKind: 'PREPARE_PAYMENT_METHOD',
+    providerKind: 'FAKE',
+    operationId: ids.prepare,
+    idempotencyKey: 'app:prepare:coordinator-hold:0001',
+    providerExpectedVersion: 0,
+    lifecycleExpectedVersion: 0,
+    taskDraftId: ids.draft,
+    taskId: ids.task,
+    eligibilityDecisionId: ids.eligibility,
+    scopeVersionId: ids.scope,
+    recordedBy: ids.actor,
+    occurredAt: '1999-01-01T00:00:00.000Z',
+    customerId: 'synthetic-customer-1',
+    ...overrides,
   };
 }
 
 function authorization(
   paymentMethodReference = 'fake-payment-method-reference'
-): Extract<ExecuteUniversalV1FinancialEventCommand, { operationKind: 'AUTHORIZE' }> {
+): ExecuteUniversalV1FinancialEventCommand & { operationKind: 'AUTHORIZE' } {
   return {
-    operationKind: 'AUTHORIZE', providerKind: 'FAKE', operationId: ids.authorize,
-    idempotencyKey: 'app:authorize:coordinator-hold:0001', providerExpectedVersion: 0,
-    lifecycleExpectedVersion: 1, taskDraftId: ids.draft, taskId: ids.task,
-    eligibilityDecisionId: ids.eligibility, scopeVersionId: ids.scope,
-    predecessorEventId: ids.predecessor, relatedOperationId: ids.prepare,
-    amountCents: 12_000, currency: 'usd', recordedBy: ids.actor,
-    occurredAt: '1999-01-01T00:00:00.000Z', paymentMethodReference,
+    operationKind: 'AUTHORIZE',
+    providerKind: 'FAKE',
+    operationId: ids.authorize,
+    idempotencyKey: 'app:authorize:coordinator-hold:0001',
+    providerExpectedVersion: 0,
+    lifecycleExpectedVersion: 1,
+    taskDraftId: ids.draft,
+    taskId: ids.task,
+    eligibilityDecisionId: ids.eligibility,
+    scopeVersionId: ids.scope,
+    predecessorEventId: ids.predecessor,
+    relatedOperationId: ids.prepare,
+    amountCents: 12_000,
+    currency: 'usd',
+    recordedBy: ids.actor,
+    occurredAt: '1999-01-01T00:00:00.000Z',
+    paymentMethodReference,
   };
 }
 
@@ -83,7 +103,9 @@ class ObservingJournal implements FinancialProviderCommandJournal {
   readonly receipts: FinancialProviderCommandReceipt[] = [];
   private readonly inner = new InMemoryFinancialProviderCommandJournal();
 
-  async recordRequested<TRequest>(input: RecordFinancialProviderCommandInput<TRequest>): Promise<FinancialProviderCommandReceipt> {
+  async recordRequested<TRequest>(
+    input: RecordFinancialProviderCommandInput<TRequest>
+  ): Promise<FinancialProviderCommandReceipt> {
     this.inputs.push(input as RecordFinancialProviderCommandInput<unknown>);
     const receipt = await this.inner.recordRequested(input);
     this.receipts.push(receipt);
@@ -97,7 +119,9 @@ class ObservingPreparedAuthority implements UniversalV1PreparedFinancialCommandA
     () => new Date('2030-01-01T00:00:00.000Z')
   );
 
-  async prepare(input: PrepareUniversalV1FinancialCommandInput): Promise<PreparedUniversalV1FinancialCommandReceipt> {
+  async prepare(
+    input: PrepareUniversalV1FinancialCommandInput
+  ): Promise<PreparedUniversalV1FinancialCommandReceipt> {
     this.inputs.push(input);
     return this.inner.prepare(input);
   }
@@ -111,14 +135,18 @@ class ImmediateDurableCoordinator implements ForegroundFinancialProviderCommandC
     invokeAdapter: (exactCanonicalRequest: TRequest) => Promise<TResult>
   ): Promise<ForegroundFinancialProviderCommandResult<TResult>> {
     this.contexts.push(context as ForegroundFinancialProviderCommandContext<unknown>);
+    const evidence = {
+      commandId: ids.command,
+      dispatchAttemptId: ids.attempt,
+      outcomeFactId: ids.outcome,
+      fakeOperationEventId: ids.fakeEvent,
+      ...(context.command.preparedFinancialCommandId === null
+        ? {}
+        : { preparedCommandId: context.command.preparedFinancialCommandId }),
+    };
     return {
       result: await invokeAdapter(context.exactRequest),
-      evidence: {
-        commandId: ids.command,
-        dispatchAttemptId: ids.attempt,
-        outcomeFactId: ids.outcome,
-        fakeOperationEventId: ids.fakeEvent,
-      },
+      evidence,
     };
   }
 }
@@ -153,7 +181,9 @@ function reconciliationSnapshot(
 
 function coordinatedFixture() {
   const journal = new ObservingJournal();
-  const providerRepository = new InMemoryFakeFinancialOperationRepository();
+  const providerRepository = new InMemoryFakeFinancialOperationRepository(
+    () => new Date('2030-01-01T00:00:00.000Z')
+  );
   const provider = new FakeFinancialProvider(providerRepository);
   const lifecycle = new InMemoryUniversalV1FinancialLifecycleRepository();
   const coordinator = new ImmediateDurableCoordinator();
@@ -178,12 +208,65 @@ function fixture(
   const provider = new FakeFinancialProvider(providerRepository);
   const lifecycle = new InMemoryUniversalV1FinancialLifecycleRepository();
   const service = new UniversalV1FakeFinancialApplicationService(
-    provider, lifecycle, { assertAuthorized: vi.fn() }, journal, prepared
+    provider,
+    lifecycle,
+    { assertAuthorized: vi.fn() },
+    journal,
+    prepared
   );
   return { provider, providerRepository, lifecycle, service };
 }
 
 describe('UniversalV1FakeFinancialApplicationService foreground dispatch hold', () => {
+  it.each([
+    [
+      'empty customer reference',
+      preparation({ customerId: '   ' }),
+      'UNIVERSAL_FINANCE_CUSTOMER_ID_INVALID',
+    ],
+    [
+      'invalid Unicode reference',
+      preparation({ customerId: '\uD800' }),
+      'FAKE_FINANCIAL_DURABLE_REQUEST_REFERENCE_INVALID',
+    ],
+    [
+      'noninteger amount',
+      { ...authorization(), amountCents: 12_000.5 },
+      'UNIVERSAL_FINANCE_AMOUNT_INVALID',
+    ],
+    [
+      'invalid scenario',
+      { ...authorization(), scenario: 'DELAYED_SETTLEMENT' },
+      'FAKE_FINANCIAL_DURABLE_REQUEST_SCENARIO_INVALID',
+    ],
+    [
+      'non-UUID authorization reference',
+      { ...authorization(), operationKind: 'SECURE', authorizationOperationId: 'foreign-id' },
+      'FAKE_FINANCIAL_DURABLE_REQUEST_REFERENCE_INVALID',
+    ],
+    [
+      'refund above original amount',
+      { ...authorization(), operationKind: 'REFUND', originalAmountCents: 11_999 },
+      'FAKE_FINANCIAL_DURABLE_REQUEST_REFUND_INVALID',
+    ],
+  ] as const)(
+    'rejects %s before PREPARED or any downstream I/O',
+    async (_label, command, reason) => {
+      const prepared = new ObservingPreparedAuthority();
+      const journal = new ObservingJournal();
+      const { providerRepository, lifecycle, service } = fixture(journal, prepared);
+      const materialize = vi.spyOn(lifecycle, 'recordFinancialEvent');
+
+      await expect(
+        service.executeFinancialEvent(command as ExecuteUniversalV1FinancialEventCommand)
+      ).rejects.toThrow(reason);
+      expect(prepared.inputs).toHaveLength(0);
+      expect(journal.inputs).toHaveLength(0);
+      expect(providerRepository.events()).toHaveLength(0);
+      expect(materialize).not.toHaveBeenCalled();
+    }
+  );
+
   it('commits PREPARED and REQUESTED but performs zero adapter or lifecycle I/O without DISPATCH_ATTEMPTED', async () => {
     const journal = new ObservingJournal();
     const prepared = new ObservingPreparedAuthority();
@@ -204,13 +287,18 @@ describe('UniversalV1FakeFinancialApplicationService foreground dispatch hold', 
   it('binds every semantic adapter field through the exact canonical request digest', async () => {
     const firstPrepared = new ObservingPreparedAuthority();
     const firstJournal = new ObservingJournal();
-    await expect(fixture(firstJournal, firstPrepared).service.executeFinancialEvent(authorization()))
-      .rejects.toThrow('FOREGROUND_DISPATCH_COORDINATOR_REQUIRED');
+    await expect(
+      fixture(firstJournal, firstPrepared).service.executeFinancialEvent(authorization())
+    ).rejects.toThrow('FOREGROUND_DISPATCH_COORDINATOR_REQUIRED');
 
     const exactRequest = {
-      operationId: ids.authorize, idempotencyKey: 'app:authorize:coordinator-hold:0001',
-      expectedVersion: 0, amountCents: 12_000, currency: 'usd',
-      relatedOperationId: ids.prepare, paymentMethodReference: 'fake-payment-method-reference',
+      operationId: ids.authorize,
+      idempotencyKey: 'app:authorize:coordinator-hold:0001',
+      expectedVersion: 0,
+      amountCents: 12_000,
+      currency: 'usd',
+      relatedOperationId: ids.prepare,
+      paymentMethodReference: 'fake-payment-method-reference',
     };
     expect(firstPrepared.inputs[0]?.providerRequestSha256).toBe(
       canonicalFinancialProviderRequestSha256(exactRequest)
@@ -219,21 +307,27 @@ describe('UniversalV1FakeFinancialApplicationService foreground dispatch hold', 
     expect(firstJournal.inputs[0]?.actor).toEqual({ actorId: ids.actor, actorKind: 'PARTICIPANT' });
 
     const changedPrepared = new ObservingPreparedAuthority();
-    await expect(fixture(new ObservingJournal(), changedPrepared).service.executeFinancialEvent(
-      authorization('different-payment-method-reference')
-    )).rejects.toThrow('FOREGROUND_DISPATCH_COORDINATOR_REQUIRED');
-    expect(changedPrepared.inputs[0]?.providerRequestSha256)
-      .not.toBe(firstPrepared.inputs[0]?.providerRequestSha256);
+    await expect(
+      fixture(new ObservingJournal(), changedPrepared).service.executeFinancialEvent(
+        authorization('different-payment-method-reference')
+      )
+    ).rejects.toThrow('FOREGROUND_DISPATCH_COORDINATOR_REQUIRED');
+    expect(changedPrepared.inputs[0]?.providerRequestSha256).not.toBe(
+      firstPrepared.inputs[0]?.providerRequestSha256
+    );
   });
 
   it('changes PREPARED digest for each previously unbound adapter semantic', async () => {
     const digestFor = async (command: ExecuteUniversalV1FinancialEventCommand) => {
       const prepared = new ObservingPreparedAuthority();
-      await expect(fixture(new ObservingJournal(), prepared).service.executeFinancialEvent(command))
-        .rejects.toThrow('FOREGROUND_DISPATCH_COORDINATOR_REQUIRED');
+      await expect(
+        fixture(new ObservingJournal(), prepared).service.executeFinancialEvent(command)
+      ).rejects.toThrow('FOREGROUND_DISPATCH_COORDINATOR_REQUIRED');
       return prepared.inputs[0]?.providerRequestSha256;
     };
-    const pairs: Array<[ExecuteUniversalV1FinancialEventCommand, ExecuteUniversalV1FinancialEventCommand]> = [
+    const pairs: Array<
+      [ExecuteUniversalV1FinancialEventCommand, ExecuteUniversalV1FinancialEventCommand]
+    > = [
       [preparation(), preparation({ customerId: 'different-customer' })],
       [authorization(), authorization('different-payment-method')],
       [
@@ -275,8 +369,9 @@ describe('UniversalV1FakeFinancialApplicationService foreground dispatch hold', 
     const { provider, lifecycle, service } = fixture();
     const adapter = vi.spyOn(provider, 'preparePaymentMethod');
     const materialize = vi.spyOn(lifecycle, 'recordFinancialEvent');
-    await expect(service.executeFinancialEvent(preparation({ scenario: 'DECLINE' })))
-      .rejects.toThrow('FOREGROUND_DISPATCH_COORDINATOR_REQUIRED');
+    await expect(
+      service.executeFinancialEvent(preparation({ scenario: 'DECLINE' }))
+    ).rejects.toThrow('FOREGROUND_DISPATCH_COORDINATOR_REQUIRED');
     expect(adapter).not.toHaveBeenCalled();
     expect(materialize).not.toHaveBeenCalled();
   });
@@ -284,8 +379,9 @@ describe('UniversalV1FakeFinancialApplicationService foreground dispatch hold', 
   it('persists neither participant wall-clock time nor a false operator classification', async () => {
     const prepared = new ObservingPreparedAuthority();
     const journal = new ObservingJournal();
-    await expect(fixture(journal, prepared).service.executeFinancialEvent(preparation()))
-      .rejects.toThrow('FOREGROUND_DISPATCH_COORDINATOR_REQUIRED');
+    await expect(
+      fixture(journal, prepared).service.executeFinancialEvent(preparation())
+    ).rejects.toThrow('FOREGROUND_DISPATCH_COORDINATOR_REQUIRED');
     expect(prepared.inputs[0]).not.toHaveProperty('occurredAt');
     expect(journal.inputs[0]?.actor).toEqual({ actorId: ids.actor, actorKind: 'PARTICIPANT' });
   });
@@ -296,7 +392,9 @@ describe('UniversalV1FakeFinancialApplicationService foreground dispatch hold', 
     };
     const preparedFixture = fixture(new ObservingJournal(), refusingPrepared);
     const preparedAdapter = vi.spyOn(preparedFixture.provider, 'preparePaymentMethod');
-    await expect(preparedFixture.service.executeFinancialEvent(preparation())).rejects.toThrow('PREPARED_REFUSED');
+    await expect(preparedFixture.service.executeFinancialEvent(preparation())).rejects.toThrow(
+      'PREPARED_REFUSED'
+    );
     expect(preparedAdapter).not.toHaveBeenCalled();
 
     const refusingJournal: FinancialProviderCommandJournal = {
@@ -304,14 +402,17 @@ describe('UniversalV1FakeFinancialApplicationService foreground dispatch hold', 
     };
     const journalFixture = fixture(refusingJournal);
     const journalAdapter = vi.spyOn(journalFixture.provider, 'preparePaymentMethod');
-    await expect(journalFixture.service.executeFinancialEvent(preparation())).rejects.toThrow('REQUESTED_REFUSED');
+    await expect(journalFixture.service.executeFinancialEvent(preparation())).rejects.toThrow(
+      'REQUESTED_REFUSED'
+    );
     expect(journalAdapter).not.toHaveBeenCalled();
   });
 
   it('keeps production, real-provider, and caller-owned transaction paths sealed', async () => {
     const denied = fixture();
-    await expect(denied.service.executeFinancialEvent({ ...preparation(), providerKind: 'APPROVED_PROVIDER' }))
-      .rejects.toThrow('UNIVERSAL_FINANCE_REAL_PROVIDER_REFUSED');
+    await expect(
+      denied.service.executeFinancialEvent({ ...preparation(), providerKind: 'APPROVED_PROVIDER' })
+    ).rejects.toThrow('UNIVERSAL_FINANCE_REAL_PROVIDER_REFUSED');
     expect(() => authorizeUniversalV1FakeFinancialTransaction()).toThrow(
       'UNIVERSAL_FINANCE_CALLER_OWNED_TRANSACTION_PREPARED_AUTHORITY_REFUSED'
     );
@@ -320,12 +421,37 @@ describe('UniversalV1FakeFinancialApplicationService foreground dispatch hold', 
 });
 
 describe('Universal V1 durable non-lifecycle command evidence', () => {
+  it('persists exact provider time and expiry instead of the caller command timestamp', async () => {
+    const { lifecycle, service } = coordinatedFixture();
+    const recordFinancialEvent = vi.spyOn(lifecycle, 'recordFinancialEvent');
+    const prepared = await service.executeFinancialEvent(preparation());
+    const authorized = await service.executeFinancialEvent({
+      ...authorization(),
+      predecessorEventId: prepared.id,
+    });
+
+    expect(prepared).toMatchObject({
+      occurredAt: '2030-01-01T00:00:00.000Z',
+      expiresAt: null,
+    });
+    expect(authorized).toMatchObject({
+      occurredAt: '2030-01-01T00:00:00.000Z',
+      expiresAt: '2030-01-01T00:15:00.000Z',
+    });
+    expect(authorized.occurredAt).not.toBe(authorization().occurredAt);
+    expect(recordFinancialEvent).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        occurredAt: '2030-01-01T00:00:00.000Z',
+        expiresAt: '2030-01-01T00:15:00.000Z',
+      })
+    );
+  });
+
   it('binds the exact reconciliation snapshot through provider request, fake metadata, and repository evidence', async () => {
     const { journal, lifecycle, providerRepository, service } = coordinatedFixture();
     const recordReconciliation = vi.spyOn(lifecycle, 'recordReconciliation');
     const snapshot = reconciliationSnapshot();
-    const reconciliationSnapshotSha256 =
-      canonicalUniversalV1ReconciliationSnapshotSha256(snapshot);
+    const reconciliationSnapshotSha256 = canonicalUniversalV1ReconciliationSnapshotSha256(snapshot);
     expect(
       canonicalUniversalV1ReconciliationSnapshotSha256(
         reconciliationSnapshot({ customerLedgerAmountCents: 12_001 })
@@ -431,7 +557,141 @@ describe('Universal V1 durable non-lifecycle command evidence', () => {
     });
   });
 
-  it('inserts the terminal reconciliation bridge in the canonical fact transaction', async () => {
+  it('uses the atomic fake lifecycle fact-and-bridge port', async () => {
+    const preparedCommandId = '00000000-0000-4000-8000-000000000125';
+    const financialEventId = '00000000-0000-4000-8000-000000000126';
+    const idempotencyKey = 'app:authorize:postgres-port:0001';
+    const occurredAt = '2030-01-01T00:00:00.000Z';
+    const expiresAt = '2030-01-01T00:30:00.000Z';
+    const durableFakeEvidence = {
+      preparedCommandId,
+      commandId: ids.command,
+      dispatchAttemptId: ids.attempt,
+      outcomeFactId: ids.outcome,
+      fakeOperationEventId: ids.fakeEvent,
+    } as const;
+    const queries: Array<{ sql: string; params: unknown[] | undefined }> = [];
+    let atomicPortParameters: unknown[] | undefined;
+    const query = (async (sql: string, params?: unknown[]) => {
+      queries.push({ sql, params });
+      if (sql.includes('public.hxos_record_fake_financial_security_event_v1')) {
+        atomicPortParameters = params;
+        return {
+          rows: [
+            {
+              id: financialEventId,
+              operation_id: ids.authorize,
+              event_kind: 'AUTHORIZED',
+              status: 'SUCCEEDED',
+              provider_kind: 'FAKE',
+              external_reference: 'fake_authorize_exact',
+              expected_version: 1,
+              idempotency_key: idempotencyKey,
+              task_draft_id: ids.draft,
+              task_id: ids.task,
+              eligibility_decision_id: ids.eligibility,
+              scope_version_id: ids.scope,
+              change_order_id: null,
+              predecessor_event_id: ids.predecessor,
+              completion_fact_id: null,
+              amount_cents: '12000',
+              currency: 'USD',
+              evidence: {
+                providerState: 'SUCCEEDED',
+                providerOperationVersion: 1,
+                providerIdempotencyReplayed: false,
+              },
+              recorded_by: ids.actor,
+              occurred_at: new Date(occurredAt),
+              expires_at: new Date(expiresAt),
+            },
+          ],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes('FROM public.universal_v1_fake_financial_lifecycle_bridges')) {
+        return {
+          rows: [
+            {
+              bridge_id: atomicPortParameters?.[1],
+              prepared_command_id: preparedCommandId,
+              command_id: ids.command,
+              dispatch_attempt_id: ids.attempt,
+              outcome_fact_id: ids.outcome,
+              fake_operation_event_id: ids.fakeEvent,
+              task_financial_security_event_id: financialEventId,
+              authority_chain_sha256: 'c'.repeat(64),
+            },
+          ],
+          rowCount: 1,
+        };
+      }
+      return { rows: [], rowCount: 0 };
+    }) as QueryFn;
+    const database = {
+      serializableTransaction: vi.fn(
+        async <T>(callback: (transactionQuery: QueryFn) => Promise<T>) => callback(query)
+      ),
+    } as unknown as Database;
+    const repository = new PostgresUniversalV1FinancialLifecycleRepository(database);
+
+    await expect(
+      repository.recordFinancialEvent({
+        operationId: ids.authorize,
+        eventKind: 'AUTHORIZED',
+        status: 'SUCCEEDED',
+        providerKind: 'FAKE',
+        externalReference: 'fake_authorize_exact',
+        providerOperationVersion: 1,
+        lifecycleExpectedVersion: 1,
+        idempotencyKey,
+        taskDraftId: ids.draft,
+        taskId: ids.task,
+        eligibilityDecisionId: ids.eligibility,
+        scopeVersionId: ids.scope,
+        changeOrderId: null,
+        predecessorEventId: ids.predecessor,
+        completionFactId: null,
+        amountCents: 12_000,
+        currency: 'USD',
+        providerState: 'SUCCEEDED',
+        providerIdempotencyReplayed: false,
+        durableFakeEvidence,
+        recordedBy: ids.actor,
+        occurredAt,
+        expiresAt,
+      })
+    ).resolves.toMatchObject({
+      id: financialEventId,
+      providerKind: 'FAKE',
+      eventKind: 'AUTHORIZED',
+      idempotencyReplayed: false,
+    });
+
+    expect(atomicPortParameters?.[0]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
+    );
+    expect(atomicPortParameters?.[1]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
+    );
+    expect(atomicPortParameters?.slice(2)).toEqual([
+      'FAKE',
+      ids.authorize,
+      idempotencyKey,
+      preparedCommandId,
+      ids.command,
+      ids.attempt,
+      ids.outcome,
+      ids.fakeEvent,
+    ]);
+    expect(
+      queries.some(({ sql }) =>
+        /INSERT\s+INTO\s+(?:public\.)?task_financial_security_events/iu.test(sql)
+      )
+    ).toBe(false);
+  });
+
+  it('uses the atomic terminal reconciliation fact-and-bridge port', async () => {
     const snapshot = reconciliationSnapshot({ reconciliationState: 'CLOSED' });
     const durableFakeEvidence = {
       commandId: ids.command,
@@ -441,70 +701,90 @@ describe('Universal V1 durable non-lifecycle command evidence', () => {
     } as const;
     const reconciliationFactId = '00000000-0000-4000-8000-000000000131';
     const queries: Array<{ sql: string; params: unknown[] | undefined }> = [];
+    let atomicPortParameters: unknown[] | undefined;
     const query = (async (sql: string, params?: unknown[]) => {
       queries.push({ sql, params });
-      if (sql.includes('INSERT INTO task_reconciliation_facts')) {
+      if (sql.includes('public.hxos_record_fake_reconciliation_fact_v1')) {
+        atomicPortParameters = params;
         return {
-          rows: [{
-            id: reconciliationFactId,
-            work_order_id: ids.workOrder,
-            reconciliation_version: 1,
-            reconciliation_state: 'CLOSED',
-            mismatch_codes: [],
-          }],
+          rows: [
+            {
+              id: reconciliationFactId,
+              work_order_id: ids.workOrder,
+              reconciliation_version: 1,
+              reconciliation_state: 'CLOSED',
+              mismatch_codes: [],
+            },
+          ],
           rowCount: 1,
         };
       }
-      if (sql.includes('INSERT INTO public.universal_v1_fake_reconciliation_bridges')) {
+      if (sql.includes('FROM public.universal_v1_fake_reconciliation_bridges')) {
         return {
-          rows: [{
-            reconciliation_bridge_id: '00000000-0000-4000-8000-000000000132',
-            terminal_intent_id: ids.terminalIntent,
-            reconciliation_fact_id: reconciliationFactId,
-            command_id: ids.command,
-            dispatch_attempt_id: ids.attempt,
-            outcome_fact_id: ids.outcome,
-            fake_operation_event_id: ids.fakeEvent,
-            authority_chain_sha256: 'd'.repeat(64),
-          }],
+          rows: [
+            {
+              reconciliation_bridge_id: atomicPortParameters?.[1],
+              terminal_intent_id: ids.terminalIntent,
+              reconciliation_fact_id: reconciliationFactId,
+              command_id: ids.command,
+              dispatch_attempt_id: ids.attempt,
+              outcome_fact_id: ids.outcome,
+              fake_operation_event_id: ids.fakeEvent,
+              authority_chain_sha256: 'd'.repeat(64),
+            },
+          ],
           rowCount: 1,
         };
       }
       return { rows: [], rowCount: 0 };
     }) as QueryFn;
     const database = {
-      serializableTransaction: vi.fn(async <T>(callback: (transactionQuery: QueryFn) => Promise<T>) =>
-        callback(query)),
+      serializableTransaction: vi.fn(
+        async <T>(callback: (transactionQuery: QueryFn) => Promise<T>) => callback(query)
+      ),
     } as unknown as Database;
     const repository = new PostgresUniversalV1FinancialLifecycleRepository(database);
 
-    await expect(repository.recordReconciliation({
-      operationId: ids.reconciliation,
-      idempotencyKey: 'app:reconcile:postgres-bridge:0001',
-      providerKind: 'FAKE',
-      providerState: 'MATCHED',
-      providerOperationVersion: 1,
-      providerIdempotencyReplayed: false,
-      externalReference: 'fake_reconcile_exact',
-      reconciliationSnapshotSha256:
-        canonicalUniversalV1ReconciliationSnapshotSha256(snapshot),
-      terminalIntentId: ids.terminalIntent,
-      durableFakeEvidence,
-      snapshot,
-    })).resolves.toMatchObject({ id: reconciliationFactId, reconciliationState: 'CLOSED' });
+    await expect(
+      repository.recordReconciliation({
+        operationId: ids.reconciliation,
+        idempotencyKey: 'app:reconcile:postgres-bridge:0001',
+        providerKind: 'FAKE',
+        providerState: 'MATCHED',
+        providerOperationVersion: 1,
+        providerIdempotencyReplayed: false,
+        externalReference: 'fake_reconcile_exact',
+        reconciliationSnapshotSha256: canonicalUniversalV1ReconciliationSnapshotSha256(snapshot),
+        terminalIntentId: ids.terminalIntent,
+        durableFakeEvidence,
+        snapshot,
+      })
+    ).resolves.toMatchObject({ id: reconciliationFactId, reconciliationState: 'CLOSED' });
 
     expect(database.serializableTransaction).toHaveBeenCalledTimes(1);
-    const bridgeInsert = queries.find(({ sql }) =>
-      sql.includes('INSERT INTO public.universal_v1_fake_reconciliation_bridges')
+    expect(atomicPortParameters?.[0]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
     );
-    expect(bridgeInsert?.params).toEqual([
+    expect(atomicPortParameters?.[1]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
+    );
+    expect(atomicPortParameters?.slice(2, 11)).toEqual([
+      'FAKE',
+      ids.reconciliation,
+      'app:reconcile:postgres-bridge:0001',
+      canonicalUniversalV1ReconciliationSnapshotSha256(snapshot),
       ids.terminalIntent,
-      reconciliationFactId,
       ids.command,
       ids.attempt,
       ids.outcome,
       ids.fakeEvent,
     ]);
+    expect(atomicPortParameters?.[11]).toMatch(/^[0-9a-f]{64}$/u);
+    expect(
+      queries.some(({ sql }) =>
+        /INSERT\s+INTO\s+(?:public\.)?task_reconciliation_facts/iu.test(sql)
+      )
+    ).toBe(false);
   });
 
   it('fails closed before fake reconciliation or account adapter I/O without a durable coordinator', async () => {

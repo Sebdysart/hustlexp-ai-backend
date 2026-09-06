@@ -13,10 +13,7 @@ const migration = readFileSync(
 const registeredPostBaselineTailMigrations = [
   migration,
   readFileSync(
-    resolve(
-      process.cwd(),
-      'backend/database/migrations/20260919_provider_event_processing_v1.sql'
-    ),
+    resolve(process.cwd(), 'backend/database/migrations/20260919_provider_event_processing_v1.sql'),
     'utf8'
   ),
   readFileSync(
@@ -55,10 +52,7 @@ const constitutional = readFileSync(
 const launch = readFileSync(resolve(process.cwd(), 'backend/database/launch-schema.sql'), 'utf8');
 const migrationDocs = readFileSync(resolve(process.cwd(), 'docs/MIGRATIONS.md'), 'utf8');
 const financialApplicationSource = readFileSync(
-  resolve(
-    process.cwd(),
-    'backend/src/services/payment/UniversalV1FinancialApplicationService.ts'
-  ),
+  resolve(process.cwd(), 'backend/src/services/payment/UniversalV1FinancialApplicationService.ts'),
   'utf8'
 );
 
@@ -79,7 +73,7 @@ describe('Universal V1 prepared financial command migration', () => {
     const containmentIndex = REQUIRED_MIGRATION_FILES.findIndex(
       ({ name }) => name === '20260923_legacy_escrow_insert_containment_v1'
     );
-    expect(REQUIRED_MIGRATION_FILES).toHaveLength(140);
+    expect(REQUIRED_MIGRATION_FILES).toHaveLength(146);
     expect(journalIndex).toBeGreaterThanOrEqual(0);
     expect(preparationIndex).toBe(journalIndex + 1);
     expect(processingIndex).toBe(preparationIndex + 1);
@@ -150,10 +144,34 @@ describe('Universal V1 prepared financial command migration', () => {
         name: '20261006_stage1_legacy_authority_containment_v1',
         fileName: '20261006_stage1_legacy_authority_containment_v1.sql',
       },
+      {
+        name: '20261007_subscription_cancellation_recovery_v1',
+        fileName: '20261007_subscription_cancellation_recovery_v1.sql',
+      },
+      {
+        name: '20261008_universal_v1_work_order_task_state_containment_v1',
+        fileName: '20261008_universal_v1_work_order_task_state_containment_v1.sql',
+      },
+      {
+        name: '20261009_universal_v1_standardized_quote_readiness_v1',
+        fileName: '20261009_universal_v1_standardized_quote_readiness_v1.sql',
+      },
+      {
+        name: '20261010_universal_v1_financial_security_event_expiry_v1',
+        fileName: '20261010_universal_v1_financial_security_event_expiry_v1.sql',
+      },
+      {
+        name: '20261012_universal_v1_work_order_command_authority_v2',
+        fileName: '20261012_universal_v1_work_order_command_authority_v2.sql',
+      },
+      {
+        name: '20261014_universal_v1_work_order_command_ports_v1',
+        fileName: '20261014_universal_v1_work_order_command_ports_v1.sql',
+      },
     ]);
     expect(
       REQUIRED_MIGRATION_FILES.some(
-        ({ name }) => name === '20260921_universal_v1_fake_financial_lifecycle_bridge_v1'
+        ({ name }) => String(name) === '20260921_universal_v1_fake_financial_lifecycle_bridge_v1'
       )
     ).toBe(false);
   });
@@ -249,10 +267,10 @@ describe('Universal V1 prepared financial command migration', () => {
       expect(baseline).not.toContain('financial_provider_command_recovery_leases');
     }
     expect(migrationDocs).toContain(
-      'clean-install baselines intentionally stop before the dependency-bound registered `20260918`-`20261006` tail'
+      'clean-install baselines intentionally stop before the dependency-bound registered `20260918`-`20261008` tail'
     );
     expect(migrationDocs).toContain(
-      'ordered 140-entry migration runner applies that exact fifteen-migration tail after its engine prerequisites'
+      'ordered 142-entry migration runner applies that exact seventeen-migration tail after its engine prerequisites'
     );
     expect(migrationDocs).toContain(
       '`20260921_universal_v1_fake_financial_lifecycle_bridge_v1`, `20260922_universal_v1_fake_terminal_lifecycle_intent_v1`, `20260926_universal_v1_change_order_three_phase_v1`, `20260927_universal_v1_change_order_recovery_v1`, and `20261002_universal_v1_dispute_fake_release_gate_v8` remain outside both foundational baselines and `REQUIRED_MIGRATION_FILES`'

@@ -1,6 +1,6 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { adminOrEngineBridgeProcedure, router, Schemas } from '../trpc.js';
+import { heldAdminOrEngineBridgeProcedure, router, Schemas } from '../trpc.js';
 import { TaskReservationService } from '../services/TaskReservationService.js';
 import { hardAssignmentFailure } from '../services/HardAssignmentGuard.js';
 
@@ -13,12 +13,14 @@ const idempotencyKey = z
 
 /** Engine-owned assignment contract for automation and /ops. */
 export const assignmentRouter = router({
-  reserve: adminOrEngineBridgeProcedure
-    .input(z.object({
-      engineTaskId: Schemas.uuid,
-      hustlerRef: Schemas.uuid,
-      idempotencyKey,
-    }))
+  reserve: heldAdminOrEngineBridgeProcedure
+    .input(
+      z.object({
+        engineTaskId: Schemas.uuid,
+        hustlerRef: Schemas.uuid,
+        idempotencyKey,
+      })
+    )
     .mutation(async ({ ctx, input }) => {
       const frozen = hardAssignmentFailure('engine_reservation');
       if (frozen) {
@@ -28,13 +30,9 @@ export const assignmentRouter = router({
           cause: { applicationCode: frozen.error.code },
         });
       }
-      const actorId = ctx.user?.id ?? ctx.engineBridgeActorId;
-      if (!actorId) {
-        throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Reservation actor missing' });
-      }
       const result = await TaskReservationService.reserve({
         ...input,
-        actorId,
+        actorId: ctx.user.id,
       });
       if (!result.success) {
         const conflictCodes = ['IDEMPOTENCY_CONFLICT', 'RESERVATION_CONFLICT'];
@@ -48,15 +46,16 @@ export const assignmentRouter = router({
           'TASK_RISK_BLOCKED',
           'HUSTLER_ALREADY_COMMITTED',
         ];
-        const code = result.error.code === 'NOT_FOUND'
-          ? 'NOT_FOUND'
-          : conflictCodes.includes(result.error.code)
-            ? 'CONFLICT'
-            : forbiddenCodes.includes(result.error.code)
-              ? 'FORBIDDEN'
-              : result.error.code === 'DB_ERROR'
-                ? 'INTERNAL_SERVER_ERROR'
-                : 'PRECONDITION_FAILED';
+        const code =
+          result.error.code === 'NOT_FOUND'
+            ? 'NOT_FOUND'
+            : conflictCodes.includes(result.error.code)
+              ? 'CONFLICT'
+              : forbiddenCodes.includes(result.error.code)
+                ? 'FORBIDDEN'
+                : result.error.code === 'DB_ERROR'
+                  ? 'INTERNAL_SERVER_ERROR'
+                  : 'PRECONDITION_FAILED';
         throw new TRPCError({ code, message: result.error.message });
       }
       return result.data;

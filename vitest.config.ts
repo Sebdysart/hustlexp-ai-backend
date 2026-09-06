@@ -20,6 +20,7 @@ export default defineConfig({
     },
     setupFiles: [
       './backend/tests/legacy-task-materialization-compatibility.setup.ts',
+      './backend/tests/disposable-database-runtime.setup.ts',
     ],
     testTimeout: 30000,
     include: ['backend/tests/**/*.test.ts'],

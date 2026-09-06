@@ -16,6 +16,12 @@ const failingRegisteredWorker = vi.hoisted(() => ({
 vi.mock('../../src/logger', () => ({ workerLogger: log }));
 vi.mock('../../src/config', () => ({ validateConfig: vi.fn() }));
 vi.mock('../../src/jobs/outbox-worker', () => ({ startOutboxWorker: vi.fn() }));
+vi.mock('../../src/jobs/fake-financial-publisher-runtime', () => ({
+  startFakeFinancialOutboxPublisher: vi.fn(),
+}));
+vi.mock('../../src/jobs/fake-financial-durable-recovery-runtime', () => ({
+  startFakeFinancialDurableRecovery: vi.fn(),
+}));
 vi.mock('../../src/jobs/worker-registration', () => ({
   registerWorkers: vi.fn((workers: unknown[]) => workers.push(failingRegisteredWorker)),
 }));
@@ -45,6 +51,9 @@ describe('worker runtime shutdown', () => {
 
     await shutdownWorkerResources({
       workers: [worker('worker-1'), worker('worker-2')],
+      closeFakeFinancialPublisher: async () => {
+        order.push('publisher');
+      },
       closeProviderEventReplay: async () => {
         order.push('provider-replay');
       },
@@ -70,10 +79,11 @@ describe('worker runtime shutdown', () => {
     });
 
     expect(order).toEqual([
+      'publisher',
+      'fake-recovery',
       'worker-1',
       'worker-2',
       'provider-replay',
-      'fake-recovery',
       'work-order-compensation',
       'change-order-recovery',
       'health',
@@ -82,6 +92,31 @@ describe('worker runtime shutdown', () => {
     ]);
   });
 
+  it('signals both financial producers before waiting for either to drain', async () => {
+    let release!: () => void;
+    const publisher = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        })
+    );
+    const recovery = vi.fn(async () => undefined);
+    const worker = { name: 'consumer', close: vi.fn(async () => undefined) };
+    const done = shutdownWorkerResources({
+      workers: [worker],
+      closeFakeFinancialPublisher: publisher,
+      closeFakeFinancialCommandRecovery: recovery,
+      closeRedis: async () => undefined,
+      closeDatabase: async () => undefined,
+    });
+    await Promise.resolve();
+    expect(publisher).toHaveBeenCalledOnce();
+    expect(recovery).toHaveBeenCalledOnce();
+    expect(worker.close).not.toHaveBeenCalled();
+    release();
+    await done;
+    expect(worker.close).toHaveBeenCalledOnce();
+  });
   it('aggregates worker rejection and still attempts every cleanup step', async () => {
     const order: string[] = [];
     const workerError = new Error('worker close failed');

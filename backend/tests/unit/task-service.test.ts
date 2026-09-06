@@ -194,6 +194,9 @@ const mockQuery = vi.mocked(db.query);
 function makeTask(overrides: Record<string, unknown> = {}) {
   return {
     id: 'task-1',
+    version: 1,
+    work_order_id: null,
+    universal_contract_version: 0,
     poster_id: 'poster-1',
     worker_id: null,
     title: 'Mow lawn',
@@ -318,14 +321,16 @@ describe('TaskService.isValidTransition', () => {
 // 3. getById
 // ===========================================================================
 describe('TaskService.getById', () => {
-  it('returns the task when found', async () => {
-    const task = makeTask();
+  it('returns the task with its PostgreSQL BIGINT version normalized', async () => {
+    const task = makeTask({ version: '7' });
     mockQuery.mockResolvedValueOnce({ rows: [task], rowCount: 1 } as never);
 
     const result = await TaskService.getById('task-1');
 
     expect(result.success).toBe(true);
     expect(result.data?.id).toBe('task-1');
+    expect(result.data?.version).toBe(7);
+    expect(typeof result.data?.version).toBe('number');
   });
 
   it('returns NOT_FOUND when task does not exist', async () => {
@@ -354,7 +359,10 @@ describe('TaskService.getById', () => {
 // ===========================================================================
 describe('TaskService.getByPoster', () => {
   it('returns tasks for a poster', async () => {
-    const tasks = [makeTask({ id: 'task-1' }), makeTask({ id: 'task-2' })];
+    const tasks = [
+      makeTask({ id: 'task-1', version: '8' }),
+      makeTask({ id: 'task-2', version: 9n }),
+    ];
     mockQuery.mockResolvedValueOnce({ rows: tasks, rowCount: 2 } as never);
 
     const result = await TaskService.getByPoster('poster-1');
@@ -362,6 +370,7 @@ describe('TaskService.getByPoster', () => {
     expect(result.success).toBe(true);
     // getByPoster now returns { tasks, nextCursor } for cursor pagination
     expect(result.data?.tasks).toHaveLength(2);
+    expect(result.data?.tasks.map((task) => task.version)).toEqual([8, 9]);
     expect(result.data?.nextCursor).toBeUndefined(); // 2 rows < default limit of 20
   });
 
@@ -381,7 +390,7 @@ describe('TaskService.getByPoster', () => {
 // ===========================================================================
 describe('TaskService.getByWorker', () => {
   it('returns tasks for a worker', async () => {
-    const tasks = [makeTask({ id: 'task-1', worker_id: 'worker-1' })];
+    const tasks = [makeTask({ id: 'task-1', worker_id: 'worker-1', version: '10' })];
     mockQuery.mockResolvedValueOnce({ rows: tasks, rowCount: 1 } as never);
 
     const result = await TaskService.getByWorker('worker-1');
@@ -389,6 +398,7 @@ describe('TaskService.getByWorker', () => {
     expect(result.success).toBe(true);
     // getByWorker now returns { tasks, nextCursor } for cursor pagination
     expect(result.data?.tasks).toHaveLength(1);
+    expect(result.data?.tasks[0]?.version).toBe(10);
     expect(result.data?.nextCursor).toBeUndefined(); // 1 row < default limit of 20
   });
 });
@@ -398,13 +408,14 @@ describe('TaskService.getByWorker', () => {
 // ===========================================================================
 describe('TaskService.listOpen', () => {
   it('returns open tasks with defaults', async () => {
-    const tasks = [makeTask(), makeTask({ id: 'task-2' })];
+    const tasks = [makeTask({ version: '11' }), makeTask({ id: 'task-2', version: 12n })];
     mockQuery.mockResolvedValueOnce({ rows: tasks, rowCount: 2 } as never);
 
     const result = await TaskService.listOpen();
 
     expect(result.success).toBe(true);
     expect(result.data).toHaveLength(2);
+    expect(result.data?.map((task) => task.version)).toEqual([11, 12]);
   });
 
   it('passes category filter when provided', async () => {
@@ -450,7 +461,7 @@ describe('TaskService.create', () => {
   };
 
   it('creates a standard task successfully', async () => {
-    const created = makeTask();
+    const created = makeTask({ version: '13' });
     mockQuery.mockResolvedValueOnce({ rows: [created], rowCount: 1 } as never); // task INSERT
     mockQuery.mockResolvedValueOnce({ rows: [{ id: 'esc-1', state: 'PENDING' }], rowCount: 1 } as never); // escrow INSERT
 
@@ -458,6 +469,7 @@ describe('TaskService.create', () => {
 
     expect(result.success).toBe(true);
     expect(result.data?.id).toBe('task-1');
+    expect(result.data?.version).toBe(13);
   });
 
   it('binds the server-resolved region policy and every domain snapshot on task insert', async () => {
@@ -849,7 +861,7 @@ describe('TaskService.create — idempotency and location privacy', () => {
   it('preflights a completed replay without creating or rate-limiting a task', async () => {
     const requestHash = buildTaskCreateRequestHash(baseParams);
     mockQuery.mockResolvedValueOnce({
-      rows: [makeTask({ id: 'task-idem-preflight', request_hash: requestHash })],
+      rows: [makeTask({ id: 'task-idem-preflight', version: '14', request_hash: requestHash })],
       rowCount: 1,
     } as never);
 
@@ -858,7 +870,7 @@ describe('TaskService.create — idempotency and location privacy', () => {
     expect(result.success).toBe(true);
     expect(result.data).toMatchObject({
       status: 'replay',
-      task: { id: 'task-idem-preflight' },
+      task: { id: 'task-idem-preflight', version: 14 },
     });
     expect(db.transaction).not.toHaveBeenCalled();
   });
@@ -1497,7 +1509,13 @@ describe('TaskService.openDispute', () => {
 // ===========================================================================
 // 13. cancel
 // ===========================================================================
-describe('TaskService.cancel', () => {
+describe('TaskService explicit cancellation commands', () => {
+  const cancelForGdpr = () => TaskService.cancelForInternalPurpose({
+    taskId: 'task-1',
+    expectedVersion: 1,
+    purpose: 'GDPR_ERASURE',
+  });
+
   it('cancels an OPEN task successfully (no funded escrow)', async () => {
     const cancelled = makeTask({ state: 'CANCELLED' });
     mockQuery
@@ -1505,7 +1523,7 @@ describe('TaskService.cancel', () => {
       .mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never)                   // UPDATE tasks
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);                           // SELECT escrows (none)
 
-    const result = await TaskService.cancel('task-1');
+    const result = await cancelForGdpr();
 
     expect(result.success).toBe(true);
     expect(result.data?.state).toBe('CANCELLED');
@@ -1520,10 +1538,101 @@ describe('TaskService.cancel', () => {
       .mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never)                                          // UPDATE tasks
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);                                                  // SELECT escrows (none)
 
-    const result = await TaskService.cancel('task-1', 'poster-1');
+    const result = await TaskService.cancelByPoster({
+      taskId: 'task-1',
+      posterId: 'poster-1',
+      expectedVersion: 1,
+    });
 
     expect(result.success).toBe(true);
     expect(result.data?.state).toBe('CANCELLED');
+  });
+
+  it('requires the poster command to match the locked task version', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [makeTask({ state: 'OPEN', version: 8 })],
+      rowCount: 1,
+    } as never);
+
+    const result = await TaskService.cancelByPoster({
+      taskId: 'task-1',
+      posterId: 'poster-1',
+      expectedVersion: 7,
+    });
+
+    expect(result).toMatchObject({ success: false, error: { code: 'TASK_CANCEL_VERSION_CONFLICT' } });
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects every legacy cancellation path after Work Order authority is bound', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [makeTask({ state: 'OPEN', version: 7, work_order_id: 'work-order-1' })],
+      rowCount: 1,
+    } as never);
+
+    const result = await TaskService.cancelByPoster({
+      taskId: 'task-1',
+      posterId: 'poster-1',
+      expectedVersion: 7,
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      error: { code: 'TASK_CANCEL_WORK_ORDER_AUTHORITY_REQUIRED' },
+    });
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects legacy cancellation for Universal V1 before any Work Order is bound', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [makeTask({
+        state: 'OPEN',
+        version: 7,
+        work_order_id: null,
+        universal_contract_version: 1,
+      })],
+      rowCount: 1,
+    } as never);
+
+    const result = await TaskService.cancelByPoster({
+      taskId: 'task-1',
+      posterId: 'poster-1',
+      expectedVersion: 7,
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      error: { code: 'TASK_CANCEL_UNIVERSAL_AUTHORITY_REQUIRED' },
+    });
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('defends the UPDATE with both the locked version and absent Work Order binding', async () => {
+    const cancelled = makeTask({ state: 'CANCELLED', version: 8 });
+    mockQuery
+      .mockResolvedValueOnce({ rows: [makeTask({ state: 'OPEN', version: 7 })], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+
+    const result = await TaskService.cancelByPoster({
+      taskId: 'task-1',
+      posterId: 'poster-1',
+      expectedVersion: 7,
+    });
+
+    expect(result).toMatchObject({ success: true, data: { state: 'CANCELLED', version: 8 } });
+    expect(String(mockQuery.mock.calls[1]?.[0])).toContain('version = $2');
+    expect(String(mockQuery.mock.calls[1]?.[0])).toContain('work_order_id IS NULL');
+    expect(mockQuery.mock.calls[1]?.[1]).toEqual(['task-1', 7]);
+  });
+
+  it('rejects invalid poster command versions before opening a transaction', async () => {
+    await expect(TaskService.cancelByPoster({
+      taskId: 'task-1',
+      posterId: 'poster-1',
+      expectedVersion: 0,
+    })).resolves.toMatchObject({ success: false, error: { code: 'INVALID_INPUT' } });
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 
   it('YY-01: returns FORBIDDEN when posterId does not match poster_id (inside FOR UPDATE lock)', async () => {
@@ -1531,7 +1640,11 @@ describe('TaskService.cancel', () => {
     mockQuery
       .mockResolvedValueOnce({ rows: [makeTask({ state: 'OPEN', poster_id: 'poster-1' })], rowCount: 1 } as never); // SELECT FOR UPDATE
 
-    const result = await TaskService.cancel('task-1', 'different-user');
+    const result = await TaskService.cancelByPoster({
+      taskId: 'task-1',
+      posterId: 'different-user',
+      expectedVersion: 1,
+    });
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('FORBIDDEN');
@@ -1540,17 +1653,8 @@ describe('TaskService.cancel', () => {
     expect(mockQuery).toHaveBeenCalledTimes(1);
   });
 
-  it('YY-01: skips ownership check when posterId is undefined (backward compat)', async () => {
-    const cancelled = makeTask({ state: 'CANCELLED' });
-    mockQuery
-      .mockResolvedValueOnce({ rows: [makeTask({ state: 'OPEN' })], rowCount: 1 } as never) // SELECT FOR UPDATE
-      .mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never)                   // UPDATE tasks
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);                           // SELECT escrows (none)
-
-    // No posterId — ownership check must be skipped (same semantics as before YY-01)
-    const result = await TaskService.cancel('task-1', undefined);
-
-    expect(result.success).toBe(true);
+  it('does not expose the former optional-actor/unversioned cancel authority', () => {
+    expect('cancel' in TaskService).toBe(false);
   });
 
   it('cancels an ACCEPTED task successfully (no funded escrow)', async () => {
@@ -1560,7 +1664,7 @@ describe('TaskService.cancel', () => {
       .mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never)                       // UPDATE tasks
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);                               // SELECT escrows (none)
 
-    const result = await TaskService.cancel('task-1');
+    const result = await cancelForGdpr();
 
     expect(result.success).toBe(true);
   });
@@ -1578,7 +1682,7 @@ describe('TaskService.cancel', () => {
       .mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never)                            // UPDATE tasks → CANCELLED
       .mockResolvedValueOnce({ rows: [{ id: 'escrow-99', state: 'FUNDED' }], rowCount: 1 } as never); // SELECT escrows → FUNDED
 
-    const result = await TaskService.cancel('task-1');
+    const result = await cancelForGdpr();
 
     expect(result.success).toBe(true);
     // writeToOutbox should have been called with the escrow refund event (intercepted by mock)
@@ -1606,7 +1710,7 @@ describe('TaskService.cancel', () => {
       .mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never)                   // UPDATE tasks → CANCELLED
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);                           // SELECT escrows → none
 
-    const result = await TaskService.cancel('task-1');
+    const result = await cancelForGdpr();
 
     expect(result.success).toBe(true);
     expect(mockWriteToOutbox).not.toHaveBeenCalled();
@@ -1623,13 +1727,13 @@ describe('TaskService.cancel', () => {
     const cancelled = makeTask({ state: 'CANCELLED' });
     mockQuery
       .mockResolvedValueOnce({
-        rows: [{ state: 'ACCEPTED', late_cancel_pct: 50, cancellation_window_hours: 0, accepted_at: acceptedAt }],
+        rows: [makeTask({ state: 'ACCEPTED', late_cancel_pct: 50, cancellation_window_hours: 0, accepted_at: acceptedAt })],
         rowCount: 1,
       } as never)                                                                                      // SELECT FOR UPDATE
       .mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never)                             // UPDATE tasks → CANCELLED
       .mockResolvedValueOnce({ rows: [{ id: 'escrow-c3', state: 'FUNDED' }], rowCount: 1 } as never); // SELECT escrows → FUNDED
 
-    const result = await TaskService.cancel('task-1');
+    const result = await cancelForGdpr();
 
     expect(result.success).toBe(true);
     // windowHours=0 means no cancellation window was configured — must issue full refund
@@ -1649,13 +1753,13 @@ describe('TaskService.cancel', () => {
     const cancelled = makeTask({ state: 'CANCELLED' });
     mockQuery
       .mockResolvedValueOnce({
-        rows: [{ state: 'ACCEPTED', late_cancel_pct: 50, cancellation_window_hours: 24, accepted_at: acceptedAt }],
+        rows: [makeTask({ state: 'ACCEPTED', late_cancel_pct: 50, cancellation_window_hours: 24, accepted_at: acceptedAt })],
         rowCount: 1,
       } as never)
       .mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [{ id: 'escrow-late', state: 'FUNDED' }], rowCount: 1 } as never);
 
-    const result = await TaskService.cancel('task-1');
+    const result = await cancelForGdpr();
 
     expect(result.success).toBe(true);
     expect(mockWriteToOutbox).toHaveBeenCalledOnce();
@@ -1678,13 +1782,13 @@ describe('TaskService.cancel', () => {
     const cancelled = makeTask({ state: 'CANCELLED' });
     mockQuery
       .mockResolvedValueOnce({
-        rows: [{ state: 'ACCEPTED', late_cancel_pct: 50, cancellation_window_hours: 24, accepted_at: acceptedAt }],
+        rows: [makeTask({ state: 'ACCEPTED', late_cancel_pct: 50, cancellation_window_hours: 24, accepted_at: acceptedAt })],
         rowCount: 1,
       } as never)
       .mockResolvedValueOnce({ rows: [cancelled], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [{ id: 'escrow-early', state: 'FUNDED' }], rowCount: 1 } as never);
 
-    const result = await TaskService.cancel('task-1');
+    const result = await cancelForGdpr();
 
     expect(result.success).toBe(true);
     expect(mockWriteToOutbox).toHaveBeenCalledOnce();
@@ -1697,7 +1801,7 @@ describe('TaskService.cancel', () => {
     // SELECT FOR UPDATE returns terminal state → early return TASK_TERMINAL
     mockQuery.mockResolvedValueOnce({ rows: [makeTask({ state: 'COMPLETED' })], rowCount: 1 } as never);
 
-    const result = await TaskService.cancel('task-1');
+    const result = await cancelForGdpr();
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('HX001'); // ErrorCodes.TASK_TERMINAL
@@ -1707,7 +1811,7 @@ describe('TaskService.cancel', () => {
     // SELECT FOR UPDATE returns PROOF_SUBMITTED → early return INVALID_STATE (not in OPEN/ACCEPTED)
     mockQuery.mockResolvedValueOnce({ rows: [makeTask({ state: 'PROOF_SUBMITTED' })], rowCount: 1 } as never);
 
-    const result = await TaskService.cancel('task-1');
+    const result = await cancelForGdpr();
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('INVALID_STATE');
@@ -1877,7 +1981,13 @@ describe('TaskService.workerAbandon (T58-1)', () => {
   it('sets state to CANCELLED (not OPEN) when an ACCEPTED task is abandoned', async () => {
     // [1] FOR UPDATE lock — task is ACCEPTED
     mockQuery.mockResolvedValueOnce({
-      rows: [{ state: 'ACCEPTED', worker_id: 'worker-1', poster_id: 'poster-1' }],
+      rows: [{
+        state: 'ACCEPTED',
+        worker_id: 'worker-1',
+        poster_id: 'poster-1',
+        universal_contract_version: 0,
+        work_order_id: null,
+      }],
       rowCount: 1,
     } as never);
     // [2] UPDATE tasks SET state='CANCELLED' — return abandoned task row
@@ -1901,12 +2011,20 @@ describe('TaskService.workerAbandon (T58-1)', () => {
     expect(updateCall).toBeDefined();
     expect(updateCall![0]).toContain("'CANCELLED'");
     expect(updateCall![0]).not.toContain("'OPEN'");
+    expect(updateCall![0]).toContain('universal_contract_version = 0');
+    expect(updateCall![0]).toContain('work_order_id IS NULL');
   });
 
   it('does NOT produce any query that sets state=OPEN when worker abandons ACCEPTED task', async () => {
     // [1] FOR UPDATE
     mockQuery.mockResolvedValueOnce({
-      rows: [{ state: 'ACCEPTED', worker_id: 'worker-1', poster_id: 'poster-1' }],
+      rows: [{
+        state: 'ACCEPTED',
+        worker_id: 'worker-1',
+        poster_id: 'poster-1',
+        universal_contract_version: 0,
+        work_order_id: null,
+      }],
       rowCount: 1,
     } as never);
     // [2] UPDATE tasks
@@ -1935,7 +2053,13 @@ describe('TaskService.workerAbandon (T58-1)', () => {
   it('T59-2: workerAbandon returns INVALID_STATE when task is in non-existent IN_PROGRESS state', async () => {
     // [1] FOR UPDATE lock — task reports IN_PROGRESS (invalid state)
     mockQuery.mockResolvedValueOnce({
-      rows: [{ state: 'IN_PROGRESS', worker_id: 'worker-1', poster_id: 'poster-1' }],
+      rows: [{
+        state: 'IN_PROGRESS',
+        worker_id: 'worker-1',
+        poster_id: 'poster-1',
+        universal_contract_version: 0,
+        work_order_id: null,
+      }],
       rowCount: 1,
     } as never);
 
@@ -1951,7 +2075,13 @@ describe('TaskService.workerAbandon (T58-1)', () => {
   it('T59-2: workerAbandon UPDATE query does NOT reference IN_PROGRESS in WHERE clause', async () => {
     // [1] FOR UPDATE lock — task is ACCEPTED
     mockQuery.mockResolvedValueOnce({
-      rows: [{ state: 'ACCEPTED', worker_id: 'worker-1', poster_id: 'poster-1' }],
+      rows: [{
+        state: 'ACCEPTED',
+        worker_id: 'worker-1',
+        poster_id: 'poster-1',
+        universal_contract_version: 0,
+        work_order_id: null,
+      }],
       rowCount: 1,
     } as never);
     // [2] UPDATE tasks SET state='CANCELLED'
@@ -1971,6 +2101,38 @@ describe('TaskService.workerAbandon (T58-1)', () => {
         (call[0] as string).includes('IN_PROGRESS')
     );
     expect(referencesInProgress).toBe(false);
+  });
+
+  it.each([
+    ['Universal V1 authority', 1, null, 'TASK_ABANDON_UNIVERSAL_AUTHORITY_REQUIRED'],
+    ['unknown authority', null, null, 'TASK_ABANDON_UNIVERSAL_AUTHORITY_REQUIRED'],
+    ['Work Order authority', 0, 'work-order-1', 'TASK_ABANDON_WORK_ORDER_AUTHORITY_REQUIRED'],
+  ])('holds %s before task, escrow, event, or outbox mutation', async (
+    _label,
+    universalContractVersion,
+    workOrderId,
+    expectedCode,
+  ) => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        state: 'ACCEPTED',
+        worker_id: 'worker-1',
+        poster_id: 'poster-1',
+        universal_contract_version: universalContractVersion,
+        work_order_id: workOrderId,
+      }],
+      rowCount: 1,
+    } as never);
+
+    const result = await TaskService.workerAbandon('task-1', 'worker-1', 'schedule changed');
+
+    expect(result).toMatchObject({ success: false, error: { code: expectedCode } });
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(String(mockQuery.mock.calls[0]?.[0])).toMatch(/^\s*SELECT\b/iu);
+    expect(String(mockQuery.mock.calls[0]?.[0])).toContain('universal_contract_version');
+    expect(String(mockQuery.mock.calls[0]?.[0])).toContain('work_order_id');
+    const { writeToOutbox } = await import('../../src/lib/outbox-helpers');
+    expect(writeToOutbox).not.toHaveBeenCalled();
   });
 });
 

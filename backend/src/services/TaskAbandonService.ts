@@ -6,13 +6,33 @@ import { ErrorCodes } from '../types.js';
 import { VALID_TASK_TRANSITIONS } from './TaskServiceShared.js';
 const log = taskLogger.child({ service: 'TaskService' });
 
+export const TASK_ABANDON_UNIVERSAL_AUTHORITY_REQUIRED_CODE =
+  'TASK_ABANDON_UNIVERSAL_AUTHORITY_REQUIRED';
+export const TASK_ABANDON_WORK_ORDER_AUTHORITY_REQUIRED_CODE =
+  'TASK_ABANDON_WORK_ORDER_AUTHORITY_REQUIRED';
+
+function exactLegacyTaskAuthority(
+  universalContractVersion: number | string | bigint | null | undefined,
+): boolean {
+  return universalContractVersion === 0
+    || universalContractVersion === '0'
+    || universalContractVersion === 0n;
+}
+
 export const TaskAbandonService = {
-workerAbandon: async (taskId: string, workerId: string, reason?: string): Promise<ServiceResult<Task>> => {
+  workerAbandon: async (taskId: string, workerId: string, reason?: string): Promise<ServiceResult<Task>> => {
     try {
       return await db.transaction(async (query) => {
         // Acquire row-level lock before reading state
-        const lockResult = await query<{ state: string; worker_id: string | null; poster_id: string }>(
-          `SELECT state, worker_id, poster_id FROM tasks WHERE id = $1 FOR UPDATE`,
+        const lockResult = await query<{
+          state: string;
+          worker_id: string | null;
+          poster_id: string;
+          universal_contract_version: number | string | bigint | null;
+          work_order_id: string | null;
+        }>(
+          `SELECT state, worker_id, poster_id, universal_contract_version, work_order_id
+             FROM tasks WHERE id = $1 FOR UPDATE`,
           [taskId]
         );
 
@@ -26,7 +46,12 @@ workerAbandon: async (taskId: string, workerId: string, reason?: string): Promis
           };
         }
 
-        const { state: currentState, worker_id: assignedWorkerId } = lockResult.rows[0];
+        const {
+          state: currentState,
+          worker_id: assignedWorkerId,
+          universal_contract_version: universalContractVersion,
+          work_order_id: workOrderId,
+        } = lockResult.rows[0];
 
         // Verify the caller is the assigned worker
         if (assignedWorkerId !== workerId) {
@@ -35,6 +60,26 @@ workerAbandon: async (taskId: string, workerId: string, reason?: string): Promis
             error: {
               code: ErrorCodes.FORBIDDEN,
               message: 'Only the assigned worker can abandon this task',
+            },
+          };
+        }
+
+        if (workOrderId !== null && workOrderId !== undefined) {
+          return {
+            success: false,
+            error: {
+              code: TASK_ABANDON_WORK_ORDER_AUTHORITY_REQUIRED_CODE,
+              message: 'This task is governed by a Work Order and cannot be abandoned through the legacy task endpoint.',
+            },
+          };
+        }
+
+        if (!exactLegacyTaskAuthority(universalContractVersion)) {
+          return {
+            success: false,
+            error: {
+              code: TASK_ABANDON_UNIVERSAL_AUTHORITY_REQUIRED_CODE,
+              message: 'Universal V1 tasks cannot be abandoned through the legacy task lifecycle.',
             },
           };
         }
@@ -63,6 +108,8 @@ workerAbandon: async (taskId: string, workerId: string, reason?: string): Promis
            WHERE id = $1
              AND state = 'ACCEPTED'
              AND worker_id = $2
+             AND universal_contract_version = 0
+             AND work_order_id IS NULL
            RETURNING *`,
           [taskId, workerId]
         );

@@ -5,7 +5,7 @@ import { db } from '../../src/db.js';
 import {
   RELEASE_CHARTER_AUTHORITY,
   releaseManifestDigest,
-  type ReleaseManifest,
+  type ReleaseManifestV2,
   type ReleaseManifestEvidence,
 } from '../../src/releaseManifest.js';
 import { AutomationLifecycleReadService } from '../../src/services/AutomationLifecycleReadService.js';
@@ -28,7 +28,10 @@ import { TaskReservationService } from '../../src/services/TaskReservationServic
 import { TaskScopeService } from '../../src/services/TaskScopeService.js';
 import { TaskService } from '../../src/services/TaskService.js';
 import type { CreateTaskParams } from '../../src/services/TaskServiceShared.js';
-import { createDatabaseBackedFakeFinancialProvider } from '../../src/services/payment/FakeFinancialProvider.js';
+import {
+  createDatabaseBackedFakeFinancialProvider,
+  issueLiveFakeFinancialDatabaseCapability,
+} from '../../src/services/payment/FakeFinancialProvider.js';
 import { grantScreeningConsent } from '../../src/services/WorkerScreeningRightsService.js';
 import {
   LOCAL_CERTIFICATION_SCREENING_DISCLOSURE_HASH,
@@ -48,6 +51,7 @@ const INSURANCE_CENTS = 100;
 const NET_WORKER_PAYOUT_CENTS = 3_900;
 const LOCAL_TEST_REVISION = 'd'.repeat(40);
 const LOCAL_TEST_DIGEST = `sha256:${'a'.repeat(64)}`;
+const localTestDigest = (value: string) => `sha256:${value.repeat(64)}`;
 
 function authorizedFakeFinanceRuntime(): {
   environment: NodeJS.ProcessEnv;
@@ -66,9 +70,9 @@ function authorizedFakeFinanceRuntime(): {
     revision: LOCAL_TEST_REVISION,
     artifactDigest: LOCAL_TEST_DIGEST,
   };
-  const imageComponent = { ...component, imageEvidence: 'VERIFIED_IMMUTABLE_IMAGE' as const, imageDigest: LOCAL_TEST_DIGEST };
-  const manifest: ReleaseManifest = {
-    version: 1,
+  const imageComponent = { ...component, imageEvidence: 'VERIFIED_IMMUTABLE_IMAGE' as const, imageDigest: localTestDigest('b') };
+  const manifest: ReleaseManifestV2 = {
+    version: 2,
     environment: 'local',
     releaseId: 'hxos-canonical-lifecycle-test',
     createdAt: '2026-08-26T00:00:00.000Z',
@@ -76,7 +80,7 @@ function authorizedFakeFinanceRuntime(): {
       document: RELEASE_CHARTER_AUTHORITY.document,
       charterVersion: RELEASE_CHARTER_AUTHORITY.version,
       charterRevision: RELEASE_CHARTER_AUTHORITY.revision,
-      capabilityPolicyDigest: LOCAL_TEST_DIGEST,
+      capabilityPolicyDigest: localTestDigest('f'),
     },
     components: {
       backend: imageComponent,
@@ -84,7 +88,23 @@ function authorizedFakeFinanceRuntime(): {
       web: imageComponent,
       migration: component,
       policy: component,
-      fixtures: imageComponent,
+      fixtures: {
+        ...component,
+        providerImageEvidence: 'VERIFIED_IMMUTABLE_IMAGE',
+        providerImageDigest: localTestDigest('b'),
+        databaseImageEvidence: 'VERIFIED_IMMUTABLE_IMAGE',
+        databaseImageDigest: localTestDigest('c'),
+      },
+    },
+    infrastructure: {
+      revision: LOCAL_TEST_REVISION,
+      artifactDigest: localTestDigest('d'),
+      desiredTopologyDigest: localTestDigest('e'),
+    },
+    databaseTargets: {
+      api: { component: 'api', environment: 'local', databaseTargetDigest: localTestDigest('6') },
+      worker: { component: 'worker', environment: 'local', databaseTargetDigest: localTestDigest('7') },
+      attester: { component: 'attester', environment: 'local', databaseTargetDigest: localTestDigest('8') },
     },
     capabilities: {
       financialProvider: 'fake',
@@ -98,11 +118,16 @@ function authorizedFakeFinanceRuntime(): {
     promotion: {
       baseManifestDigest: null,
       changedComponents: ['backend', 'worker', 'web', 'migration', 'policy', 'fixtures'],
+      infrastructureChanged: true,
     },
-    health: {
-      backend: { component: 'backend', path: '/health' },
-      worker: { component: 'worker', path: '/health' },
-      web: { component: 'web', path: '/version.json' },
+    acceptance: {
+      backend: { kind: 'http', component: 'backend', path: '/health' },
+      worker: { kind: 'http', component: 'worker', path: '/health' },
+      web: { kind: 'http', component: 'web', path: '/version.json' },
+      migration: { kind: 'receipt', component: 'migration', receiptType: 'migration-execution-v1' },
+      policy: { kind: 'receipt', component: 'policy', receiptType: 'canonical-policy-digest-v1' },
+      fixtures: { kind: 'receipt', component: 'fixtures', receiptType: 'fixture-seed-v1' },
+      infrastructure: { kind: 'readback', binding: 'infrastructure', receiptType: 'infrastructure-readback-v1' },
     },
   };
   const release: ReleaseManifestEvidence = {
@@ -112,6 +137,15 @@ function authorizedFakeFinanceRuntime(): {
     source: 'HXOS_CANONICAL_LIFECYCLE_TEST',
     errors: [],
     manifest,
+    authentication: {
+      status: 'missing',
+      algorithm: null,
+      keyId: null,
+      keyFingerprint: null,
+      signatureDigest: null,
+      source: 'not-required-for-local-system-test',
+      errors: [],
+    },
   };
   const identity: BuildIdentity = {
     schema_version: 1,
@@ -121,6 +155,8 @@ function authorizedFakeFinanceRuntime(): {
     environment: 'test',
     clean_source: false,
     source: 'HXOS_CANONICAL_LIFECYCLE_TEST',
+    artifact_digest: LOCAL_TEST_DIGEST,
+    artifact_verified: false,
   };
   return { environment, release, identity };
 }
@@ -312,11 +348,18 @@ describePg('HX/OS canonical PostgreSQL lifecycle', () => {
       permitsRealSettlement: false,
       permitsProviderPayouts: false,
     });
-    const financialProvider = createDatabaseBackedFakeFinancialProvider(
-      db,
-      fakeRuntime.environment,
-      fakeRuntime.release,
-      fakeRuntime.identity,
+    const liveCapability = await issueLiveFakeFinancialDatabaseCapability({
+      env: fakeRuntime.environment,
+      release: fakeRuntime.release,
+      identity: fakeRuntime.identity,
+      component: 'backend',
+    });
+    const financialProvider = createDatabaseBackedFakeFinancialProvider(liveCapability);
+    expect(() => createDatabaseBackedFakeFinancialProvider(liveCapability)).toThrow(
+      'OPAQUE_LIVE_DATABASE_CAPABILITY_REQUIRED',
+    );
+    expect(() => createDatabaseBackedFakeFinancialProvider({ ...liveCapability })).toThrow(
+      'OPAQUE_LIVE_DATABASE_CAPABILITY_REQUIRED',
     );
     const stripeEventsBefore = await db.query<{ count: number }>(
       'SELECT COUNT(*)::integer AS count FROM stripe_events',
@@ -1217,10 +1260,12 @@ describePg('HX/OS canonical PostgreSQL lifecycle', () => {
       permitsProviderPayouts: false,
     });
     const provider = createDatabaseBackedFakeFinancialProvider(
-      db,
-      fakeRuntime.environment,
-      fakeRuntime.release,
-      fakeRuntime.identity,
+      await issueLiveFakeFinancialDatabaseCapability({
+        env: fakeRuntime.environment,
+        release: fakeRuntime.release,
+        identity: fakeRuntime.identity,
+        component: 'backend',
+      }),
     );
     const refreshRunId = randomUUID();
     const providerId = `synthetic-provider-${refreshRunId}`;

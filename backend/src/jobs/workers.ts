@@ -19,7 +19,6 @@
  */
 
 import { fileURLToPath } from 'url';
-import { randomUUID } from 'node:crypto';
 import { startOutboxWorker, type OutboxWorkerHandles } from './outbox-worker.js';
 import { workerLogger as log } from '../logger.js';
 import { validateConfig } from '../config.js';
@@ -27,19 +26,25 @@ import type { Worker } from 'bullmq';
 import { registerWorkers as registerWorkerSet } from './worker-registration.js';
 import { registerScheduledJobs } from './worker-schedules.js';
 import { startWorkerHealthServer, type WorkerHealthServer } from './worker-health-server.js';
-import { runStartupMigrations } from '../serverStartupMigrations.js';
+import {
+  productionStartupMigrationRuntime,
+  runStartupMigrations,
+} from '../serverStartupMigrations.js';
 import { closeRedisRuntime } from '../lib/redis-runtime-shutdown.js';
 import { db } from '../db.js';
+import { installConfiguredRuntimeDatabase } from './install-runtime-database.js';
+import {
+  startFakeFinancialOutboxPublisher,
+  type FakeFinancialPublisherHandle,
+} from './fake-financial-publisher-runtime.js';
 import {
   startProviderEventReplayWorker,
   type ProviderEventReplayWorkerHandle,
 } from './provider-event-replay-worker.js';
 import {
-  ExactFakeFinancialCommandRecoveryExecutor,
-  NonproductionFakeFinancialCommandRecoveryWorker,
-  startNonproductionFakeFinancialCommandRecoveryPoller,
-  type FakeFinancialCommandRecoveryWorkerHandle,
-} from './financial-provider-command-recovery-worker.js';
+  startFakeFinancialDurableRecovery,
+  type FakeFinancialDurableRecoveryHandle,
+} from './fake-financial-durable-recovery-runtime.js';
 import {
   PostgresUniversalV1WorkOrderCompensationRepository,
   startUniversalV1WorkOrderCompensationPoller,
@@ -56,8 +61,6 @@ import {
   UniversalV1ChangeOrderRecoveryService,
 } from '../services/UniversalV1ChangeOrderRecovery.js';
 import { PostgresUniversalV1ChangeOrderRepository } from '../services/UniversalV1ChangeOrderPostgresRepository.js';
-import { PostgresFakeFinancialOperationRepository } from '../services/payment/FakeFinancialProvider.js';
-import { PostgresFinancialProviderCommandRecoveryRepository } from '../services/payment/FinancialProviderCommandRecovery.js';
 import { assertNonproductionFakeFinanceAuthorized } from '../services/payment/NonproductionFinancialAuthorization.js';
 import { readNonproductionFinancialBootstrapReadiness } from '../services/payment/NonproductionFinancialBootstrapReadiness.js';
 import { createUniversalV1FakeFinancialApplicationService } from '../services/payment/UniversalV1FinancialApplicationService.js';
@@ -67,9 +70,10 @@ import { readReleaseManifest } from '../releaseManifest.js';
 // Track all registered workers and outbox interval handles for graceful shutdown
 const activeWorkers: Worker[] = [];
 let outboxHandles: OutboxWorkerHandles | null = null;
+let fakeFinancialPublisher: FakeFinancialPublisherHandle | null = null;
 let workerHealthServer: WorkerHealthServer | null = null;
 let providerEventReplayWorker: ProviderEventReplayWorkerHandle | null = null;
-let fakeFinancialCommandRecoveryWorker: FakeFinancialCommandRecoveryWorkerHandle | null = null;
+let fakeFinancialCommandRecoveryWorker: FakeFinancialDurableRecoveryHandle | null = null;
 let workOrderCompensationWorker: UniversalV1WorkOrderCompensationPollerHandle | null = null;
 let changeOrderRecoveryWorker: UniversalV1ChangeOrderRecoveryPollerHandle | null = null;
 const WORKER_DRAIN_TIMEOUT_MS = 30_000;
@@ -77,6 +81,7 @@ export const WORKER_TERMINAL_CLOSE_TIMEOUT_MS = 30_000;
 
 export interface WorkerShutdownResources {
   workers: ReadonlyArray<Pick<Worker, 'name' | 'close'>>;
+  closeFakeFinancialPublisher?: () => Promise<void>;
   closeProviderEventReplay?: () => Promise<void>;
   closeFakeFinancialCommandRecovery?: () => Promise<void>;
   closeWorkOrderCompensation?: () => Promise<void>;
@@ -116,9 +121,12 @@ async function startProviderEventReplayRuntime(): Promise<ProviderEventReplayWor
   return startProviderEventReplayWorker(configuredInterval);
 }
 
-async function startFakeFinancialCommandRecoveryRuntime(): Promise<FakeFinancialCommandRecoveryWorkerHandle | null> {
+async function startFakeFinancialCommandRecoveryRuntime(): Promise<void> {
   const environment = nonproductionFinancialWorkerEnvironment();
-  if (!environment) return null;
+  if (!environment) {
+    fakeFinancialCommandRecoveryWorker = null;
+    return;
+  }
   const release = readReleaseManifest();
   const readiness = await readNonproductionFinancialBootstrapReadiness({
     environment,
@@ -132,32 +140,13 @@ async function startFakeFinancialCommandRecoveryRuntime(): Promise<FakeFinancial
     throw new Error(`FAKE_FINANCIAL_RECOVERY_BOOTSTRAP_NOT_READY:${readiness.status}`);
   }
 
-  const assertAuthorized = () => {
-    assertNonproductionFakeFinanceAuthorized({ component: 'worker' });
-  };
-  const recoveryRepository = new PostgresFinancialProviderCommandRecoveryRepository(db);
-  const fakeEventRepository = new PostgresFakeFinancialOperationRepository(db);
-  const executor = new ExactFakeFinancialCommandRecoveryExecutor(
-    fakeEventRepository,
-    30,
-    assertAuthorized
-  );
-  const worker = new NonproductionFakeFinancialCommandRecoveryWorker(
-    recoveryRepository,
-    executor,
-    {
-      environment,
-      leaseOwnerId: randomUUID(),
-    },
-    assertAuthorized
-  );
+  if (shutdownInProgress) throw new Error('WORKER_STARTUP_ABORTED');
   const configuredInterval = Number(
     process.env.HX_FAKE_FINANCIAL_COMMAND_RECOVERY_INTERVAL_MS ?? 5_000
   );
-  return startNonproductionFakeFinancialCommandRecoveryPoller(configuredInterval, {
-    worker,
-    assertAuthorized,
-  });
+  fakeFinancialCommandRecoveryWorker = startFakeFinancialDurableRecovery(configuredInterval);
+  await fakeFinancialCommandRecoveryWorker.ready;
+  if (shutdownInProgress) throw new Error('WORKER_STARTUP_ABORTED');
 }
 
 async function startWorkOrderCompensationRuntime(): Promise<UniversalV1WorkOrderCompensationPollerHandle | null> {
@@ -182,21 +171,13 @@ async function startWorkOrderCompensationRuntime(): Promise<UniversalV1WorkOrder
   const configuredInterval = Number(
     process.env.HX_UNIVERSAL_V1_WORK_ORDER_COMPENSATION_INTERVAL_MS ?? 5_000
   );
-  return startUniversalV1WorkOrderCompensationPoller(
-    configuredInterval,
-    {
-      worker: new UniversalV1WorkOrderCompensationWorker(
-        new PostgresUniversalV1WorkOrderCompensationRepository(db),
-        () => createUniversalV1FakeFinancialApplicationService(
-          db,
-          { ...process.env, SERVICE_ROLE: 'worker' },
-          release,
-          buildIdentity
-        )
-      ),
-      assertAuthorized,
-    }
-  );
+  return startUniversalV1WorkOrderCompensationPoller(configuredInterval, {
+    worker: new UniversalV1WorkOrderCompensationWorker(
+      new PostgresUniversalV1WorkOrderCompensationRepository(db),
+      () => createUniversalV1FakeFinancialApplicationService()
+    ),
+    assertAuthorized,
+  });
 }
 
 async function startChangeOrderRecoveryRuntime(): Promise<UniversalV1ChangeOrderRecoveryPollerHandle | null> {
@@ -229,13 +210,7 @@ async function startChangeOrderRecoveryRuntime(): Promise<UniversalV1ChangeOrder
         recoveryRepository,
         new PostgresUniversalV1ChangeOrderRepository(db)
       ),
-      () =>
-        createUniversalV1FakeFinancialApplicationService(
-          db,
-          { ...process.env, SERVICE_ROLE: 'worker' },
-          release,
-          buildIdentity
-        )
+      () => createUniversalV1FakeFinancialApplicationService()
     ),
     assertAuthorized,
   });
@@ -275,9 +250,15 @@ function registerWorkers(): void {
 async function startWorkers(): Promise<void> {
   try {
     log.info('Starting HustleXP Worker Runtime...');
-    await runStartupMigrations(log);
+    await runStartupMigrations(log, productionStartupMigrationRuntime(db.readQuery));
+    if (shutdownInProgress) throw new Error('WORKER_STARTUP_ABORTED');
+    if (nonproductionFinancialWorkerEnvironment()) {
+      fakeFinancialPublisher = startFakeFinancialOutboxPublisher();
+      await fakeFinancialPublisher.ready;
+      if (shutdownInProgress) throw new Error('WORKER_STARTUP_ABORTED');
+    }
     providerEventReplayWorker = await startProviderEventReplayRuntime();
-    fakeFinancialCommandRecoveryWorker = await startFakeFinancialCommandRecoveryRuntime();
+    await startFakeFinancialCommandRecoveryRuntime();
     workOrderCompensationWorker = await startWorkOrderCompensationRuntime();
     changeOrderRecoveryWorker = await startChangeOrderRecoveryRuntime();
     // Register all BullMQ workers
@@ -295,7 +276,7 @@ async function startWorkers(): Promise<void> {
     // Workers run in background, outbox poller runs on interval
   } catch (error) {
     log.fatal({ err: error }, 'Failed to start worker runtime');
-    process.exit(1);
+    throw error;
   }
 }
 
@@ -336,6 +317,22 @@ export async function shutdownWorkerResources(resources: WorkerShutdownResources
   const terminalCloseTimeoutMs =
     resources.terminalCloseTimeoutMs ?? WORKER_TERMINAL_CLOSE_TIMEOUT_MS;
 
+  const producers = [
+    { close: resources.closeFakeFinancialPublisher, name: 'fake_financial_publisher' },
+    { close: resources.closeFakeFinancialCommandRecovery, name: 'fake_financial_recovery' },
+  ];
+  await Promise.all(
+    producers.map(async ({ close, name }) => {
+      if (!close) return;
+      try {
+        await closeWorkerResourceWithDeadline(close, name, terminalCloseTimeoutMs);
+      } catch (error) {
+        errors.push(error);
+        log.error({ err: error, resource: name }, 'Error draining fake-financial producer');
+      }
+    })
+  );
+
   const closePromises = resources.workers.map(async (worker, index) => {
     try {
       log.info(
@@ -374,12 +371,6 @@ export async function shutdownWorkerResources(resources: WorkerShutdownResources
     terminalCloseSteps.push({
       name: 'provider event replay worker',
       close: resources.closeProviderEventReplay,
-    });
-  }
-  if (resources.closeFakeFinancialCommandRecovery) {
-    terminalCloseSteps.push({
-      name: 'fake financial command recovery worker',
-      close: resources.closeFakeFinancialCommandRecovery,
     });
   }
   if (resources.closeWorkOrderCompensation) {
@@ -441,6 +432,8 @@ export async function gracefulShutdown(signal: string): Promise<void> {
   }
 
   const workersToDrain = activeWorkers.splice(0, activeWorkers.length);
+  const fakeFinancialPublisherToClose = fakeFinancialPublisher;
+  fakeFinancialPublisher = null;
   const providerEventReplayToClose = providerEventReplayWorker;
   providerEventReplayWorker = null;
   const fakeFinancialCommandRecoveryToClose = fakeFinancialCommandRecoveryWorker;
@@ -455,6 +448,9 @@ export async function gracefulShutdown(signal: string): Promise<void> {
   try {
     await shutdownWorkerResources({
       workers: workersToDrain,
+      closeFakeFinancialPublisher: fakeFinancialPublisherToClose?.stop.bind(
+        fakeFinancialPublisherToClose
+      ),
       closeProviderEventReplay: providerEventReplayToClose
         ? () => providerEventReplayToClose.stop()
         : undefined,
@@ -507,14 +503,54 @@ process.on('SIGTERM', () => {
  */
 export async function bootWorkerProcess(): Promise<void> {
   validateConfig();
-  workerHealthServer = await startWorkerHealthServer({
-    providerEventReplayHealth: () => providerEventReplayWorker?.health() ?? null,
-    fakeFinancialCommandRecoveryHealth: () => fakeFinancialCommandRecoveryWorker?.health() ?? null,
-    workOrderCompensationHealth: () => workOrderCompensationWorker?.health() ?? null,
-    changeOrderRecoveryHealth: () => changeOrderRecoveryWorker?.health() ?? null,
-  });
-  await startWorkers();
-  workerHealthServer.markReady();
+  const installed = await installConfiguredRuntimeDatabase('worker');
+  try {
+    workerHealthServer = await startWorkerHealthServer({
+      fakeFinancialPublisherHealth: () => fakeFinancialPublisher?.status() ?? null,
+      providerEventReplayHealth: () => providerEventReplayWorker?.health() ?? null,
+      fakeFinancialCommandRecoveryHealth: () =>
+        fakeFinancialCommandRecoveryWorker?.health() ?? null,
+      workOrderCompensationHealth: () => workOrderCompensationWorker?.health() ?? null,
+      changeOrderRecoveryHealth: () => changeOrderRecoveryWorker?.health() ?? null,
+    });
+    await startWorkers();
+    if (shutdownInProgress) throw new Error('WORKER_STARTUP_ABORTED');
+    workerHealthServer.markReady();
+  } catch (error) {
+    if (outboxHandles) {
+      clearInterval(outboxHandles.outboxInterval);
+      clearInterval(outboxHandles.surgeInterval);
+      clearInterval(outboxHandles.trustTierInterval);
+      outboxHandles = null;
+    }
+    try {
+      await shutdownWorkerResources({
+        workers: activeWorkers.splice(0, activeWorkers.length),
+        closeFakeFinancialPublisher: fakeFinancialPublisher?.stop.bind(fakeFinancialPublisher),
+        closeProviderEventReplay: providerEventReplayWorker?.stop.bind(providerEventReplayWorker),
+        closeFakeFinancialCommandRecovery: fakeFinancialCommandRecoveryWorker?.stop.bind(
+          fakeFinancialCommandRecoveryWorker
+        ),
+        closeWorkOrderCompensation: workOrderCompensationWorker?.stop.bind(
+          workOrderCompensationWorker
+        ),
+        closeChangeOrderRecovery: changeOrderRecoveryWorker?.stop.bind(changeOrderRecoveryWorker),
+        closeHealthServer: workerHealthServer?.close.bind(workerHealthServer),
+        closeRedis: closeRedisRuntime,
+        closeDatabase: () => installed.close(),
+      });
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], 'WORKER_BOOT_AND_CLEANUP_FAILED');
+    } finally {
+      fakeFinancialPublisher = null;
+      providerEventReplayWorker = null;
+      fakeFinancialCommandRecoveryWorker = null;
+      workOrderCompensationWorker = null;
+      changeOrderRecoveryWorker = null;
+      workerHealthServer = null;
+    }
+    throw error;
+  }
 }
 
 // Start workers if this file is run directly (ESM-compatible entry point guard)

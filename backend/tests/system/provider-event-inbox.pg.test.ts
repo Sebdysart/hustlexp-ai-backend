@@ -8,7 +8,7 @@ import {
   type RecordProviderEventInput,
 } from '../../src/services/payment/ProviderEventInbox.js';
 
-const describePg = describe.sequential.skipIf(!hasDb);
+const describePg = describe.skipIf(!hasDb).sequential;
 
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
@@ -168,9 +168,20 @@ describePg('provider-event inbox PostgreSQL authority', () => {
       `DELETE FROM public.provider_event_inbox_receipts WHERE receipt_id=$1`,
       [recorded.receiptId],
     )).rejects.toThrow(/append-only/iu);
-    await expect(db.query(
-      'TRUNCATE TABLE public.provider_event_inbox_receipts',
-    )).rejects.toThrow(/append-only/iu);
+    // Include referencing relations so PostgreSQL reaches the inbox truncate guard.
+    // If the guard regresses, the sentinel still rolls back the disposable transaction.
+    await expect(db.transaction(async (query) => {
+      await query('TRUNCATE TABLE public.provider_event_inbox_receipts CASCADE');
+      throw new Error('PROVIDER_EVENT_INBOX_TRUNCATE_WAS_ALLOWED');
+    })).rejects.toMatchObject({
+      code: 'P0001',
+      message: 'HXPEI1: provider event inbox evidence is append-only',
+    });
+    const preserved = await db.query(
+      'SELECT receipt_id FROM public.provider_event_inbox_receipts WHERE receipt_id=$1',
+      [recorded.receiptId],
+    );
+    expect(preserved.rows).toEqual([{ receipt_id: recorded.receiptId }]);
   });
 
   it('rejects a raw payload whose claimed digest does not match its exact bytes', async () => {

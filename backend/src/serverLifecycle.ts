@@ -21,7 +21,7 @@ let shutdownPromise: Promise<void> | undefined;
 async function runWithShutdownDeadline(
   operation: () => Promise<unknown> | unknown,
   timeoutMs: number,
-  timeoutCode: string,
+  timeoutCode: string
 ): Promise<void> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_resolve, reject) => {
@@ -32,19 +32,17 @@ async function runWithShutdownDeadline(
   });
 
   try {
-    await Promise.race([
-      Promise.resolve().then(operation),
-      deadline,
-    ]);
+    await Promise.race([Promise.resolve().then(operation), deadline]);
   } finally {
     if (timeout) clearTimeout(timeout);
   }
 }
 
-async function stopHttpIntake(server: ServerType): Promise<void> {
+export async function stopHttpIntake(server: ServerType): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     server.close((error) => {
-      if (error) reject(error);
+      if (error && (error as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING')
+        reject(error);
       else resolve();
     });
   });
@@ -85,11 +83,7 @@ export async function shutdownServerResources({
 
   for (const resource of resources) {
     try {
-      await runWithShutdownDeadline(
-        resource.close,
-        closeTimeoutMs,
-        resource.timeoutCode,
-      );
+      await runWithShutdownDeadline(resource.close, closeTimeoutMs, resource.timeoutCode);
       logger.info(resource.successMessage);
     } catch (error) {
       errors.push(error);
@@ -130,8 +124,12 @@ export function gracefulShutdown(server: ServerType, signal: string): Promise<vo
 }
 
 export function installProcessHandlers(server: ServerType): void {
-  process.on('SIGINT', () => { void gracefulShutdown(server, 'SIGINT'); });
-  process.on('SIGTERM', () => { void gracefulShutdown(server, 'SIGTERM'); });
+  process.on('SIGINT', () => {
+    void gracefulShutdown(server, 'SIGINT');
+  });
+  process.on('SIGTERM', () => {
+    void gracefulShutdown(server, 'SIGTERM');
+  });
   process.on('unhandledRejection', (reason) => {
     logger.error({ reason }, 'Unhandled promise rejection');
     Sentry.captureException(reason);

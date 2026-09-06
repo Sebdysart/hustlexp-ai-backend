@@ -27,7 +27,11 @@ const tokenSchema = z.string().regex(/^[a-f0-9]{64}$/i);
 const sourceSchema = z.enum(EXTERNAL_SHARE_CHANNELS);
 const directInviteSourceSchema = z.enum(DIRECT_INVITE_CHANNELS);
 
-type BridgeRow = ExternalBridgeTaskSnapshot & ExternalBridgeLinkSnapshot & {
+type LegacyBridgeTaskSnapshot = ExternalBridgeTaskSnapshot & {
+  universal_contract_version: number | string | bigint | null;
+};
+
+type BridgeRow = LegacyBridgeTaskSnapshot & ExternalBridgeLinkSnapshot & {
   link_id: string;
   task_id: string;
   source_channel: string;
@@ -40,7 +44,28 @@ const SAFE_TASK_SELECT = `
   t.hustler_payout_cents, t.estimated_duration_minutes, t.rough_location,
   t.deadline, t.requirements, t.risk_level, t.required_tools,
   t.cancellation_policy_version, t.late_cancel_pct, t.cancellation_window_hours,
-  t.trust_tier_required`;
+  t.trust_tier_required, t.universal_contract_version`;
+
+const LEGACY_EXTERNAL_BRIDGE_AUTHORITY_HELD = 'UNIVERSAL_V1_LEGACY_EXTERNAL_BRIDGE_HELD';
+
+function exactLegacyExternalBridgeAuthority(
+  task: { universal_contract_version?: number | string | bigint | null },
+): boolean {
+  const version = task.universal_contract_version;
+  return version === 0 || version === '0' || version === 0n;
+}
+
+function assertExactLegacyExternalBridgeAuthority(
+  task: { universal_contract_version?: number | string | bigint | null },
+  mutation: string,
+): void {
+  if (exactLegacyExternalBridgeAuthority(task)) return;
+  throw new TRPCError({
+    code: 'PRECONDITION_FAILED',
+    message: 'Legacy external task mutations are held unless exact legacy-only authority is proven.',
+    cause: { applicationCode: LEGACY_EXTERNAL_BRIDGE_AUTHORITY_HELD, mutation },
+  });
+}
 
 function failForBlockers(blockers: string[]): never {
   const code = blockers.includes('task_unavailable') || blockers.includes('share_expired')
@@ -103,8 +128,17 @@ function eligibilityMessage(blocker: string): string {
   return copy[blocker] ?? 'This account is not eligible to offer availability for this task.';
 }
 
-async function candidateSnapshot(query: QueryFn, tokenHash: string, userId: string, lock = false) {
+async function candidateSnapshot(
+  query: QueryFn,
+  tokenHash: string,
+  userId: string,
+  lock = false,
+  requireLegacyReadAuthority = false,
+) {
   const task = await loadBridge(query, tokenHash, lock);
+  if (requireLegacyReadAuthority && !exactLegacyExternalBridgeAuthority(task)) {
+    failForBlockers(['share_revoked']);
+  }
   const result = await query<ExternalBridgeUserSnapshot>(
     `SELECT id, trust_tier, COALESCE(trust_hold, false) AS trust_hold,
             COALESCE(is_verified, false) AS is_verified,
@@ -136,7 +170,7 @@ export const taskExternalBridgeRouter = router({
       const tokenHash = hashExternalShareToken(token);
       const path = externalSharePath(token);
       const created = await db.transaction(async (query) => {
-        const result = await query<ExternalBridgeTaskSnapshot>(
+        const result = await query<LegacyBridgeTaskSnapshot>(
           `SELECT ${SAFE_TASK_SELECT} FROM tasks t WHERE t.id = $1 FOR UPDATE`,
           [input.taskId],
         );
@@ -144,6 +178,7 @@ export const taskExternalBridgeRouter = router({
         if (!task || task.poster_id !== ctx.user.id) {
           throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found.' });
         }
+        assertExactLegacyExternalBridgeAuthority(task, 'create_share_link');
         const blockers = externalShareReadiness(task);
         if (blockers.length) failForBlockers(blockers);
         await query(
@@ -188,7 +223,7 @@ export const taskExternalBridgeRouter = router({
       const tokenHash = hashExternalShareToken(token);
       const path = externalSharePath(token);
       const created = await db.transaction(async (query) => {
-        const result = await query<ExternalBridgeTaskSnapshot>(
+        const result = await query<LegacyBridgeTaskSnapshot>(
           `SELECT ${SAFE_TASK_SELECT} FROM tasks t WHERE t.id = $1 FOR UPDATE`,
           [input.taskId],
         );
@@ -196,6 +231,7 @@ export const taskExternalBridgeRouter = router({
         if (!task || task.poster_id !== ctx.user.id) {
           throw new TRPCError({ code: 'NOT_FOUND', message: 'Task not found.' });
         }
+        assertExactLegacyExternalBridgeAuthority(task, 'create_direct_invite');
         const blockers = externalShareReadiness(task);
         if (blockers.length) failForBlockers(blockers);
         await query(
@@ -232,6 +268,7 @@ export const taskExternalBridgeRouter = router({
     .input(z.object({ token: tokenSchema }))
     .query(async ({ ctx, input }) => {
       const row = await loadBridge(db.query.bind(db), hashExternalShareToken(input.token));
+      if (!exactLegacyExternalBridgeAuthority(row)) failForBlockers(['share_revoked']);
       if (directInviteRecipientBlockers(row, ctx.user?.id ?? null).length) failForBlockers(['share_revoked']);
       return publicCard(row);
     }),
@@ -239,7 +276,13 @@ export const taskExternalBridgeRouter = router({
   getCandidateOffer: hustlerProcedure
     .input(z.object({ token: tokenSchema }))
     .query(async ({ ctx, input }) => {
-      const snapshot = await candidateSnapshot(db.query.bind(db), hashExternalShareToken(input.token), ctx.user.id);
+      const snapshot = await candidateSnapshot(
+        db.query.bind(db),
+        hashExternalShareToken(input.token),
+        ctx.user.id,
+        false,
+        true,
+      );
       return {
         card: publicCard(snapshot.task),
         eligibility: {
@@ -272,6 +315,7 @@ export const taskExternalBridgeRouter = router({
       }
       const submitted = await db.transaction(async (query) => {
       const snapshot = await candidateSnapshot(query, hashExternalShareToken(input.token), ctx.user.id, true);
+      assertExactLegacyExternalBridgeAuthority(snapshot.task, 'submit_external_offer');
       if (snapshot.blockers.length) {
         throw new TRPCError({ code: 'FORBIDDEN', message: eligibilityMessage(snapshot.blockers[0]) });
       }

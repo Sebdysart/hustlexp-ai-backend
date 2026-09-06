@@ -143,7 +143,7 @@ describe('UniversalV1FulfillmentApplication', () => {
 
   it('creates exact-manifest fake finance before repository delegation', async () => {
     const finance = { executeFinancialEvent: vi.fn() };
-    const createFinance = vi.fn().mockReturnValue(finance);
+    const createFinance = vi.fn().mockResolvedValue(finance);
     const repository = {
       completeFakeFinancialLifecycle: vi.fn().mockResolvedValue({
         path: 'SETTLED',

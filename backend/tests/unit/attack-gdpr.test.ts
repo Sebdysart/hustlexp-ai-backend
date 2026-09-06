@@ -59,15 +59,15 @@ vi.mock('../../src/auth/middleware.js', () => ({
 }));
 
 // Mock TaskService to avoid pulling in ScoperAIService → AIClient → config.ai chain.
-// GDPRService calls TaskService.cancel() — the mock returns success so deletion proceeds.
+// GDPRService calls the explicit GDPR cancellation command — the mock returns success so deletion proceeds.
 // EscrowService is NOT mocked so Attack 1 test 1 and Attack 7 can test real release logic.
 vi.mock('../../src/services/TaskService', () => ({
   TaskService: {
-    cancel: vi.fn().mockResolvedValue({ success: true, data: {} }),
+    cancelForInternalPurpose: vi.fn().mockResolvedValue({ success: true, data: {} }),
     getById: vi.fn().mockResolvedValue({ success: false, error: { code: 'NOT_FOUND', message: 'not found' } }),
   },
   default: {
-    cancel: vi.fn().mockResolvedValue({ success: true, data: {} }),
+    cancelForInternalPurpose: vi.fn().mockResolvedValue({ success: true, data: {} }),
     getById: vi.fn().mockResolvedValue({ success: false, error: { code: 'NOT_FOUND', message: 'not found' } }),
   },
 }));

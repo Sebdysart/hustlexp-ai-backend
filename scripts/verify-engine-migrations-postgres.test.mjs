@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import {
   MIGRATION_VERIFICATION_DATABASES,
+  migrationVerificationExecutionEnvironment,
   validateMigrationVerificationPolicy,
 } from './verify-engine-migrations-postgres.mjs';
 
@@ -37,6 +38,42 @@ test('migration verification refuses production, remote, wrong-user, and broad d
   }
 });
 
+test('engine execution authority accepts only exact disposable verifier targets, never admin', () => {
+  for (const [name, host] of [
+    ['hx_ci_fresh_test', '127.0.0.1'],
+    ['hx_ci_upgrade_test', '[::1]'],
+  ]) {
+    assert.deepEqual(
+      migrationVerificationExecutionEnvironment(
+        `postgresql://hx_ci_runner:synthetic@${host}:5432/${name}`,
+      ),
+      {
+        NODE_ENV: 'test',
+        HX_ENVIRONMENT: 'local',
+        SERVICE_ROLE: 'migration',
+        HX_ALLOW_CI_DB_RECREATE: 'true',
+        HXOS_LOCAL_TEST_DATABASE_NAME: name,
+        HXOS_LOCAL_TEST_DATABASE_ROLE: 'hx_ci_runner',
+      },
+    );
+  }
+
+  for (const databaseUrl of [
+    safeEnv.DATABASE_URL,
+    'postgresql://hx_ci_runner:synthetic@127.0.0.1:5432/hx_ci_system_test',
+    'postgresql://postgres:synthetic@127.0.0.1:5432/hx_ci_fresh_test',
+    'postgresql://hx_ci_runner:synthetic@localhost:5432/hx_ci_fresh_test',
+    'postgresql://hx_ci_runner:synthetic@db.example.test:5432/hx_ci_fresh_test',
+    'postgresql://hx_ci_runner:synthetic@127.0.0.1:5444/hx_ci_fresh_test',
+    'postgresql://hx_ci_runner:synthetic@127.0.0.1:5432/hx_ci_fresh_test?sslmode=require',
+  ]) {
+    assert.throws(
+      () => migrationVerificationExecutionEnvironment(databaseUrl),
+      /Refusing migration verification execution target/u,
+    );
+  }
+});
+
 test('force-drop implementation checks exact recreate authority before connecting or dropping', async () => {
   const source = await readFile(
     new URL('./verify-engine-migrations-postgres.mjs', import.meta.url),
@@ -54,6 +91,43 @@ test('force-drop implementation checks exact recreate authority before connectin
   assert.ok(authorityIndex < connectIndex, 'authority must be checked before connecting');
   assert.ok(connectIndex < forceDropIndex, 'the validated admin connection precedes force-drop');
   assert.match(implementation, /MIGRATION_VERIFICATION_DATABASE_SET\.has\(name\)/u);
+});
+
+test('PostgreSQL verifier binds and consumes one stateful exact plan per migration client', async () => {
+  const source = await readFile(
+    new URL('./verify-engine-migrations-postgres.mjs', import.meta.url),
+    'utf8'
+  );
+  assert.match(source, /assertMigrationExecutionAuthorized\(\{/u);
+  assert.match(source, /assertTaskLocationCryptoConfigured\(\)/u);
+  assert.match(source, /migrationArtifactDigest: await engineMigrationArtifactDigest\(\)/u);
+  assert.match(source, /databaseUrl: url/u);
+  assert.match(source, /authorizeEngineAutomationMigrationPlanOnConnectedClient/u);
+  assert.match(
+    source,
+    /ensureConstitutionalBaseline\(client, plan\.baseline, plan\.session\)/u,
+  );
+  assert.match(source, /backfillLegacyTaskLocations\(client, plan\.session\)/u);
+  assert.match(source, /completeMigrationExecutionSession\(plan\.session, client\)/u);
+  assert.match(source, /runCanonicalMigrationPlan\(url, 'applied'\)/u);
+  assert.match(source, /runCanonicalMigrationPlan\(url, 'already_applied'\)/u);
+  assert.match(
+    source,
+    /consumeCanonicalMigrationPlan\([\s\S]*?fixtureClient,[\s\S]*?'already_applied'/u,
+  );
+
+  const calls = source.match(/applyEngineAutomationMigration\([\s\S]*?\n\s*\)/gu) ?? [];
+  assert.ok(calls.length >= 5, 'every verifier migration sink must remain statically discoverable');
+  for (const call of calls) {
+    assert.match(call, /plan\.session/u, 'every migration sink must use the opaque plan session');
+  }
+  assert.doesNotMatch(
+    source,
+    /applyEngineAutomationMigration\(\s*client,\s*migration\.sql,\s*migration\.sourcePath,\s*spec\.name\s*\)/u,
+    'the retired four-argument migration signature must never return',
+  );
+  assert.doesNotMatch(source, /runEngineAutomationMigration\(/u);
+  assert.doesNotMatch(source, /await client\.query\(baseline\)/u);
 });
 
 test('PostgreSQL verification executes the legacy assignment-alias bypass proof', async () => {
@@ -133,11 +207,11 @@ test('PostgreSQL verification certifies purpose-bound occurrence audit migration
   );
 
   const preSplitLoop = source.indexOf(
-    'for (const spec of runtime.migrationSpecs.slice(0, splitIndex))',
+    'for (let index = 0; index < splitIndex; index += 1)',
     upgradeStart
   );
   const tailLoop = source.indexOf(
-    'for (const spec of runtime.migrationSpecs.slice(splitIndex))',
+    'for (let index = splitIndex; index < runtime.migrationSpecs.length; index += 1)',
     preSplitLoop
   );
   const exactTailBinding = source.indexOf('occurrenceAccessAuditSql = migration.sql;', tailLoop);

@@ -17,6 +17,14 @@ vi.mock('../../src/db', () => ({
   default: { query: vi.fn() },
 }));
 
+const mockRedisGet = vi.hoisted(() => vi.fn());
+
+vi.mock('../../src/cache/redis', () => ({
+  redis: {
+    get: mockRedisGet,
+  },
+}));
+
 // Stable child logger so tests can inspect its calls (especially error).
 // Must be hoisted so the vi.mock factory (which runs before variable init) can
 // reference it.
@@ -33,6 +41,7 @@ vi.mock('../../src/logger', () => ({
 // ─── Imports ─────────────────────────────────────────────────────────────────
 import { createContext, Schemas, router, publicProcedure, protectedProcedure, hustlerProcedure, posterProcedure, publicTRPCErrorShape } from '../../src/trpc';
 import { firebaseAuth } from '../../src/auth/firebase';
+import { authCache } from '../../src/auth-cache';
 import { db } from '../../src/db';
 
 const mockVerifyIdToken = vi.mocked(firebaseAuth.verifyIdToken);
@@ -55,6 +64,11 @@ function makeRequest(authHeader?: string, bridgeKey?: string): Request {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  authCache.clear();
+  // A cached identity is usable only after the authoritative revocation store
+  // confirms that no marker exists. Keep these unit tests hermetic while
+  // preserving the production fail-closed behavior for unavailable Redis.
+  mockRedisGet.mockResolvedValue(null);
 });
 
 describe('publicTRPCErrorShape', () => {
@@ -110,27 +124,30 @@ describe('createContext', () => {
     expect(ctx.firebaseUid).toBeNull();
   });
 
-  it('authenticates a valid engine bridge key without creating a user session', async () => {
+  it('ignores a matching retired engine bridge header and never creates authority fields', async () => {
     const key = 'bridge-key-that-is-longer-than-thirty-two-characters';
     vi.stubEnv('ENGINE_BRIDGE_WRITE_KEY', key);
     vi.stubEnv('ENGINE_BRIDGE_ACTOR_ID', '550e8400-e29b-41d4-a716-446655440002');
     try {
       const ctx = await createContext({ req: makeRequest(undefined, key), resHeaders: new Headers() });
       expect(ctx.user).toBeNull();
-      expect(ctx.engineBridgeAuthorized).toBe(true);
-      expect(ctx.engineBridgeActorId).toBe('550e8400-e29b-41d4-a716-446655440002');
+      expect(ctx.firebaseUid).toBeNull();
+      expect(ctx).not.toHaveProperty('engineBridgeAuthorized');
+      expect(ctx).not.toHaveProperty('engineBridgeActorId');
+      expect(mockVerifyIdToken).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllEnvs();
     }
   });
 
-  it('rejects a wrong engine bridge key without leaking an actor identity', async () => {
+  it('never exposes retired bridge identity fields for an arbitrary bridge header', async () => {
     vi.stubEnv('ENGINE_BRIDGE_WRITE_KEY', 'bridge-key-that-is-longer-than-thirty-two-characters');
     vi.stubEnv('ENGINE_BRIDGE_ACTOR_ID', '550e8400-e29b-41d4-a716-446655440002');
     try {
       const ctx = await createContext({ req: makeRequest(undefined, 'wrong-key-that-is-also-longer-than-thirty-two'), resHeaders: new Headers() });
-      expect(ctx.engineBridgeAuthorized).toBe(false);
-      expect(ctx.engineBridgeActorId).toBeNull();
+      expect(ctx.user).toBeNull();
+      expect(ctx).not.toHaveProperty('engineBridgeAuthorized');
+      expect(ctx).not.toHaveProperty('engineBridgeActorId');
     } finally {
       vi.unstubAllEnvs();
     }
@@ -244,6 +261,7 @@ describe('createContext', () => {
     expect(ctx2.user).toEqual(expect.objectContaining({ id: mockUser.id }));
     // Firebase called once (cache hit on second)
     expect(mockVerifyIdToken).toHaveBeenCalledTimes(1);
+    expect(mockRedisGet).toHaveBeenCalledWith('auth:revoked:uid-cache', 'authority');
   });
 
   it('does not cache token very close to expiry', async () => {

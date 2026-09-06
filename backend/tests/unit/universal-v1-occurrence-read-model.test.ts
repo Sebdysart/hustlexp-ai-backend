@@ -35,6 +35,9 @@ const ids = {
   reconciliation: '00000000-0000-4000-8000-000000000120',
   proposal: '00000000-0000-4000-8000-000000000122',
   amendment: '00000000-0000-4000-8000-000000000123',
+  standardizedQuote: '00000000-0000-4000-8000-000000000124',
+  standardizedAcceptance: '00000000-0000-4000-8000-000000000125',
+  readiness: '00000000-0000-4000-8000-000000000126',
 } as const;
 
 const at = '2026-09-24T12:00:00.000Z';
@@ -55,6 +58,27 @@ function row(
     route_category: 'plumbing',
     route_service_cell: 'Oakland, CA',
     route_created_at: at,
+    standardized_quote_id: null,
+    standardized_quote_version: null,
+    standardized_quote_kind: null,
+    standardized_quote_work_category: null,
+    standardized_quote_customer_total_cents: null,
+    standardized_quote_currency: null,
+    standardized_quote_valid_until: null,
+    standardized_quote_created_at: null,
+    standardized_quote_routing_current: null,
+    standardized_quote_unexpired: null,
+    standardized_acceptance_id: null,
+    standardized_acceptance_version: null,
+    standardized_acceptance_accepted_at: null,
+    standardized_readiness_id: null,
+    standardized_readiness_version: null,
+    standardized_readiness_provider_kind: null,
+    standardized_readiness_chain_head: null,
+    standardized_readiness_unexpired: null,
+    standardized_readiness_routing_current: null,
+    standardized_readiness_expires_at: null,
+    standardized_readiness_created_at: null,
     provider_user_id: ids.provider,
     provider_organization_id: ids.organization,
     provider_class: 'VERIFIED_TRADE_BUSINESS',
@@ -178,6 +202,100 @@ function row(
     reconciliation_created_at: null,
     ...overrides,
   };
+}
+
+function standardizedDraftRow(
+  overrides: Partial<RawUniversalV1OccurrenceRow> = {},
+): RawUniversalV1OccurrenceRow {
+  return row({
+    draft_status: 'account_claimed',
+    route_version: 2,
+    route_reason_codes: ['STANDARDIZED_SCOPE_ELIGIBLE'],
+    route_category: 'furniture_assembly',
+    route_service_cell: '00000',
+    provider_user_id: null,
+    provider_organization_id: null,
+    provider_class: null,
+    qualification_provider_class: null,
+    qualification_credential_type: null,
+    qualification_issuing_authority: null,
+    qualification_jurisdiction_code: null,
+    qualification_license_scope: null,
+    qualification_license_status: null,
+    qualification_expires_at: null,
+    qualification_verified_at: null,
+    qualification_official_source_checked_at: null,
+    qualification_permitted_work_categories: null,
+    eligibility_id: null,
+    eligibility_version: null,
+    eligibility_task_eligible: null,
+    eligibility_is_current: null,
+    eligibility_blocker_codes: null,
+    eligibility_policy_version: null,
+    eligibility_evaluated_at: null,
+    eligibility_valid_until: null,
+    invitation_id: null,
+    invitation_quote_id: null,
+    invitation_expected_draft_version: null,
+    invitation_expected_quote_version: null,
+    invitation_is_current: null,
+    invitation_valid_until: null,
+    invitation_created_at: null,
+    estimate_id: null,
+    estimate_quote_id: null,
+    estimate_quote_version_id: null,
+    estimate_version: null,
+    estimate_work_category: null,
+    estimate_customer_total_cents: null,
+    estimate_provider_payout_cents: null,
+    estimate_currency: null,
+    estimate_scope_snapshot: null,
+    estimate_line_items: null,
+    estimate_created_at: null,
+    acceptance_id: null,
+    acceptance_created_at: null,
+    task_id: null,
+    task_state: null,
+    task_category: null,
+    task_risk_level: null,
+    task_requires_proof: null,
+    task_universal_payment_posture: null,
+    task_automation_classification: null,
+    task_worker_id: null,
+    scope_version_id: null,
+    scope_version: null,
+    scope_hash: null,
+    scope_source: null,
+    scope_customer_total_cents: null,
+    scope_provider_payout_cents: null,
+    scope_currency: null,
+    scope_title: null,
+    scope_description: null,
+    scope_requirements: null,
+    scope_checklist: null,
+    scope_created_at: null,
+    interest_id: null,
+    interest_status: null,
+    interest_created_at: null,
+    hold_id: null,
+    hold_is_active: null,
+    hold_status: null,
+    hold_reserved_at: null,
+    hold_expires_at: null,
+    work_order_id: null,
+    work_order_materialization_version: null,
+    work_order_materialized_at: null,
+    latest_amendment_id: null,
+    latest_amendment_version: null,
+    latest_financial_version: null,
+    change_order_timeline: null,
+    execution_fact_id: null,
+    execution_version: null,
+    execution_state: null,
+    execution_transition: null,
+    execution_recorded_at: null,
+    ...overrides,
+  });
 }
 
 function facts(result: RawUniversalV1OccurrenceRow | null = row()) {
@@ -828,6 +946,169 @@ describe('Universal V1 occurrence projection', () => {
       message: expect.not.stringContaining('private_database_password'),
     });
   });
+
+  it('projects the standardized quote readiness chain without inventing a consequential effect', async () => {
+    const unquoted = await new UniversalV1OccurrenceReadApplication(facts(standardizedDraftRow()))
+      .customer(ids.draft, ids.customer);
+    expect(unquoted).toMatchObject({
+      next_action: 'PREPARE_STANDARDIZED_QUOTE',
+      commercial: {
+        standardized_quote: {
+          quote: null,
+          acceptance: null,
+          readiness: null,
+          actionable_state: 'PREPARE_QUOTE_OR_REVIEW_ROUTE',
+        },
+      },
+    });
+
+    const quoted = standardizedDraftRow({
+      standardized_quote_id: ids.standardizedQuote,
+      standardized_quote_version: 1,
+      standardized_quote_kind: 'STANDARDIZED_SCOPE_FIXED_PRICE',
+      standardized_quote_work_category: 'furniture_assembly',
+      standardized_quote_customer_total_cents: '12900',
+      standardized_quote_currency: 'usd',
+      standardized_quote_valid_until: '2026-09-24T13:00:00.000Z',
+      standardized_quote_created_at: at,
+      standardized_quote_routing_current: true,
+      standardized_quote_unexpired: true,
+    });
+    const quoteOnly = await new UniversalV1OccurrenceReadApplication(facts(quoted))
+      .customer(ids.draft, ids.customer);
+    expect(quoteOnly.commercial.standardized_quote).toMatchObject({
+      quote: {
+        quote_version_id: ids.standardizedQuote,
+        quote_version: 1,
+        quote_kind: 'STANDARDIZED_SCOPE_FIXED_PRICE',
+        work_category_code: 'furniture_assembly',
+        customer_total_cents: 12_900,
+        currency: 'usd',
+      },
+      acceptance: null,
+      readiness: null,
+      routing_current: true,
+      acceptance_open: true,
+      price_locked: false,
+      fake_payment_method_ready: false,
+      actionable_state: 'ACCEPT_QUOTE',
+    });
+    expect(quoteOnly.next_action).toBe('ACCEPT_STANDARDIZED_QUOTE');
+
+    const noLongerActionable = await new UniversalV1OccurrenceReadApplication(facts({
+      ...quoted,
+      draft_status: 'converted',
+      standardized_quote_routing_current: false,
+    })).customer(ids.draft, ids.customer);
+    expect(noLongerActionable.commercial.standardized_quote).toMatchObject({
+      routing_current: false,
+      acceptance_open: false,
+      fake_payment_method_ready: false,
+      actionable_state: 'REQUOTE_OR_REVIEW_ROUTE',
+    });
+    expect(noLongerActionable.next_action).toBe('REVIEW_STANDARDIZED_ROUTE');
+
+    const accepted = standardizedDraftRow({
+      ...quoted,
+      standardized_acceptance_id: ids.standardizedAcceptance,
+      standardized_acceptance_version: 1,
+      standardized_acceptance_accepted_at: at,
+    });
+    const acceptedOnly = await new UniversalV1OccurrenceReadApplication(facts(accepted))
+      .customer(ids.draft, ids.customer);
+    expect(acceptedOnly.commercial.standardized_quote).toMatchObject({
+      acceptance: {
+        acceptance_fact_id: ids.standardizedAcceptance,
+        acceptance_version: 1,
+      },
+      price_locked: true,
+      fake_payment_method_ready: false,
+      actionable_state: 'PREPARE_OR_RENEW_FAKE_PAYMENT_METHOD',
+    });
+    expect(acceptedOnly.next_action).toBe('PREPARE_OR_RENEW_FAKE_PAYMENT_METHOD');
+
+    const acceptedNoLongerActionable = await new UniversalV1OccurrenceReadApplication(facts({
+      ...accepted,
+      draft_status: 'converted',
+      standardized_quote_routing_current: false,
+    })).customer(ids.draft, ids.customer);
+    expect(acceptedNoLongerActionable.commercial.standardized_quote).toMatchObject({
+      routing_current: false,
+      acceptance_open: false,
+      fake_payment_method_ready: false,
+      actionable_state: 'ROUTE_REVIEW_REQUIRED_AFTER_ACCEPTANCE',
+    });
+    expect(acceptedNoLongerActionable.next_action).toBe('REVIEW_STANDARDIZED_ROUTE');
+
+    const ready = standardizedDraftRow({
+      ...accepted,
+      standardized_readiness_id: ids.readiness,
+      standardized_readiness_version: 1,
+      standardized_readiness_provider_kind: 'FAKE',
+      standardized_readiness_chain_head: true,
+      standardized_readiness_unexpired: true,
+      standardized_readiness_routing_current: true,
+      standardized_readiness_expires_at: '2026-09-24T13:00:00.000Z',
+      standardized_readiness_created_at: at,
+    });
+    const readyCustomer = await new UniversalV1OccurrenceReadApplication(facts(ready))
+      .customer(ids.draft, ids.customer);
+    expect(readyCustomer.commercial.standardized_quote).toMatchObject({
+      readiness: {
+        readiness_fact_id: ids.readiness,
+        readiness_version: 1,
+        provider_kind: 'FAKE',
+        current_status: 'CURRENT',
+        is_current: true,
+      },
+      price_locked: true,
+      fake_payment_method_ready: true,
+      actionable_state: 'READY_FOR_PROVIDER_DISCOVERY',
+    });
+    expect(readyCustomer).toMatchObject({
+      next_action: 'WAIT_FOR_PROVIDER_INTEREST',
+      payment_creation_frozen: true,
+      hard_assignment_created: false,
+      final_availability_confirmation_required: true,
+      task: null,
+      hold: null,
+      work_order: null,
+      financial_lifecycle: null,
+    });
+
+    const interestedProvider = await new UniversalV1OccurrenceReadApplication(facts({
+      ...ready,
+      provider_user_id: ids.provider,
+      provider_organization_id: null,
+      provider_class: 'GENERAL_SERVICE_PROVIDER',
+      interest_id: ids.interest,
+      interest_status: 'pending',
+      interest_created_at: at,
+    })).provider(ids.draft, ids.provider);
+    expect(interestedProvider).toMatchObject({
+      provider: {
+        provider_class: 'GENERAL_SERVICE_PROVIDER',
+        provider_user_id: ids.provider,
+        provider_organization_id: null,
+      },
+      eligibility: null,
+      next_action: 'WAIT_FOR_ELIGIBILITY',
+      payment_creation_frozen: true,
+      hard_assignment_created: false,
+    });
+    expect(JSON.stringify({ quoteOnly, acceptedOnly, readyCustomer, interestedProvider }))
+      .not.toMatch(/scope_hash|sha256|provider_payout|processor|opaque_reference|runtime_evidence/iu);
+  });
+
+  it('fails closed when only part of a standardized quote fact is observed', async () => {
+    const partial = standardizedDraftRow({
+      standardized_quote_id: ids.standardizedQuote,
+    });
+    await expect(
+      new UniversalV1OccurrenceReadApplication(facts(partial))
+        .customer(ids.draft, ids.customer)
+    ).rejects.toMatchObject({ code: 'OCCURRENCE_READ_UNAVAILABLE' });
+  });
 });
 
 describe('PostgreSQL Universal V1 occurrence authority', () => {
@@ -848,10 +1129,26 @@ describe('PostgreSQL Universal V1 occurrence authority', () => {
     expect(sql).toContain('draft.poster_user_id = $2');
     expect(sql).toContain('draft.universal_contract_version = 1');
     expect(sql).toContain('draft.active_routing_decision_id');
+    expect(sql).toContain('public.task_draft_standardized_quote_versions');
+    expect(sql).toContain('public.task_draft_standardized_quote_acceptance_facts');
+    expect(sql).toContain('public.task_draft_payment_method_readiness_facts');
+    expect(sql).toContain('interest.provider_class_snapshot');
     expect(sql).toContain('public.current_verified_trade_qualifications');
     expect(sql).toContain(
       'qualification.business_credential_id = eligibility.trade_credential_id',
     );
+    const quoteProjectionStart = sql.indexOf('SELECT quote.id, quote.quote_version');
+    const quoteProjectionEnd = sql.indexOf(') standardized_quote ON TRUE');
+    const quoteProjectionSql = sql.slice(quoteProjectionStart, quoteProjectionEnd);
+    expect(quoteProjectionStart).toBeGreaterThan(-1);
+    expect(quoteProjectionEnd).toBeGreaterThan(quoteProjectionStart);
+    expect(quoteProjectionSql).toContain("draft.ingress_origin = 'BACKEND_POSTGRESQL'");
+    expect(quoteProjectionSql).toContain("draft.status = 'account_claimed'");
+    expect(quoteProjectionSql).toContain('draft.task_id IS NULL');
+    expect(quoteProjectionSql).toContain("actor.default_mode = 'poster'");
+    expect(quoteProjectionSql).toContain("actor.account_status = 'ACTIVE'");
+    expect(quoteProjectionSql).toContain('actor.is_minor IS FALSE');
+    expect(quoteProjectionSql).toContain('COALESCE(actor.is_banned, FALSE) IS FALSE');
     expect(sql).not.toMatch(/SELECT\s+\*/iu);
     expect(sql).toContain('delivery.expected_completion_fact_id = CASE');
     expect(sql).toContain("WHEN completion.fact_kind = 'APPROVED'");

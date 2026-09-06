@@ -1,0 +1,1260 @@
+diff --git a/backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql b/backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql
+index 7c874da..35aec3c 100644
+--- a/backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql
++++ b/backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql
+@@ -12278,3 +12278,248 @@ $$;
+ REVOKE ALL ON FUNCTION public.hxos_claim_fake_financial_change_order_recovery_v13(
+   UUID,TEXT,TEXT,TEXT,UUID,INTEGER,INTEGER,INTEGER
+ ) FROM PUBLIC;
++
++
++-- A scoped recovery observation is advisory evidence, never dispatch or terminal
++-- authority. Every later writer must revalidate its own exact durable evidence.
++CREATE OR REPLACE FUNCTION public.hxos_observe_fake_financial_change_order_recovery_v13(
++  p_target_authority_id UUID,p_target_database_name TEXT,
++  p_release_environment TEXT,p_release_manifest_digest TEXT,
++  p_proposal_id UUID,p_recovery_lease_id UUID,p_lease_owner_id UUID,
++  p_witness_request_sha256 TEXT,p_work_order_id UUID
++) RETURNS TABLE(observation JSONB,observed_at TIMESTAMPTZ,
++  target_authority_id UUID,release_manifest_digest TEXT)
++LANGUAGE plpgsql SECURITY DEFINER VOLATILE PARALLEL UNSAFE
++SET search_path=pg_catalog
++AS $$
++DECLARE
++  witness RECORD;
++  lease RECORD;
++  revocation_reason TEXT;
++BEGIN
++  IF pg_catalog.current_setting('transaction_isolation') <> 'read committed'
++     OR p_target_authority_id IS NULL OR p_target_database_name IS NULL
++     OR p_release_environment IS NULL OR p_release_manifest_digest IS NULL
++     OR p_proposal_id IS NULL OR p_recovery_lease_id IS NULL OR p_lease_owner_id IS NULL
++     OR p_work_order_id IS NULL OR p_witness_request_sha256 IS NULL
++     OR p_witness_request_sha256 !~ '^[a-f0-9]{64}$'
++     OR p_witness_request_sha256=pg_catalog.repeat('0',64) THEN
++    RAISE EXCEPTION 'HXUV1-CORECOVERY-13-OBSERVATION_INPUT_INVALID';
++  END IF;
++  PERFORM hx_authority.assert_fake_financial_outbox_target_v13(
++    p_target_authority_id,p_target_database_name,p_release_environment,p_release_manifest_digest);
++  IF NOT pg_catalog.pg_try_advisory_xact_lock(pg_catalog.hashtextextended(
++    'universal-v1-change-order-proposal:'||p_proposal_id::TEXT,0)) THEN
++    RAISE EXCEPTION 'HXUV1-CORECOVERY-13-OBSERVATION_LOCK_BUSY';
++  END IF;
++  SELECT command.proposal_id,command.work_order_id,command.request_sha256 INTO witness
++    FROM public.universal_v1_change_order_materialization_commands command
++   WHERE command.proposal_id=p_proposal_id FOR SHARE NOWAIT;
++  IF witness.proposal_id IS NULL OR witness.work_order_id IS DISTINCT FROM p_work_order_id
++     OR pg_catalog.btrim(witness.request_sha256) IS DISTINCT FROM p_witness_request_sha256 THEN
++    RAISE EXCEPTION 'HXUV1-CORECOVERY-13-OBSERVATION_BINDING_MISMATCH';
++  END IF;
++  SELECT l.expires_at INTO lease FROM public.universal_v1_change_order_recovery_leases l
++   WHERE l.proposal_id=p_proposal_id AND l.recovery_lease_id=p_recovery_lease_id
++     AND l.lease_owner_id=p_lease_owner_id;
++  IF NOT FOUND THEN RAISE EXCEPTION 'HXUV1-CORECOVERY-13-OBSERVATION_BINDING_MISMATCH'; END IF;
++  IF lease.expires_at<=pg_catalog.clock_timestamp() OR EXISTS(
++    SELECT 1 FROM public.universal_v1_change_order_recovery_terminal_facts terminal
++     WHERE terminal.proposal_id=p_proposal_id) THEN RETURN; END IF;
++  IF NOT pg_catalog.pg_try_advisory_xact_lock(pg_catalog.hashtextextended(
++    'fulfillment:'||p_work_order_id::TEXT,0)) THEN
++    RAISE EXCEPTION 'HXUV1-CORECOVERY-13-OBSERVATION_LOCK_BUSY';
++  END IF;
++  revocation_reason:=public.universal_v1_change_order_recovery_revocation_reason_v1(p_proposal_id);
++  RETURN QUERY WITH claimed AS (
++    SELECT p_proposal_id AS proposal_id,p_recovery_lease_id AS recovery_lease_id,p_lease_owner_id AS lease_owner_id
++  ), observed AS (
++       SELECT command.proposal_id, claimed.recovery_lease_id, claimed.lease_owner_id,
++              command.idempotency_key, command.request_sha256,
++              command.actor_user_id, command.work_order_id, command.task_id,
++              command.task_draft_id, command.eligibility_decision_id,
++              command.base_scope_version_id, command.replacement_scope_version_id,
++              replacement.version AS replacement_scope_version,
++              command.expected_financial_version, command.predecessor_event_id,
++              command.predecessor_operation_id, command.adjustment_operation_id,
++              command.customer_total_cents, command.currency, command.occurred_at,
++              adjustment.id AS adjustment_event_id,
++              amendment.id AS amendment_id,
++              compensation_event.id AS compensation_event_id,
++              adjustment_outcome.outcome_fact_id AS adjustment_outcome_fact_id,
++              revocation_reason AS authority_revocation_reason,
++              compensation.compensation_command_id,
++              compensation.reversal_operation_id AS compensation_reversal_operation_id,
++              compensation.reversal_idempotency_key AS compensation_reversal_idempotency_key,
++              compensation.lifecycle_expected_version AS compensation_lifecycle_expected_version,
++              compensation.amount_cents AS compensation_amount_cents,
++              compensation.currency AS compensation_currency,
++              compensation.requested_by AS compensation_requested_by,
++              compensation.created_at AS compensation_created_at,
++              compensation.semantic_limitation AS compensation_semantic_limitation,
++              CASE
++                WHEN amendment.id IS NOT NULL THEN 'AMENDMENT_MATERIALIZED'
++                WHEN compensation_event.id IS NOT NULL AND compensation_bridge.bridge_id IS NOT NULL
++                  THEN 'COMPENSATION_SUCCEEDED'
++                WHEN compensation.compensation_command_id IS NOT NULL THEN
++                  CASE
++                    WHEN compensation_journal.command_id IS NULL
++                      OR compensation_attempt.dispatch_attempt_id IS NULL
++                      THEN 'COMPENSATION_READY'
++                    WHEN compensation_outcome.outcome_kind = 'OUTCOME_OBSERVED'
++                      AND compensation_outcome.effect_certainty = 'CONFIRMED_EFFECT'
++                      AND compensation_outcome.provider_state = 'REVERSED'
++                      AND compensation_outcome.retryable = FALSE
++                      THEN 'COMPENSATION_REPLAYABLE'
++                    WHEN (
++                      compensation_outcome.outcome_kind = 'FAILED'
++                      AND compensation_outcome.effect_certainty = 'CONFIRMED_NO_EFFECT'
++                      AND compensation_outcome.retryable = FALSE
++                    ) OR (
++                      compensation_outcome.outcome_kind = 'OUTCOME_OBSERVED'
++                      AND compensation_outcome.effect_certainty = 'CONFIRMED_NO_EFFECT'
++                      AND compensation_outcome.retryable = FALSE
++                    ) THEN 'COMPENSATION_TERMINAL_NO_EFFECT'
++                    WHEN compensation_attempt.dispatch_attempt_id IS NOT NULL
++                      THEN 'COMPENSATION_RECONCILE_ONLY'
++                    ELSE 'WAITING'
++                  END
++                WHEN adjustment.id IS NOT NULL
++                  AND adjustment.status = 'SUCCEEDED'
++                  AND adjustment_bridge.bridge_id IS NOT NULL
++                  THEN 'ADJUSTMENT_SUCCEEDED'
++                WHEN adjustment.id IS NOT NULL
++                  AND adjustment.status IN ('DECLINED','FAILED')
++                  AND adjustment_bridge.bridge_id IS NOT NULL
++                  THEN 'ADJUST_TERMINAL_NO_EFFECT'
++                WHEN adjustment_attempt.dispatch_attempt_id IS NULL
++                  AND revocation_reason IN (
++                    'AMENDMENT_CHAIN_CHANGED',
++                    'FINANCIAL_CHAIN_CHANGED',
++                    'WORK_ORDER_TERMINALIZED'
++                  )
++                  THEN 'WAITING'
++                WHEN adjustment_attempt.dispatch_attempt_id IS NULL
++                  AND revocation_reason IS NOT NULL
++                  THEN 'ADJUST_NO_EFFECT_AUTHORITY_REVOKED'
++                WHEN adjustment_journal.command_id IS NULL
++                  OR adjustment_attempt.dispatch_attempt_id IS NULL
++                  THEN 'ADJUST_READY'
++                WHEN adjustment_outcome.outcome_kind = 'OUTCOME_OBSERVED'
++                  AND adjustment_outcome.effect_certainty = 'CONFIRMED_EFFECT'
++                  AND adjustment_outcome.provider_state = 'SUCCEEDED'
++                  AND adjustment_outcome.retryable = FALSE
++                  THEN 'ADJUST_REPLAYABLE'
++                WHEN (
++                  adjustment_outcome.outcome_kind = 'FAILED'
++                  AND adjustment_outcome.effect_certainty = 'CONFIRMED_NO_EFFECT'
++                  AND adjustment_outcome.retryable = FALSE
++                ) OR (
++                  adjustment_outcome.outcome_kind = 'OUTCOME_OBSERVED'
++                  AND adjustment_outcome.effect_certainty = 'CONFIRMED_NO_EFFECT'
++                  AND adjustment_outcome.retryable = FALSE
++                ) THEN 'ADJUST_TERMINAL_NO_EFFECT'
++                WHEN adjustment_attempt.dispatch_attempt_id IS NOT NULL
++                  THEN 'ADJUST_RECONCILE_ONLY'
++                ELSE 'WAITING'
++              END AS recovery_state
++         FROM claimed
++         JOIN public.universal_v1_change_order_materialization_commands command
++           ON command.proposal_id = claimed.proposal_id
++         JOIN public.task_scope_versions replacement
++           ON replacement.id = command.replacement_scope_version_id
++         LEFT JOIN public.task_work_order_amendments amendment
++           ON amendment.change_order_id = command.proposal_id
++          AND amendment.work_order_id = command.work_order_id
++          AND amendment.scope_version_id = command.replacement_scope_version_id
++         LEFT JOIN public.task_financial_security_events adjustment
++           ON adjustment.operation_id = command.adjustment_operation_id::text
++          AND adjustment.idempotency_key = command.idempotency_key || ':adjust'
++          AND adjustment.expected_version = command.expected_financial_version + 1
++          AND adjustment.provider_kind = 'FAKE'
++          AND adjustment.event_kind = 'ADJUSTMENT_AUTHORIZED'
++          AND adjustment.task_draft_id = command.task_draft_id
++          AND adjustment.task_id = command.task_id
++          AND adjustment.eligibility_decision_id = command.eligibility_decision_id
++          AND adjustment.scope_version_id = command.replacement_scope_version_id
++          AND adjustment.change_order_id = command.proposal_id
++          AND adjustment.predecessor_event_id = command.predecessor_event_id
++          AND adjustment.amount_cents = command.customer_total_cents
++          AND adjustment.currency = command.currency
++         LEFT JOIN public.universal_v1_fake_financial_lifecycle_bridges adjustment_bridge
++           ON adjustment_bridge.task_financial_security_event_id = adjustment.id
++          AND adjustment_bridge.fake_operation_kind = 'ADJUST'
++         LEFT JOIN public.universal_v1_prepared_financial_commands adjustment_prepared
++           ON adjustment_prepared.operation_kind = 'ADJUST'
++          AND adjustment_prepared.operation_id = command.adjustment_operation_id
++          AND adjustment_prepared.provider_kind = 'FAKE'
++          AND adjustment_prepared.provider_expected_version = 0
++          AND adjustment_prepared.idempotency_key = command.idempotency_key || ':adjust'
++         LEFT JOIN public.financial_provider_command_journal adjustment_journal
++           ON adjustment_journal.prepared_financial_command_id = adjustment_prepared.prepared_command_id
++          AND adjustment_journal.operation_id = command.adjustment_operation_id
++          AND adjustment_journal.idempotency_key = command.idempotency_key || ':adjust'
++         LEFT JOIN LATERAL (
++           SELECT attempt.dispatch_attempt_id
++             FROM public.financial_provider_command_dispatch_attempts attempt
++            WHERE attempt.command_id = adjustment_journal.command_id
++            ORDER BY attempt.attempt_number DESC
++            LIMIT 1
++         ) adjustment_attempt ON TRUE
++         LEFT JOIN LATERAL (
++           SELECT outcome.outcome_fact_id, outcome.outcome_kind, outcome.effect_certainty,
++                  outcome.provider_state, outcome.retryable
++             FROM public.financial_provider_command_outcome_facts outcome
++            WHERE outcome.command_id = adjustment_journal.command_id
++              AND outcome.dispatch_attempt_id = adjustment_attempt.dispatch_attempt_id
++            ORDER BY outcome.recorded_at DESC, outcome.outcome_fact_id DESC
++            LIMIT 1
++         ) adjustment_outcome ON TRUE
++         LEFT JOIN public.universal_v1_change_order_compensation_commands compensation
++           ON compensation.proposal_id = command.proposal_id
++         LEFT JOIN public.task_financial_security_events compensation_event
++           ON compensation_event.operation_id = compensation.reversal_operation_id::text
++          AND compensation_event.idempotency_key = compensation.reversal_idempotency_key
++          AND compensation_event.expected_version = compensation.lifecycle_expected_version
++          AND compensation_event.event_kind = 'REVERSED'
++          AND compensation_event.status = 'SUCCEEDED'
++          AND compensation_event.provider_kind = 'FAKE'
++         LEFT JOIN public.universal_v1_fake_financial_lifecycle_bridges compensation_bridge
++           ON compensation_bridge.task_financial_security_event_id = compensation_event.id
++          AND compensation_bridge.fake_operation_kind = 'REVERSAL'
++         LEFT JOIN public.universal_v1_prepared_financial_commands compensation_prepared
++           ON compensation_prepared.operation_kind = 'REVERSAL'
++          AND compensation_prepared.operation_id = compensation.reversal_operation_id
++          AND compensation_prepared.provider_kind = 'FAKE'
++          AND compensation_prepared.provider_expected_version = 0
++          AND compensation_prepared.idempotency_key = compensation.reversal_idempotency_key
++         LEFT JOIN public.financial_provider_command_journal compensation_journal
++           ON compensation_journal.prepared_financial_command_id = compensation_prepared.prepared_command_id
++          AND compensation_journal.operation_id = compensation.reversal_operation_id
++          AND compensation_journal.idempotency_key = compensation.reversal_idempotency_key
++         LEFT JOIN LATERAL (
++           SELECT attempt.dispatch_attempt_id
++             FROM public.financial_provider_command_dispatch_attempts attempt
++            WHERE attempt.command_id = compensation_journal.command_id
++            ORDER BY attempt.attempt_number DESC
++            LIMIT 1
++         ) compensation_attempt ON TRUE
++         LEFT JOIN LATERAL (
++           SELECT outcome.outcome_kind, outcome.effect_certainty,
++                  outcome.provider_state, outcome.retryable
++             FROM public.financial_provider_command_outcome_facts outcome
++            WHERE outcome.command_id = compensation_journal.command_id
++              AND outcome.dispatch_attempt_id = compensation_attempt.dispatch_attempt_id
++            ORDER BY outcome.recorded_at DESC, outcome.outcome_fact_id DESC
++            LIMIT 1
++         ) compensation_outcome ON TRUE
++
++  ) SELECT pg_catalog.to_jsonb(observed),pg_catalog.clock_timestamp(),
++      p_target_authority_id,p_release_manifest_digest FROM observed;
++  IF lease.expires_at<=pg_catalog.clock_timestamp() THEN
++    RAISE EXCEPTION 'HXUV1-CORECOVERY-13-OBSERVATION_LEASE_EXPIRED';
++  END IF;
++END;
++$$;
++REVOKE ALL ON FUNCTION public.hxos_observe_fake_financial_change_order_recovery_v13(
++  UUID,TEXT,TEXT,TEXT,UUID,UUID,UUID,TEXT,UUID) FROM PUBLIC;
+diff --git a/backend/src/jobs/change-order-recovery-role-plans.ts b/backend/src/jobs/change-order-recovery-role-plans.ts
+index f561966..fc2db0e 100644
+--- a/backend/src/jobs/change-order-recovery-role-plans.ts
++++ b/backend/src/jobs/change-order-recovery-role-plans.ts
+@@ -17,3 +17,79 @@ export const CHANGE_ORDER_RECOVERY_CLAIM_LOCK_COLUMNS: Readonly<Record<string, r
+   {
+     'public.universal_v1_change_order_materialization_commands': ['proposal_id'],
+   };
++
++export const CHANGE_ORDER_RECOVERY_OBSERVATION_FUNCTION =
++  'public.hxos_observe_fake_financial_change_order_recovery_v13(uuid,text,text,text,uuid,uuid,uuid,text,uuid)';
++export const CHANGE_ORDER_RECOVERY_OBSERVATION_DEPENDENCIES = [
++  // PostgreSQL stores the legacy migration's longer identifier at NAMEDATALEN-1.
++  'public.universal_v1_change_order_recovery_revocation_reason_pre_expiry(uuid)',
++  'public.universal_v1_effective_work_order_scope_id(uuid)',
++  'public.business_membership_has_action(uuid,uuid,text)',
++  'public.universal_v1_invited_provider_authority_is_current(uuid,uuid,text,uuid,text,text)',
++] as const;
++// Exact additional reads needed by the retained revocation classifier and projection.
++// Named columns complete the frozen witness SELECT *, without exposing raw runtime reads.
++export const CHANGE_ORDER_RECOVERY_OBSERVATION_READ_COLUMNS: Readonly<
++  Record<string, readonly string[]>
++> = {
++  'public.universal_v1_change_order_materialization_commands': [
++    'expected_proposal_version',
++    'expected_scope_version',
++    'expected_amendment_version',
++    'expected_execution_version',
++    'predecessor_operation_id',
++    'provider_payout_cents',
++    'occurred_at',
++  ],
++  'public.universal_v1_change_order_compensation_commands': [
++    'compensation_command_id',
++    'created_at',
++    'semantic_limitation',
++  ],
++  'public.task_scope_change_proposals': [
++    'application_contract_version',
++    'proposal_version',
++    'reviewed_by',
++    'proposed_provider_payout_cents',
++    'proposed_scope_sha256',
++  ],
++  'public.task_scope_versions': ['version', 'supersedes_version_id', 'source', 'scope_hash'],
++  'public.task_work_order_amendments': ['id', 'change_order_id'],
++  'public.tasks': [
++    'work_order_id',
++    'active_scope_version_id',
++    'universal_payment_posture',
++    'business_organization_id',
++    'poster_id',
++    'category',
++    'region_code',
++  ],
++  'public.task_work_orders': ['provider_user_id', 'provider_organization_id'],
++  'public.task_scope_change_approvals': ['actor_id'],
++  'public.task_provider_eligibility_decisions': [
++    'provider_user_id',
++    'provider_organization_id',
++    'provider_class',
++    'trade_credential_id',
++  ],
++  'public.task_work_order_execution_facts': ['scope_version_id'],
++  'public.task_reconciliation_facts': ['work_order_id'],
++  'public.users': ['id', 'account_status', 'is_minor', 'is_banned'],
++  'public.business_organizations': [
++    'id',
++    'status',
++    'client_enabled',
++    'provider_enabled',
++    'provider_class',
++    'verification_status',
++  ],
++  'public.business_memberships': ['organization_id', 'user_id', 'status', 'role'],
++  'public.capability_profiles': ['user_id', 'provider_class'],
++  'public.current_verified_trade_qualifications': [
++    'business_credential_id',
++    'provider_user_id',
++    'organization_id',
++    'jurisdiction_code',
++    'permitted_work_categories',
++  ],
++};
+diff --git a/backend/src/jobs/fake-financial-outbox-role-plans.ts b/backend/src/jobs/fake-financial-outbox-role-plans.ts
+index c37636d..50b5c74 100644
+--- a/backend/src/jobs/fake-financial-outbox-role-plans.ts
++++ b/backend/src/jobs/fake-financial-outbox-role-plans.ts
+@@ -1,4 +1,4 @@
+-import { CHANGE_ORDER_RECOVERY_CLAIM_FUNCTION } from './change-order-recovery-role-plans.js';
++import { CHANGE_ORDER_RECOVERY_CLAIM_FUNCTION, CHANGE_ORDER_RECOVERY_OBSERVATION_FUNCTION } from './change-order-recovery-role-plans.js';
+ /** Exact additive v13 surface for the existing eight-role authority model. */
+ export const FAKE_FINANCIAL_RUNTIME_AUTHORITY_FUNCTION =
+   'public.hxos_read_universal_v1_fake_financial_runtime_authority_v13()';
+@@ -49,6 +49,7 @@ export const FAKE_FINANCIAL_RECOVERY_ADMISSION_FUNCTION =
+ 
+ export const FAKE_FINANCIAL_OUTBOX_WORKER_FUNCTIONS = [
+   CHANGE_ORDER_RECOVERY_CLAIM_FUNCTION,
++  CHANGE_ORDER_RECOVERY_OBSERVATION_FUNCTION,
+   'public.hxos_scan_fake_financial_recovery_v13(uuid,integer)',
+   'public.hxos_read_fake_financial_restoration_v13(uuid,text,text)',
+   'public.hxos_read_fake_financial_progress_v13(uuid,text,text)',
+diff --git a/backend/src/jobs/financial-readiness-custody.ts b/backend/src/jobs/financial-readiness-custody.ts
+index b9de523..1a0cfe9 100644
+--- a/backend/src/jobs/financial-readiness-custody.ts
++++ b/backend/src/jobs/financial-readiness-custody.ts
+@@ -5,6 +5,12 @@ import type { WorkOrderCommandRoleNames } from './work-order-command-role-author
+ // Closed retained legacy custody. These identities are not active command ports.
+ // Their frozen bodies remain covered by the independent semantic catalog evidence.
+ export const FINANCIAL_READINESS_RETAINED_FUNCTIONS = [
++  {
++    identity: 'public.universal_v1_change_order_recovery_revocation_reason_pre_expiry(uuid)',
++    securityDefiner: false,
++    owner: 'migrationRole',
++    financeExecute: true,
++  },
+   {
+     identity: 'public.claim_universal_v1_change_order_compensation_v1(uuid,uuid,uuid,uuid)',
+     securityDefiner: true,
+diff --git a/backend/src/jobs/work-order-command-role-authority.ts b/backend/src/jobs/work-order-command-role-authority.ts
+index 2989a38..67f444e 100644
+--- a/backend/src/jobs/work-order-command-role-authority.ts
++++ b/backend/src/jobs/work-order-command-role-authority.ts
+@@ -1,3 +1,7 @@
++import {
++  CHANGE_ORDER_RECOVERY_OBSERVATION_READ_COLUMNS,
++  CHANGE_ORDER_RECOVERY_OBSERVATION_DEPENDENCIES,
++} from './change-order-recovery-role-plans.js';
+ import {
+   CHANGE_ORDER_RECOVERY_CLAIM_INSERT_COLUMNS,
+   CHANGE_ORDER_RECOVERY_CLAIM_LOCK_COLUMNS,
+@@ -372,7 +376,7 @@ export const WORK_ORDER_TRIGGER_CATALOG_SHA256 =
+ // paths, and ACLs are checked independently; this digest closes source-body
+ // drift that could otherwise preserve superficial protocol fragments.
+ export const WORK_ORDER_AUTHORITY_FUNCTION_CATALOG_SHA256 =
+-  'b552ae412b9a074cc332aa65f4d70f2247ff33ed2cc02cdc3e798eb743d1d95d';
++  '19e7c6d624bb4391a1824cb8fb9692ffe9eec8f56cb5933e40cdfd8d2b4ea634';
+ 
+ export const WORK_ORDER_ORDINAL146_SQL_SHA256 =
+   '3920ac8d3208b9f573dc331cab60c373d0349611700c6e14a6e4c1dd8c53aac4';
+@@ -381,7 +385,7 @@ export const WORK_ORDER_FAKE_FINANCIAL_V12_SQL_SHA256 =
+ export const WORK_ORDER_BOOTSTRAP_SEAL_SQL_SHA256 =
+   'c69825589193885d0f6a3b93930880998e95e1c5cd44bb9b5999cb457192b2bd';
+ export const FAKE_FINANCIAL_OUTBOX_V13_SQL_SHA256 =
+-  'a7a65b9761c6f5e969940e66792d52aa2bbe3ecbe13e6d7685126f7dd2482ce8';
++  'ef8faf0f0b753c51f02d4578f6dfd2da05d83dc282dc19e514187c403f669735';
+ 
+ export interface WorkOrderCommandRoleNames {
+   migrationRole: string;
+@@ -742,7 +746,15 @@ const FUNCTION_PLANS: readonly FunctionPlan[] = [
+     (identity): FunctionPlan => ({
+       identity,
+       owner: 'migrationRole',
+-      permittedExecute: new Set<RoleKey>(['migrationRole', 'commandOwnerRole']),
++      permittedExecute: new Set<RoleKey>([
++        'migrationRole',
++        'commandOwnerRole',
++        ...(CHANGE_ORDER_RECOVERY_OBSERVATION_DEPENDENCIES.some(
++          (dependency) => dependency === identity
++        )
++          ? ['financeOwnerRole' as const]
++          : []),
++      ]),
+       sourceKind: 'dependency',
+       securityDefiner: identity === 'public.business_membership_has_action(uuid,uuid,text)',
+       volatility: identity === 'public.universal_v1_fake_terminal_plan_v1(text)' ? 'i' : 's',
+@@ -969,7 +981,7 @@ const FUNCTION_PLANS: readonly FunctionPlan[] = [
+           ? ['migrationRole', 'commandOwnerRole', 'financeOwnerRole', 'telemetryOwnerRole']
+           : isLock || isSealedTriggerDependency
+             ? ['commandOwnerRole']
+-            : isEffectiveExpiry || isFinancialCurrent
++            : isEffectiveExpiry || isFinancialCurrent || isCurrentAuthority
+               ? ['migrationRole', 'commandOwnerRole', 'financeOwnerRole']
+               : ['migrationRole', 'commandOwnerRole']
+       ),
+@@ -1601,6 +1613,14 @@ const RELATION_PLANS: readonly RelationPlan[] = BASE_RELATION_PLANS.map((plan) =
+     ],
+     permittedColumnSelects: [
+       ...plan.permittedColumnSelects,
++      ...(CHANGE_ORDER_RECOVERY_OBSERVATION_READ_COLUMNS[plan.relation]
++        ? [
++            {
++              role: 'financeOwnerRole' as const,
++              columns: CHANGE_ORDER_RECOVERY_OBSERVATION_READ_COLUMNS[plan.relation]!,
++            },
++          ]
++        : []),
+       ...(CHANGE_ORDER_MATERIALIZATION_READ_COLUMNS[plan.relation]
+         ? [
+             {
+diff --git a/backend/src/services/UniversalV1ChangeOrderRecovery.ts b/backend/src/services/UniversalV1ChangeOrderRecovery.ts
+index 0f8ff8a..24ac3e3 100644
+--- a/backend/src/services/UniversalV1ChangeOrderRecovery.ts
++++ b/backend/src/services/UniversalV1ChangeOrderRecovery.ts
+@@ -1042,3 +1042,6 @@ export class UniversalV1ChangeOrderRecoveryService {
+     };
+   }
+ }
++
++// Shared projection mapper; the restricted observation adapter validates the full receipt first.
++export { mapClaim as mapChangeOrderRecoveryObservation };
+diff --git a/backend/src/services/UniversalV1ChangeOrderRecoveryObservation.ts b/backend/src/services/UniversalV1ChangeOrderRecoveryObservation.ts
+new file mode 100644
+index 0000000..43d8903
+--- /dev/null
++++ b/backend/src/services/UniversalV1ChangeOrderRecoveryObservation.ts
+@@ -0,0 +1,226 @@
++import { z } from 'zod';
++import { db, type Database } from '../db.js';
++import {
++  authorizedChangeOrderRecoveryClaims,
++  type ChangeOrderRecoveryClaimAuthority,
++  type ChangeOrderRecoveryLease,
++} from './UniversalV1ChangeOrderRecoveryClaims.js';
++import {
++  mapChangeOrderRecoveryObservation,
++  type UniversalV1ChangeOrderRecoveryClaim,
++} from './UniversalV1ChangeOrderRecovery.js';
++
++const uuid = z
++  .string()
++  .uuid()
++  .refine((value) => value === value.toLowerCase());
++const digest = z
++  .string()
++  .regex(/^[a-f0-9]{64}$/u)
++  .refine((value) => value !== '0'.repeat(64));
++const manifestDigest = z
++  .string()
++  .regex(/^sha256:[a-f0-9]{64}$/u)
++  .refine((value) => value !== 'sha256:' + '0'.repeat(64));
++const timestamp = z.preprocess(
++  (value) => (value instanceof Date ? value.toISOString() : value),
++  z
++    .string()
++    .datetime({ offset: true })
++    .transform((value) => new Date(value).toISOString())
++);
++const integer = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
++const key = z
++  .string()
++  .min(16)
++  .max(128)
++  .regex(/^[A-Za-z0-9:_-]+$/u);
++const currency = z.string().regex(/^[A-Z]{3}$/u);
++const authoritySchema = z
++  .object({
++    databaseName: z.string().min(1).max(63),
++    serviceLogin: z.string().min(1).max(63),
++    environment: z.enum(['local', 'preview', 'staging']),
++    manifestDigest,
++    targetDigest: manifestDigest,
++  })
++  .strict();
++const leaseSchema = z
++  .object({
++    proposal_id: uuid,
++    recovery_lease_id: uuid,
++    lease_owner_id: uuid,
++    witness_request_sha256: digest,
++    work_order_id: uuid,
++    acquired_at: timestamp,
++    expires_at: timestamp,
++    target_authority_id: uuid,
++    release_manifest_digest: manifestDigest,
++  })
++  .strict();
++const metadataSchema = z
++  .object({
++    session_database_role: z.string(),
++    target_authority_id: uuid,
++    target_database_name: z.string(),
++    environment: z.enum(['local', 'preview', 'staging']),
++    release_manifest_sha256: manifestDigest,
++  })
++  .strict();
++const projectionSchema = z
++  .object({
++    proposal_id: uuid,
++    recovery_lease_id: uuid,
++    lease_owner_id: uuid,
++    recovery_state: z.enum([
++      'ADJUST_READY',
++      'ADJUST_REPLAYABLE',
++      'ADJUST_RECONCILE_ONLY',
++      'ADJUST_TERMINAL_NO_EFFECT',
++      'ADJUST_NO_EFFECT_AUTHORITY_REVOKED',
++      'ADJUSTMENT_SUCCEEDED',
++      'COMPENSATION_READY',
++      'COMPENSATION_REPLAYABLE',
++      'COMPENSATION_RECONCILE_ONLY',
++      'COMPENSATION_TERMINAL_NO_EFFECT',
++      'COMPENSATION_SUCCEEDED',
++      'AMENDMENT_MATERIALIZED',
++      'WAITING',
++    ]),
++    idempotency_key: key,
++    request_sha256: digest,
++    actor_user_id: uuid,
++    work_order_id: uuid,
++    task_id: uuid,
++    task_draft_id: uuid,
++    eligibility_decision_id: uuid,
++    base_scope_version_id: uuid,
++    replacement_scope_version_id: uuid,
++    replacement_scope_version: integer.positive(),
++    expected_financial_version: integer,
++    predecessor_event_id: uuid,
++    predecessor_operation_id: uuid,
++    adjustment_operation_id: uuid,
++    customer_total_cents: integer.positive(),
++    currency,
++    occurred_at: timestamp,
++    adjustment_event_id: uuid.nullable(),
++    amendment_id: uuid.nullable(),
++    compensation_event_id: uuid.nullable(),
++    adjustment_outcome_fact_id: uuid.nullable(),
++    authority_revocation_reason: z.string().min(1).max(96).nullable(),
++    compensation_command_id: uuid.nullable(),
++    compensation_reversal_operation_id: uuid.nullable(),
++    compensation_reversal_idempotency_key: key.nullable(),
++    compensation_lifecycle_expected_version: integer.nullable(),
++    compensation_amount_cents: integer.positive().nullable(),
++    compensation_currency: currency.nullable(),
++    compensation_requested_by: uuid.nullable(),
++    compensation_created_at: timestamp.nullable(),
++    compensation_semantic_limitation: z.literal('PRIOR_SECURED_STATE_NOT_RESTORED').nullable(),
++  })
++  .strict();
++const receiptSchema = z
++  .object({
++    observation: projectionSchema,
++    observed_at: timestamp,
++    target_authority_id: uuid,
++    release_manifest_digest: manifestDigest,
++  })
++  .strict();
++function refuse(reason: string): never {
++  throw Error('CHANGE_ORDER_RECOVERY_OBSERVATION_' + reason);
++}
++
++/** Observation does not authorize financial effects. Later commands must validate
++ * their own live authority and exact evidence, even when this receipt is current. */
++export class PostgresUniversalV1ChangeOrderRecoveryObservation {
++  constructor(
++    private readonly database: Pick<Database, 'transaction'> = db,
++    private readonly authorize: () => ChangeOrderRecoveryClaimAuthority = authorizedChangeOrderRecoveryClaims
++  ) {}
++
++  async observe(
++    raw: ChangeOrderRecoveryLease
++  ): Promise<UniversalV1ChangeOrderRecoveryClaim | null> {
++    const lease = Object.freeze(leaseSchema.parse(raw));
++    const authority = Object.freeze(authoritySchema.parse(this.authorize()));
++    if (
++      lease.release_manifest_digest !== authority.manifestDigest ||
++      Date.parse(lease.acquired_at) >= Date.parse(lease.expires_at)
++    )
++      return refuse('LEASE_BINDING_MISMATCH');
++    return this.database.transaction(async (query) => {
++      const metadata = await query(
++        'SELECT session_database_role,target_authority_id,target_database_name,environment,release_manifest_sha256 FROM public.hxos_read_universal_v1_fake_financial_runtime_authority_v13()'
++      );
++      if (metadata.rowCount !== 1 || metadata.rows.length !== 1)
++        return refuse('TARGET_CARDINALITY');
++      const target = metadataSchema.parse(metadata.rows[0]);
++      if (
++        target.session_database_role !== authority.serviceLogin ||
++        target.target_database_name !== authority.databaseName ||
++        target.environment !== authority.environment ||
++        target.release_manifest_sha256 !== authority.manifestDigest ||
++        target.target_authority_id !== lease.target_authority_id
++      )
++        return refuse('TARGET_BINDING_MISMATCH');
++      const result = await query(
++        'SELECT * FROM public.hxos_observe_fake_financial_change_order_recovery_v13($1,$2,$3,$4,$5,$6,$7,$8,$9)',
++        [
++          lease.target_authority_id,
++          authority.databaseName,
++          authority.environment,
++          authority.manifestDigest,
++          lease.proposal_id,
++          lease.recovery_lease_id,
++          lease.lease_owner_id,
++          lease.witness_request_sha256,
++          lease.work_order_id,
++        ]
++      );
++      if (result.rowCount !== result.rows.length || result.rows.length > 1)
++        return refuse('RECEIPT_CARDINALITY');
++      let claim: UniversalV1ChangeOrderRecoveryClaim | null = null;
++      if (result.rows.length) {
++        const receipt = receiptSchema.parse(result.rows[0]),
++          row = receipt.observation;
++        if (
++          receipt.target_authority_id !== lease.target_authority_id ||
++          receipt.release_manifest_digest !== authority.manifestDigest ||
++          row.proposal_id !== lease.proposal_id ||
++          row.recovery_lease_id !== lease.recovery_lease_id ||
++          row.lease_owner_id !== lease.lease_owner_id ||
++          row.work_order_id !== lease.work_order_id ||
++          row.request_sha256 !== lease.witness_request_sha256 ||
++          Date.parse(receipt.observed_at) < Date.parse(lease.acquired_at) ||
++          Date.parse(receipt.observed_at) >= Date.parse(lease.expires_at)
++        )
++          return refuse('RECEIPT_BINDING_MISMATCH');
++        const compensationValues = Object.entries(row).filter(
++          ([name]) => name.startsWith('compensation_') && name !== 'compensation_event_id'
++        );
++        if (
++          row.compensation_command_id === null &&
++          compensationValues.some(([, value]) => value !== null)
++        )
++          return refuse('COMPENSATION_IDENTITY_INVALID');
++        if (
++          (row.recovery_state.startsWith('COMPENSATION_') &&
++            row.compensation_command_id === null) ||
++          (row.recovery_state === 'COMPENSATION_SUCCEEDED' && row.compensation_event_id === null) ||
++          (row.recovery_state === 'AMENDMENT_MATERIALIZED' &&
++            (row.amendment_id === null || row.adjustment_event_id === null)) ||
++          (row.recovery_state === 'ADJUSTMENT_SUCCEEDED' && row.adjustment_event_id === null)
++        )
++          return refuse('STATE_EVIDENCE_INCOMPLETE');
++        claim = mapChangeOrderRecoveryObservation(row);
++        if (claim.compensationCommand) Object.freeze(claim.compensationCommand);
++        Object.freeze(claim);
++      }
++      if (JSON.stringify(authoritySchema.parse(this.authorize())) !== JSON.stringify(authority))
++        return refuse('RELEASE_AUTHORITY_CHANGED');
++      return claim;
++    });
++  }
++}
+diff --git a/backend/src/services/payment/NonproductionFinancialBootstrapReadiness.ts b/backend/src/services/payment/NonproductionFinancialBootstrapReadiness.ts
+index cc7d4ae..b819b34 100644
+--- a/backend/src/services/payment/NonproductionFinancialBootstrapReadiness.ts
++++ b/backend/src/services/payment/NonproductionFinancialBootstrapReadiness.ts
+@@ -411,7 +411,7 @@ const CRITICAL_SCHEMA_EVIDENCE = Object.freeze([
+   },
+   {
+     identityName: 'functions',
+-    sha256: '1758340cd63f6f3bcb6860858b2720653f319d957501c5ea528cbaaba6b556fe',
++    sha256: '69475967edb0c64491291d494452af0437154370323744815b8138db9291d141',
+   },
+   {
+     identityName: 'triggers',
+diff --git a/backend/tests/helpers/universal-v1-synthetic-role-provisioning.ts b/backend/tests/helpers/universal-v1-synthetic-role-provisioning.ts
+index 6aa07e9..478b155 100644
+--- a/backend/tests/helpers/universal-v1-synthetic-role-provisioning.ts
++++ b/backend/tests/helpers/universal-v1-synthetic-role-provisioning.ts
+@@ -1,3 +1,7 @@
++import {
++  CHANGE_ORDER_RECOVERY_OBSERVATION_READ_COLUMNS,
++  CHANGE_ORDER_RECOVERY_OBSERVATION_DEPENDENCIES,
++} from '../../src/jobs/change-order-recovery-role-plans.js';
+ import {
+   CHANGE_ORDER_RECOVERY_CLAIM_INSERT_COLUMNS,
+   CHANGE_ORDER_RECOVERY_CLAIM_LOCK_COLUMNS,
+@@ -509,6 +513,32 @@ export async function provisionUniversalV1SyntheticRoles(
+           ' TO ' +
+           quote(roles.financeOwnerRole)
+       );
++  for (const [relation, columns] of Object.entries(CHANGE_ORDER_RECOVERY_OBSERVATION_READ_COLUMNS))
++    await client.query(
++      'GRANT SELECT(' +
++        columns.join(',') +
++        ') ON ' +
++        relation +
++        ' TO ' +
++        quote(roles.financeOwnerRole)
++    );
++  const retainedClassifier = CHANGE_ORDER_RECOVERY_OBSERVATION_DEPENDENCIES[0];
++  await client.query(
++    'ALTER FUNCTION ' + retainedClassifier + ' OWNER TO ' + quote(roles.migrationRole)
++  );
++  await client.query(
++    'REVOKE ALL ON FUNCTION ' +
++      retainedClassifier +
++      ' FROM PUBLIC,' +
++      Object.values(roles)
++        .filter((role) => role !== roles.migrationRole)
++        .map(quote)
++        .join(',')
++  );
++  for (const identity of CHANGE_ORDER_RECOVERY_OBSERVATION_DEPENDENCIES)
++    await client.query(
++      'GRANT EXECUTE ON FUNCTION ' + identity + ' TO ' + quote(roles.financeOwnerRole)
++    );
+   await provisionAuthenticatedFinancialPreparationDependencies(client, roles);
+   for (const relation of FAKE_FINANCIAL_WEBHOOK_RELATIONS) {
+     const owner =
+diff --git a/backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts b/backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts
+index a32c841..e4cc88f 100644
+--- a/backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts
++++ b/backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts
+@@ -3144,6 +3144,205 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
+     );
+   }
+ 
++  async function observeChangeOrderRecovery(
++    lease: pg.QueryResultRow,
++    client = clients.get('workerRole')!,
++    overrides: unknown[] = []
++  ) {
++    return client.query(
++      'SELECT * FROM public.hxos_observe_fake_financial_change_order_recovery_v13($1,$2,$3,$4,$5,$6,$7,$8,$9)',
++      overrides.length
++        ? overrides
++        : [
++            lease.target_authority_id,
++            new URL(fixture.databaseUrl).pathname.slice(1),
++            'local',
++            lease.release_manifest_digest,
++            lease.proposal_id,
++            lease.recovery_lease_id,
++            lease.lease_owner_id,
++            lease.witness_request_sha256,
++            lease.work_order_id,
++          ]
++    );
++  }
++
++  async function recoveryObservationLease(
++    setup: Awaited<ReturnType<typeof changeOrderHistoryFixture>>
++  ) {
++    await fixture.pool.query(
++      'SELECT pg_sleep(GREATEST(0,5.05-EXTRACT(EPOCH FROM (clock_timestamp()-prepared_at)))) FROM public.universal_v1_change_order_materialization_commands WHERE proposal_id=$1',
++      [setup.changePhase.context.proposalId]
++    );
++    const result = await claimChangeOrderRecovery(clients.get('workerRole')!);
++    const lease = result.rows.find((row) => row.proposal_id === setup.payload.proposal_id)!;
++    expect(lease).toBeDefined();
++    return lease;
++  }
++
++  it('worker change order recovery observes exact adjustment and amendment progression', async () => {
++    const setup = await changeOrderHistoryFixture(),
++      worker = clients.get('workerRole')!;
++    // Complete provider execution within the original admission window. Recovery
++    // observation starts later and must wait for the separate durable outcome.
++    await setup.execute();
++    const lease = await recoveryObservationLease(setup);
++    const state = async () =>
++      (await observeChangeOrderRecovery(lease)).rows[0].observation.recovery_state;
++    expect(await state()).toBe('ADJUST_RECONCILE_ONLY');
++    const outcome = (
++      await worker.query('SELECT * FROM public.hxos_record_fake_financial_outcome_v13($1,$2,$3)', [
++        setup.binding.admission.job_validation_id,
++        setup.binding.workerId,
++        setup.binding.admission.recovery_lease_id,
++      ])
++    ).rows[0];
++    expect(await state()).toBe('ADJUST_REPLAYABLE');
++    const event = (
++      await worker.query('SELECT * FROM public.hxos_materialize_fake_financial_event_v13($1,$2)', [
++        setup.binding.admission.job_validation_id,
++        outcome.outcome_fact.outcome_fact_id,
++      ])
++    ).rows[0].financial_event;
++    expect(await state()).toBe('ADJUSTMENT_SUCCEEDED');
++    const completed = await setup.changeOrders.finalizePriceAndScopeMaterialization(
++      setup.changePhase,
++      event.id,
++      setup.lane.posterUserId
++    );
++    await fixture.pool.query("UPDATE public.users SET account_status='SUSPENDED' WHERE id=$1", [
++      setup.lane.providerUserId,
++    ]);
++    const observation = (await observeChangeOrderRecovery(lease)).rows[0].observation;
++    expect(observation).toMatchObject({
++      recovery_state: 'AMENDMENT_MATERIALIZED',
++      amendment_id: completed.amendment_id,
++      adjustment_event_id: event.id,
++      compensation_command_id: null,
++    });
++    expect(await setup.effects()).toEqual({ operations: 1, events: 1 });
++  }, 60_000);
++
++  it('worker change order recovery observes only its exact active lease and current release', async () => {
++    const setup = await changeOrderHistoryFixture(),
++      lease = await recoveryObservationLease(setup);
++    for (const role of ['apiRole', 'attesterRole'] as const)
++      await expect(observeChangeOrderRecovery(lease, clients.get(role)!)).rejects.toThrow(
++        /permission denied/u
++      );
++    const args = [
++      lease.target_authority_id,
++      new URL(fixture.databaseUrl).pathname.slice(1),
++      'local',
++      lease.release_manifest_digest,
++      lease.proposal_id,
++      lease.recovery_lease_id,
++      lease.lease_owner_id,
++      lease.witness_request_sha256,
++      lease.work_order_id,
++    ];
++    for (const [index, value] of [
++      [0, randomUUID()],
++      [1, 'wrong_database'],
++      [2, 'staging'],
++      [3, 'sha256:' + 'e'.repeat(64)],
++      [4, randomUUID()],
++      [5, randomUUID()],
++      [6, randomUUID()],
++      [7, 'f'.repeat(64)],
++      [8, randomUUID()],
++      [7, null],
++    ] as const) {
++      const altered = [...args];
++      altered[index] = value;
++      await expect(
++        observeChangeOrderRecovery(lease, clients.get('workerRole')!, altered)
++      ).rejects.toThrow();
++    }
++    const holder = await fixture.pool.connect();
++    try {
++      for (const lock of [
++        'universal-v1-change-order-proposal:' + lease.proposal_id,
++        'fulfillment:' + lease.work_order_id,
++      ]) {
++        await holder.query('BEGIN');
++        await holder.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [lock]);
++        await expect(observeChangeOrderRecovery(lease)).rejects.toThrow('OBSERVATION_LOCK_BUSY');
++        await holder.query('ROLLBACK');
++      }
++    } finally {
++      await holder.query('ROLLBACK');
++      holder.release();
++    }
++    expect((await observeChangeOrderRecovery(lease)).rows).toHaveLength(1);
++    expect(await setup.effects()).toEqual({ operations: 0, events: 0 });
++  }, 60_000);
++
++  it('worker change order recovery observes revoked customer through a scoped lease port', async () => {
++    const setup = await changeOrderHistoryFixture();
++    await fixture.pool.query('UPDATE public.users SET is_banned=TRUE WHERE id=$1', [
++      setup.lane.posterUserId,
++    ]);
++    await fixture.pool.query(
++      'SELECT pg_sleep(GREATEST(0,5.05-EXTRACT(EPOCH FROM (clock_timestamp()-prepared_at)))) FROM public.universal_v1_change_order_materialization_commands WHERE proposal_id=$1',
++      [setup.changePhase.context.proposalId]
++    );
++    const worker = clients.get('workerRole')!;
++    const leases = await claimChangeOrderRecovery(worker);
++    const lease = leases.rows.find((row) => row.proposal_id === setup.payload.proposal_id)!;
++    expect(lease).toBeDefined();
++    const result = await worker.query(
++      'SELECT * FROM public.hxos_observe_fake_financial_change_order_recovery_v13($1,$2,$3,$4,$5,$6,$7,$8,$9)',
++      [
++        lease.target_authority_id,
++        new URL(fixture.databaseUrl).pathname.slice(1),
++        'local',
++        lease.release_manifest_digest,
++        lease.proposal_id,
++        lease.recovery_lease_id,
++        lease.lease_owner_id,
++        lease.witness_request_sha256,
++        lease.work_order_id,
++      ]
++    );
++    expect(result.rows).toHaveLength(1);
++    expect(result.rows[0].observation).toMatchObject({
++      proposal_id: lease.proposal_id,
++      recovery_lease_id: lease.recovery_lease_id,
++      lease_owner_id: lease.lease_owner_id,
++      request_sha256: lease.witness_request_sha256,
++      recovery_state: 'ADJUST_RECONCILE_ONLY',
++      authority_revocation_reason: 'CUSTOMER_ACTOR_AUTHORITY_REVOKED',
++      adjustment_event_id: null,
++      compensation_command_id: null,
++    });
++    expect(await setup.effects()).toEqual({ operations: 0, events: 0 });
++    const { PostgresUniversalV1ChangeOrderRecoveryObservation } =
++      await import('../../src/services/UniversalV1ChangeOrderRecoveryObservation.js');
++    const reader = new PostgresUniversalV1ChangeOrderRecoveryObservation(
++      preparationDatabase(worker),
++      () => ({
++        databaseName: new URL(fixture.databaseUrl).pathname.slice(1),
++        serviceLogin: roles.workerRole,
++        environment: 'local',
++        manifestDigest: lease.release_manifest_digest,
++        targetDigest: 'sha256:' + 'd'.repeat(64),
++      })
++    );
++    const typed = await reader.observe({
++      ...lease,
++      acquired_at: lease.acquired_at.toISOString(),
++      expires_at: lease.expires_at.toISOString(),
++    });
++    expect(typed).toMatchObject({
++      observation: 'ADJUST_RECONCILE_ONLY',
++      authorityRevocationReason: null,
++      witnessRequestSha256: lease.witness_request_sha256,
++      recoveryLeaseId: lease.recovery_lease_id,
++    });
++    expect(Object.isFrozen(typed)).toBe(true);
++  }, 60_000);
++
+   it('worker change order recovery claims an immutable witness after customer revocation without an actor assertion', async () => {
+     const setup = await changeOrderHistoryFixture();
+     await fixture.pool.query('UPDATE public.users SET is_banned=TRUE WHERE id=$1', [
+diff --git a/backend/tests/unit/change-order-recovery-observation.test.ts b/backend/tests/unit/change-order-recovery-observation.test.ts
+new file mode 100644
+index 0000000..9b82565
+--- /dev/null
++++ b/backend/tests/unit/change-order-recovery-observation.test.ts
+@@ -0,0 +1,251 @@
++import { randomUUID } from 'node:crypto';
++import { describe, it, expect, vi } from 'vitest';
++import type { Database } from '../../src/db.js';
++import { PostgresUniversalV1ChangeOrderRecoveryObservation } from '../../src/services/UniversalV1ChangeOrderRecoveryObservation.js';
++
++function fixture() {
++  const authority = {
++    databaseName: 'hx_ci_observation',
++    serviceLogin: 'hx_ci_worker',
++    environment: 'local' as const,
++    manifestDigest: 'sha256:' + 'a'.repeat(64),
++    targetDigest: 'sha256:' + 'b'.repeat(64),
++  };
++  const lease = {
++    proposal_id: randomUUID(),
++    recovery_lease_id: randomUUID(),
++    lease_owner_id: randomUUID(),
++    witness_request_sha256: 'c'.repeat(64),
++    work_order_id: randomUUID(),
++    acquired_at: '2026-09-05T00:00:00.000Z',
++    expires_at: '2026-09-05T00:05:00.000Z',
++    target_authority_id: randomUUID(),
++    release_manifest_digest: authority.manifestDigest,
++  };
++  const metadata = {
++    session_database_role: authority.serviceLogin,
++    target_authority_id: lease.target_authority_id,
++    target_database_name: authority.databaseName,
++    environment: authority.environment,
++    release_manifest_sha256: authority.manifestDigest,
++  };
++  const observation = {
++    proposal_id: lease.proposal_id,
++    recovery_lease_id: lease.recovery_lease_id,
++    lease_owner_id: lease.lease_owner_id,
++    work_order_id: lease.work_order_id,
++    request_sha256: lease.witness_request_sha256,
++    recovery_state: 'ADJUST_RECONCILE_ONLY',
++    idempotency_key: 'observation:exact:key',
++    actor_user_id: randomUUID(),
++    task_id: randomUUID(),
++    task_draft_id: randomUUID(),
++    eligibility_decision_id: randomUUID(),
++    base_scope_version_id: randomUUID(),
++    replacement_scope_version_id: randomUUID(),
++    replacement_scope_version: 2,
++    expected_financial_version: 2,
++    predecessor_event_id: randomUUID(),
++    predecessor_operation_id: randomUUID(),
++    adjustment_operation_id: randomUUID(),
++    customer_total_cents: 8000,
++    currency: 'USD',
++    occurred_at: '2026-09-04T23:59:00+00:00',
++    adjustment_event_id: null,
++    amendment_id: null,
++    compensation_event_id: null,
++    adjustment_outcome_fact_id: null,
++    authority_revocation_reason: 'CUSTOMER_ACTOR_AUTHORITY_REVOKED',
++    compensation_command_id: null,
++    compensation_reversal_operation_id: null,
++    compensation_reversal_idempotency_key: null,
++    compensation_lifecycle_expected_version: null,
++    compensation_amount_cents: null,
++    compensation_currency: null,
++    compensation_requested_by: null,
++    compensation_created_at: null,
++    compensation_semantic_limitation: null,
++  } as Record<string, unknown>;
++  const receipt = {
++    observation,
++    observed_at: new Date('2026-09-05T00:00:01.123Z'),
++    target_authority_id: lease.target_authority_id,
++    release_manifest_digest: authority.manifestDigest,
++  };
++  const responses = [
++    { rows: [metadata] as unknown[], rowCount: 1 },
++    { rows: [receipt] as unknown[], rowCount: 1 },
++  ];
++  const query = vi.fn(async () => responses.shift()!);
++  let committed = false,
++    rolledBack = false;
++  const transaction: Database['transaction'] = async (work) => {
++    try {
++      const result = await work(query as never);
++      committed = true;
++      return result;
++    } catch (error) {
++      rolledBack = true;
++      throw error;
++    }
++  };
++  const authorize = vi.fn(() => authority);
++  return {
++    authority,
++    lease,
++    metadata,
++    observation,
++    receipt,
++    responses,
++    query,
++    authorize,
++    reader: new PostgresUniversalV1ChangeOrderRecoveryObservation({ transaction }, authorize),
++    state: () => ({ committed, rolledBack }),
++  };
++}
++
++describe('restricted worker recovery observation', () => {
++  it('binds the exact lease and drops unrelated revocation evidence when an admitted effect is unresolved', async () => {
++    const f = fixture(),
++      result = await f.reader.observe(f.lease);
++    expect(result).toMatchObject({
++      proposalId: f.lease.proposal_id,
++      recoveryLeaseId: f.lease.recovery_lease_id,
++      observation: 'ADJUST_RECONCILE_ONLY',
++      authorityRevocationReason: null,
++      adjustmentOutcomeFactId: null,
++      occurredAt: '2026-09-04T23:59:00.000Z',
++    });
++    expect(Object.isFrozen(result)).toBe(true);
++    expect(f.query.mock.calls[1]).toEqual([
++      'SELECT * FROM public.hxos_observe_fake_financial_change_order_recovery_v13($1,$2,$3,$4,$5,$6,$7,$8,$9)',
++      [
++        f.lease.target_authority_id,
++        f.authority.databaseName,
++        'local',
++        f.authority.manifestDigest,
++        f.lease.proposal_id,
++        f.lease.recovery_lease_id,
++        f.lease.lease_owner_id,
++        f.lease.witness_request_sha256,
++        f.lease.work_order_id,
++      ],
++    ]);
++    expect(f.state()).toEqual({ committed: true, rolledBack: false });
++  });
++  it.each([
++    'ADJUST_READY',
++    'ADJUST_REPLAYABLE',
++    'ADJUST_TERMINAL_NO_EFFECT',
++    'ADJUST_NO_EFFECT_AUTHORITY_REVOKED',
++    'ADJUSTMENT_SUCCEEDED',
++    'COMPENSATION_READY',
++    'COMPENSATION_REPLAYABLE',
++    'COMPENSATION_RECONCILE_ONLY',
++    'COMPENSATION_TERMINAL_NO_EFFECT',
++    'COMPENSATION_SUCCEEDED',
++    'AMENDMENT_MATERIALIZED',
++    'WAITING',
++  ])('preserves the selected durable observation: %s', async (state) => {
++    const f = fixture();
++    f.observation.recovery_state = state;
++    if (state === 'ADJUST_TERMINAL_NO_EFFECT')
++      f.observation.adjustment_outcome_fact_id = randomUUID();
++    if (
++      state === 'ADJUSTMENT_SUCCEEDED' ||
++      state === 'AMENDMENT_MATERIALIZED' ||
++      state.startsWith('COMPENSATION_')
++    )
++      f.observation.adjustment_event_id = randomUUID();
++    if (state === 'AMENDMENT_MATERIALIZED') f.observation.amendment_id = randomUUID();
++    if (state === 'COMPENSATION_SUCCEEDED') f.observation.compensation_event_id = randomUUID();
++    if (state.startsWith('COMPENSATION_'))
++      Object.assign(f.observation, {
++        compensation_command_id: randomUUID(),
++        compensation_reversal_operation_id: randomUUID(),
++        compensation_reversal_idempotency_key: 'compensation:exact:key',
++        compensation_lifecycle_expected_version: 4,
++        compensation_amount_cents: 8000,
++        compensation_currency: 'USD',
++        compensation_requested_by: randomUUID(),
++        compensation_created_at: '2026-09-05T00:00:00.123456+00:00',
++        compensation_semantic_limitation: 'PRIOR_SECURED_STATE_NOT_RESTORED',
++      });
++    const result = await f.reader.observe(f.lease);
++    expect(result?.observation).toBe(state);
++    if (result?.compensationCommand) expect(Object.isFrozen(result.compensationCommand)).toBe(true);
++  });
++  it.each([
++    'proposal_id',
++    'recovery_lease_id',
++    'lease_owner_id',
++    'work_order_id',
++    'request_sha256',
++  ])('rolls back a substituted witness or lease: %s', async (field) => {
++    const f = fixture();
++    f.observation[field] = field === 'request_sha256' ? 'e'.repeat(64) : randomUUID();
++    await expect(f.reader.observe(f.lease)).rejects.toThrow('RECEIPT_BINDING_MISMATCH');
++    expect(f.state()).toEqual({ committed: false, rolledBack: true });
++  });
++  it.each([
++    'session_database_role',
++    'target_database_name',
++    'environment',
++    'release_manifest_sha256',
++    'target_authority_id',
++  ])('rejects stale or wrong installed target metadata: %s', async (field) => {
++    const f = fixture();
++    Object.assign(f.metadata, {
++      [field]:
++        field === 'target_authority_id'
++          ? randomUUID()
++          : field === 'environment'
++            ? 'staging'
++            : field === 'release_manifest_sha256'
++              ? 'sha256:' + 'f'.repeat(64)
++              : 'wrong',
++    });
++    await expect(f.reader.observe(f.lease)).rejects.toThrow('TARGET_BINDING_MISMATCH');
++    expect(f.query).toHaveBeenCalledOnce();
++  });
++  it.each(['empty', 'present'])(
++    'rechecks installed authority before committing a %s observation',
++    async (kind) => {
++      const f = fixture();
++      if (kind === 'empty') f.responses[1] = { rows: [], rowCount: 0 };
++      f.authorize
++        .mockReturnValueOnce(f.authority)
++        .mockReturnValueOnce({ ...f.authority, targetDigest: 'sha256:' + 'e'.repeat(64) });
++      await expect(f.reader.observe(f.lease)).rejects.toThrow('RELEASE_AUTHORITY_CHANGED');
++      expect(f.state()).toEqual({ committed: false, rolledBack: true });
++    }
++  );
++  it('returns no work when the database says the exact lease expired or terminalized', async () => {
++    const f = fixture();
++    f.responses[1] = { rows: [], rowCount: 0 };
++    expect(await f.reader.observe(f.lease)).toBeNull();
++    expect(f.authorize).toHaveBeenCalledTimes(2);
++  });
++  it.each([
++    'missing_outcome',
++    'missing_compensation',
++    'partial_compensation',
++    'unknown_field',
++    'unsafe_amount',
++    'expired_observation',
++    'duplicate_receipt',
++  ])('rejects incomplete or malformed recovery evidence: %s', async (defect) => {
++    const f = fixture();
++    if (defect === 'missing_outcome') f.observation.recovery_state = 'ADJUST_TERMINAL_NO_EFFECT';
++    if (defect === 'missing_compensation') f.observation.recovery_state = 'COMPENSATION_READY';
++    if (defect === 'partial_compensation') f.observation.compensation_amount_cents = 8000;
++    if (defect === 'unknown_field') f.observation.dispatch_authorized = true;
++    if (defect === 'unsafe_amount')
++      f.observation.customer_total_cents = Number.MAX_SAFE_INTEGER + 1;
++    if (defect === 'expired_observation') f.receipt.observed_at = new Date(f.lease.expires_at);
++    if (defect === 'duplicate_receipt')
++      f.responses[1] = { rows: [f.receipt, f.receipt], rowCount: 2 };
++    await expect(f.reader.observe(f.lease)).rejects.toThrow();
++    expect(f.state()).toEqual({ committed: false, rolledBack: true });
++  });
++});
+diff --git a/backend/tests/unit/work-order-command-role-authority.test.ts b/backend/tests/unit/work-order-command-role-authority.test.ts
+index 6094b91..ea7831e 100644
+--- a/backend/tests/unit/work-order-command-role-authority.test.ts
++++ b/backend/tests/unit/work-order-command-role-authority.test.ts
+@@ -1,6 +1,8 @@
+ import {
+   CHANGE_ORDER_RECOVERY_CLAIM_INSERT_COLUMNS,
+   CHANGE_ORDER_RECOVERY_CLAIM_LOCK_COLUMNS,
++  CHANGE_ORDER_RECOVERY_OBSERVATION_READ_COLUMNS,
++  CHANGE_ORDER_RECOVERY_OBSERVATION_DEPENDENCIES,
+ } from '../../src/jobs/change-order-recovery-role-plans.js';
+ import {
+   CHANGE_ORDER_MATERIALIZATION_ADDITIONAL_RELATIONS,
+@@ -839,7 +841,7 @@ function baseRelationRow(
+   };
+ }
+ 
+-function functionRow(
++function functionRowBeforeRecoveryObservation(
+   identity: (typeof WORK_ORDER_AUTHORITY_FUNCTIONS)[number]
+ ): WorkOrderCommandFunctionRow {
+   if (
+@@ -1074,6 +1076,17 @@ function functionRow(
+   };
+ }
+ 
++function functionRow(identity: (typeof WORK_ORDER_AUTHORITY_FUNCTIONS)[number]) {
++  const row = functionRowBeforeRecoveryObservation(identity);
++  if (!CHANGE_ORDER_RECOVERY_OBSERVATION_DEPENDENCIES.some((dependency) => dependency === identity))
++    return row;
++  return {
++    ...row,
++    finance_owner_execute: true,
++    execute_grantees: [...new Set([...row.execute_grantees!, names.financeOwnerRole])],
++  };
++}
++
+ function relationRow(
+   relation: (typeof WORK_ORDER_COMMAND_WRITE_RELATIONS)[number]
+ ): WorkOrderCommandRelationPrivilegeRow {
+@@ -1163,6 +1176,8 @@ function relationRow(
+     row.acl_grants!.push(names.commandOwnerRole + '|INSERT|' + column);
+   for (const column of CHANGE_ORDER_RECOVERY_CLAIM_INSERT_COLUMNS[relation] ?? [])
+     row.acl_grants!.push(names.financeOwnerRole + '|INSERT|' + column);
++  for (const column of CHANGE_ORDER_RECOVERY_OBSERVATION_READ_COLUMNS[relation] ?? [])
++    row.acl_grants!.push(names.financeOwnerRole + '|SELECT|' + column);
+   for (const column of CHANGE_ORDER_RECOVERY_CLAIM_LOCK_COLUMNS[relation] ?? []) {
+     row.finance_owner_any_column_update = true;
+     row.acl_grants!.push(names.financeOwnerRole + '|UPDATE|' + column);

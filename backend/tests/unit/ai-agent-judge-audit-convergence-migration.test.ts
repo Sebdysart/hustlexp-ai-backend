@@ -6,18 +6,18 @@ import { REQUIRED_MIGRATION_FILES } from '../../src/jobs/engine-automation-migra
 const migration = readFileSync(
   resolve(
     process.cwd(),
-    'backend/database/migrations/20260830_ai_agent_judge_audit_convergence.sql',
+    'backend/database/migrations/20260830_ai_agent_judge_audit_convergence.sql'
   ),
-  'utf8',
+  'utf8'
 );
 
 describe('AI agent Judge audit schema convergence', () => {
   it('registers the append-only repair before the outbound and ingress tails', () => {
     const repairIndex = REQUIRED_MIGRATION_FILES.findIndex(
-      ({ name }) => name === '20260830_ai_agent_judge_audit_convergence',
+      ({ name }) => name === '20260830_ai_agent_judge_audit_convergence'
     );
 
-    expect(REQUIRED_MIGRATION_FILES).toHaveLength(140);
+    expect(REQUIRED_MIGRATION_FILES).toHaveLength(146);
     expect(repairIndex).toBeGreaterThanOrEqual(0);
     expect(REQUIRED_MIGRATION_FILES.slice(repairIndex)).toEqual([
       {
@@ -152,19 +152,39 @@ describe('AI agent Judge audit schema convergence', () => {
         name: '20261006_stage1_legacy_authority_containment_v1',
         fileName: '20261006_stage1_legacy_authority_containment_v1.sql',
       },
+      {
+        name: '20261007_subscription_cancellation_recovery_v1',
+        fileName: '20261007_subscription_cancellation_recovery_v1.sql',
+      },
+      {
+        name: '20261008_universal_v1_work_order_task_state_containment_v1',
+        fileName: '20261008_universal_v1_work_order_task_state_containment_v1.sql',
+      },
+      {
+        name: '20261009_universal_v1_standardized_quote_readiness_v1',
+        fileName: '20261009_universal_v1_standardized_quote_readiness_v1.sql',
+      },
+      {
+        name: '20261010_universal_v1_financial_security_event_expiry_v1',
+        fileName: '20261010_universal_v1_financial_security_event_expiry_v1.sql',
+      },
+      {
+        name: '20261012_universal_v1_work_order_command_authority_v2',
+        fileName: '20261012_universal_v1_work_order_command_authority_v2.sql',
+      },
+      {
+        name: '20261014_universal_v1_work_order_command_ports_v1',
+        fileName: '20261014_universal_v1_work_order_command_ports_v1.sql',
+      },
     ]);
   });
 
   it('replaces and validates the exact closed proposal-agent set', () => {
-    expect(migration).toContain(
-      'DROP CONSTRAINT IF EXISTS ai_agent_decisions_agent_type_check',
-    );
+    expect(migration).toContain('DROP CONSTRAINT IF EXISTS ai_agent_decisions_agent_type_check');
     expect(migration).toMatch(
-      /CHECK \(agent_type IN \(\s*'scoper',\s*'judge',\s*'matchmaker',\s*'dispute',\s*'reputation',\s*'onboarding',\s*'logistics'\s*\)\) NOT VALID/,
+      /CHECK \(agent_type IN \(\s*'scoper',\s*'judge',\s*'matchmaker',\s*'dispute',\s*'reputation',\s*'onboarding',\s*'logistics'\s*\)\) NOT VALID/
     );
-    expect(migration).toContain(
-      'VALIDATE CONSTRAINT ai_agent_decisions_agent_type_check',
-    );
+    expect(migration).toContain('VALIDATE CONSTRAINT ai_agent_decisions_agent_type_check');
   });
 
   it('does not rewrite or remove audit evidence', () => {

@@ -39,6 +39,7 @@ vi.mock('../../src/lib/redis-runtime-shutdown', () => ({
 }));
 
 vi.mock('../../src/serverStartupMigrations', () => ({
+  productionStartupMigrationRuntime: vi.fn(() => ({})),
   runStartupMigrations: vi.fn().mockResolvedValue(undefined),
 }));
 

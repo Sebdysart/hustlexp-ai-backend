@@ -54,7 +54,9 @@ describe('API startup migration authority', () => {
     expect(runtime.query).toHaveBeenCalledOnce();
     const [sql, values] = runtime.query.mock.calls[0] as [string, unknown[]];
     expect(sql.trimStart()).toMatch(/^SELECT\b/u);
-    expect(sql).toContain('name, sha256');
+    expect(sql).toContain('migration_name AS name, applied_sha256 AS sha256');
+    expect(sql).toContain('FROM public.hxos_read_fake_financial_applied_migrations_v13()');
+    expect(sql).not.toContain('FROM public.applied_migrations');
     expect(values).toEqual([['one', 'two']]);
   });
 
@@ -96,7 +98,7 @@ describe('API startup migration authority', () => {
   });
 
   it('derives its production registry only from REQUIRED_MIGRATION_FILES', () => {
-    const runtime = productionStartupMigrationRuntime();
+    const runtime = productionStartupMigrationRuntime(async () => ({ rows: [], rowCount: 0 }));
     expect(runtime.migrationSpecs.map(({ name }) => name)).toEqual(
       REQUIRED_MIGRATION_FILES.map(({ name }) => name),
     );
@@ -112,5 +114,8 @@ describe('API startup migration authority', () => {
     );
     expect(source).not.toContain('getPool()');
     expect(source).not.toContain('.connect()');
+    expect(source).not.toContain("from './db.js'");
+    expect(source).toContain('FROM public.hxos_read_fake_financial_applied_migrations_v13()');
+    expect(source).not.toContain('FROM public.applied_migrations');
   });
 });

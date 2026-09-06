@@ -20,6 +20,7 @@ const INTEREST_ID = '99999999-9999-4999-8999-999999999999';
 const ELIGIBILITY_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const INVITATION_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const QUOTE_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const STANDARDIZED_QUOTE_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 
 const context = {
   user: {
@@ -52,7 +53,7 @@ function generalAuthority(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function opportunityRow() {
+function opportunityRow(overrides: Record<string, unknown> = {}) {
   return {
     opportunity_id: OPPORTUNITY_ID,
     opportunity_version: 1,
@@ -89,10 +90,42 @@ function opportunityRow() {
     address_contact_authority: 'NONE',
     financial_authority: 'NONE',
     guaranteed_earning_authority: 'NONE',
+    standardized_quote_id: STANDARDIZED_QUOTE_ID,
+    standardized_quote_version: 1,
+    standardized_quote_sha256: 'f'.repeat(64),
+    standardized_scope_artifact_kind: 'TASK_DRAFT_STANDARDIZED_SCOPE_V1',
+    standardized_scope_artifact_id: STANDARDIZED_QUOTE_ID,
+    standardized_scope_artifact_version: 1,
+    standardized_scope_artifact_sha256: '9'.repeat(64),
+    customer_total_cents: 12_000,
+    currency: 'usd',
+    fake_payment_method_ready: true,
+    payment_method_readiness_posture: 'FAKE_PAYMENT_METHOD_READY_NO_FINANCIAL_EFFECT',
+    ...overrides,
   };
 }
 
-function interestRow(requestDigest = 'c'.repeat(64)) {
+function estimateOpportunityRow() {
+  return opportunityRow({
+    routing_outcome: 'ESTIMATE_REQUIRED',
+    standardized_quote_id: null,
+    standardized_quote_version: null,
+    standardized_quote_sha256: null,
+    standardized_scope_artifact_kind: null,
+    standardized_scope_artifact_id: null,
+    standardized_scope_artifact_version: null,
+    standardized_scope_artifact_sha256: null,
+    customer_total_cents: null,
+    currency: null,
+    fake_payment_method_ready: false,
+    payment_method_readiness_posture: 'NOT_APPLICABLE',
+  });
+}
+
+function interestRow(
+  requestDigest = 'c'.repeat(64),
+  overrides: Record<string, unknown> = {}
+) {
   return {
     interest_id: INTEREST_ID,
     opportunity_id: OPPORTUNITY_ID,
@@ -123,6 +156,7 @@ function interestRow(requestDigest = 'c'.repeat(64)) {
     created_at: new Date('2026-08-30T12:00:00.000Z'),
     idempotency_key: 'interest:provider:0001',
     request_sha256: requestDigest,
+    ...overrides,
   };
 }
 
@@ -184,6 +218,30 @@ describe('UniversalV1TaskOpportunityService', () => {
           eligibilityStatus: 'PENDING',
           assignmentStatus: 'PENDING',
           financialAuthority: 'NONE',
+          scopeArtifact: {
+            kind: 'TASK_DRAFT_STANDARDIZED_SCOPE_V1',
+            id: STANDARDIZED_QUOTE_ID,
+            version: 1,
+            sha256: '9'.repeat(64),
+          },
+          interestScopeArtifact: {
+            kind: 'TASK_DRAFT_ROUTE_CONTEXT_V1',
+            id: ROUTE_ID,
+            version: 1,
+            sha256: 'a'.repeat(64),
+          },
+          privacyPosture: 'STANDARDIZED_SCOPE_ALLOWLIST_ONLY',
+          standardizedQuote: {
+            quoteVersionId: STANDARDIZED_QUOTE_ID,
+            customerTotalCents: 12_000,
+            fakePaymentMethodReady: true,
+            scopeArtifact: {
+              kind: 'TASK_DRAFT_STANDARDIZED_SCOPE_V1',
+              id: STANDARDIZED_QUOTE_ID,
+              version: 1,
+              sha256: '9'.repeat(64),
+            },
+          },
         },
       ],
     });
@@ -197,7 +255,9 @@ describe('UniversalV1TaskOpportunityService', () => {
       50,
       0,
     ]);
-    expect(JSON.stringify(response)).not.toMatch(/customer|email|phone|exactAddress|poster/iu);
+    expect(JSON.stringify(response)).not.toMatch(
+      /"(?:customer|customerId|customerName|email|phone|exactAddress|poster|posterId|posterUserId)"\s*:/iu
+    );
   });
 
   it('holds browse when the provider capability observation is unresolved', async () => {
@@ -281,11 +341,13 @@ describe('UniversalV1TaskOpportunityService', () => {
       if (sql.includes('application.idempotency_key = $2')) return result([]);
       if (sql.includes('FROM public.users actor')) return result([generalAuthority()]);
       if (sql.includes('current_universal_v1_task_opportunities_v1')) {
-        return result([opportunityRow()]);
+        return result([estimateOpportunityRow()]);
       }
       if (sql.includes('application.opportunity_id = $1::UUID')) return result([]);
       if (sql.includes('INSERT INTO public.task_applications')) {
-        return result([interestRow(expectedDigest)]);
+        return result([
+          interestRow(expectedDigest, { routing_outcome: 'ESTIMATE_REQUIRED' }),
+        ]);
       }
       throw new Error(`Unexpected query: ${sql}`);
     });
@@ -312,6 +374,86 @@ describe('UniversalV1TaskOpportunityService', () => {
     );
   });
 
+  it('records ready standardized fulfillment interest as observation only', async () => {
+    const input = {
+      opportunityId: OPPORTUNITY_ID,
+      expectedOpportunityVersion: 1,
+      idempotencyKey: 'interest:provider:held01',
+    };
+    const expectedDigest = createHash('sha256')
+      .update([
+        'HX_UNIVERSAL_V1_EXPRESS_INTEREST_V1',
+        USER_ID,
+        OPPORTUNITY_ID,
+        '1',
+        '',
+        '',
+        input.idempotencyKey,
+      ].join('|'))
+      .digest('hex');
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('pg_advisory_xact_lock')) return result([]);
+      if (sql.includes('AS active_provider_identity')) {
+        return result([{ active_provider_identity: true }]);
+      }
+      if (sql.includes('application.idempotency_key = $2')) return result([]);
+      if (sql.includes('FROM public.users actor')) return result([generalAuthority()]);
+      if (sql.includes('current_universal_v1_task_opportunities_v1')) {
+        return result([opportunityRow()]);
+      }
+      if (sql.includes('application.opportunity_id = $1::UUID')) return result([]);
+      if (sql.includes('INSERT INTO public.task_applications')) {
+        return result([interestRow(expectedDigest)]);
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    });
+    const service = new UniversalV1TaskOpportunityService(database(query));
+
+    await expect(service.expressInterest(context, input)).resolves.toMatchObject({
+      interestId: INTEREST_ID,
+      routing: { outcome: 'FULFILLMENT_CANDIDATE' },
+      reservationCreated: false,
+      eligibilityDecisionCreated: false,
+      assignmentCreated: false,
+      addressContactAccessGranted: false,
+      financialEventCreated: false,
+      payableCreated: false,
+      guaranteedEarning: false,
+    });
+
+    const executedSql = query.mock.calls.map(([sql]) => String(sql)).join('\n');
+    expect(executedSql).toContain('INSERT INTO public.task_applications');
+    expect(executedSql).not.toMatch(
+      /INSERT INTO public\.(?:tasks|task_provider_eligibility_decisions|task_reservations|task_work_orders|task_financial_security_events|provider_payables)/u
+    );
+  });
+
+  it('holds fulfillment interest when exact standardized fake readiness is absent', async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('pg_advisory_xact_lock')) return result([]);
+      if (sql.includes('AS active_provider_identity')) {
+        return result([{ active_provider_identity: true }]);
+      }
+      if (sql.includes('FROM public.users actor')) return result([generalAuthority()]);
+      if (sql.includes('current_universal_v1_task_opportunities_v1')) {
+        return result([opportunityRow({
+          fake_payment_method_ready: false,
+          payment_method_readiness_posture: 'NOT_APPLICABLE',
+        })]);
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    });
+    const service = new UniversalV1TaskOpportunityService(database(query));
+
+    await expect(service.expressInterest(context, {
+      opportunityId: OPPORTUNITY_ID,
+      expectedOpportunityVersion: 1,
+      idempotencyKey: 'interest:provider:unready1',
+    })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect(query.mock.calls.map(([sql]) => String(sql)).join('\n'))
+      .not.toContain('task_applications');
+  });
+
   it('returns an exact concurrent replay only when the request digest matches', async () => {
     const input = {
       opportunityId: OPPORTUNITY_ID,
@@ -336,6 +478,10 @@ describe('UniversalV1TaskOpportunityService', () => {
       if (sql.includes('AS active_provider_identity')) {
         return result([{ active_provider_identity: true }]);
       }
+      if (sql.includes('FROM public.users actor')) return result([generalAuthority()]);
+      if (sql.includes('current_universal_v1_task_opportunities_v1')) {
+        return result([estimateOpportunityRow()]);
+      }
       if (sql.includes('application.idempotency_key = $2')) return result([interestRow(digest)]);
       throw new Error(`Unexpected query: ${sql}`);
     });
@@ -358,11 +504,11 @@ describe('UniversalV1TaskOpportunityService', () => {
       if (sql.includes('AS active_provider_identity')) {
         return result([{ active_provider_identity: true }]);
       }
-      if (sql.includes('application.idempotency_key = $2')) return result([]);
       if (sql.includes('FROM public.users actor')) return result([generalAuthority()]);
       if (sql.includes('current_universal_v1_task_opportunities_v1')) {
-        return result([opportunityRow()]);
+        return result([estimateOpportunityRow()]);
       }
+      if (sql.includes('application.idempotency_key = $2')) return result([]);
       if (sql.includes('application.opportunity_id = $1::UUID')) {
         return result([interestRow()]);
       }

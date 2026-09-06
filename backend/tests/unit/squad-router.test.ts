@@ -57,12 +57,12 @@ vi.mock('../../src/logger', () => ({
 }));
 
 // AUDIT FIX M2: createTeamTask delegates task creation to TaskService.
-// REVIEW FIX (PR242): cancel added — the compensation path invokes it when the
+// REVIEW FIX (PR242): explicit internal cancellation compensates when the
 // assignment transaction fails after the task was committed.
 vi.mock('../../src/services/TaskService', () => ({
   TaskService: {
-    create: vi.fn().mockResolvedValue({ success: true, data: { id: 'task-from-service' } }),
-    cancel: vi.fn().mockResolvedValue({ success: true, data: { id: 'task-from-service' } }),
+    create: vi.fn().mockResolvedValue({ success: true, data: { id: 'task-from-service', version: 1 } }),
+    cancelForInternalPurpose: vi.fn().mockResolvedValue({ success: true, data: { id: 'task-from-service' } }),
   },
 }));
 
@@ -546,8 +546,8 @@ describe('squad.createTeamTask — creation via TaskService + compensation', () 
   beforeEach(() => {
     vi.clearAllMocks();
     dbMocks.query.mockReset();
-    mockTaskService.create.mockResolvedValue({ success: true, data: { id: 'task-from-service' } } as any);
-    mockTaskService.cancel.mockResolvedValue({ success: true, data: { id: 'task-from-service' } } as any);
+    mockTaskService.create.mockResolvedValue({ success: true, data: { id: 'task-from-service', version: 1 } } as any);
+    mockTaskService.cancelForInternalPurpose.mockResolvedValue({ success: true, data: { id: 'task-from-service' } } as any);
   });
 
   it('creates the task through TaskService and links it atomically with the assignment', async () => {
@@ -570,7 +570,7 @@ describe('squad.createTeamTask — creation via TaskService + compensation', () 
     const txSql = dbMocks.txQuery.mock.calls.map((c) => String(c[0]));
     expect(txSql.some((s) => s.includes('squad_id'))).toBe(true);
     expect(txSql.some((s) => s.includes('squad_task_assignments'))).toBe(true);
-    expect(mockTaskService.cancel).not.toHaveBeenCalled();
+    expect(mockTaskService.cancelForInternalPurpose).not.toHaveBeenCalled();
   });
 
   it('COMPENSATES on assignment failure: cancels the committed task and rethrows (no orphaned claimable task)', async () => {
@@ -585,7 +585,11 @@ describe('squad.createTeamTask — creation via TaskService + compensation', () 
       .rejects.toThrow('squad_task_assignments constraint violation');
 
     // The just-created task must have been cancelled by the owning service
-    expect(mockTaskService.cancel).toHaveBeenCalledWith('task-from-service', 'organizer-1');
+    expect(mockTaskService.cancelForInternalPurpose).toHaveBeenCalledWith({
+      taskId: 'task-from-service',
+      expectedVersion: 1,
+      purpose: 'SQUAD_CREATE_COMPENSATION',
+    });
   });
 
   it('maps the legacy task-materialization freeze to PRECONDITION_FAILED', async () => {

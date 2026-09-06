@@ -1,20 +1,14 @@
 import { createHash } from 'node:crypto';
 
 import {
-  SYNTHETIC_FINANCIAL_OBSERVATION_KIND,
   syntheticFinancialObservationSchema,
   type SyntheticFinancialObservation,
 } from './SyntheticFinancialCommandSchemas.js';
-import {
-  assertSyntheticFinancialWebhookHmac,
-} from './SyntheticFinancialCommandAuthority.js';
-import {
-  PostgresProviderEventInboxRepository,
-  ProviderEventInboxError,
-  type ProviderEventInboxReceipt,
-} from './ProviderEventInbox.js';
+import { SyntheticFinancialAuthorityError } from './SyntheticFinancialCommandAuthority.js';
+import { ProviderEventInboxError, type ProviderEventInboxReceipt } from './ProviderEventInbox.js';
+import { SealedSyntheticFinancialWebhookInbox } from './SealedSyntheticFinancialWebhookInbox.js';
+import { fakeFinancialWebhookKeyIdSchema } from './FakeFinancialWebhookAuthentication.js';
 
-const SYNTHETIC_FINANCIAL_AUTHENTICATION_SCHEME = 'HMAC_SHA256';
 const INGRESS_IDEMPOTENCY_KEY = /^[A-Za-z0-9:_-]{16,128}$/u;
 
 export type SyntheticFinancialWebhookIngressErrorReason =
@@ -29,6 +23,7 @@ export class SyntheticFinancialWebhookIngressError extends Error {
 }
 
 export interface AuthenticateAndRecordSyntheticFinancialWebhookInput {
+  readonly keyId: string;
   readonly rawBody: string;
   readonly signature: string;
   readonly ingressIdempotencyKey?: string;
@@ -40,21 +35,15 @@ export interface AuthenticatedSyntheticFinancialWebhook {
   readonly normalizationIdempotencyKey: string;
 }
 
-const providerEventInbox = new PostgresProviderEventInboxRepository();
+const providerEventInbox = new SealedSyntheticFinancialWebhookInbox();
 
 function sha256(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
-function authenticationEvidenceSha256(signature: string): string {
-  return sha256(
-    `HUSTLEXP_SYNTHETIC_WEBHOOK_HMAC_SHA256_V1\0${signature.trim().toLowerCase()}`,
-  );
-}
-
 export function syntheticFinancialWebhookNormalizationIdempotencyKey(
   providerKind: string,
-  providerEventReference: string,
+  providerEventReference: string
 ): string {
   return `provider-event:${sha256(`${providerKind}\0${providerEventReference}`)}`;
 }
@@ -78,13 +67,18 @@ export function parseSyntheticFinancialObservation(rawBody: string): SyntheticFi
  * any participant, operation, lifecycle, normalization, or provider boundary.
  */
 export async function authenticateAndRecordSyntheticFinancialWebhook(
-  input: AuthenticateAndRecordSyntheticFinancialWebhookInput,
+  input: AuthenticateAndRecordSyntheticFinancialWebhookInput
 ): Promise<AuthenticatedSyntheticFinancialWebhook> {
-  assertSyntheticFinancialWebhookHmac(input.rawBody, input.signature);
+  if (
+    !fakeFinancialWebhookKeyIdSchema.safeParse(input.keyId).success ||
+    !/^[a-f0-9]{64}$/u.test(input.signature)
+  ) {
+    throw new SyntheticFinancialAuthorityError('WEBHOOK_HMAC_INVALID');
+  }
   const observation = parseSyntheticFinancialObservation(input.rawBody);
   const normalizationIdempotencyKey = syntheticFinancialWebhookNormalizationIdempotencyKey(
     observation.providerKind,
-    observation.providerEventReference,
+    observation.providerEventReference
   );
   const ingressIdempotencyKey = input.ingressIdempotencyKey ?? normalizationIdempotencyKey;
   if (!INGRESS_IDEMPOTENCY_KEY.test(ingressIdempotencyKey)) {
@@ -93,28 +87,24 @@ export async function authenticateAndRecordSyntheticFinancialWebhook(
 
   let receipt: ProviderEventInboxReceipt;
   try {
-    receipt = await providerEventInbox.recordAuthenticatedEvent({
-      providerKind: observation.providerKind,
-      providerEventReference: observation.providerEventReference,
-      providerEventKind: SYNTHETIC_FINANCIAL_OBSERVATION_KIND,
-      operationId: observation.operationId,
+    receipt = await providerEventInbox.record({
+      keyId: input.keyId,
+      rawBody: input.rawBody,
+      signature: input.signature,
       ingressIdempotencyKey,
-      rawPayload: Buffer.from(input.rawBody, 'utf8'),
-      authentication: {
-        status: 'VERIFIED',
-        scheme: SYNTHETIC_FINANCIAL_AUTHENTICATION_SCHEME,
-        evidenceSha256: authenticationEvidenceSha256(input.signature),
-        verifiedAt: new Date().toISOString(),
-      },
     });
   } catch (error) {
-    if (error instanceof ProviderEventInboxError) throw error;
+    if (
+      error instanceof ProviderEventInboxError ||
+      error instanceof SyntheticFinancialAuthorityError
+    )
+      throw error;
     throw new ProviderEventInboxError('PERSISTENCE_INCOMPLETE');
   }
 
-  return {
-    observation,
+  return Object.freeze({
+    observation: Object.freeze(observation),
     receipt,
     normalizationIdempotencyKey,
-  };
+  });
 }

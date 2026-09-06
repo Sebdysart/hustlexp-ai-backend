@@ -1,11 +1,11 @@
 /**
  * HustleXP tRPC Router v1.0.0
- * 
+ *
  * CONSTITUTIONAL: Layer 2 API
- * 
+ *
  * Exposes services via type-safe tRPC endpoints.
  * Authentication via Firebase middleware.
- * 
+ *
  * @see ARCHITECTURE.md §1
  */
 
@@ -39,10 +39,9 @@ function publicApplicationCode(cause: unknown): string | undefined {
   return code === PAYMENT_CREATION_FROZEN_CODE ? code : undefined;
 }
 
-export function publicTRPCErrorShape<T extends { message: string; data: { code?: string; stack?: string } }>(
-  shape: T,
-  error?: { cause?: unknown },
-): T & { data: T['data'] & { applicationCode?: string } } {
+export function publicTRPCErrorShape<
+  T extends { message: string; data: { code?: string; stack?: string } },
+>(shape: T, error?: { cause?: unknown }): T & { data: T['data'] & { applicationCode?: string } } {
   const applicationCode = publicApplicationCode(error?.cause);
   return {
     ...shape,
@@ -158,16 +157,18 @@ function capabilityAdminMiddleware(capability: AdminCapability | null) {
        FROM admin_roles
        WHERE user_id = $1 AND role = ANY($2::text[])
        LIMIT 1`,
-      [ctx.user!.id, [...VALID_ADMIN_ROLES]],
+      [ctx.user!.id, [...VALID_ADMIN_ROLES]]
     );
     const row = result.rows[0];
-    const privileged = Boolean(row && PRIVILEGED_ADMIN_ROLES.includes(
-      row.role as (typeof PRIVILEGED_ADMIN_ROLES)[number],
-    ));
+    const privileged = Boolean(
+      row && PRIVILEGED_ADMIN_ROLES.includes(row.role as (typeof PRIVILEGED_ADMIN_ROLES)[number])
+    );
     if (!row || (!privileged && capability !== null && row.capability_granted !== true)) {
       throw new TRPCError({
         code: 'FORBIDDEN',
-        message: capability ? 'Required administrator capability missing' : 'Platform administrator access required',
+        message: capability
+          ? 'Required administrator capability missing'
+          : 'Platform administrator access required',
       });
     }
     if (capability === null && !privileged) {
@@ -178,12 +179,24 @@ function capabilityAdminMiddleware(capability: AdminCapability | null) {
 }
 
 export const platformAdminProcedure = protectedProcedure.use(capabilityAdminMiddleware(null));
-export const financialAdminProcedure = protectedProcedure.use(capabilityAdminMiddleware('can_access_financials'));
-export const escrowAdminProcedure = protectedProcedure.use(capabilityAdminMiddleware('can_override_escrow'));
-export const userManagementAdminProcedure = protectedProcedure.use(capabilityAdminMiddleware('can_ban_users'));
-export const disputeAdminProcedure = protectedProcedure.use(capabilityAdminMiddleware('can_resolve_disputes'));
-export const trustAdminProcedure = protectedProcedure.use(capabilityAdminMiddleware('can_modify_trust'));
-export const safetyAdminProcedure = protectedProcedure.use(capabilityAdminMiddleware('can_manage_incidents'));
+export const financialAdminProcedure = protectedProcedure.use(
+  capabilityAdminMiddleware('can_access_financials')
+);
+export const escrowAdminProcedure = protectedProcedure.use(
+  capabilityAdminMiddleware('can_override_escrow')
+);
+export const userManagementAdminProcedure = protectedProcedure.use(
+  capabilityAdminMiddleware('can_ban_users')
+);
+export const disputeAdminProcedure = protectedProcedure.use(
+  capabilityAdminMiddleware('can_resolve_disputes')
+);
+export const trustAdminProcedure = protectedProcedure.use(
+  capabilityAdminMiddleware('can_modify_trust')
+);
+export const safetyAdminProcedure = protectedProcedure.use(
+  capabilityAdminMiddleware('can_manage_incidents')
+);
 
 const freshOperatorStepUpMiddleware = t.middleware(async ({ ctx, next }) => {
   if (!ctx.firebaseUid || !hasFreshOperatorStepUp(ctx.identityAssurance)) {
@@ -221,25 +234,19 @@ const consequentialAdminMutationHold = t.middleware(() => {
 });
 
 export const heldPlatformAdminProcedure = platformAdminProcedure.use(
-  consequentialAdminMutationHold,
+  consequentialAdminMutationHold
 );
 export const heldFinancialAdminProcedure = financialAdminProcedure.use(
-  consequentialAdminMutationHold,
+  consequentialAdminMutationHold
 );
-export const heldEscrowAdminProcedure = escrowAdminProcedure.use(
-  consequentialAdminMutationHold,
-);
+export const heldEscrowAdminProcedure = escrowAdminProcedure.use(consequentialAdminMutationHold);
 export const heldUserManagementAdminProcedure = userManagementAdminProcedure.use(
-  consequentialAdminMutationHold,
+  consequentialAdminMutationHold
 );
-export const heldTrustAdminProcedure = trustAdminProcedure.use(
-  consequentialAdminMutationHold,
-);
-export const heldSafetyAdminProcedure = safetyAdminProcedure.use(
-  consequentialAdminMutationHold,
-);
+export const heldTrustAdminProcedure = trustAdminProcedure.use(consequentialAdminMutationHold);
+export const heldSafetyAdminProcedure = safetyAdminProcedure.use(consequentialAdminMutationHold);
 export const heldOperationsAdminProcedure = operationsAdminProcedure.use(
-  consequentialAdminMutationHold,
+  consequentialAdminMutationHold
 );
 
 /** A policy-forbidden administrator effect with no restoration switch. */
@@ -247,35 +254,17 @@ export function forbiddenConsequentialAdminMutation(message: string): never {
   throw new TRPCError({ code: 'PRECONDITION_FAILED', message });
 }
 
-const isAdminOrEngineBridge = t.middleware(async ({ ctx, next }) => {
-  if (ctx.engineBridgeAuthorized === true && ctx.engineBridgeActorId) {
-    return next({ ctx });
-  }
-  if (!ctx.user) {
-    throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Authentication required' });
-  }
-  if (ctx.user.is_banned || ['SUSPENDED', 'DELETED'].includes(ctx.user.account_status)) {
-    throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Account suspended.' });
-  }
-  if (ctx.user.is_admin === false) {
-    throw new TRPCError({ code: 'FORBIDDEN', message: 'Platform administrator or engine bridge access required' });
-  }
-  // Human callers on engine-equivalent procedures require a fresh platform
-  // role check. A cached generic staff flag must never grant assignment,
-  // recurring-recovery, or unattended-completion authority.
-  const result = await db.query(
-    'SELECT role FROM admin_roles WHERE user_id = $1 AND role = ANY($2::text[]) LIMIT 1',
-    [ctx.user.id, [...PRIVILEGED_ADMIN_ROLES]],
-  );
-  if (result.rows.length === 0) {
-    throw new TRPCError({ code: 'FORBIDDEN', message: 'Platform administrator or engine bridge access required' });
-  }
-  return next({ ctx: { ...ctx, user: ctx.user } as AuthedContext });
-});
-
-export const adminOrEngineBridgeProcedure = t.procedure.use(isAdminOrEngineBridge);
-export const heldAdminOrEngineBridgeProcedure = adminOrEngineBridgeProcedure.use(
-  consequentialAdminMutationHold,
+/**
+ * Compatibility name for the retired engine-bridge surface. The former
+ * reusable environment/header credential is no longer parsed. Read-only
+ * callers must now be named, authenticated platform administrators; no
+ * shared-secret workload identity receives human authority.
+ *
+ * @deprecated Use a purpose-scoped named identity procedure.
+ */
+export const adminOrEngineBridgeProcedure = platformAdminProcedure;
+export const heldAdminOrEngineBridgeProcedure = platformAdminProcedure.use(
+  consequentialAdminMutationHold
 );
 
 // Middleware: require Hustler role (default_mode = 'worker') — composed on top of isAuthenticated.
@@ -319,7 +308,7 @@ export const posterProcedure = protectedProcedure.use(isPosterCheck);
 export const Schemas = {
   // IDs
   uuid: z.string().uuid(),
-  
+
   // Task
   createTask: z.object({
     title: z.string().trim().min(1).max(255),
@@ -333,8 +322,17 @@ export const Schemas = {
     /** City/region label safe to expose before a reservation exists. */
     roughArea: z.string().trim().min(2).max(120).optional(),
     /** ISO country-subdivision policy key. The engine resolves the version; clients cannot choose it. */
-    regionCode: z.string().trim().regex(/^US-[A-Z]{2}$/),
-    clientIdempotencyKey: z.string().trim().min(8).max(128).regex(/^[A-Za-z0-9:_-]+$/).optional(),
+    regionCode: z
+      .string()
+      .trim()
+      .regex(/^US-[A-Z]{2}$/),
+    clientIdempotencyKey: z
+      .string()
+      .trim()
+      .min(8)
+      .max(128)
+      .regex(/^[A-Za-z0-9:_-]+$/)
+      .optional(),
     isTest: z.boolean().optional(),
     category: z.string().trim().min(1).max(100),
     deadline: z.string().datetime().optional(),
@@ -354,7 +352,11 @@ export const Schemas = {
     // Partial payout is still rejected by the router. Checklist steps are
     // canonical scope inputs and are persisted in immutable scope version 1.
     prorate_on_abort: z.boolean().optional(),
-    proof_steps: z.array(z.object({ step: z.string().trim().min(1).max(200) }).strict()).min(1).max(12).optional(),
+    proof_steps: z
+      .array(z.object({ step: z.string().trim().min(1).max(200) }).strict())
+      .min(1)
+      .max(12)
+      .optional(),
     estimatedDurationMinutes: z.number().int().min(15).max(1440).optional(),
     requiredTools: z.array(z.string().trim().min(1).max(100)).max(20).optional(),
     aiScopeObservationId: z.string().uuid().optional(),
@@ -370,7 +372,7 @@ export const Schemas = {
     taskId: z.string().uuid(),
     consentItems: z.array(z.string().trim().min(1).max(500)).min(1).max(10),
   }),
-  
+
   // Escrow
   fundEscrow: z.object({
     escrowId: z.string().uuid(),
@@ -385,7 +387,7 @@ export const Schemas = {
     // where this field remains optional.
     stripeTransferId: z.string().min(1).max(255),
   }),
-  
+
   // Proof
   submitProof: z.object({
     taskId: z.string().uuid(),
@@ -397,7 +399,7 @@ export const Schemas = {
     decision: z.enum(['ACCEPTED', 'REJECTED']),
     reason: z.string().max(1000).optional(),
   }),
-  
+
   // XP
   // SECURITY FIX: baseXP removed from user-facing schema — derived server-side
   // from the escrow amount to prevent caller-controlled XP inflation.
@@ -405,7 +407,7 @@ export const Schemas = {
     taskId: z.string().uuid(),
     escrowId: z.string().uuid(),
   }),
-  
+
   // Offset-based pagination (legacy — for admin/internal endpoints where drift is acceptable)
   pagination: z.object({
     limit: z.number().int().min(1).max(100).default(20),
@@ -419,13 +421,13 @@ export const Schemas = {
     cursor: z.string().nullish(), // null/undefined = fetch from beginning
     limit: z.number().int().min(1).max(100).default(20),
   }),
-  
+
   // Onboarding AI
   submitCalibration: z.object({
     calibrationPrompt: z.string().min(1).max(5000),
     onboardingVersion: z.string().max(20).default('1.0.0'),
   }),
-  
+
   confirmRole: z.object({
     confirmedMode: z.enum(['worker', 'poster']),
     overrideAI: z.boolean().default(false),

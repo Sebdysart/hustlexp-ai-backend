@@ -40,14 +40,12 @@ export class UniversalV1ChangeOrderRecoveryWorker {
   private readonly minimumAgeSeconds: number;
 
   constructor(
-    private readonly repository: UniversalV1ChangeOrderRecoveryRepository =
-      new PostgresUniversalV1ChangeOrderRecoveryRepository(),
-    private readonly service: UniversalV1ChangeOrderRecoveryService =
-      new UniversalV1ChangeOrderRecoveryService(
-        repository,
-        new PostgresUniversalV1ChangeOrderRepository()
-      ),
-    private readonly createFinance: () => RecoveryFinance = () =>
+    private readonly repository: UniversalV1ChangeOrderRecoveryRepository = new PostgresUniversalV1ChangeOrderRecoveryRepository(),
+    private readonly service: UniversalV1ChangeOrderRecoveryService = new UniversalV1ChangeOrderRecoveryService(
+      repository,
+      new PostgresUniversalV1ChangeOrderRepository()
+    ),
+    private readonly createFinance: () => RecoveryFinance | Promise<RecoveryFinance> = () =>
       createUniversalV1FakeFinancialApplicationService(),
     options: UniversalV1ChangeOrderRecoveryWorkerOptions = {}
   ) {
@@ -77,7 +75,7 @@ export class UniversalV1ChangeOrderRecoveryWorker {
 
     // Factory construction proves local/preview/staging, exact signed release,
     // worker identity, fake provider, and frozen-money posture before DB claim.
-    const finance = this.createFinance();
+    const finance = await this.createFinance();
     const claims = await this.repository.claimDue({
       leaseOwnerId: this.leaseOwnerId,
       limit,
@@ -181,8 +179,7 @@ export function startUniversalV1ChangeOrderRecoveryPoller(
       .catch((error: unknown) => {
         consecutiveFailures += 1;
         lastFailureCode =
-          error instanceof Error &&
-          error.message === 'CHANGE_ORDER_RECOVERY_BATCH_INCOMPLETE'
+          error instanceof Error && error.message === 'CHANGE_ORDER_RECOVERY_BATCH_INCOMPLETE'
             ? 'BATCH_INCOMPLETE'
             : 'BATCH_FAILED';
       })
@@ -210,8 +207,7 @@ export function startUniversalV1ChangeOrderRecoveryPoller(
       priorSecuredStateRestored:
         UNIVERSAL_V1_CHANGE_ORDER_RECOVERY_SEMANTIC_LIMITATION.priorSecuredStateRestored,
       executionMayResumeAfterCompensation:
-        UNIVERSAL_V1_CHANGE_ORDER_RECOVERY_SEMANTIC_LIMITATION
-          .executionMayResumeAfterCompensation,
+        UNIVERSAL_V1_CHANGE_ORDER_RECOVERY_SEMANTIC_LIMITATION.executionMayResumeAfterCompensation,
     }),
     stop: async () => {
       if (stopped) return;

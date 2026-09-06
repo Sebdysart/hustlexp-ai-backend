@@ -232,32 +232,67 @@ describe('Invariant S-2: Subscription Plan Changes Are Monotonic', () => {
     expect(replayTimestamps.rows[0]).toEqual(firstTimestamps.rows[0]);
   });
 
-  it('S-2: plan cannot downgrade before expiry', async () => {
+  it('S-2: cancellation is replay-safe and cannot extend authority past observation', async () => {
+    const before = await db.query<{
+      plan_expires_at: Date;
+      observed_at: Date;
+    }>(
+      `SELECT plan_expires_at, clock_timestamp() AS observed_at
+       FROM users
+       WHERE id = $1`,
+      [userId]
+    );
+    const activeExpiry = new Date(before.rows[0].plan_expires_at);
+    const observedBefore = new Date(before.rows[0].observed_at);
+    expect(activeExpiry.getTime()).toBeGreaterThan(observedBefore.getTime());
+
     const eventId = `evt_sub_cancel_${Date.now()}`;
     await insertStripeEvent(eventId, 'customer.subscription.deleted');
     const futurePeriodEnd = Math.floor(Date.now() / 1000) + 20 * 24 * 60 * 60;
-    await processSubscriptionEvent({
+    const cancellationPayload = {
       id: 'sub_test',
       customer: 'cus_test',
       metadata: { user_id: userId },
       items: { data: [{ price: { metadata: { plan: 'premium' as const } } }] },
       current_period_end: futurePeriodEnd,
       status: 'canceled',
-    }, eventId);
+    };
+    await processSubscriptionEvent(cancellationPayload, eventId);
 
     const plan = await getUserPlan(userId);
     expect(plan).toBe('premium');
 
-    const user = await db.query<{ plan: string; plan_expires_at: Date }>(
-      `SELECT plan, plan_expires_at FROM users WHERE id = $1`,
+    const user = await db.query<{
+      plan: string;
+      plan_expires_at: Date;
+      observed_at: Date;
+    }>(
+      `SELECT plan, plan_expires_at, clock_timestamp() AS observed_at
+       FROM users
+       WHERE id = $1`,
       [userId]
     );
     const expiresAt = new Date(user.rows[0].plan_expires_at);
-    const now = new Date();
+    const observedAfter = new Date(user.rows[0].observed_at);
 
     expect(expiresAt).toBeInstanceOf(Date);
-    expect(expiresAt.getTime()).toBeGreaterThan(now.getTime());
+    expect(expiresAt.getTime()).toBeGreaterThanOrEqual(observedBefore.getTime());
+    expect(expiresAt.getTime()).toBeLessThanOrEqual(observedAfter.getTime());
+    expect(expiresAt.getTime()).toBeLessThan(activeExpiry.getTime());
+    expect(expiresAt.getTime()).toBeLessThan(futurePeriodEnd * 1000);
     expect(user.rows[0].plan).toBe('premium');
+
+    // Replaying the same validated cancellation cannot move expiry forward.
+    await processSubscriptionEvent(cancellationPayload, eventId);
+    const replay = await db.query<{ plan_expires_at: Date }>(
+      `SELECT plan_expires_at FROM users WHERE id = $1`,
+      [userId]
+    );
+    expect(replay.rows[0].plan_expires_at).toEqual(expiresAt);
+
+    // The stored label is downgraded only by the existing expiry reader, but
+    // the cancellation observation grants no effective premium authority.
+    await expect(PlanService.getUserPlan(userId)).resolves.toBe('free');
   });
 });
 

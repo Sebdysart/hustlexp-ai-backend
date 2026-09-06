@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { db } from './db.js';
+import type { QueryFn } from './database-contracts.js';
 import { REQUIRED_MIGRATION_FILES } from './jobs/engine-automation-migration-files.js';
 import { logger } from './logger.js';
 
@@ -33,7 +33,7 @@ export type StartupMigrationRuntime = {
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 
-export function productionStartupMigrationRuntime(): StartupMigrationRuntime {
+export function productionStartupMigrationRuntime(query: QueryFn): StartupMigrationRuntime {
   const cwd = process.cwd();
   return {
     migrationSpecs: REQUIRED_MIGRATION_FILES.map(({ name, fileName }) => ({
@@ -45,7 +45,7 @@ export function productionStartupMigrationRuntime(): StartupMigrationRuntime {
     })),
     readText: (filePath) => readFile(filePath, 'utf8'),
     query: async (sql, values) => {
-      const result = await db.query<StartupMigrationEvidence>(sql, values);
+      const result = await query<StartupMigrationEvidence>(sql, values);
       return { rows: result.rows };
     },
   };
@@ -86,14 +86,14 @@ async function expectedMigrationDigests(
  */
 export async function runStartupMigrations(
   startLog: StartupLogger,
-  runtime: StartupMigrationRuntime = productionStartupMigrationRuntime(),
+  runtime: StartupMigrationRuntime,
 ): Promise<void> {
   const expected = await expectedMigrationDigests(runtime);
   const names = [...expected.keys()];
   const result = await runtime.query(
-    `SELECT name, sha256
-     FROM applied_migrations
-     WHERE name = ANY($1::text[])`,
+    `SELECT migration_name AS name, applied_sha256 AS sha256
+     FROM public.hxos_read_fake_financial_applied_migrations_v13()
+     WHERE migration_name = ANY($1::text[])`,
     [names],
   );
 

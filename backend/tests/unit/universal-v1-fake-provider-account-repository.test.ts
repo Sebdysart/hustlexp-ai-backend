@@ -101,7 +101,7 @@ describe('Universal V1 fake provider-account fact repository', () => {
           rowCount: 1,
         };
       }
-      if (sql.includes('INSERT INTO public.universal_v1_fake_provider_account_facts')) {
+      if (sql.includes('public.hxos_record_fake_provider_account_fact_v1')) {
         return { rows: [{ provider_account_fact_id: ids.fact }], rowCount: 1 };
       }
       if (sql.includes('WHERE fact.provider_account_fact_id = $1')) {
@@ -126,7 +126,7 @@ describe('Universal V1 fake provider-account fact repository', () => {
       idempotencyReplayed: false,
     });
     const insert = calls.find(({ sql }) =>
-      sql.includes('INSERT INTO public.universal_v1_fake_provider_account_facts')
+      sql.includes('public.hxos_record_fake_provider_account_fact_v1')
     );
     const occupiedRefresh = calls.find(({ sql }) => sql.includes('OR fact.refresh_fake_event_id'));
     expect(occupiedRefresh?.sql).not.toMatch(/(?:WHERE|OR) fact\.onboard_[a-z_]+_id/u);
@@ -139,7 +139,10 @@ describe('Universal V1 fake provider-account fact repository', () => {
     expect(insert?.sql).not.toMatch(
       /task_draft|task_id|work_order|customer|provider_account_reference_sha256|account_state|payouts_enabled|recorded_at|materialized_at/iu
     );
-    expect(insert?.params).toEqual([
+    expect(insert?.params?.[0]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
+    );
+    expect(insert?.params?.slice(1)).toEqual([
       'ORGANIZATION',
       null,
       ids.organization,

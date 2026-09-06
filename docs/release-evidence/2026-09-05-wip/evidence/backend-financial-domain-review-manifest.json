@@ -1,0 +1,175 @@
+{
+  "generatedAt": "2026-09-05T04:54:46.921Z",
+  "status": "FOCUSED_EXECUTION_DOMAIN_CHECKS_PASS_BACKEND_AND_RELEASE_INCOMPLETE",
+  "repository": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip",
+  "head": "36255e604e718320ccae7d4e3ac269ad09678205",
+  "baseline": "Preserved progress-recovery WIP; not HEAD relative.",
+  "productionEffects": "NONE",
+  "customerMoney": "FROZEN",
+  "hardAssignment": "FROZEN",
+  "releaseEligible": false,
+  "scope": [
+    "Revalidate current customer/draft, task/scope/route/synthetic service cell, provider/profile/organization/credential eligibility, incidents and exact accepted-estimate Phase A commitment/interest/hold before new positive PREPARE/AUTHORIZE/SECURE fake execution.",
+    "Use nonblocking domain locks under the existing execution lock order; sample expiry after locks and preserve original committed recovery, replay and compensation boundaries.",
+    "Genuine restricted attester/API applications create the accepted-estimate Phase A witness; admitted execution/outcome/materialization cover PREPARE, AUTHORIZE and SECURE in separate commits.",
+    "Enroll the unchanged canonical INVOKER compensating-reversal predicate and its exact 15-column dependencies on each of two relations. Grant finance/migration execution and narrow owner reads; add no runtime login raw-table access.",
+    "Correct the trigger count to the independently observed 312, retaining the matching catalog digest and all frozen migration hashes."
+  ],
+  "sqlPins": {
+    "20261014_universal_v1_work_order_command_ports_v1.sql": "3920ac8d3208b9f573dc331cab60c373d0349611700c6e14a6e4c1dd8c53aac4",
+    "20261015_universal_v1_work_order_fake_financial_authority_hardening_v12.sql": "5bb8ee72b9113146b88c22c6751ebe527ba6246b4463a8611ef9c24b999b7ac5",
+    "20261015_universal_v1_work_order_bootstrap_seal_v1.sql": "c69825589193885d0f6a3b93930880998e95e1c5cd44bb9b5999cb457192b2bd",
+    "20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql": "9e5084152e7f31ede492102205b7ec877dd0f458000b59b8e49b474221059141"
+  },
+  "functionCatalog": {
+    "count": 107,
+    "sha256": "12f64645f79521a3d051c4e47bbc344cd339d6de960054d95334bc4b158e5370"
+  },
+  "triggerCatalog": {
+    "count": 312,
+    "sha256": "32227032a43c3753458d7870e10443b47034dfe194fd36e4c63a60c410766905"
+  },
+  "validation": {
+    "affectedUnits": {
+      "files": 11,
+      "passed": 309,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0,
+      "paths": [
+        "backend/tests/unit/FakeFinancialProvider.test.ts",
+        "backend/tests/unit/fake-financial-durable-request.test.ts",
+        "backend/tests/unit/financial-provider-command-journal.test.ts",
+        "backend/tests/unit/work-order-command-role-authority.test.ts",
+        "backend/tests/unit/fake-financial-admitted-request.test.ts",
+        "backend/tests/unit/fake-financial-admitted-execution.test.ts",
+        "backend/tests/unit/fake-financial-recovery-evidence.test.ts",
+        "backend/tests/unit/fake-financial-outcome.test.ts",
+        "backend/tests/unit/fake-financial-projection-contract.test.ts",
+        "backend/tests/unit/universal-v1-financial-application-service.test.ts",
+        "backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts"
+      ]
+    },
+    "postgres": {
+      "files": 2,
+      "passed": 125,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    "sourceCompilation": "PASS",
+    "expandedTestTypecheck": "PASS",
+    "sourceLintZeroWarnings": "PASS",
+    "gitDiffCheck": "PASS",
+    "patchReverseCheck": "PASS",
+    "fullRequiredSuite": "NOT YET VALIDATED ON CURRENT BYTES"
+  },
+  "regressionEvidence": {
+    "diagnosticBeforeGuard": {
+      "path": "work/financial-domain-red.log",
+      "sha256": "8394e88907b798567682e8f9490a9e622f6501f50669a941d4601b0ef3b84e5d",
+      "status": "One selected regression failed before guard; filtered cases are not certification evidence"
+    },
+    "precedingAuditCohort": "The audit preserves its 310-unit selected cohort and 119/6 PostgreSQL result. Current selected unit paths are explicit above; no tests were removed to obtain a passing result."
+  },
+  "independentReview": "Read-only agent review identified missing service-cell environment/test/kind binding, corrected before the passing run. Final dependency review found no actionable defect in the unchanged INVOKER helper ownership/15-column grants/catalog enrollment. This is not independent human release approval.",
+  "trustBoundaries": [
+    "Synthetic bearer/revocation/release evidence and in-process attester HTTP handling; no real network transport or installed signed runtime boot is proved.",
+    "Public-fact prerequisite reads and financial PREPARED insertion use owner access. Authenticated financial PREPARED submission remains unimplemented.",
+    "Selected denials cover customer account status/ban/minor, provider suspension/ban/trust hold/profile revocation and lock contention, superseded/expired eligibility, incidents and cancelled exact holds with zero raw/canonical partial effects.",
+    "Organization/trade/cell replacement and all insertion/expiry races require further tests. Standardized-quote monetary witness compatibility and all remaining terminal financial operations remain open.",
+    "Actual public API-to-Redis-to-worker orchestration, durable work discovery, eight-role startup/readiness and all customer/provider/Ops web journeys are not proved by this packet."
+  ],
+  "migrationArtifact": {
+    "stored": "f888ee9b2872e73b90428bb3922d45a61108bcf3decdc43f8f3f117b123a7ac6",
+    "computed": "9a4ff59839c45f3784f3fec2ad3e9dfdb2df9adc97515d49e8d580801854d1a0",
+    "regenerated": false,
+    "status": "MISMATCH_RELEASE_FAILURE_PENDING_FINAL_SQL"
+  },
+  "remaining": [
+    "Authenticated financial PREPARED submission and typed ID-only application enqueue.",
+    "Exact-name queue consumer, owned publisher/recovery loops, durable work discovery and authoritative ambiguous/no-effect convergence.",
+    "Remaining monetary/terminal/domain/standardized-quote journeys, canonical ledger and guarded closure.",
+    "Current Docs product gaps, eight-role readiness, immutable authority enrollment, full required regression and clean-clone API/worker/web reproduction.",
+    "Credential revocation and repository/production evidence, approved signers, independent human review, exact isolated staging evidence."
+  ],
+  "files": [
+    {
+      "path": "backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql",
+      "change": "modified",
+      "beforeSha256": "11cfed4944e9a282af222f3c0ecb6a2f51904d1c522661386c4a0bcb51e01e23",
+      "afterSha256": "9e5084152e7f31ede492102205b7ec877dd0f458000b59b8e49b474221059141"
+    },
+    {
+      "path": "backend/src/jobs/fake-financial-outbox-role-plans.ts",
+      "change": "modified",
+      "beforeSha256": "44f650f5c6de9dba2c7f1bef285a8fb5d9c7bcad3f4bd21fd76d24562ff10897",
+      "afterSha256": "669efc210ececc4012cbfac588db239fc3090d143cf8be58b26f956e8830f3b7"
+    },
+    {
+      "path": "backend/src/jobs/work-order-command-role-authority.ts",
+      "change": "modified",
+      "beforeSha256": "f76d70e59a41f7c01fefed7a34a643fdaf19fed24a97d6884311d2b986df7ca9",
+      "afterSha256": "3c144cb95aa36df3ae9340982588049c11d803d35b7995b1d9b4c9e3b943c2a5"
+    },
+    {
+      "path": "backend/tests/helpers/universal-v1-accepted-estimate-fixture.ts",
+      "change": "modified",
+      "beforeSha256": "04b0e802f6b866eeb9539726db8f9f1d76bfc515cd350395e38a0c29d8e282ca",
+      "afterSha256": "40effc574495c3de6248afa919412117325dc46f811faca7c9b9811059d03b3a"
+    },
+    {
+      "path": "backend/tests/helpers/universal-v1-prepared-work-order-fixture.ts",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "5e66b1ef4df6bab95b96604454f5d8948f3fd51d4a11059b163c7090b5c197f3"
+    },
+    {
+      "path": "backend/tests/helpers/universal-v1-synthetic-role-provisioning.ts",
+      "change": "modified",
+      "beforeSha256": "90363015e488183aada7904d28955848a996130c0b99b4bd94a94f8923a21348",
+      "afterSha256": "ccb2c36611a05ced7e125fd6718522d85ae29c9db6d1f455d6763c1d9fa54e2e"
+    },
+    {
+      "path": "backend/tests/system/universal-v1-fake-financial-command-outbox-authority-v13.pg.test.ts",
+      "change": "modified",
+      "beforeSha256": "674b47447cffccc40df043bc85f5f8e7501438c9180c06dabc15fa741ec817fa",
+      "afterSha256": "f2c31fa2b841f2de853423e993418608fea706597070121de3f5280a6f10ae51"
+    },
+    {
+      "path": "backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts",
+      "change": "modified",
+      "beforeSha256": "2478b77d34822d152fe8aea6cacc0069c331ce5b7a5c660f2f9f1b92847c7b83",
+      "afterSha256": "8b665bfa72175cbc931ec895be433c6a301d8ade4fa23d8602ad5e085c2d64b6"
+    },
+    {
+      "path": "backend/tests/unit/work-order-command-role-authority.test.ts",
+      "change": "modified",
+      "beforeSha256": "e53d9751a7c923bb2affc8915fa543d978383ddad02caf60b4f4a7ad317198be",
+      "afterSha256": "732f6ce262289f92ef37d68ca8a6f86341a419e05d2cca1dee40265bcf9d82d2"
+    }
+  ],
+  "logReceipts": [
+    {
+      "path": "financial-domain-units.log",
+      "sha256": "90257cd8bde3b1aebee198f194866be16a4776fc83dc6ca77a6cb0f3553bb119"
+    },
+    {
+      "path": "financial-domain-postgres.log",
+      "sha256": "347129a89d0668a007922b310e0b2358515dae2217504fdc6867a0f73891976b"
+    },
+    {
+      "path": "financial-domain-typecheck.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "financial-domain-compile.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "financial-domain-lint.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "patchSha256": "1775d7dc8dd8ffc43f3b36963bb8c47c0e711e7bd4018abe4c56c760af539512"
+}

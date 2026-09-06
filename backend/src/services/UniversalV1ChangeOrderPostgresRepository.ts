@@ -10,9 +10,7 @@ import {
   type UniversalV1ChangeOrderParty,
   UniversalV1ChangeOrderError,
 } from './UniversalV1ChangeOrderContracts.js';
-import {
-  deterministicUuid,
-} from './UniversalV1WorkOrderPostgresRepository.js';
+import { deterministicUuid } from './UniversalV1WorkOrderPostgresRepository.js';
 
 type StoredChangeOrderKind = UniversalV1ChangeOrderKind | 'SCHEDULE_AND_SCOPE';
 
@@ -291,6 +289,18 @@ function fail(
   message: string
 ): never {
   throw new UniversalV1ChangeOrderError(code, message);
+}
+
+function isExpiredAdjustmentAmendmentError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const candidate = error as { code?: unknown; message?: unknown };
+  return (
+    candidate.code === 'P0001' &&
+    typeof candidate.message === 'string' &&
+    candidate.message.startsWith(
+      'HXUV1-FSE-EXP-2: expired adjustment authority cannot materialize a Work Order amendment'
+    )
+  );
 }
 
 function number(value: string | number | null, code: string): number {
@@ -1308,8 +1318,7 @@ export class PostgresUniversalV1ChangeOrderRepository implements UniversalV1Chan
           (preparedWitness.proposal_id !== input.proposal_id ||
             preparedWitness.idempotency_key !== input.idempotency_key ||
             preparedWitness.actor_user_id !== actorId ||
-            Number(preparedWitness.expected_proposal_version) !==
-              input.expected_proposal_version ||
+            Number(preparedWitness.expected_proposal_version) !== input.expected_proposal_version ||
             Number(preparedWitness.expected_scope_version) !== input.expected_scope_version ||
             Number(preparedWitness.expected_amendment_version) !==
               input.expected_amendment_version ||
@@ -1681,8 +1690,7 @@ export class PostgresUniversalV1ChangeOrderRepository implements UniversalV1Chan
       if (preparedWitness) {
         if (
           preparedWitness.replacement_scope_hash !== scopeSha256 ||
-          Number(preparedWitness.replacement_scope_version) !==
-            input.expected_scope_version + 1 ||
+          Number(preparedWitness.replacement_scope_version) !== input.expected_scope_version + 1 ||
           Number(preparedWitness.replacement_customer_total_cents) !== customerTotal ||
           Number(preparedWitness.replacement_provider_payout_cents) !== providerPayout ||
           preparedWitness.replacement_currency !== context.currency ||
@@ -1772,24 +1780,10 @@ export class PostgresUniversalV1ChangeOrderRepository implements UniversalV1Chan
       if (isPriceChange) {
         const adjustmentOperationId = deterministicUuid(input.idempotency_key, 'adjust');
         const witness = await query<{ request_sha256: string; occurred_at: Date | string }>(
-          `INSERT INTO public.universal_v1_change_order_materialization_commands (
-             proposal_id, idempotency_key, request_sha256, actor_user_id,
-             work_order_id, task_id, task_draft_id, eligibility_decision_id,
-             base_scope_version_id, replacement_scope_version_id,
-             expected_proposal_version, expected_scope_version,
-             expected_amendment_version, expected_execution_version,
-             expected_financial_version, predecessor_event_id,
-             predecessor_operation_id, adjustment_operation_id,
-             customer_total_cents, provider_payout_cents, currency, occurred_at
-           ) VALUES (
-             $1,$2,
-             public.universal_v1_change_order_materialization_request_sha256(
-               $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17
-             ),
-             $3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-             GREATEST($21::timestamptz, $22::timestamptz + interval '1 millisecond')
-           )
-           RETURNING request_sha256, occurred_at`,
+          `SELECT request_sha256, occurred_at
+             FROM public.hxos_record_change_order_materialization_command_v1(
+               $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21
+             )`,
           [
             context.proposal_id,
             input.idempotency_key,
@@ -1812,7 +1806,6 @@ export class PostgresUniversalV1ChangeOrderRepository implements UniversalV1Chan
             providerPayout,
             context.currency,
             input.client_ts,
-            context.latest_financial_occurred_at,
           ]
         );
         const insertedWitness = witness.rows[0];
@@ -1989,20 +1982,21 @@ export class PostgresUniversalV1ChangeOrderRepository implements UniversalV1Chan
     adjustmentEventId: string,
     actorId: string
   ): Promise<MaterializedUniversalV1ChangeOrder> {
-    return this.database.serializableTransaction(async (query) => {
-      const prepared = phase.context;
-      await query(
-        `SELECT pg_advisory_xact_lock(
+    try {
+      return await this.database.serializableTransaction(async (query) => {
+        const prepared = phase.context;
+        await query(
+          `SELECT pg_advisory_xact_lock(
            hashtextextended('universal-v1-change-order-proposal:' || $1::text, 0)
          )`,
-        [prepared.proposalId]
-      );
-      await query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [
-        `fulfillment:${prepared.workOrderId}`,
-      ]);
+          [prepared.proposalId]
+        );
+        await query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [
+          `fulfillment:${prepared.workOrderId}`,
+        ]);
 
-      const replay = await query<FinalizationReplayRow>(
-        `SELECT amendment.id AS amendment_id,
+        const replay = await query<FinalizationReplayRow>(
+          `SELECT amendment.id AS amendment_id,
                 amendment.amendment_version,
                 amendment.change_order_id,
                 proposal.proposal_version,
@@ -2034,44 +2028,44 @@ export class PostgresUniversalV1ChangeOrderRepository implements UniversalV1Chan
           WHERE amendment.idempotency_key = $1
             AND amendment.change_order_id = $2::uuid
           FOR UPDATE OF amendment, proposal, scope, adjustment, execution`,
-        [phase.idempotencyKey, prepared.proposalId]
-      );
-      if (replay.rows[0]) {
-        const row = replay.rows[0];
-        if (
-          row.materialized_by !== actorId ||
-          row.adjustment_event_id !== adjustmentEventId ||
-          row.scope_version_id !== prepared.scopeVersionId ||
-          Number(row.scope_version) !== prepared.scopeVersion ||
-          Number(row.expected_financial_version) !== prepared.expectedFinancialVersion ||
-          Number(row.adjustment_expected_version) !== prepared.expectedFinancialVersion + 1 ||
-          row.adjustment_event_kind !== 'ADJUSTMENT_AUTHORIZED' ||
-          row.adjustment_status !== 'SUCCEEDED' ||
-          row.adjustment_provider_kind !== 'FAKE' ||
-          row.execution_actor_user_id !== actorId ||
-          !/^[a-f0-9]{64}$/u.test(row.request_sha256)
-        ) {
-          return fail(
-            'CHANGE_ORDER_IDEMPOTENCY_CONFLICT',
-            'The completed price amendment does not match the exact prepared command.'
-          );
+          [phase.idempotencyKey, prepared.proposalId]
+        );
+        if (replay.rows[0]) {
+          const row = replay.rows[0];
+          if (
+            row.materialized_by !== actorId ||
+            row.adjustment_event_id !== adjustmentEventId ||
+            row.scope_version_id !== prepared.scopeVersionId ||
+            Number(row.scope_version) !== prepared.scopeVersion ||
+            Number(row.expected_financial_version) !== prepared.expectedFinancialVersion ||
+            Number(row.adjustment_expected_version) !== prepared.expectedFinancialVersion + 1 ||
+            row.adjustment_event_kind !== 'ADJUSTMENT_AUTHORIZED' ||
+            row.adjustment_status !== 'SUCCEEDED' ||
+            row.adjustment_provider_kind !== 'FAKE' ||
+            row.execution_actor_user_id !== actorId ||
+            !/^[a-f0-9]{64}$/u.test(row.request_sha256)
+          ) {
+            return fail(
+              'CHANGE_ORDER_IDEMPOTENCY_CONFLICT',
+              'The completed price amendment does not match the exact prepared command.'
+            );
+          }
+          return {
+            amendment_id: row.amendment_id,
+            amendment_version: Number(row.amendment_version),
+            proposal_id: row.change_order_id,
+            scope_version_id: row.scope_version_id,
+            scope_version: Number(row.scope_version),
+            adjustment_event_id: row.adjustment_event_id,
+            provider_kind: 'FAKE',
+            replayed: true,
+            payment_creation_performed: false,
+            hard_assignment_created: false,
+          };
         }
-        return {
-          amendment_id: row.amendment_id,
-          amendment_version: Number(row.amendment_version),
-          proposal_id: row.change_order_id,
-          scope_version_id: row.scope_version_id,
-          scope_version: Number(row.scope_version),
-          adjustment_event_id: row.adjustment_event_id,
-          provider_kind: 'FAKE',
-          replayed: true,
-          payment_creation_performed: false,
-          hard_assignment_created: false,
-        };
-      }
 
-      const authority = await query<PriceFinalizationRow>(
-        `SELECT work_order.id AS work_order_id,
+        const authority = await query<PriceFinalizationRow>(
+          `SELECT work_order.id AS work_order_id,
                 task.id AS task_id,
                 proposal.id AS proposal_id,
                 base_scope.id AS base_scope_version_id,
@@ -2274,43 +2268,43 @@ export class PostgresUniversalV1ChangeOrderRepository implements UniversalV1Chan
                         customer_approval, provider_approval,
                         customer_approval_actor, provider_approval_actor,
                         execution, adjustment`,
-        [
-          prepared.proposalId,
-          phase.idempotencyKey,
-          adjustmentEventId,
-          actorId,
-          phase.requestSha256,
-        ]
-      );
-      const current = authority.rows[0];
-      if (!current) {
-        return fail(
-          'CHANGE_ORDER_AUTHORITY_REVOKED',
-          'The exact prepared price amendment cannot be finalized from current authority.'
+          [
+            prepared.proposalId,
+            phase.idempotencyKey,
+            adjustmentEventId,
+            actorId,
+            phase.requestSha256,
+          ]
         );
-      }
+        const current = authority.rows[0];
+        if (!current) {
+          return fail(
+            'CHANGE_ORDER_AUTHORITY_REVOKED',
+            'The exact prepared price amendment cannot be finalized from current authority.'
+          );
+        }
 
-      const nextAmendmentVersion = Number(current.latest_amendment_version ?? 0) + 1;
-      const requestSha256 = await databaseRequestHash(
-        query,
-        `SELECT public.universal_v1_change_amendment_request_sha256(
+        const nextAmendmentVersion = Number(current.latest_amendment_version ?? 0) + 1;
+        const requestSha256 = await databaseRequestHash(
+          query,
+          `SELECT public.universal_v1_change_amendment_request_sha256(
            $1::uuid, $2::integer, $3::uuid, $4::uuid,
            $5::uuid, $6::uuid, $7::integer, $8::uuid, $9::text
          ) AS request_sha256`,
-        [
-          current.work_order_id,
-          nextAmendmentVersion,
-          current.latest_amendment_id,
-          current.proposal_id,
-          current.replacement_scope_version_id,
-          adjustmentEventId,
-          prepared.expectedFinancialVersion,
-          actorId,
-          phase.idempotencyKey,
-        ]
-      );
-      const taskUpdate = await query<{ worker_id: string | null }>(
-        `UPDATE tasks
+          [
+            current.work_order_id,
+            nextAmendmentVersion,
+            current.latest_amendment_id,
+            current.proposal_id,
+            current.replacement_scope_version_id,
+            adjustmentEventId,
+            prepared.expectedFinancialVersion,
+            actorId,
+            phase.idempotencyKey,
+          ]
+        );
+        const taskUpdate = await query<{ worker_id: string | null }>(
+          `UPDATE tasks
             SET title = $2,
                 description = $3,
                 requirements = $4,
@@ -2327,55 +2321,55 @@ export class PostgresUniversalV1ChangeOrderRepository implements UniversalV1Chan
             AND automation_classification = 'CONTROLLED_TEST'
             AND universal_payment_posture = 'PAYMENT_CREATION_FROZEN'
           RETURNING worker_id`,
-        [
-          current.task_id,
-          current.replacement_title,
-          current.replacement_description,
-          current.replacement_requirements,
-          current.customer_total_cents,
-          current.provider_payout_cents,
-          current.replacement_scope_hash,
-          current.replacement_scope_version_id,
-          current.base_scope_version_id,
-        ]
-      );
-      if (taskUpdate.rowCount !== 1 || taskUpdate.rows[0]?.worker_id !== null) {
-        return fail(
-          'CHANGE_ORDER_HARD_ASSIGNMENT_FORBIDDEN',
-          'The exact task scope could not advance without hard assignment.'
+          [
+            current.task_id,
+            current.replacement_title,
+            current.replacement_description,
+            current.replacement_requirements,
+            current.customer_total_cents,
+            current.provider_payout_cents,
+            current.replacement_scope_hash,
+            current.replacement_scope_version_id,
+            current.base_scope_version_id,
+          ]
         );
-      }
+        if (taskUpdate.rowCount !== 1 || taskUpdate.rows[0]?.worker_id !== null) {
+          return fail(
+            'CHANGE_ORDER_HARD_ASSIGNMENT_FORBIDDEN',
+            'The exact task scope could not advance without hard assignment.'
+          );
+        }
 
-      const amendment = await query<{ id: string }>(
-        `INSERT INTO task_work_order_amendments (
+        const amendment = await query<{ id: string }>(
+          `INSERT INTO task_work_order_amendments (
            work_order_id, amendment_version, supersedes_amendment_id,
            change_order_id, scope_version_id, adjustment_event_id,
            expected_financial_version, idempotency_key, request_sha256, materialized_by
          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
          RETURNING id`,
-        [
-          current.work_order_id,
-          nextAmendmentVersion,
-          current.latest_amendment_id,
-          current.proposal_id,
-          current.replacement_scope_version_id,
-          adjustmentEventId,
-          prepared.expectedFinancialVersion,
-          phase.idempotencyKey,
-          requestSha256,
-          actorId,
-        ]
-      );
-      const amendmentId = amendment.rows[0]?.id;
-      if (!amendmentId) {
-        return fail(
-          'CHANGE_ORDER_MATERIALIZATION_FAILED',
-          'The immutable price amendment was not created.'
+          [
+            current.work_order_id,
+            nextAmendmentVersion,
+            current.latest_amendment_id,
+            current.proposal_id,
+            current.replacement_scope_version_id,
+            adjustmentEventId,
+            prepared.expectedFinancialVersion,
+            phase.idempotencyKey,
+            requestSha256,
+            actorId,
+          ]
         );
-      }
-      const executionKey = `${phase.idempotencyKey}:execution`;
-      const execution = await query<{ id: string }>(
-        `INSERT INTO task_work_order_execution_facts (
+        const amendmentId = amendment.rows[0]?.id;
+        if (!amendmentId) {
+          return fail(
+            'CHANGE_ORDER_MATERIALIZATION_FAILED',
+            'The immutable price amendment was not created.'
+          );
+        }
+        const executionKey = `${phase.idempotencyKey}:execution`;
+        const execution = await query<{ id: string }>(
+          `INSERT INTO task_work_order_execution_facts (
            work_order_id, task_id, scope_version_id, execution_version,
            supersedes_fact_id, state, transition_kind, completion_fact_id,
            work_order_amendment_id, actor_role, actor_user_id, reason,
@@ -2386,38 +2380,47 @@ export class PostgresUniversalV1ChangeOrderRepository implements UniversalV1Chan
              $8,$1,'APPLY_AMENDMENT',$6,$10,$3,NULL,$7,$9,$11::timestamptz,NULL
            ),$11::timestamptz,'universal-v1-work-order-execution-1.0.0'
          ) RETURNING id`,
-        [
-          current.work_order_id,
-          current.task_id,
-          current.replacement_scope_version_id,
-          Number(current.execution_version) + 1,
-          current.execution_fact_id,
-          current.execution_state,
-          amendmentId,
-          actorId,
-          executionKey,
-          Number(current.execution_version),
-          prepared.occurredAt,
-        ]
-      );
-      if (!execution.rows[0]?.id) {
+          [
+            current.work_order_id,
+            current.task_id,
+            current.replacement_scope_version_id,
+            Number(current.execution_version) + 1,
+            current.execution_fact_id,
+            current.execution_state,
+            amendmentId,
+            actorId,
+            executionKey,
+            Number(current.execution_version),
+            prepared.occurredAt,
+          ]
+        );
+        if (!execution.rows[0]?.id) {
+          return fail(
+            'CHANGE_ORDER_MATERIALIZATION_FAILED',
+            'The immutable price-amendment execution fact was not created.'
+          );
+        }
+        return {
+          amendment_id: amendmentId,
+          amendment_version: nextAmendmentVersion,
+          proposal_id: current.proposal_id,
+          scope_version_id: current.replacement_scope_version_id,
+          scope_version: Number(current.replacement_scope_version),
+          adjustment_event_id: adjustmentEventId,
+          provider_kind: 'FAKE',
+          replayed: false,
+          payment_creation_performed: false,
+          hard_assignment_created: false,
+        };
+      });
+    } catch (error) {
+      if (isExpiredAdjustmentAmendmentError(error)) {
         return fail(
-          'CHANGE_ORDER_MATERIALIZATION_FAILED',
-          'The immutable price-amendment execution fact was not created.'
+          'CHANGE_ORDER_AUTHORITY_REVOKED',
+          'The successful adjustment expired before the price amendment could materialize.'
         );
       }
-      return {
-        amendment_id: amendmentId,
-        amendment_version: nextAmendmentVersion,
-        proposal_id: current.proposal_id,
-        scope_version_id: current.replacement_scope_version_id,
-        scope_version: Number(current.replacement_scope_version),
-        adjustment_event_id: adjustmentEventId,
-        provider_kind: 'FAKE',
-        replayed: false,
-        payment_creation_performed: false,
-        hard_assignment_created: false,
-      };
-    });
+      throw error;
+    }
   }
 }

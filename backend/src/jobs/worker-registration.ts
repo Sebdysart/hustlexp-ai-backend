@@ -84,8 +84,10 @@ const notificationHandlers: Record<string, JobHandler> = {
   'email.send_requested': processEmailJob,
   'push.send_requested': async (job) => (await import('./push-worker.js')).processPushJob(job),
   'sms.send_requested': async (job) => (await import('./sms-worker.js')).processSMSJob(job),
-  'task.instant_available': async (job) => (await import('./instant-notification-worker.js')).processInstantNotificationJob(job),
-  'task.progress_updated': async (job) => (await import('./realtime-worker.js')).processRealtimeJob(job),
+  'task.instant_available': async (job) =>
+    (await import('./instant-notification-worker.js')).processInstantNotificationJob(job),
+  'task.progress_updated': async (job) =>
+    (await import('./realtime-worker.js')).processRealtimeJob(job),
   'escrow.funded': async (job) => notifyEscrow(job, 'funded'),
   'escrow.refunded': async (job) => notifyEscrow(job, 'refunded'),
   'escrow.payment_failed': notifyPaymentFailed,
@@ -110,22 +112,33 @@ async function processNotificationJob(job: Job): Promise<void> {
 }
 
 const paymentHandlers: Record<string, JobHandler> = {
-  'escrow.release_requested': async (job) => (await import('./escrow-action-worker.js')).processEscrowActionJob(job),
-  'escrow.released': async (job) => (await import('./escrow-release-reconciliation-worker.js')).processEscrowReleaseReconciliationJob(job),
+  'escrow.release_requested': async (job) =>
+    (await import('./escrow-action-worker.js')).processEscrowActionJob(job),
+  'escrow.released': async (job) =>
+    (
+      await import('./escrow-release-reconciliation-worker.js')
+    ).processEscrowReleaseReconciliationJob(job),
   'escrow.refund_requested': async (job) => {
-    const action = (job.data.payload as { financial_action?: unknown } | undefined)?.financial_action;
+    const action = (job.data.payload as { financial_action?: unknown } | undefined)
+      ?.financial_action;
     if (action === 'cancel_pending_payment_intent') {
-      await (await import('./dispatch-expiry-payment-cancel-worker.js'))
-        .processDispatchExpiryPaymentCancelJob(job as never);
+      await (
+        await import('./dispatch-expiry-payment-cancel-worker.js')
+      ).processDispatchExpiryPaymentCancelJob(job as never);
       return;
     }
     await (await import('./escrow-action-worker.js')).processEscrowActionJob(job);
   },
-  'escrow.partial_refund_requested': async (job) => (await import('./escrow-action-worker.js')).processEscrowActionJob(job),
-  'escrow.completion_release_requested': async (job) => (await import('./completion-release-worker.js')).processCompletionReleaseJob(job),
-  'stripe.event_received': async (job) => (await import('./stripe-event-dispatcher.js')).processStripeEventDispatchJob(job),
-  'task.instant_matching_started': async (job) => (await import('./instant-matching-worker.js')).processInstantMatchingJob(job),
-  'task.instant_surge_evaluate': async (job) => (await import('./instant-surge-worker.js')).processInstantSurgeJob(job),
+  'escrow.partial_refund_requested': async (job) =>
+    (await import('./escrow-action-worker.js')).processEscrowActionJob(job),
+  'escrow.completion_release_requested': async (job) =>
+    (await import('./completion-release-worker.js')).processCompletionReleaseJob(job),
+  'stripe.event_received': async (job) =>
+    (await import('./stripe-event-dispatcher.js')).processStripeEventDispatchJob(job),
+  'task.instant_matching_started': async (job) =>
+    (await import('./instant-matching-worker.js')).processInstantMatchingJob(job),
+  'task.instant_surge_evaluate': async (job) =>
+    (await import('./instant-surge-worker.js')).processInstantSurgeJob(job),
 };
 
 async function processPaymentQueueJob(job: Job): Promise<void> {
@@ -142,9 +155,12 @@ async function processPaymentQueueJob(job: Job): Promise<void> {
 }
 
 const trustHandlers: Record<string, JobHandler> = {
-  'trust.dispute_resolved.worker': async (job) => (await import('./trust-worker.js')).processTrustJob(job),
-  'trust.dispute_resolved.poster': async (job) => (await import('./trust-worker.js')).processTrustJob(job),
-  'fraud.scan_requested': async (job) => (await import('./fraud-detection-worker.js')).processFraudDetectionJob(job),
+  'trust.dispute_resolved.worker': async (job) =>
+    (await import('./trust-worker.js')).processTrustJob(job),
+  'trust.dispute_resolved.poster': async (job) =>
+    (await import('./trust-worker.js')).processTrustJob(job),
+  'fraud.scan_requested': async (job) =>
+    (await import('./fraud-detection-worker.js')).processFraudDetectionJob(job),
 };
 
 async function processTrustQueueJob(job: Job): Promise<void> {
@@ -163,37 +179,99 @@ function addWorker(active: Worker[], worker: Worker): void {
 }
 
 export function registerWorkers(active: Worker[]): void {
-  addWorker(active, createWorker('exports', processExportJob, {
-    concurrency: 5, removeOnComplete: { count: 100, age: 3600 }, removeOnFail: { age: 86400 },
-  }));
-  addWorker(active, createWorker('user_notifications', processNotificationJob, {
-    concurrency: 10, removeOnComplete: { count: 1000, age: 3600 }, removeOnFail: { age: 86400 },
-  }));
-  addWorker(active, createWorker('critical_payments', processPaymentQueueJob, {
-    concurrency: 1, removeOnComplete: { count: 1000, age: 86400 }, removeOnFail: { age: 7 * 86400 },
-  }));
-  addWorker(active, createWorker('critical_trust', processTrustQueueJob, {
-    concurrency: 3, removeOnComplete: { count: 500, age: 43200 }, removeOnFail: { age: 3 * 86400 },
-  }));
-  addWorker(active, createWorker('maintenance', async (job) => (await import('./maintenance-worker.js')).processMaintenanceJob(job), {
-    concurrency: 1, removeOnComplete: { count: 100, age: 86400 }, removeOnFail: { age: 7 * 86400 },
-  }));
-  addWorker(active, createWorker('tax_reporting', async (job) => (await import('./tax-reporting-worker.js')).processTaxReportingJob(job), {
-    concurrency: 1, removeOnComplete: { count: 50, age: 7 * 86400 }, removeOnFail: { age: 30 * 86400 },
-  }));
-  addWorker(active, createWorker('biometric_analysis', processBiometricAnalysisJob, {
-    concurrency: 3, removeOnComplete: { count: 500, age: 43200 }, removeOnFail: { age: 3 * 86400 },
-  }));
-  addWorker(active, createWorker('expertise_recalc', processExpertiseRecalcJob, {
-    concurrency: 1, removeOnComplete: { count: 10, age: 86400 }, removeOnFail: { age: 7 * 86400 },
-  }));
-  addWorker(active, createWorker('xp_tax_reminders', processXPTaxReminderJob, {
-    concurrency: 1, removeOnComplete: { count: 10, age: 86400 }, removeOnFail: { age: 7 * 86400 },
-  }));
-  addWorker(active, createWorker('synthetic_finance', async (job) => {
-    await (await import('./synthetic-financial-worker.js')).processSyntheticFinancialJob(job);
-  }, {
-    concurrency: 1, removeOnComplete: { count: 1000, age: 86400 }, removeOnFail: { age: 7 * 86400 },
-  }));
+  addWorker(
+    active,
+    createWorker('exports', processExportJob, {
+      concurrency: 5,
+      removeOnComplete: { count: 100, age: 3600 },
+      removeOnFail: { age: 86400 },
+    })
+  );
+  addWorker(
+    active,
+    createWorker('user_notifications', processNotificationJob, {
+      concurrency: 10,
+      removeOnComplete: { count: 1000, age: 3600 },
+      removeOnFail: { age: 86400 },
+    })
+  );
+  addWorker(
+    active,
+    createWorker('critical_payments', processPaymentQueueJob, {
+      concurrency: 1,
+      removeOnComplete: { count: 1000, age: 86400 },
+      removeOnFail: { age: 7 * 86400 },
+    })
+  );
+  addWorker(
+    active,
+    createWorker('critical_trust', processTrustQueueJob, {
+      concurrency: 3,
+      removeOnComplete: { count: 500, age: 43200 },
+      removeOnFail: { age: 3 * 86400 },
+    })
+  );
+  addWorker(
+    active,
+    createWorker(
+      'maintenance',
+      async (job) => (await import('./maintenance-worker.js')).processMaintenanceJob(job),
+      {
+        concurrency: 1,
+        removeOnComplete: { count: 100, age: 86400 },
+        removeOnFail: { age: 7 * 86400 },
+      }
+    )
+  );
+  addWorker(
+    active,
+    createWorker(
+      'tax_reporting',
+      async (job) => (await import('./tax-reporting-worker.js')).processTaxReportingJob(job),
+      {
+        concurrency: 1,
+        removeOnComplete: { count: 50, age: 7 * 86400 },
+        removeOnFail: { age: 30 * 86400 },
+      }
+    )
+  );
+  addWorker(
+    active,
+    createWorker('biometric_analysis', processBiometricAnalysisJob, {
+      concurrency: 3,
+      removeOnComplete: { count: 500, age: 43200 },
+      removeOnFail: { age: 3 * 86400 },
+    })
+  );
+  addWorker(
+    active,
+    createWorker('expertise_recalc', processExpertiseRecalcJob, {
+      concurrency: 1,
+      removeOnComplete: { count: 10, age: 86400 },
+      removeOnFail: { age: 7 * 86400 },
+    })
+  );
+  addWorker(
+    active,
+    createWorker('xp_tax_reminders', processXPTaxReminderJob, {
+      concurrency: 1,
+      removeOnComplete: { count: 10, age: 86400 },
+      removeOnFail: { age: 7 * 86400 },
+    })
+  );
+  addWorker(
+    active,
+    createWorker(
+      'synthetic_finance',
+      async (job) => {
+        return (await import('./synthetic-financial-worker.js')).processSyntheticFinancialJob(job);
+      },
+      {
+        concurrency: 1,
+        removeOnComplete: { count: -1 },
+        removeOnFail: { count: -1 },
+      }
+    )
+  );
   log.info('All BullMQ workers registered');
 }

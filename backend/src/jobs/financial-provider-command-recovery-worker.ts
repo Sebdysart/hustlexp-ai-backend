@@ -140,6 +140,10 @@ export interface FinancialProviderCommandRecoveryRunResult {
   readonly persistenceErrors: number;
 }
 
+export interface LegacyFakeFinancialExpiryCompensationPort {
+  runOnce(limit?: number): Promise<unknown>;
+}
+
 export interface ForegroundFinancialProviderCommandDispatchPort {
   /**
    * Must establish fresh lifecycle reservation/authorization and bind the
@@ -785,7 +789,8 @@ export class NonproductionFakeFinancialCommandRecoveryWorker {
     private readonly repository: FinancialProviderCommandRecoveryRepository,
     private readonly executor: FakeFinancialCommandRecoveryExecutor,
     private readonly options: NonproductionFakeFinancialCommandRecoveryWorkerOptions,
-    private readonly authorize: FakeFinanceAuthorizer = assertNonproductionFakeFinanceAuthorized
+    private readonly authorize: FakeFinanceAuthorizer = assertNonproductionFakeFinanceAuthorized,
+    private readonly legacyExpiryCompensation?: LegacyFakeFinancialExpiryCompensationPort
   ) {
     if (
       !NONPRODUCTION_ENVIRONMENTS.has(options.environment) ||
@@ -837,6 +842,19 @@ export class NonproductionFakeFinancialCommandRecoveryWorker {
       persistenceErrors: 0,
     };
     const processedCommandIds = new Set<string>();
+
+    // Migration v9 can expose raw-only pre-expiry successes. Contain those
+    // through their sealed PREPARED -> DISPATCH_ATTEMPTED -> OUTCOME_OBSERVED
+    // fake-only rail before any source command is allowed to become terminal.
+    if (this.legacyExpiryCompensation) {
+      try {
+        this.authorize({ component: 'worker' });
+        await this.legacyExpiryCompensation.runOnce(this.batchLimit);
+      } catch {
+        mutable.persistenceErrors += 1;
+        return mutable;
+      }
+    }
 
     for (let index = 0; index < this.batchLimit; index += 1) {
       let claims: readonly FinancialProviderCommandRecoveryClaim[];
@@ -978,8 +996,9 @@ export function startNonproductionFakeFinancialCommandRecoveryPoller(
   const workerId = options.workerId ?? `fake-financial-recovery:${randomUUID()}`;
   let stopped = false;
   let inFlight: Promise<void> | null = null;
+  let hasSuccessfulTick = false;
   let consecutiveFailures = 0;
-  let lastFailureCode: string | null = null;
+  let lastFailureCode: string | null = 'STARTUP_PENDING';
 
   const tick = (): Promise<void> => {
     if (stopped || inFlight) return inFlight ?? Promise.resolve();
@@ -996,6 +1015,7 @@ export function startNonproductionFakeFinancialCommandRecoveryPoller(
         if (result.persistenceErrors > 0) {
           throw new Error('FAKE_FINANCIAL_RECOVERY_PERSISTENCE_ERRORS');
         }
+        hasSuccessfulTick = true;
         consecutiveFailures = 0;
         lastFailureCode = null;
       })
@@ -1025,7 +1045,11 @@ export function startNonproductionFakeFinancialCommandRecoveryPoller(
     workerId,
     interval,
     health: () => ({
-      status: stopped ? 'stopped' : consecutiveFailures > 0 ? 'degraded' : 'healthy',
+      status: stopped
+        ? 'stopped'
+        : !hasSuccessfulTick || consecutiveFailures > 0
+          ? 'degraded'
+          : 'healthy',
       inFlight: inFlight !== null,
       consecutiveFailures,
       lastFailureCode,

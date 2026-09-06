@@ -1,3 +1,4 @@
+import { readFinancialReadinessCustodyViolations } from '../../jobs/financial-readiness-custody.js';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -5,9 +6,11 @@ import path from 'node:path';
 import type { BuildIdentity } from '../../buildIdentity.js';
 import type { QueryFn } from '../../db.js';
 import {
-  releaseManifestDigest,
-  type ReleaseManifestEvidence,
-} from '../../releaseManifest.js';
+  configuredWorkOrderCommandRoles,
+  verifyWorkOrderCommandAuthorityInCurrentSnapshot,
+  type WorkOrderCommandRoleNames,
+} from '../../jobs/work-order-command-role-authority.js';
+import { releaseManifestDigest, type ReleaseManifestEvidence } from '../../releaseManifest.js';
 import { REQUIRED_MIGRATION_FILES } from '../../jobs/engine-automation-migration-files.js';
 import { NONPRODUCTION_FAKE_FINANCIAL_MIGRATION_FILES } from '../../jobs/nonproduction-financial-migration.js';
 import {
@@ -21,6 +24,7 @@ export type NonproductionFinancialBootstrapReadinessStatus =
   | 'ready'
   | 'unauthorized'
   | 'bootstrap_missing'
+  | 'database_identity_mismatch'
   | 'schema_evidence_mismatch'
   | 'database_authority_violation'
   | 'attestation_unavailable';
@@ -64,6 +68,26 @@ interface AppliedMigrationEvidenceRow extends Record<string, unknown> {
   applied_sha256: string | null;
 }
 
+interface WorkOrderBootstrapAuthorityEvidenceRow extends Record<string, unknown> {
+  session_database_role: unknown;
+  target_authority_id: unknown;
+  authority_version: unknown;
+  target_database_name: unknown;
+  observed_database_name: unknown;
+  environment: unknown;
+  release_manifest_sha256: unknown;
+  v13_sql_sha256: unknown;
+  fake_financial_operations_relation: unknown;
+  fake_financial_operation_events_relation: unknown;
+  evidence_row_count: number | string;
+  evidence_v12_sha256: string | null;
+  evidence_ordinal146_sha256: string | null;
+  seal_evidence_row_count: number | string;
+  seal_evidence_sha256: string | null;
+  seal_evidence_ordinal146_sha256: string | null;
+  seal_evidence_v12_sha256: string | null;
+}
+
 interface CriticalSchemaIdentityEvidence extends Record<string, unknown> {
   identityName: string;
   sha256: string;
@@ -78,8 +102,26 @@ interface DatabaseAuthorityViolationRow extends Record<string, unknown> {
   violation_code: string;
 }
 
+interface PostgreSqlVersionRow extends Record<string, unknown> {
+  server_version_num: unknown;
+}
+
+interface DatabaseIdentityRow extends Record<string, unknown> {
+  server_encoding: unknown;
+  database_encoding: unknown;
+  locale_provider: unknown;
+  lc_collate: unknown;
+  lc_ctype: unknown;
+  icu_locale: unknown;
+  icu_rules: unknown;
+  recorded_collation_version: unknown;
+  actual_collation_version: unknown;
+  is_template: unknown;
+  allows_connections: unknown;
+}
+
 export interface NonproductionFinancialReadinessDatabase {
-  transaction: <T>(fn: (query: QueryFn) => Promise<T>) => Promise<T>;
+  readOnlyAttestationTransaction: <T>(fn: (query: QueryFn) => Promise<T>) => Promise<T>;
 }
 
 interface ReadinessOptions {
@@ -95,6 +137,20 @@ interface ReadinessOptions {
 }
 
 const SHA256 = /^[0-9a-f]{64}$/u;
+const SUPPORTED_POSTGRESQL_MAJOR = 16;
+const SUPPORTED_DATABASE_IDENTITY = Object.freeze({
+  serverEncoding: 'UTF8',
+  databaseEncoding: 'UTF8',
+  localeProvider: 'c',
+  lcCollate: 'en_US.utf8',
+  lcCtype: 'en_US.utf8',
+  icuLocale: null,
+  icuRules: null,
+  recordedCollationVersion: null,
+  actualCollationVersion: null,
+  isTemplate: false,
+  allowsConnections: true,
+});
 const CRITICAL_FINANCIAL_MIGRATIONS = Object.freeze([
   Object.freeze({
     migrationName: '20260916_provider_event_inbox_v1',
@@ -144,6 +200,34 @@ const CRITICAL_FINANCIAL_MIGRATIONS = Object.freeze([
     migrationName: '20261002_universal_v1_dispute_fake_release_gate_v8',
     fileName: '20261002_universal_v1_dispute_fake_release_gate_v8.sql',
   }),
+  Object.freeze({
+    migrationName: '20261010_universal_v1_financial_security_event_expiry_v1',
+    fileName: '20261010_universal_v1_financial_security_event_expiry_v1.sql',
+  }),
+  Object.freeze({
+    migrationName: '20261010_universal_v1_fake_financial_expiry_v9',
+    fileName: '20261010_universal_v1_fake_financial_expiry_v9.sql',
+  }),
+  Object.freeze({
+    migrationName: '20261011_universal_v1_fake_financial_expiry_recovery_v10',
+    fileName: '20261011_universal_v1_fake_financial_expiry_recovery_v10.sql',
+  }),
+  Object.freeze({
+    migrationName: '20261013_nonproduction_runtime_insert_authority_v1',
+    fileName: '20261013_nonproduction_runtime_insert_authority_v1.sql',
+  }),
+  Object.freeze({
+    migrationName: '20261014_universal_v1_work_order_command_ports_v1',
+    fileName: '20261014_universal_v1_work_order_command_ports_v1.sql',
+  }),
+  Object.freeze({
+    migrationName: '20261015_universal_v1_work_order_fake_financial_authority_hardening_v12',
+    fileName: '20261015_universal_v1_work_order_fake_financial_authority_hardening_v12.sql',
+  }),
+  Object.freeze({
+    migrationName: '20261015_universal_v1_work_order_bootstrap_seal_v1',
+    fileName: '20261015_universal_v1_work_order_bootstrap_seal_v1.sql',
+  }),
 ] as const);
 const CRITICAL_RELATION_NAMES = Object.freeze([
   'applied_migrations',
@@ -156,9 +240,21 @@ const CRITICAL_RELATION_NAMES = Object.freeze([
   'hxos_fake_financial_schema_evidence_v6',
   'hxos_fake_financial_schema_evidence_v7',
   'hxos_fake_financial_schema_evidence_v8',
+  'hxos_fake_financial_schema_evidence_v9',
+  'hxos_fake_financial_schema_evidence_v10',
+  'hxos_fake_financial_schema_evidence_v11',
+  'hxos_fake_financial_schema_evidence_v12',
+  'hxos_work_order_bootstrap_seal_evidence_v1',
+  'hxos_universal_v1_work_order_target_activation_barrier_v1',
   'hxos_nonproduction_bootstrap_completion_v1',
   'hxos_fake_financial_operations_v1',
   'hxos_fake_financial_operation_events_v1',
+  'hxos_fake_financial_legacy_expiry_dispositions_v9',
+  'hxos_fake_financial_legacy_expiry_compensation_commands_v9',
+  'hxos_fake_financial_legacy_expiry_compensation_attempts_v9',
+  'hxos_fake_financial_legacy_expiry_compensation_outcomes_v9',
+  'hxos_fake_financial_legacy_expiry_compensations_v9',
+  'hxos_fake_financial_legacy_expiry_noncompensable_facts_v10',
   'provider_event_inbox_observations',
   'provider_event_inbox_receipts',
   'financial_provider_command_journal',
@@ -180,25 +276,18 @@ const CRITICAL_RELATION_NAMES = Object.freeze([
   'universal_v1_change_order_recovery_leases',
   'universal_v1_change_order_compensation_commands',
   'universal_v1_change_order_recovery_terminal_facts',
+  'task_financial_security_events',
+  'task_reconciliation_facts',
+  'task_work_orders',
+  'task_work_order_amendments',
+  'task_location_access_log',
 ] as const);
-const READ_ONLY_ATTESTATION_RELATION_NAMES = Object.freeze([
-  'applied_migrations',
-  'hxos_fake_financial_schema_evidence_v1',
-  'hxos_fake_financial_schema_evidence_v2',
-  'hxos_fake_financial_schema_evidence_v3',
-  'hxos_fake_financial_schema_evidence_v4',
-  'hxos_fake_financial_schema_evidence_v5',
-  'hxos_fake_financial_schema_evidence_v6',
-  'hxos_fake_financial_schema_evidence_v7',
-  'hxos_fake_financial_schema_evidence_v8',
-  'hxos_nonproduction_bootstrap_completion_v1',
-  'universal_v1_fake_terminal_plan_steps_v1',
-  'universal_v1_change_order_recovery_leases',
-  'universal_v1_change_order_compensation_commands',
-  'universal_v1_change_order_recovery_terminal_facts',
-  'provider_financial_observation_normalizations',
-  'provider_financial_observation_backlog_v1',
+const SECURITY_DEFINER_DEPENDENCY_FUNCTION_SIGNATURES = Object.freeze([
+  'public.digest(text,text)',
+  'public.digest(bytea,text)',
 ] as const);
+const RUNTIME_EXPRESSION_DEPENDENCY_FUNCTION_SIGNATURES =
+  SECURITY_DEFINER_DEPENDENCY_FUNCTION_SIGNATURES;
 const CRITICAL_FUNCTION_NAMES = Object.freeze([
   'hxos_reject_fake_financial_mutation_v1',
   'reject_provider_event_inbox_mutation',
@@ -229,6 +318,7 @@ const CRITICAL_FUNCTION_NAMES = Object.freeze([
   'universal_v1_reconciliation_snapshot_sha256_v1',
   'validate_universal_v1_fake_reconciliation_bridge',
   'require_universal_v1_fake_reconciliation_bridge',
+  'require_universal_v1_double_entry_ledger_v1',
   'reject_universal_v1_fake_terminal_authority_mutation',
   'universal_v1_change_order_materialization_request_sha256',
   'enforce_universal_v1_change_order_materialization_command',
@@ -253,6 +343,42 @@ const CRITICAL_FUNCTION_NAMES = Object.freeze([
   'record_universal_v1_change_order_no_effect_recovery_v1',
   'universal_v1_change_order_recovery_resolution_v1',
   'enforce_universal_v1_dispute_release_gate_v1',
+  'universal_v1_financial_security_is_current_v1',
+  'universal_v1_effective_financial_security_expiry_v1',
+  'enforce_universal_v1_work_order_financial_expiry_v1',
+  'enforce_universal_v1_amendment_financial_expiry_v1',
+  'enforce_universal_v1_prepared_positive_expiry_v1',
+  'enforce_universal_v1_dispatch_positive_expiry_v1',
+  'enforce_universal_v1_location_access_expiry_v1',
+  'validate_fake_financial_legacy_expiry_disposition_v9',
+  'legacy_fake_expiry_compensation_operation_id_v9',
+  'prepare_fake_financial_legacy_expiry_compensation_v9',
+  'prepare_fake_financial_legacy_expiry_attempt_v9',
+  'validate_fake_financial_legacy_expiry_outcome_v9',
+  'validate_fake_financial_legacy_expiry_compensation_v9',
+  'require_legacy_expiry_compensation_before_terminal_outcome_v9',
+  'enforce_universal_v1_fake_expiry_bridge_v9',
+  'enforce_universal_v1_change_order_predecessor_expiry_v9',
+  'enforce_universal_v1_terminal_intent_expiry_v9',
+  'validate_fake_financial_legacy_expiry_noncompensable_v10',
+  'hxos_prepare_legacy_expiry_compensation_v10',
+  'hxos_record_legacy_expiry_compensation_attempt_v10',
+  'hxos_finalize_legacy_expiry_compensation_v10',
+  'require_legacy_expiry_terminal_before_outcome_v10',
+  'hxos_record_financial_provider_command_v1',
+  'hxos_prepare_universal_v1_financial_command_v1',
+  'hxos_record_financial_provider_dispatch_attempt_v1',
+  'hxos_record_change_order_materialization_command_v1',
+  'hxos_record_fake_financial_lifecycle_bridge_v1',
+  'hxos_record_fake_financial_security_event_v1',
+  'hxos_record_fake_terminal_lifecycle_intent_v1',
+  'hxos_record_fake_provider_account_fact_v1',
+  'hxos_record_fake_reconciliation_bridge_v1',
+  'hxos_record_fake_reconciliation_fact_v1',
+] as const);
+const CRITICAL_AUTHORITY_FUNCTION_SIGNATURES = Object.freeze([
+  'hx_authority.assert_universal_v1_work_order_bootstrap_seal_v1()',
+  'public.hxos_read_universal_v1_work_order_runtime_authority_v1()',
 ] as const);
 const CRITICAL_SCHEMA_IDENTITY_NAMES = Object.freeze([
   'relations',
@@ -260,6 +386,7 @@ const CRITICAL_SCHEMA_IDENTITY_NAMES = Object.freeze([
   'indexes',
   'functions',
   'triggers',
+  'rewrite_rules',
   'constraint_triggers',
   'policies',
   'extensions',
@@ -267,12 +394,60 @@ const CRITICAL_SCHEMA_IDENTITY_NAMES = Object.freeze([
 
 // These PostgreSQL 16 semantic catalog fingerprints must be regenerated from
 // the exact, fresh 20260916..20260923 registered engine tail plus the nonproduction
-// fake-finance v1..v8 chain whenever any critical SQL changes.
-// An empty default intentionally keeps runtime attestation fail-closed until
-// independently captured catalog evidence is reviewed and frozen here.
-const CRITICAL_SCHEMA_EVIDENCE = Object.freeze(
-  [] satisfies readonly CriticalSchemaIdentityEvidence[],
-);
+// fake-finance through v13 with canonical eight-role custody whenever any
+// critical SQL changes.
+const CRITICAL_SCHEMA_EVIDENCE = Object.freeze([
+  {
+    identityName: 'relations',
+    sha256: 'e4e0706947648698ae01a70019a36eb149a8d9f6910b6d72e055f5e5c3926e42',
+  },
+  {
+    identityName: 'constraints',
+    sha256: '927c550aa4be246f95a31b19c35cabc59021b00133e794c7bad284c472cf08ef',
+  },
+  {
+    identityName: 'indexes',
+    sha256: '9f801062d6308c63a0c14b5aeb94f7d05de779acf3e4135025905ae714766353',
+  },
+  {
+    identityName: 'functions',
+    sha256: '69475967edb0c64491291d494452af0437154370323744815b8138db9291d141',
+  },
+  {
+    identityName: 'triggers',
+    sha256: 'fbc7b1d95fa35a96f9fdca5c29ce5609f0c67fa64885b49a18bf9acf8a1a94b4',
+  },
+  {
+    identityName: 'rewrite_rules',
+    sha256: '38e1ac5f344c529e5d12ef778f1be38ec5a6154487d76ca63bfbd07bde8f45f9',
+  },
+  {
+    identityName: 'constraint_triggers',
+    sha256: 'd0a58b6800f3c206647eee9d4ea461fbd18c06f144fb2a800d5136788bd5ab72',
+  },
+  {
+    identityName: 'policies',
+    sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+  },
+  {
+    identityName: 'extensions',
+    sha256: 'd49c999edb78e599cc4abcf90a0586c8941def0440d694fd10759d836e3818ee',
+  },
+] satisfies readonly CriticalSchemaIdentityEvidence[]);
+
+/** Resolve exact catalog identities without requiring USAGE on private authority schemas.
+ * Only this module's fixed SQL expression is supplied; no caller text is interpolated.
+ */
+function catalogFunctionOidSql(): string {
+  return `(SELECT lookup_procedure.oid
+             FROM pg_catalog.pg_proc lookup_procedure
+             JOIN pg_catalog.pg_namespace lookup_namespace
+               ON lookup_namespace.oid = lookup_procedure.pronamespace
+            WHERE pg_catalog.replace(pg_catalog.format('%I.%I(%s)',
+                    lookup_namespace.nspname, lookup_procedure.proname,
+                    pg_catalog.oidvectortypes(lookup_procedure.proargtypes)), ', ', ',')
+                  = function_signature)`;
+}
 
 function sqlTextValues(values: readonly string[]): string {
   return values.map((value) => `('${value}'::text)`).join(',\n         ');
@@ -286,7 +461,7 @@ let defaultExpectedCriticalMigrationEvidence:
   | undefined;
 
 function normalizeEnvironment(
-  environment: string,
+  environment: string
 ): NonproductionFinancialEnvironment | 'production' | 'unknown' {
   const normalized = environment.trim().toLowerCase();
   if (normalized === 'development' || normalized === 'test' || normalized === 'local') {
@@ -300,36 +475,35 @@ function normalizeEnvironment(
 
 function hasContradictoryProductionMetadata(
   environment: string,
-  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>
 ): boolean {
   const declaredEnvironment = normalizeEnvironment(environment);
-  const hxEnvironment = env.HX_ENVIRONMENT
-    ? normalizeEnvironment(env.HX_ENVIRONMENT)
-    : null;
+  const hxEnvironment = env.HX_ENVIRONMENT ? normalizeEnvironment(env.HX_ENVIRONMENT) : null;
   const nodeEnvironment = env.NODE_ENV?.trim().toLowerCase();
   if (
-    hxEnvironment
-    && hxEnvironment !== 'unknown'
-    && declaredEnvironment !== 'unknown'
-    && hxEnvironment !== declaredEnvironment
+    hxEnvironment &&
+    hxEnvironment !== 'unknown' &&
+    declaredEnvironment !== 'unknown' &&
+    hxEnvironment !== declaredEnvironment
   ) {
     return true;
   }
-  const deploymentEnvironment = hxEnvironment && hxEnvironment !== 'unknown'
-    ? hxEnvironment
-    : declaredEnvironment;
+  const deploymentEnvironment =
+    hxEnvironment && hxEnvironment !== 'unknown' ? hxEnvironment : declaredEnvironment;
   if (deploymentEnvironment === 'preview' || deploymentEnvironment === 'staging') {
     return nodeEnvironment !== 'production';
   }
-  return deploymentEnvironment === 'production'
-    && Boolean(nodeEnvironment)
-    && nodeEnvironment !== 'production';
+  return (
+    deploymentEnvironment === 'production' &&
+    Boolean(nodeEnvironment) &&
+    nodeEnvironment !== 'production'
+  );
 }
 
 function baseReadiness(
   environment: NonproductionFinancialBootstrapReadiness['environment'],
   status: NonproductionFinancialBootstrapReadinessStatus,
-  overrides: Partial<NonproductionFinancialBootstrapReadiness> = {},
+  overrides: Partial<NonproductionFinancialBootstrapReadiness> = {}
 ): NonproductionFinancialBootstrapReadiness {
   return {
     schemaVersion: 1,
@@ -349,7 +523,7 @@ function baseReadiness(
 }
 
 export function unavailableNonproductionFinancialBootstrapReadiness(
-  environment: string,
+  environment: string
 ): NonproductionFinancialBootstrapReadiness {
   return baseReadiness(normalizeEnvironment(environment), 'attestation_unavailable', {
     required: true,
@@ -364,18 +538,18 @@ function expectedEvidencePath(fileName: string): string {
 async function loadExpectedFinancialEvidence(): Promise<
   readonly NonproductionFinancialMigrationEvidence[]
 > {
-  return Promise.all(NONPRODUCTION_FAKE_FINANCIAL_MIGRATION_FILES.map(async (migration) => {
-    const contents = await readFile(expectedEvidencePath(migration.fileName));
-    return {
-      migrationName: migration.name,
-      sha256: createHash('sha256').update(contents).digest('hex'),
-    };
-  }));
+  return Promise.all(
+    NONPRODUCTION_FAKE_FINANCIAL_MIGRATION_FILES.map(async (migration) => {
+      const contents = await readFile(expectedEvidencePath(migration.fileName));
+      return {
+        migrationName: migration.name,
+        sha256: createHash('sha256').update(contents).digest('hex'),
+      };
+    })
+  );
 }
 
-function expectedFinancialEvidence(): Promise<
-  readonly NonproductionFinancialMigrationEvidence[]
-> {
+function expectedFinancialEvidence(): Promise<readonly NonproductionFinancialMigrationEvidence[]> {
   defaultExpectedFinancialEvidence ??= loadExpectedFinancialEvidence();
   return defaultExpectedFinancialEvidence;
 }
@@ -383,21 +557,22 @@ function expectedFinancialEvidence(): Promise<
 async function loadExpectedCriticalMigrationEvidence(): Promise<
   readonly NonproductionFinancialMigrationEvidence[]
 > {
-  return Promise.all(CRITICAL_FINANCIAL_MIGRATIONS.map(async (migration) => {
-    const registered = NONPRODUCTION_FAKE_FINANCIAL_MIGRATION_FILES.find(
-      ({ name }) => name === migration.migrationName,
-    ) ?? REQUIRED_MIGRATION_FILES.find(
-      ({ name }) => name === migration.migrationName,
-    );
-    if (registered?.fileName !== migration.fileName) {
-      throw new Error('critical financial migration registry identity is unavailable');
-    }
-    const contents = await readFile(expectedEvidencePath(migration.fileName));
-    return {
-      migrationName: migration.migrationName,
-      sha256: createHash('sha256').update(contents).digest('hex'),
-    };
-  }));
+  return Promise.all(
+    CRITICAL_FINANCIAL_MIGRATIONS.map(async (migration) => {
+      const registered =
+        NONPRODUCTION_FAKE_FINANCIAL_MIGRATION_FILES.find(
+          ({ name }) => name === migration.migrationName
+        ) ?? REQUIRED_MIGRATION_FILES.find(({ name }) => name === migration.migrationName);
+      if (registered?.fileName !== migration.fileName) {
+        throw new Error('critical financial migration registry identity is unavailable');
+      }
+      const contents = await readFile(expectedEvidencePath(migration.fileName));
+      return {
+        migrationName: migration.migrationName,
+        sha256: createHash('sha256').update(contents).digest('hex'),
+      };
+    })
+  );
 }
 
 function expectedCriticalMigrationEvidence(): Promise<
@@ -409,99 +584,103 @@ function expectedCriticalMigrationEvidence(): Promise<
 
 async function readSchemaEvidence(query: QueryFn): Promise<SchemaEvidenceRow[]> {
   const result = await query<SchemaEvidenceRow>(
-    `WITH evidence AS (
-       SELECT migration_name, btrim(migration_sql_sha256) AS evidence_sha256
-       FROM public.hxos_fake_financial_schema_evidence_v1
-       UNION ALL
-       SELECT migration_name, btrim(migration_sql_sha256) AS evidence_sha256
-       FROM public.hxos_fake_financial_schema_evidence_v2
-       UNION ALL
-       SELECT migration_name, btrim(migration_sql_sha256) AS evidence_sha256
-       FROM public.hxos_fake_financial_schema_evidence_v3
-       UNION ALL
-       SELECT migration_name, btrim(migration_sql_sha256) AS evidence_sha256
-       FROM public.hxos_fake_financial_schema_evidence_v4
-       UNION ALL
-       SELECT migration_name, btrim(migration_sql_sha256) AS evidence_sha256
-       FROM public.hxos_fake_financial_schema_evidence_v5
-       UNION ALL
-       SELECT migration_name, btrim(migration_sql_sha256) AS evidence_sha256
-       FROM public.hxos_fake_financial_schema_evidence_v6
-       UNION ALL
-       SELECT migration_name, btrim(migration_sql_sha256) AS evidence_sha256
-       FROM public.hxos_fake_financial_schema_evidence_v7
-       UNION ALL
-       SELECT migration_name, btrim(migration_sql_sha256) AS evidence_sha256
-       FROM public.hxos_fake_financial_schema_evidence_v8
-     )
-     SELECT evidence.migration_name,
-            evidence.evidence_sha256,
-            btrim(applied_migrations.sha256) AS applied_sha256
-     FROM evidence
-     LEFT JOIN public.applied_migrations
-       ON applied_migrations.name = evidence.migration_name
-     ORDER BY evidence.migration_name`,
+    `SELECT migration_name, evidence_sha256, applied_sha256
+       FROM public.hxos_read_fake_financial_schema_evidence_v13()`
   );
   return result.rows;
 }
 
+async function readWorkOrderBootstrapAuthorityEvidence(
+  query: QueryFn
+): Promise<WorkOrderBootstrapAuthorityEvidenceRow | null> {
+  // The sealed reader rejects missing/duplicate receipts and ledger drift before
+  // returning the exact frozen predecessor hashes. No runtime evidence-table access.
+  const result = await query<WorkOrderBootstrapAuthorityEvidenceRow>(
+    `SELECT session_database_role, target_authority_id::text, authority_version,
+            target_database_name, pg_catalog.current_database()::text AS observed_database_name,
+            environment, release_manifest_sha256, v13_sql_sha256,
+            fake_financial_operations_relation, fake_financial_operation_events_relation,
+            1 AS evidence_row_count,
+            v12_sql_sha256 AS evidence_v12_sha256,
+            ordinal146_sql_sha256 AS evidence_ordinal146_sha256,
+            1 AS seal_evidence_row_count,
+            seal_sql_sha256 AS seal_evidence_sha256,
+            ordinal146_sql_sha256 AS seal_evidence_ordinal146_sha256,
+            v12_sql_sha256 AS seal_evidence_v12_sha256
+       FROM public.hxos_read_universal_v1_fake_financial_runtime_authority_v13()`
+  );
+  return result.rows.length === 1 ? result.rows[0]! : null;
+}
+
 function matchingEvidenceCount(
   observed: readonly SchemaEvidenceRow[],
-  expected: readonly NonproductionFinancialMigrationEvidence[],
+  expected: readonly NonproductionFinancialMigrationEvidence[]
 ): number {
   const actual = new Map(observed.map((row) => [row.migration_name, row]));
   return expected.filter(({ migrationName, sha256 }) => {
     const row = actual.get(migrationName);
-    return SHA256.test(sha256)
-      && row?.evidence_sha256 === sha256
-      && row.applied_sha256 === sha256;
+    return SHA256.test(sha256) && row?.evidence_sha256 === sha256 && row.applied_sha256 === sha256;
   }).length;
 }
 
 function validExpectedEvidence(
   observed: readonly NonproductionFinancialMigrationEvidence[],
-  expectedNames: readonly string[],
+  expectedNames: readonly string[]
 ): boolean {
-  return observed.length === expectedNames.length
-    && observed.every((entry, index) => (
-      entry.migrationName === expectedNames[index]
-      && SHA256.test(entry.sha256)
-    ));
+  return (
+    observed.length === expectedNames.length &&
+    observed.every(
+      (entry, index) => entry.migrationName === expectedNames[index] && SHA256.test(entry.sha256)
+    )
+  );
 }
 
 async function readAppliedCriticalMigrationEvidence(
-  query: QueryFn,
+  query: QueryFn
 ): Promise<AppliedMigrationEvidenceRow[]> {
   const result = await query<AppliedMigrationEvidenceRow>(
-    `SELECT name AS migration_name, btrim(sha256) AS applied_sha256
-       FROM public.applied_migrations
-      WHERE name = ANY($1::text[])
-      ORDER BY name`,
-    [CRITICAL_FINANCIAL_MIGRATIONS.map(({ migrationName }) => migrationName)],
+    `SELECT migration_name, applied_sha256
+       FROM public.hxos_read_fake_financial_applied_migrations_v13()
+      WHERE migration_name = ANY($1::text[])
+      ORDER BY migration_name`,
+    [CRITICAL_FINANCIAL_MIGRATIONS.map(({ migrationName }) => migrationName)]
   );
   return result.rows;
 }
 
 function criticalMigrationEvidenceMatches(
   observed: readonly AppliedMigrationEvidenceRow[],
-  expected: readonly NonproductionFinancialMigrationEvidence[],
+  expected: readonly NonproductionFinancialMigrationEvidence[]
 ): boolean {
   const actual = new Map(observed.map((row) => [row.migration_name, row.applied_sha256]));
-  return observed.length === expected.length
-    && actual.size === expected.length
-    && expected.every(({ migrationName, sha256 }) => actual.get(migrationName) === sha256);
+  return (
+    observed.length === expected.length &&
+    actual.size === expected.length &&
+    expected.every(({ migrationName, sha256 }) => actual.get(migrationName) === sha256)
+  );
 }
 
 async function readCriticalSchemaIdentityEvidence(
   query: QueryFn,
+  roles: WorkOrderCommandRoleNames
 ): Promise<CriticalSchemaIdentityRow[]> {
   const result = await query<CriticalSchemaIdentityRow>(
-     `WITH target_relations(relation_name) AS (
+    `WITH configured_role_labels AS MATERIALIZED (
+       SELECT configured.key AS role_label, role_record.oid AS role_oid
+       FROM pg_catalog.jsonb_each_text($1::jsonb) configured
+       JOIN pg_catalog.pg_roles role_record ON role_record.rolname=configured.value
+     ), target_relations(relation_name) AS (
        VALUES
          ${sqlTextValues(CRITICAL_RELATION_NAMES)}
      ), target_functions(function_name) AS (
        VALUES
          ${sqlTextValues(CRITICAL_FUNCTION_NAMES)}
+     ), target_authority_functions(function_signature) AS (
+       VALUES
+         ${sqlTextValues(CRITICAL_AUTHORITY_FUNCTION_SIGNATURES)}
+     ), target_extension_function_signatures(function_signature) AS (
+       VALUES
+         ${sqlTextValues(RUNTIME_EXPRESSION_DEPENDENCY_FUNCTION_SIGNATURES)}
      ), relation_objects AS (
        SELECT target.relation_name,
               relation.oid AS relation_oid,
@@ -623,8 +802,29 @@ async function readCriticalSchemaIdentityEvidence(
            ON access_method.oid = index_relation.relam
         WHERE namespace.nspname = 'public'
           AND relation.relname IN (SELECT relation_name FROM target_relations)
+     ), extension_function_members AS (
+       SELECT extension_dependency.objid AS function_oid,
+              extension_record.extname AS extension_name
+         FROM pg_catalog.pg_depend extension_dependency
+         JOIN pg_catalog.pg_extension extension_record
+           ON extension_record.oid = extension_dependency.refobjid
+        WHERE extension_dependency.classid = 'pg_catalog.pg_proc'::regclass
+          AND extension_dependency.refclassid = 'pg_catalog.pg_extension'::regclass
+          AND extension_dependency.deptype = 'e'
+     ), target_extension_functions AS (
+       SELECT function_signature,
+              ${catalogFunctionOidSql()}::oid AS function_oid
+         FROM target_extension_function_signatures
+     ), critical_trigger_functions AS (
+       SELECT DISTINCT trigger_record.tgfoid AS function_oid
+         FROM pg_catalog.pg_trigger trigger_record
+         JOIN relation_objects relation_object
+           ON relation_object.relation_oid = trigger_record.tgrelid
+        WHERE relation_object.relation_oid IS NOT NULL
+          AND NOT trigger_record.tgisinternal
      ), function_objects AS (
        SELECT procedure.oid AS function_oid,
+              namespace.nspname AS function_schema,
               procedure.proname,
               pg_catalog.pg_get_function_identity_arguments(procedure.oid) AS identity_arguments,
               procedure.proowner,
@@ -637,14 +837,40 @@ async function readCriticalSchemaIdentityEvidence(
               procedure.proisstrict,
               procedure.proparallel,
               procedure.proconfig,
-              procedure.prolang
+              procedure.prolang,
+              procedure.prosrc,
+              procedure.probin,
+              owner_role.rolcanlogin AS owner_can_login,
+              owner_role.rolsuper AS owner_is_superuser,
+              owner_role.rolcreaterole AS owner_can_create_role,
+              owner_role.rolcreatedb AS owner_can_create_database,
+              owner_role.rolreplication AS owner_can_replicate,
+              owner_role.rolbypassrls AS owner_can_bypass_rls,
+              extension_member.extension_name
          FROM pg_catalog.pg_proc procedure
          JOIN pg_catalog.pg_namespace namespace
            ON namespace.oid = procedure.pronamespace
-        WHERE namespace.nspname = 'public'
-          AND procedure.proname IN (SELECT function_name FROM target_functions)
+         JOIN pg_catalog.pg_roles owner_role
+           ON owner_role.oid = procedure.proowner
+         LEFT JOIN extension_function_members extension_member
+           ON extension_member.function_oid = procedure.oid
+        WHERE (
+            namespace.nspname = 'public'
+            AND extension_member.function_oid IS NULL
+          )
+           OR procedure.oid IN (
+             SELECT function_oid
+               FROM target_extension_functions
+              WHERE function_oid IS NOT NULL
+           )
+           OR procedure.oid IN (SELECT function_oid FROM critical_trigger_functions)
+           OR procedure.oid IN (
+             SELECT ${catalogFunctionOidSql()}::OID
+               FROM target_authority_functions
+              WHERE ${catalogFunctionOidSql()} IS NOT NULL
+           )
      ), function_identities AS (
-       SELECT function_object.proname || '(' ||
+       SELECT function_object.function_schema || '.' || function_object.proname || '(' ||
                 function_object.identity_arguments || ')' AS object_name,
               concat_ws('|',
                 function_object.prokind::text,
@@ -656,6 +882,44 @@ async function readCriticalSchemaIdentityEvidence(
                 function_object.proisstrict::text,
                 function_object.proparallel::text,
                 COALESCE(array_to_string(function_object.proconfig, ','), 'NULL'),
+                'owner_login=' || function_object.owner_can_login::text,
+                'owner_superuser=' || function_object.owner_is_superuser::text,
+                'owner_createrole=' || function_object.owner_can_create_role::text,
+                'owner_createdb=' || function_object.owner_can_create_database::text,
+                'owner_replication=' || function_object.owner_can_replicate::text,
+                'owner_bypassrls=' || function_object.owner_can_bypass_rls::text,
+                'extension=' || COALESCE(function_object.extension_name, 'NONE'),
+                'acl=' || COALESCE((
+                  SELECT pg_catalog.string_agg(
+                    concat_ws(':',
+                      CASE
+                        WHEN privilege.grantee = 0 THEN 'PUBLIC'
+                        WHEN privilege.grantee = function_object.proowner THEN 'OWNER'
+                        ELSE COALESCE((SELECT role_label FROM configured_role_labels
+                          WHERE role_oid=privilege.grantee), 'UNEXPECTED')
+                      END,
+                      privilege.privilege_type,
+                      privilege.is_grantable::text
+                    ),
+                    ',' ORDER BY
+                      CASE
+                        WHEN privilege.grantee = 0 THEN 'PUBLIC'
+                        WHEN privilege.grantee = function_object.proowner THEN 'OWNER'
+                        ELSE COALESCE((SELECT role_label FROM configured_role_labels
+                          WHERE role_oid=privilege.grantee), 'UNEXPECTED')
+                      END,
+                      privilege.privilege_type,
+                      privilege.is_grantable::text
+                  )
+                    FROM pg_catalog.aclexplode(
+                      COALESCE(
+                        function_object.proacl,
+                        pg_catalog.acldefault('f', function_object.proowner)
+                      )
+                    ) privilege
+                ), ''),
+                'source=' || function_object.prosrc,
+                'binary=' || COALESCE(function_object.probin, 'NULL'),
                 pg_catalog.pg_get_functiondef(function_object.function_oid)
               ) AS identity
          FROM function_objects function_object
@@ -666,7 +930,8 @@ async function readCriticalSchemaIdentityEvidence(
               concat_ws('|',
                 trigger_record.tgenabled::text,
                 trigger_record.tgtype::text,
-                function_namespace.nspname || '.' || function_record.proname,
+                function_namespace.nspname || '.' || function_record.proname || '(' ||
+                  pg_catalog.pg_get_function_identity_arguments(function_record.oid) || ')',
                 COALESCE(pg_catalog.pg_get_expr(trigger_record.tgqual, trigger_record.tgrelid), 'NULL'),
                 pg_catalog.pg_get_triggerdef(trigger_record.oid, false)
               ) AS identity
@@ -682,6 +947,22 @@ async function readCriticalSchemaIdentityEvidence(
         WHERE namespace.nspname = 'public'
           AND relation.relname IN (SELECT relation_name FROM target_relations)
           AND NOT trigger_record.tgisinternal
+     ), rewrite_rule_identities AS (
+       SELECT namespace.nspname || '.' || relation.relname || '.' ||
+                rewrite_record.rulename AS object_name,
+              concat_ws('|',
+                'enabled=' || rewrite_record.ev_enabled::text,
+                'event=' || rewrite_record.ev_type::text,
+                'instead=' || rewrite_record.is_instead::text,
+                pg_catalog.pg_get_ruledef(rewrite_record.oid, false)
+              ) AS identity
+         FROM pg_catalog.pg_rewrite rewrite_record
+         JOIN pg_catalog.pg_class relation
+           ON relation.oid = rewrite_record.ev_class
+         JOIN pg_catalog.pg_namespace namespace
+           ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = 'public'
+          AND relation.relname IN (SELECT relation_name FROM target_relations)
      ), constraint_trigger_identities AS (
        SELECT constraint_relation.relname || '.' || constraint_record.conname || '|' ||
               trigger_relation.relname || '|' || function_record.proname || '|' ||
@@ -797,6 +1078,12 @@ async function readCriticalSchemaIdentityEvidence(
               ), '')
          FROM trigger_identities
        UNION ALL
+       SELECT 'rewrite_rules', COALESCE(string_agg(
+                object_name || '|' || identity,
+                E'\n' ORDER BY object_name
+              ), '')
+         FROM rewrite_rule_identities
+       UNION ALL
        SELECT 'constraint_triggers', COALESCE(string_agg(
                 object_name || '|' || identity,
                 E'\\n' ORDER BY object_name
@@ -822,262 +1109,70 @@ async function readCriticalSchemaIdentityEvidence(
             ) AS identity_sha256
        FROM identity_documents
       ORDER BY identity_name`,
+    [JSON.stringify(roles)]
   );
   return result.rows;
 }
 
-async function readDatabaseAuthorityViolations(
-  query: QueryFn,
+async function hasSupportedPostgreSqlMajor(query: QueryFn): Promise<boolean> {
+  const result = await query<PostgreSqlVersionRow>(
+    `/* hxos_nonproduction_postgresql_major_v1 */
+     SELECT pg_catalog.current_setting('server_version_num') AS server_version_num`
+  );
+  if (result.rowCount !== 1 || result.rows.length !== 1) return false;
+  const rawServerVersionNumber = result.rows[0]?.server_version_num;
+  if (typeof rawServerVersionNumber !== 'string' || !/^[0-9]+$/u.test(rawServerVersionNumber)) {
+    return false;
+  }
+  const serverVersionNumber = Number(rawServerVersionNumber);
+  return (
+    Number.isSafeInteger(serverVersionNumber) &&
+    Math.floor(serverVersionNumber / 10_000) === SUPPORTED_POSTGRESQL_MAJOR
+  );
+}
+
+async function hasSupportedDatabaseIdentity(query: QueryFn): Promise<boolean> {
+  const result = await query<DatabaseIdentityRow>(
+    `/* hxos_nonproduction_database_identity_v1 */
+     SELECT pg_catalog.current_setting('server_encoding') AS server_encoding,
+            pg_catalog.pg_encoding_to_char(database_record.encoding) AS database_encoding,
+            database_record.datlocprovider::text AS locale_provider,
+            database_record.datcollate AS lc_collate,
+            database_record.datctype AS lc_ctype,
+            database_record.daticulocale AS icu_locale,
+            database_record.daticurules AS icu_rules,
+            database_record.datcollversion AS recorded_collation_version,
+            pg_catalog.pg_database_collation_actual_version(database_record.oid)
+              AS actual_collation_version,
+            database_record.datistemplate AS is_template,
+            database_record.datallowconn AS allows_connections
+       FROM pg_catalog.pg_database database_record
+      WHERE database_record.datname = pg_catalog.current_database()`
+  );
+  if (result.rowCount !== 1 || result.rows.length !== 1) return false;
+  const row = result.rows[0];
+  return (
+    row?.server_encoding === SUPPORTED_DATABASE_IDENTITY.serverEncoding &&
+    row.database_encoding === SUPPORTED_DATABASE_IDENTITY.databaseEncoding &&
+    row.locale_provider === SUPPORTED_DATABASE_IDENTITY.localeProvider &&
+    row.lc_collate === SUPPORTED_DATABASE_IDENTITY.lcCollate &&
+    row.lc_ctype === SUPPORTED_DATABASE_IDENTITY.lcCtype &&
+    row.icu_locale === SUPPORTED_DATABASE_IDENTITY.icuLocale &&
+    row.icu_rules === SUPPORTED_DATABASE_IDENTITY.icuRules &&
+    row.recorded_collation_version === SUPPORTED_DATABASE_IDENTITY.recordedCollationVersion &&
+    row.actual_collation_version === SUPPORTED_DATABASE_IDENTITY.actualCollationVersion &&
+    row.is_template === SUPPORTED_DATABASE_IDENTITY.isTemplate &&
+    row.allows_connections === SUPPORTED_DATABASE_IDENTITY.allowsConnections
+  );
+}
+
+async function readInternalConstraintViolations(
+  query: QueryFn
 ): Promise<DatabaseAuthorityViolationRow[]> {
-  const result = await query<DatabaseAuthorityViolationRow>(
-    `WITH RECURSIVE target_relations(relation_name) AS (
-       VALUES
-         ${sqlTextValues(CRITICAL_RELATION_NAMES)}
-     ), target_functions(function_name) AS (
-       VALUES
-         ${sqlTextValues(CRITICAL_FUNCTION_NAMES)}
-     ), runtime_role AS (
-       SELECT role_record.*
-         FROM pg_catalog.pg_roles role_record
-        WHERE role_record.rolname = current_user
-     ), current_database_record AS (
-       SELECT database_record.*
-         FROM pg_catalog.pg_database database_record
-        WHERE database_record.datname = current_database()
-     ), relation_objects AS (
-       SELECT relation.oid AS object_oid,
-              relation.relname AS object_name,
-              relation.relowner AS owner_oid,
-              relation.relacl AS object_acl,
-              'r'::text AS acl_kind
-         FROM pg_catalog.pg_class relation
-         JOIN pg_catalog.pg_namespace namespace
-           ON namespace.oid = relation.relnamespace
-        WHERE namespace.nspname = 'public'
-          AND relation.relname IN (SELECT relation_name FROM target_relations)
-     ), function_objects AS (
-       SELECT procedure.oid AS object_oid,
-              procedure.proname || '(' ||
-                pg_catalog.pg_get_function_identity_arguments(procedure.oid) || ')'
-                AS object_name,
-              procedure.proowner AS owner_oid,
-              procedure.proacl AS object_acl,
-              'f'::text AS acl_kind
-         FROM pg_catalog.pg_proc procedure
-         JOIN pg_catalog.pg_namespace namespace
-           ON namespace.oid = procedure.pronamespace
-        WHERE namespace.nspname = 'public'
-          AND procedure.proname IN (SELECT function_name FROM target_functions)
-     ), object_owners AS (
-       SELECT owner_oid FROM relation_objects
-       UNION
-       SELECT owner_oid FROM function_objects
-     ), authority_owners AS (
-       SELECT owner_oid FROM object_owners
-       UNION
-       SELECT namespace.nspowner
-         FROM pg_catalog.pg_namespace namespace
-        WHERE namespace.nspname = 'public'
-       UNION
-       SELECT extension_record.extowner
-         FROM pg_catalog.pg_extension extension_record
-        WHERE extension_record.extname = 'pgcrypto'
-       UNION
-       SELECT database_record.datdba
-         FROM current_database_record database_record
-     ), owner_roles AS (
-       SELECT role_record.*
-         FROM pg_catalog.pg_roles role_record
-        WHERE role_record.oid IN (SELECT owner_oid FROM authority_owners)
-     ), role_membership(member_oid, role_oid) AS (
-       SELECT membership.member, membership.roleid
-         FROM pg_catalog.pg_auth_members membership
-       UNION
-       SELECT inherited.member_oid, membership.roleid
-         FROM role_membership inherited
-         JOIN pg_catalog.pg_auth_members membership
-           ON membership.member = inherited.role_oid
-     ), unsafe_owner_login_members AS (
-       SELECT login_role.oid
-         FROM pg_catalog.pg_roles login_role
-        WHERE login_role.rolcanlogin
-          AND EXISTS (
-            SELECT 1
-              FROM authority_owners owner
-             WHERE login_role.oid <> owner.owner_oid
-               AND EXISTS (
-                 SELECT 1
-                   FROM role_membership membership
-                  WHERE membership.member_oid = login_role.oid
-                    AND membership.role_oid = owner.owner_oid
-               )
-          )
-     ), unsafe_owner_elevated_memberships AS (
-       SELECT owner.owner_oid
-         FROM authority_owners owner
-         JOIN pg_catalog.pg_roles elevated_role
-           ON elevated_role.oid <> owner.owner_oid
-          AND (
-            elevated_role.rolsuper
-            OR elevated_role.rolcreaterole
-            OR elevated_role.rolcreatedb
-            OR elevated_role.rolreplication
-            OR elevated_role.rolbypassrls
-          )
-          AND EXISTS (
-            SELECT 1
-              FROM role_membership membership
-             WHERE membership.member_oid = owner.owner_oid
-               AND membership.role_oid = elevated_role.oid
-          )
-     ), relation_acl_items AS (
-       SELECT 'relation'::text AS object_kind,
-              relation_object.object_name,
-              relation_object.owner_oid,
-              privilege.grantee,
-              privilege.privilege_type,
-              privilege.is_grantable
-         FROM relation_objects relation_object
-         CROSS JOIN LATERAL pg_catalog.aclexplode(
-           CASE WHEN pg_catalog.cardinality(COALESCE(
-             relation_object.object_acl,
-             pg_catalog.acldefault('r', relation_object.owner_oid)
-           )) > 0
-           THEN COALESCE(
-             relation_object.object_acl,
-             pg_catalog.acldefault('r', relation_object.owner_oid)
-           )
-           ELSE NULL::aclitem[] END
-         ) privilege
-     ), column_acl_items AS (
-       SELECT 'column'::text AS object_kind,
-              relation.relname || '.' || attribute.attname AS object_name,
-              relation.relowner AS owner_oid,
-              privilege.grantee,
-              privilege.privilege_type,
-              privilege.is_grantable
-         FROM pg_catalog.pg_class relation
-         JOIN pg_catalog.pg_namespace namespace
-           ON namespace.oid = relation.relnamespace
-         JOIN pg_catalog.pg_attribute attribute
-           ON attribute.attrelid = relation.oid
-          AND attribute.attnum > 0
-          AND NOT attribute.attisdropped
-         CROSS JOIN LATERAL pg_catalog.aclexplode(
-           CASE WHEN pg_catalog.cardinality(attribute.attacl) > 0
-                THEN attribute.attacl
-                ELSE NULL::aclitem[] END
-         ) privilege
-        WHERE namespace.nspname = 'public'
-          AND relation.relname IN (SELECT relation_name FROM target_relations)
-     ), function_acl_items AS (
-       SELECT 'function'::text AS object_kind,
-              function_object.object_name,
-              function_object.owner_oid,
-              privilege.grantee,
-              privilege.privilege_type,
-              privilege.is_grantable
-         FROM function_objects function_object
-         CROSS JOIN LATERAL pg_catalog.aclexplode(
-           CASE WHEN pg_catalog.cardinality(COALESCE(
-             function_object.object_acl,
-             pg_catalog.acldefault('f', function_object.owner_oid)
-           )) > 0
-           THEN COALESCE(
-             function_object.object_acl,
-             pg_catalog.acldefault('f', function_object.owner_oid)
-           )
-           ELSE NULL::aclitem[] END
-         ) privilege
-     ), object_acl_items AS (
-       SELECT * FROM relation_acl_items
-       UNION ALL
-       SELECT * FROM column_acl_items
-       UNION ALL
-       SELECT * FROM function_acl_items
-     ), default_acl_targets AS (
-       SELECT owner_oid, acl_kind
-         FROM object_owners
-         CROSS JOIN (VALUES ('r'::text), ('f'::text)) kinds(acl_kind)
-     ), global_default_acls AS (
-       SELECT target.owner_oid,
-              target.acl_kind,
-              COALESCE(default_acl.defaclacl,
-                CASE target.acl_kind
-                  WHEN 'r' THEN pg_catalog.acldefault('r', target.owner_oid)
-                  ELSE pg_catalog.acldefault('f', target.owner_oid)
-                END
-              ) AS effective_acl
-         FROM default_acl_targets target
-         LEFT JOIN pg_catalog.pg_default_acl default_acl
-           ON default_acl.defaclrole = target.owner_oid
-          AND default_acl.defaclnamespace = 0
-          AND default_acl.defaclobjtype::text = target.acl_kind
-     ), schema_default_acls AS (
-       SELECT default_acl.defaclrole AS owner_oid,
-              default_acl.defaclacl AS effective_acl
-         FROM pg_catalog.pg_default_acl default_acl
-         JOIN pg_catalog.pg_namespace namespace
-           ON namespace.oid = default_acl.defaclnamespace
-        WHERE namespace.nspname = 'public'
-          AND default_acl.defaclrole IN (SELECT owner_oid FROM object_owners)
-          AND default_acl.defaclobjtype IN ('r', 'f')
-     ), default_acl_items AS (
-       SELECT default_acl.owner_oid,
-              privilege.grantee,
-              privilege.privilege_type
-         FROM global_default_acls default_acl
-         CROSS JOIN LATERAL pg_catalog.aclexplode(
-           CASE WHEN pg_catalog.cardinality(default_acl.effective_acl) > 0
-                THEN default_acl.effective_acl
-                ELSE NULL::aclitem[] END
-         ) privilege
-       UNION ALL
-       SELECT default_acl.owner_oid,
-              privilege.grantee,
-              privilege.privilege_type
-         FROM schema_default_acls default_acl
-         CROSS JOIN LATERAL pg_catalog.aclexplode(
-           CASE WHEN pg_catalog.cardinality(default_acl.effective_acl) > 0
-                THEN default_acl.effective_acl
-                ELSE NULL::aclitem[] END
-         ) privilege
-     ), public_schema_acl AS (
-       SELECT namespace.nspowner AS owner_oid,
-              privilege.grantee,
-              privilege.privilege_type,
-              privilege.is_grantable
-         FROM pg_catalog.pg_namespace namespace
-         CROSS JOIN LATERAL pg_catalog.aclexplode(
-           CASE WHEN pg_catalog.cardinality(COALESCE(
-             namespace.nspacl,
-             pg_catalog.acldefault('n', namespace.nspowner)
-           )) > 0
-           THEN COALESCE(
-             namespace.nspacl,
-             pg_catalog.acldefault('n', namespace.nspowner)
-           )
-           ELSE NULL::aclitem[] END
-         ) privilege
-        WHERE namespace.nspname = 'public'
-     ), database_acl AS (
-       SELECT database_record.datdba AS owner_oid,
-              privilege.grantee,
-              privilege.privilege_type,
-              privilege.is_grantable
-         FROM current_database_record database_record
-         CROSS JOIN LATERAL pg_catalog.aclexplode(
-           CASE WHEN pg_catalog.cardinality(COALESCE(
-             database_record.datacl,
-             pg_catalog.acldefault('d', database_record.datdba)
-           )) > 0
-           THEN COALESCE(
-             database_record.datacl,
-             pg_catalog.acldefault('d', database_record.datdba)
-           )
-           ELSE NULL::aclitem[] END
-         ) privilege
-     ), target_foreign_keys AS (
+  const result =
+    await query<DatabaseAuthorityViolationRow>(`WITH target_relations(relation_name) AS (
+    VALUES ${sqlTextValues(CRITICAL_RELATION_NAMES)}
+  ), target_foreign_keys AS (
        SELECT constraint_record.oid
          FROM pg_catalog.pg_constraint constraint_record
          JOIN pg_catalog.pg_class relation
@@ -1130,181 +1225,33 @@ async function readDatabaseAuthorityViolations(
           ))
           AND trigger_record.tgisinternal
           AND trigger_record.tgenabled NOT IN ('O', 'A')
-     ), violations(violation_code) AS (
-       SELECT 'RUNTIME_ROLE_ELEVATED'
-         FROM runtime_role
-        WHERE rolsuper OR rolcreaterole OR rolcreatedb OR rolreplication OR rolbypassrls
-       UNION ALL
-       SELECT 'OBJECT_OWNER_ROLE_COUNT'
-        WHERE (SELECT count(*) FROM authority_owners) <> 1
-       UNION ALL
-       SELECT 'OBJECT_OWNER_UNSAFE'
-         FROM owner_roles
-        WHERE rolsuper OR rolcanlogin OR rolcreaterole OR rolcreatedb
-           OR rolreplication OR rolbypassrls
-       UNION ALL
-       SELECT 'RUNTIME_HAS_OWNER_AUTHORITY'
-         FROM authority_owners owner
-         CROSS JOIN runtime_role runtime
-        WHERE owner.owner_oid = runtime.oid
-           OR EXISTS (
-             SELECT 1
-               FROM role_membership membership
-              WHERE membership.member_oid = runtime.oid
-                AND membership.role_oid = owner.owner_oid
-           )
-       UNION ALL
-       SELECT 'OWNER_HAS_LOGIN_MEMBER'
-         FROM unsafe_owner_login_members
-       UNION ALL
-       SELECT 'OWNER_HAS_ELEVATED_MEMBERSHIP'
-         FROM unsafe_owner_elevated_memberships
-       UNION ALL
-       SELECT 'OBJECT_PUBLIC_GRANT'
-         FROM object_acl_items
-        WHERE grantee = 0
-       UNION ALL
-       SELECT 'OBJECT_ROGUE_GRANT'
-         FROM object_acl_items acl_item
-         CROSS JOIN runtime_role runtime
-        WHERE acl_item.grantee <> 0
-          AND acl_item.grantee <> acl_item.owner_oid
-          AND acl_item.grantee <> runtime.oid
-       UNION ALL
-       SELECT 'RUNTIME_COLUMN_GRANT'
-         FROM object_acl_items acl_item
-         CROSS JOIN runtime_role runtime
-        WHERE acl_item.object_kind = 'column'
-          AND acl_item.grantee = runtime.oid
-       UNION ALL
-       SELECT 'RUNTIME_GRANT_OPTION'
-         FROM object_acl_items acl_item
-         CROSS JOIN runtime_role runtime
-        WHERE acl_item.grantee = runtime.oid
-          AND acl_item.is_grantable
-       UNION ALL
-       SELECT 'RUNTIME_FUNCTION_EXECUTE_GRANT'
-         FROM object_acl_items acl_item
-         CROSS JOIN runtime_role runtime
-        WHERE acl_item.object_kind = 'function'
-          AND acl_item.grantee = runtime.oid
-       UNION ALL
-       SELECT 'RUNTIME_RELATION_PRIVILEGE_EXCEEDS_ALLOWLIST'
-         FROM object_acl_items acl_item
-         CROSS JOIN runtime_role runtime
-        WHERE acl_item.object_kind = 'relation'
-          AND acl_item.grantee = runtime.oid
-          AND NOT (
-            acl_item.privilege_type = 'SELECT'
-            OR (
-              acl_item.privilege_type = 'INSERT'
-              AND acl_item.object_name NOT IN (
-                ${READ_ONLY_ATTESTATION_RELATION_NAMES
-                  .map((name) => `'${name}'`)
-                  .join(', ')}
-              )
-            )
-            OR (
-              acl_item.object_name = 'provider_event_processing_state'
-              AND acl_item.privilege_type = 'UPDATE'
-            )
-          )
-       UNION ALL
-       SELECT 'PUBLIC_SCHEMA_CREATE'
-         FROM public_schema_acl
-        WHERE grantee = 0 AND privilege_type = 'CREATE'
-       UNION ALL
-       SELECT 'PUBLIC_SCHEMA_GRANT_OPTION'
-         FROM public_schema_acl
-        WHERE grantee = 0 AND is_grantable
-       UNION ALL
-       SELECT 'SCHEMA_ROGUE_GRANT'
-         FROM public_schema_acl schema_acl
-         CROSS JOIN runtime_role runtime
-        WHERE schema_acl.grantee <> 0
-          AND schema_acl.grantee <> schema_acl.owner_oid
-          AND schema_acl.grantee <> runtime.oid
-       UNION ALL
-       SELECT 'RUNTIME_SCHEMA_CREATE'
-        WHERE pg_catalog.has_schema_privilege(current_user, 'public', 'CREATE')
-       UNION ALL
-       SELECT 'RUNTIME_DATABASE_CREATE_OR_TEMP'
-        WHERE pg_catalog.has_database_privilege(
-          current_user,
-          current_database(),
-          'CREATE'
-        ) OR pg_catalog.has_database_privilege(
-          current_user,
-          current_database(),
-          'TEMPORARY'
-        )
-       UNION ALL
-       SELECT 'DATABASE_PUBLIC_CREATE_OR_TEMP'
-         FROM database_acl
-        WHERE grantee = 0 AND privilege_type IN ('CREATE', 'TEMPORARY')
-       UNION ALL
-       SELECT 'DATABASE_ROGUE_CREATE_OR_TEMP'
-         FROM database_acl database_privilege
-         CROSS JOIN runtime_role runtime
-        WHERE database_privilege.grantee <> 0
-          AND database_privilege.grantee <> database_privilege.owner_oid
-          AND database_privilege.grantee <> runtime.oid
-          AND database_privilege.privilege_type IN ('CREATE', 'TEMPORARY')
-       UNION ALL
-       SELECT 'RUNTIME_SCHEMA_GRANT_OPTION'
-         FROM public_schema_acl schema_acl
-         CROSS JOIN runtime_role runtime
-        WHERE schema_acl.grantee = runtime.oid
-          AND schema_acl.is_grantable
-       UNION ALL
-       SELECT 'DEFAULT_PUBLIC_GRANT'
-         FROM default_acl_items
-        WHERE grantee = 0
-       UNION ALL
-       SELECT 'DEFAULT_ROGUE_GRANT'
-         FROM default_acl_items acl_item
-         CROSS JOIN runtime_role runtime
-        WHERE acl_item.grantee <> 0
-          AND acl_item.grantee <> acl_item.owner_oid
-          AND acl_item.grantee <> runtime.oid
-       UNION ALL
-       SELECT 'DEFAULT_RUNTIME_GRANT'
-         FROM default_acl_items acl_item
-         CROSS JOIN runtime_role runtime
-        WHERE acl_item.grantee = runtime.oid
-       UNION ALL
-       SELECT 'FOREIGN_KEY_INTERNAL_TRIGGER_UNSAFE'
-         FROM foreign_key_trigger_state
-        WHERE internal_trigger_count < 4 OR disabled_trigger_count > 0
-       UNION ALL
-       SELECT 'INTERNAL_CONSTRAINT_TRIGGER_DISABLED'
-         FROM disabled_internal_constraint_triggers
      )
-     SELECT DISTINCT violation_code
-       FROM violations
-      ORDER BY violation_code`,
-  );
+    SELECT 'FOREIGN_KEY_TRIGGER_ENFORCEMENT_INVALID' AS violation_code FROM foreign_key_trigger_state
+    WHERE internal_trigger_count<4 OR disabled_trigger_count>0
+    UNION ALL SELECT 'DISABLED_INTERNAL_CONSTRAINT_TRIGGER' FROM disabled_internal_constraint_triggers`);
   return result.rows;
 }
 
-function validExpectedSchemaEvidence(
-  expected: readonly CriticalSchemaIdentityEvidence[],
-): boolean {
-  return expected.length === CRITICAL_SCHEMA_IDENTITY_NAMES.length
-    && expected.every((entry, index) => (
-      entry.identityName === CRITICAL_SCHEMA_IDENTITY_NAMES[index]
-      && SHA256.test(entry.sha256)
-    ));
+function validExpectedSchemaEvidence(expected: readonly CriticalSchemaIdentityEvidence[]): boolean {
+  return (
+    expected.length === CRITICAL_SCHEMA_IDENTITY_NAMES.length &&
+    expected.every(
+      (entry, index) =>
+        entry.identityName === CRITICAL_SCHEMA_IDENTITY_NAMES[index] && SHA256.test(entry.sha256)
+    )
+  );
 }
 
 function criticalSchemaEvidenceMatches(
   observed: readonly CriticalSchemaIdentityRow[],
-  expected: readonly CriticalSchemaIdentityEvidence[],
+  expected: readonly CriticalSchemaIdentityEvidence[]
 ): boolean {
   const actual = new Map(observed.map((row) => [row.identity_name, row.identity_sha256]));
-  return observed.length === expected.length
-    && actual.size === expected.length
-    && expected.every(({ identityName, sha256 }) => actual.get(identityName) === sha256);
+  return (
+    observed.length === expected.length &&
+    actual.size === expected.length &&
+    expected.every(({ identityName, sha256 }) => actual.get(identityName) === sha256)
+  );
 }
 
 /**
@@ -1312,12 +1259,13 @@ function criticalSchemaEvidenceMatches(
  *
  * This grants no provider authority and performs no migration. A nonproduction
  * runtime is ready only when its exact authorized manifest is bound to one
- * append-only bootstrap completion, every current financial SQL checksum, and
- * the exact live catalog identity of the financial intake, preparation,
- * processing, command-journal, and recovery schema.
+ * supported PostgreSQL 16 database identity, one append-only bootstrap
+ * completion, every current financial SQL checksum, and the exact live catalog
+ * identity of the financial intake, preparation, processing, command-journal,
+ * and recovery schema.
  */
 export async function readNonproductionFinancialBootstrapReadiness(
-  options: ReadinessOptions,
+  options: ReadinessOptions
 ): Promise<NonproductionFinancialBootstrapReadiness> {
   const environment = normalizeEnvironment(options.environment);
   if (hasContradictoryProductionMetadata(options.environment, options.env)) {
@@ -1354,111 +1302,204 @@ export async function readNonproductionFinancialBootstrapReadiness(
   };
 
   try {
-    return await options.database.transaction(async (query) => {
-      await query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
-      await query("SET LOCAL search_path = 'pg_catalog'");
-      await query("SET LOCAL statement_timeout = '1000ms'");
-      await query("SET LOCAL lock_timeout = '250ms'");
+    return await options.database.readOnlyAttestationTransaction(async (query) => {
+      if (
+        !(await hasSupportedPostgreSqlMajor(query)) ||
+        !(await hasSupportedDatabaseIdentity(query))
+      ) {
+        return baseReadiness(environment, 'database_identity_mismatch', evidenceFields);
+      }
       const completion = await query<BootstrapCompletionRow>(
-      `SELECT release_id, release_environment, required_migration_count,
+        `SELECT release_id, release_environment, required_migration_count,
               financial_migration_status, completed_at
-       FROM public.hxos_nonproduction_bootstrap_completion_v1
-       WHERE release_manifest_digest = $1
-         AND migration_artifact_digest = $2`,
-      [exactReleaseManifestDigest, migrationArtifactDigest],
-    );
-    const row = completion.rows[0];
-    if (
-      completion.rows.length !== 1
-      || !row
-      || row.release_id !== manifest.releaseId
-      || row.release_environment !== environment
-      || Number(row.required_migration_count) !== REQUIRED_MIGRATION_FILES.length
-      || !['applied', 'already_applied'].includes(row.financial_migration_status)
-    ) {
-      return baseReadiness(environment, 'bootstrap_missing', evidenceFields);
-    }
+       FROM public.hxos_read_fake_financial_bootstrap_completion_v13($1,$2)`,
+        [exactReleaseManifestDigest, migrationArtifactDigest]
+      );
+      const row = completion.rows[0];
+      if (
+        completion.rows.length !== 1 ||
+        !row ||
+        row.release_id !== manifest.releaseId ||
+        row.release_environment !== environment ||
+        Number(row.required_migration_count) !== REQUIRED_MIGRATION_FILES.length ||
+        !['applied', 'already_applied'].includes(row.financial_migration_status)
+      ) {
+        return baseReadiness(environment, 'bootstrap_missing', evidenceFields);
+      }
 
-    const expected = options.expectedFinancialEvidence ?? await expectedFinancialEvidence();
-    if (
-      expected.length !== NONPRODUCTION_FAKE_FINANCIAL_MIGRATION_FILES.length
-      || expected.some((entry, index) => (
-        entry.migrationName !== NONPRODUCTION_FAKE_FINANCIAL_MIGRATION_FILES[index]?.name
-        || !SHA256.test(entry.sha256)
-      ))
-    ) {
-      return baseReadiness(environment, 'attestation_unavailable', evidenceFields);
-    }
-    const observed = await readSchemaEvidence(query);
-    const matchedFakeFinancialMigrationCount = matchingEvidenceCount(observed, expected);
-    if (
-      observed.length !== expected.length
-      || matchedFakeFinancialMigrationCount !== expected.length
-    ) {
-      return baseReadiness(environment, 'schema_evidence_mismatch', {
-        ...evidenceFields,
-        matchedFakeFinancialMigrationCount,
-      });
-    }
+      const expected = options.expectedFinancialEvidence ?? (await expectedFinancialEvidence());
+      if (
+        expected.length !== NONPRODUCTION_FAKE_FINANCIAL_MIGRATION_FILES.length ||
+        expected.some(
+          (entry, index) =>
+            entry.migrationName !== NONPRODUCTION_FAKE_FINANCIAL_MIGRATION_FILES[index]?.name ||
+            !SHA256.test(entry.sha256)
+        )
+      ) {
+        return baseReadiness(environment, 'attestation_unavailable', evidenceFields);
+      }
+      const observed = await readSchemaEvidence(query);
+      const matchedFakeFinancialMigrationCount = matchingEvidenceCount(observed, expected);
+      if (
+        observed.length !== expected.length ||
+        matchedFakeFinancialMigrationCount !== expected.length
+      ) {
+        return baseReadiness(environment, 'schema_evidence_mismatch', {
+          ...evidenceFields,
+          matchedFakeFinancialMigrationCount,
+        });
+      }
 
-    const expectedCriticalMigrations = options.expectedCriticalMigrationEvidence
-      ?? await expectedCriticalMigrationEvidence();
-    if (!validExpectedEvidence(
-      expectedCriticalMigrations,
-      CRITICAL_FINANCIAL_MIGRATIONS.map(({ migrationName }) => migrationName),
-    )) {
-      return baseReadiness(environment, 'attestation_unavailable', {
-        ...evidenceFields,
-        matchedFakeFinancialMigrationCount,
-      });
-    }
-    const appliedCriticalMigrations = await readAppliedCriticalMigrationEvidence(query);
-    if (!criticalMigrationEvidenceMatches(
-      appliedCriticalMigrations,
-      expectedCriticalMigrations,
-    )) {
-      return baseReadiness(environment, 'schema_evidence_mismatch', {
-        ...evidenceFields,
-        matchedFakeFinancialMigrationCount,
-      });
-    }
+      const expectedCriticalMigrations =
+        options.expectedCriticalMigrationEvidence ?? (await expectedCriticalMigrationEvidence());
+      if (
+        !validExpectedEvidence(
+          expectedCriticalMigrations,
+          CRITICAL_FINANCIAL_MIGRATIONS.map(({ migrationName }) => migrationName)
+        )
+      ) {
+        return baseReadiness(environment, 'attestation_unavailable', {
+          ...evidenceFields,
+          matchedFakeFinancialMigrationCount,
+        });
+      }
+      const appliedCriticalMigrations = await readAppliedCriticalMigrationEvidence(query);
+      if (
+        !criticalMigrationEvidenceMatches(appliedCriticalMigrations, expectedCriticalMigrations)
+      ) {
+        return baseReadiness(environment, 'schema_evidence_mismatch', {
+          ...evidenceFields,
+          matchedFakeFinancialMigrationCount,
+        });
+      }
 
-    const authorityViolations = await readDatabaseAuthorityViolations(query);
-    if (authorityViolations.length > 0) {
-      return baseReadiness(environment, 'database_authority_violation', {
-        ...evidenceFields,
-        matchedFakeFinancialMigrationCount,
-      });
-    }
+      const expectedOrdinal146 = expectedCriticalMigrations.find(
+        ({ migrationName }) => migrationName === '20261014_universal_v1_work_order_command_ports_v1'
+      );
+      const expectedV12 = expected.find(
+        ({ migrationName }) =>
+          migrationName ===
+          '20261015_universal_v1_work_order_fake_financial_authority_hardening_v12'
+      );
+      const expectedSeal = expected.find(
+        ({ migrationName }) =>
+          migrationName === '20261015_universal_v1_work_order_bootstrap_seal_v1'
+      );
+      const bootstrapAuthorityEvidence = await readWorkOrderBootstrapAuthorityEvidence(query);
+      if (
+        !expectedOrdinal146 ||
+        !expectedV12 ||
+        !expectedSeal ||
+        !bootstrapAuthorityEvidence ||
+        Number(bootstrapAuthorityEvidence.evidence_row_count) !== 1 ||
+        bootstrapAuthorityEvidence.evidence_ordinal146_sha256 !== expectedOrdinal146.sha256 ||
+        bootstrapAuthorityEvidence.evidence_v12_sha256 !== expectedV12.sha256 ||
+        Number(bootstrapAuthorityEvidence.seal_evidence_row_count) !== 1 ||
+        bootstrapAuthorityEvidence.seal_evidence_sha256 !== expectedSeal.sha256 ||
+        bootstrapAuthorityEvidence.seal_evidence_ordinal146_sha256 !== expectedOrdinal146.sha256 ||
+        bootstrapAuthorityEvidence.seal_evidence_v12_sha256 !== expectedV12.sha256
+      ) {
+        return baseReadiness(environment, 'schema_evidence_mismatch', {
+          ...evidenceFields,
+          matchedFakeFinancialMigrationCount,
+        });
+      }
 
-    const expectedCriticalSchema = options.expectedCriticalSchemaEvidence
-      ?? CRITICAL_SCHEMA_EVIDENCE;
-    if (!validExpectedSchemaEvidence(expectedCriticalSchema)) {
-      return baseReadiness(environment, 'attestation_unavailable', {
-        ...evidenceFields,
-        matchedFakeFinancialMigrationCount,
-      });
-    }
-    const observedCriticalSchema = await readCriticalSchemaIdentityEvidence(query);
-    if (!criticalSchemaEvidenceMatches(observedCriticalSchema, expectedCriticalSchema)) {
-      return baseReadiness(environment, 'schema_evidence_mismatch', {
-        ...evidenceFields,
-        matchedFakeFinancialMigrationCount,
-      });
-    }
+      const roles = configuredWorkOrderCommandRoles(options.env);
+      const expectedRuntimeRole =
+        options.component === 'backend'
+          ? roles.apiRole
+          : options.component === 'worker'
+            ? roles.workerRole
+            : roles.migrationRole;
+      const expectedDatabase = options.env.HX_RUNTIME_DATABASE_NAME?.trim();
+      const expectedV13 = expected.find(
+        ({ migrationName }) =>
+          migrationName === '20261016_universal_v1_fake_financial_command_outbox_authority_v13'
+      );
+      // The sealed reader proves internal receipt consistency. Readiness must also
+      // bind that authority to this component, configured database and exact release.
+      // The data plane owns the activation barrier before opening this read snapshot.
+      if (
+        !expectedDatabase ||
+        typeof bootstrapAuthorityEvidence.target_authority_id !== 'string' ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+          bootstrapAuthorityEvidence.target_authority_id
+        ) ||
+        typeof bootstrapAuthorityEvidence.authority_version !== 'number' ||
+        !Number.isSafeInteger(bootstrapAuthorityEvidence.authority_version) ||
+        bootstrapAuthorityEvidence.authority_version < 1 ||
+        bootstrapAuthorityEvidence.session_database_role !== expectedRuntimeRole ||
+        bootstrapAuthorityEvidence.target_database_name !== expectedDatabase ||
+        bootstrapAuthorityEvidence.observed_database_name !== expectedDatabase ||
+        bootstrapAuthorityEvidence.environment !== environment ||
+        bootstrapAuthorityEvidence.release_manifest_sha256 !== exactReleaseManifestDigest ||
+        !expectedV13 ||
+        bootstrapAuthorityEvidence.v13_sql_sha256 !== expectedV13.sha256 ||
+        bootstrapAuthorityEvidence.fake_financial_operations_relation !==
+          'public.hxos_fake_financial_operations_v1' ||
+        bootstrapAuthorityEvidence.fake_financial_operation_events_relation !==
+          'public.hxos_fake_financial_operation_events_v1'
+      ) {
+        return baseReadiness(environment, 'database_authority_violation', {
+          ...evidenceFields,
+          matchedFakeFinancialMigrationCount,
+        });
+      }
 
-    const completedAt = new Date(row.completed_at);
-    if (Number.isNaN(completedAt.getTime())) {
-      return baseReadiness(environment, 'schema_evidence_mismatch', {
+      const commandAuthority = await verifyWorkOrderCommandAuthorityInCurrentSnapshot(
+        query,
+        options.env,
+        options.component === 'backend'
+          ? 'apiRole'
+          : options.component === 'worker'
+            ? 'workerRole'
+            : 'migrationRole'
+      );
+      if (commandAuthority.status !== 'READY')
+        return baseReadiness(environment, 'database_authority_violation', {
+          ...evidenceFields,
+          matchedFakeFinancialMigrationCount,
+        });
+      const authorityViolations = [
+        ...(await readFinancialReadinessCustodyViolations(query, roles)),
+        ...(await readInternalConstraintViolations(query)),
+      ];
+      if (authorityViolations.length > 0) {
+        return baseReadiness(environment, 'database_authority_violation', {
+          ...evidenceFields,
+          matchedFakeFinancialMigrationCount,
+        });
+      }
+
+      const expectedCriticalSchema =
+        options.expectedCriticalSchemaEvidence ?? CRITICAL_SCHEMA_EVIDENCE;
+      if (!validExpectedSchemaEvidence(expectedCriticalSchema)) {
+        return baseReadiness(environment, 'attestation_unavailable', {
+          ...evidenceFields,
+          matchedFakeFinancialMigrationCount,
+        });
+      }
+      const observedCriticalSchema = await readCriticalSchemaIdentityEvidence(query, roles);
+      if (!criticalSchemaEvidenceMatches(observedCriticalSchema, expectedCriticalSchema)) {
+        return baseReadiness(environment, 'schema_evidence_mismatch', {
+          ...evidenceFields,
+          matchedFakeFinancialMigrationCount,
+        });
+      }
+
+      const completedAt = new Date(row.completed_at);
+      if (Number.isNaN(completedAt.getTime())) {
+        return baseReadiness(environment, 'schema_evidence_mismatch', {
+          ...evidenceFields,
+          matchedFakeFinancialMigrationCount,
+        });
+      }
+      return baseReadiness(environment, 'ready', {
         ...evidenceFields,
         matchedFakeFinancialMigrationCount,
+        completedAt: completedAt.toISOString(),
       });
-    }
-    return baseReadiness(environment, 'ready', {
-      ...evidenceFields,
-      matchedFakeFinancialMigrationCount,
-      completedAt: completedAt.toISOString(),
-    });
     });
   } catch {
     return baseReadiness(environment, 'attestation_unavailable', evidenceFields);

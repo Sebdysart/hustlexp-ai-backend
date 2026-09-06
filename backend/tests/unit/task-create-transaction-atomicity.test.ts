@@ -59,6 +59,7 @@ describe('transaction-bound task creation atomicity', () => {
       .mockResolvedValueOnce({ rows: [] }) // locked idempotency recheck
       .mockResolvedValueOnce({ rows: [{
         id: '20000000-0000-4000-8000-000000000001',
+        version: '1',
         poster_id: '00000000-0000-4000-8000-000000000001',
         title: 'Business work order', description: 'Approved work order',
         requirements: null,

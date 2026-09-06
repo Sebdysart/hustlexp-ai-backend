@@ -1,123 +1,219 @@
-# HustleXP V1A PostgreSQL Actor-Attestation Decision Packet
+# HustleXP V1A PostgreSQL actor-attestation decision packet
 
-- Status: `HOLD — EXTERNAL_DECISION_REQUIRED / RELEASE_BLOCKING`
-- Prepared: 2026-08-30
-- Scope: Universal V1A consequential PostgreSQL commands
-- Affected gates: Gate 2 directly; the authoritative Gate 3 end-to-end command lane transitively
+- Owner-decision status: `AUTHORIZED_LOCAL_NONPROD_IMPLEMENTATION_PENDING`
+- Release status: `RELEASE_BLOCKED_PENDING_IMPLEMENTATION_AND_INDEPENDENT_REVIEW`
+- Decision: `OPTION_A_ISOLATED_ONE_TIME_ACTOR_ATTESTER`
+- Scope: Universal V1A consequential PostgreSQL commands in isolated local,
+  preview, and staging environments using synthetic data and fake value
+- Production effects: `NONE`
+- Production money: `FROZEN`
+- Production hard assignment: `FROZEN`
+- Independent security/release approval: `ABSENT`
 
-## Decision required
+The owner has authorized Option A as the implementation direction for
+local/nonproduction work. That authorization selects the design; it is not an
+independent security review, release approval, database provisioning receipt,
+or proof that any function or role exists. The machine-readable record is
+`backend/database/work-order-command-authority.HOLD.json`, which remains
+non-authorizing and release-blocking.
 
-Approve one independently verifiable way for PostgreSQL to bind a consequential command to the authenticated human who authorized its exact payload. Until that decision is approved and implemented, the application may continue safe read-model, routing, fake-provider, orchestration, and test work, but no Universal V1A command lane may be certified as release-authoritative.
+## Authorized decision
 
-- Decision owner: `UNASSIGNED — human Platform/Security owner required`
-- Security approver: `UNASSIGNED`
-- Approval evidence: `ABSENT`
-- Target environments: local, preview, staging; production remains held
+Use an isolated identity-attestation service and a PostgreSQL login that are
+separate from API, worker, migration, command-owner, assertion-owner, and
+finance-owner identities.
 
-## Current evidence
+For each consequential command, the attester must independently reverify the
+original bearer, including revocation, issuer, audience, and expiry. It resolves
+the verified subject rather than accepting an actor UUID selected by the
+browser or API. Command-specific authentication and step-up facts are recorded
+and rechecked according to the command policy; this decision does not invent a
+blanket MFA policy for ordinary customer or provider commands.
 
-The application currently establishes a strong identity chain through token verification with revocation checking, a named active user, current Operations RBAC, and fresh MFA/step-up. It then passes `ctx.user.id` to PostgreSQL over a shared runtime connection.
+The attester creates a random 256-bit opaque one-time token. Only its SHA-256
+digest may be persisted. The plaintext token may exist transiently in attester
+and API memory but must never be stored, logged, placed in a URL, returned in
+health output, or included in immutable audit. PostgreSQL owns issuance time and
+expiry. The database-owned maximum assertion lifetime is exactly 60 seconds;
+the effective lifetime must be shorter when the verified bearer expires sooner.
 
-That UUID is useful audit provenance, but PostgreSQL cannot prove that it came from the verified token. Code running with the shared runtime login can supply a different UUID. API, worker, and migration processes also are not yet proven to use separate least-privilege roles. Direct runtime DML remains possible on some command-owned relations.
+The assertion binds all of the following:
 
-The current Work Order role-authority verifier therefore correctly reports actor binding as absent and the protocol as unapproved. Existing HMAC secrets held by the same runtime do not create an independent trust boundary.
+- exact environment;
+- command kind;
+- canonical command/request SHA-256;
+- independently verified subject;
+- relevant authentication and step-up facts;
+- verification and expiry time.
 
-## Recommended decision: isolated one-time identity attestation
+Issuance and consumption are separate append-only facts. Consumption is
+one-time and occurs inside the same serializable transaction as the protected
+command. A sealed function maps the verified subject to the canonical user,
+recomputes or rechecks the exact command binding, and rechecks current account,
+role, capability, version, and domain authority. A custom PostgreSQL setting,
+caller-supplied actor UUID, or secret shared with the API/worker is not identity
+authority.
 
-Approve an identity-attestation service and role that are separate from the API and worker runtimes.
+## Required eight-role topology
 
-1. The attester re-verifies the Firebase bearer token with revocation checking, exact issuer/audience, token expiry, MFA, and authentication recency.
-2. The attester canonicalizes the exact command and records an append-only assertion containing:
-   - Firebase UID rather than a caller-selected database UUID;
-   - environment and command kind;
-   - exact canonical request SHA-256;
-   - MFA/authentication facts and verification time;
-   - a random 256-bit one-time token digest/JTI;
-   - an expiry no longer than 60 seconds.
-3. Only an attester-specific PostgreSQL login can insert assertion facts. API and worker roles receive no insert, update, delete, or truncate privilege on assertion relations and cannot mint assertions.
-4. The API receives only the opaque one-time token and passes it with the command. It never accepts an actor UUID from the client.
-5. A sealed command function resolves the Firebase UID to the canonical user, consumes the assertion exactly once, recomputes the request hash, and rechecks active identity, role, capability, step-up, expected versions, and domain authority inside the same serializable transaction.
-6. Assertion consumption is an append-only fact. Replays return the original result only for the exact command and cannot consume or mutate a second assertion.
+The exact configured database identifiers remain unprovisioned and therefore
+`null` in the HOLD. Their logical responsibilities are fixed:
 
-The initial estimate-lane command shape should be:
+| Logical role | Login | Authorized shape |
+|---|---:|---|
+| Migrator | Yes, one-shot | Applies the exact approved migration manifest; never an API/worker credential and cannot execute runtime command entrypoints |
+| API | Yes | Read access required by API projections and `EXECUTE` only on approved human command entrypoints; no direct protected DML |
+| Worker | Yes | Read access required by workers and `EXECUTE` only on approved worker/recovery entrypoints; no direct protected DML |
+| Attester | Yes | May issue assertions only through the sealed issuer; cannot consume assertions or execute Work Order commands |
+| Command owner | `NOLOGIN` | Owns sealed Work Order commands; no elevated attributes or cross-role membership |
+| Assertion owner | `NOLOGIN` | Owns assertion relations, issuer, and consumer; no elevated attributes or cross-role membership |
+| Finance owner | `NOLOGIN` | Owns separately certified provider-neutral financial commands; its existence grants no Work Order, payment, settlement, payout, or production capability |
+| Telemetry owner | `NOLOGIN` | Owns the sealed major-action telemetry functions; receives only their exact read/insert dependencies and no command, finance, or protected-table ownership |
 
-```sql
-public.issue_universal_v1_initial_eligibility_invitation_v1(
-  p_actor_assertion_token text,
-  p_task_draft_id uuid,
-  p_provider_user_id uuid,
-  p_expected_draft_version integer,
-  p_idempotency_key text,
-  p_client_ts timestamptz
+All eight roles must be pairwise distinct, have no superuser, role-creation,
+database-creation, replication, or row-security-bypass attribute, and have no
+cross-membership. API, worker, and attester logins must lack `CREATE` on
+`public`. Migration credentials remain outside API, worker, and attester
+services.
+
+## Planned database objects and function identities
+
+The implementation may create a protected `hx_authority` schema containing
+immutable assertion-issuance and assertion-consumption facts. It must not store
+the opaque token itself.
+
+The planned sealed identities are:
+
+```text
+public.hxos_issue_universal_v1_actor_assertion_v1(
+  text,text,text,text,jsonb,timestamptz
+)
+
+hx_authority.consume_universal_v1_actor_assertion_v1(
+  text,text,jsonb,text
+)
+
+public.hxos_express_universal_v1_post_estimate_interest_v1(
+  text,uuid,integer,text,timestamptz
+)
+
+public.hxos_place_universal_v1_conditional_hold_v1(
+  text,uuid,integer,text,timestamptz
+)
+
+public.hxos_prepare_universal_v1_fake_work_order_v1(
+  text,uuid,integer,text,timestamptz
+)
+
+public.hxos_materialize_universal_v1_fake_work_order_v1(
+  text,text,text,uuid
+)
+
+public.hxos_request_universal_v1_fake_work_order_recovery_v1(
+  text,text,text,uuid
+)
+
+public.hxos_claim_universal_v1_work_order_compensation_v2(
+  integer,integer
 )
 ```
 
-The client must not supply actor, organization, credential, provider class, category, region, risk, proof, availability, price, financial eligibility, or policy fields.
+The attester alone may execute the issuer. The assertion consumer is internal
+and executable only by the no-login command owner. The API may execute only the
+five API entrypoints. The worker may execute only the bounded recovery claimant.
+`PUBLIC` and the migrator may execute none of them.
 
-## Required PostgreSQL authority shape
+Every entrypoint is planned as `SECURITY DEFINER`, `VOLATILE`, with the exact
+fixed search path `pg_catalog`. It must fully qualify protected objects,
+derive the actor from the consumed assertion, bind expected versions and
+idempotency, and emit immutable command/audit evidence. These are planned
+identities, not implemented or provisioned facts.
 
-- Separate logins for migrations, API runtime, identity attester, and preferably worker runtime.
-- Separate `NOLOGIN` owners for sealed commands and assertion relations.
-- Command functions are `SECURITY DEFINER`, `VOLATILE`, and set the exact search path `pg_catalog, public`.
-- Runtime roles receive `EXECUTE` only on sealed commands and read-only access required by their projections.
-- Runtime direct DML is revoked from eligibility, quote, invitation, hold, Work Order, assignment, address-grant, command-evidence, and assertion relations.
-- `PUBLIC` and migration/runtime roles cannot execute internal trigger helpers or mint assertions.
-- Runtime roles do not have `CREATE` on `public` and cannot set a custom session value that substitutes for identity proof.
-- Existing alternate writers, including post-estimate eligibility insertion, must be sealed or held before protected-relation DML is revoked.
+The finance owner remains distinct because fake financial execution has a
+separate authority boundary. A Work Order command may verify an exact successful
+fake Financial Security Event; it does not receive direct financial-table write
+authority and cannot activate real money.
 
-## Domain requirements for the first sealed command
+## Protected write surface and alternate writers
 
-Inside one `SERIALIZABLE` transaction, the function must:
+API, worker, and attester direct `INSERT`, `UPDATE`, `DELETE`, and `TRUNCATE`
+must ultimately be absent from:
 
-- lock the exact TaskDraft, active route, provider, organization, credential, service-cell authority, and relevant restriction facts;
-- require the expected active `ESTIMATE_REQUIRED` route version;
-- derive all seven eligibility dimensions from current server/database authority;
-- record a negative eligibility fact without creating a quote or invitation;
-- for an eligible result, atomically create the eligibility fact, empty provider-estimate quote shell, and immutable invitation;
-- keep `processor_payment_eligible=false` and `payout_funding_eligible=false`;
-- record `final_availability_confirmation_required=true`;
-- create no payment, escrow, Financial Security Event, hold, assignment, address grant, Task, or Work Order.
+- `public.task_work_order_command_requests`;
+- `public.task_provider_eligibility_decisions`;
+- `public.task_work_orders`;
+- `public.task_work_order_execution_facts`;
+- `public.task_reservations`;
+- `public.task_applications`.
 
-## Alternatives requiring an explicit decision
+Direct DML must not be revoked prematurely. Every existing writer must first be
+ported to a typed sealed command or structurally held. This includes Work Order
+interest, hold, prepare, materialize and recovery; execution, fulfillment and
+change-order facts; opportunity and legacy application writers; legacy
+reservation/assignment writers; and privacy erasure. Universal V1 privacy
+redaction must preserve immutable authority evidence rather than generically
+rewriting a canonical actor fact.
 
-### A. Isolated one-time attester — recommended
+Production hard assignment remains frozen. Interest is not assignment, a
+conditional hold is not assignment, and Work Order materialization under this
+local/nonproduction plan must continue returning
+`hard_assignment_created=false` and `payment_creation_performed=false`.
 
-Strong request binding and clean role separation. Adds one small service/credential boundary and operational rotation/monitoring obligations.
+## Required implementation sequence
 
-### B. Per-request database identity through an approved gateway
-
-Acceptable only if the gateway cryptographically authenticates the end user and PostgreSQL can independently verify the bound identity and request. A freely settable session variable, JWT decoded only by application code, or shared runtime role is not sufficient.
-
-### C. Keep the command lane held
-
-Safest default when A or B is not approved. Continue all unaffected build/test work, but do not certify or promote the end-to-end command lane.
-
-## Rejected shortcuts
-
-- Trusting a client-supplied or application-supplied actor UUID.
-- Signing with a secret available to the same API/worker runtime.
-- Treating application RBAC alone as PostgreSQL command authority.
-- Granting broad table DML and relying only on repository conventions.
-- Using mutable session settings as the authorization proof.
-- Marking the verifier ready without independent readback evidence.
+1. Preserve this decision and the machine-readable HOLD without granting
+   runtime authority.
+2. Implement the assertion schema and sealed functions in an append-only
+   migration.
+3. Provision and read back the eight exact roles in disposable local
+   PostgreSQL, then in isolated preview/staging through approved secret
+   references.
+4. Add the isolated attester and bind the API request without exposing the
+   bearer or token.
+5. Port or structurally hold every protected-relation writer.
+6. Revoke direct DML only after the writer inventory is proven complete.
+7. Run genuine distinct-login authorization, concurrency, recovery, migration,
+   and public API/worker tests.
+8. Obtain independent security review and the normal exact-SHA protected-release
+   approvals. Owner authorization and Codex review do not satisfy this step.
 
 ## Acceptance evidence
 
-Approval and implementation are complete only when automated tests and live readback prove:
+The release block remains until exact candidate evidence proves:
 
-- forged, expired, reused, wrong-environment, wrong-command, wrong-request-hash, and non-MFA assertions are denied;
-- client actor spoofing is impossible;
-- role/capability revocation after assertion minting is rechecked and denied;
-- direct runtime insert, update, delete, and truncate are denied on every protected relation;
-- exact retries replay one result and changed payloads conflict;
-- negative eligibility creates no quote or invitation;
-- concurrent calls produce one authoritative eligibility/invitation result;
-- assertion, consumption, command, and audit facts are append-only;
-- function owner, ACL, volatility, fixed search path, role shape, and relation privileges match the approved manifest;
-- API, worker, migration, and attester identities are distinct in local/preview/staging health readback.
+- the eight configured roles exist, are pairwise distinct, and match their
+  login, ownership, membership, and elevated-attribute requirements;
+- runtime database target v3 binds the canonical eight-role-topology digest to
+  the database, environment, release, build, and target identity before any
+  listener or worker may be treated as authoritative;
+- forged, expired, reused, wrong-environment, wrong-command, wrong-binding, and
+  wrong-actor assertions are denied;
+- only a SHA-256 token digest is persisted and the maximum assertion lifetime is
+  60 seconds;
+- assertion issuance, consumption, command, and audit facts are append-only;
+- API, worker, and attester direct protected DML is denied;
+- exact retry returns one result and changed payloads conflict;
+- current actor, role, capability, expected-version, and domain authority are
+  rechecked at consumption;
+- Work Order materialization versus recovery produces exactly one winner under
+  concurrency and crash-boundary tests;
+- function owner, ACL, volatility, fixed search path, schema privileges, and
+  live session identities match the approved manifest;
+- a real authenticated HTTP to attester to API to worker journey succeeds on
+  synthetic data and fake value without creating hard assignment or production
+  money;
+- an independent human reviewer approves the exact implementation and the
+  normal last-push, hosted-check, conversation-resolution, signature, and
+  protected-merge gates remain satisfied.
 
-## Safe work while held
+## Non-authority and exclusions
 
-The hold does not block deterministic routing, privacy-safe occurrence projections, provider-neutral fake financial behavior, nonproduction refusal guards, tests, clean-clone orchestration, synthetic fixtures, or documentation. It blocks only claims that consequential PostgreSQL command authority—or an end-to-end release candidate depending on it—is complete.
+This decision does not authorize a migration, role creation, credential
+distribution, deployment, persistent-target mutation, live communication,
+processor call, payment creation, capture, settlement, payout, banking effect,
+production database change, production deployment, or real hard assignment.
+It does not count as independent security or release approval.
 
-Production payment creation, hard assignment, deployment, and production database changes remain frozen regardless of this decision.
+Safe unrelated local work may continue. The dependent Work Order authority and
+end-to-end certification lanes remain release-blocked until implementation,
+live readback, tests, and independent review all succeed on the exact candidate.

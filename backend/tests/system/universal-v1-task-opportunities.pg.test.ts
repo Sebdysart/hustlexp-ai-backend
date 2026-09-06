@@ -1,26 +1,35 @@
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { createServer } from 'node:net';
 
+import { trpcServer } from '@hono/trpc-server';
 import { Hono } from 'hono';
 import pg from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { buildIdentity } from '../../src/buildIdentity.js';
-import type { QueryFn } from '../../src/db.js';
+import type { Database, QueryFn } from '../../src/db.js';
+import { processEmailJob } from '../../src/jobs/email-worker.js';
 import { releaseManifestEvidence } from '../../src/releaseManifest.js';
+import { universalOccurrenceRouter } from '../../src/routers/universalOccurrence.js';
+import { universalV1TaskOpportunitiesRouter } from '../../src/routers/universalV1TaskOpportunities.js';
+import { createUniversalV1StandardizedQuotesRouter } from '../../src/routers/universalV1StandardizedQuotes.js';
+import { webLeadsRouter } from '../../src/routers/web/leads.js';
 import {
   submitUniversalV1TaskDraft,
+  webTaskDraftsRouter,
   type TaskDraftIngressDependencies,
   type TaskDraftIngressInput,
 } from '../../src/routers/web/taskDrafts.js';
 import { registerHealthRoutes } from '../../src/serverHealthRoutes.js';
 import { registerTrpcRoutes } from '../../src/serverTrpcRoutes.js';
 import type { HustleApp } from '../../src/serverTypes.js';
+import { PostgresUniversalV1OccurrenceFactReader } from '../../src/services/UniversalV1OccurrenceReadModel.js';
 import {
   UniversalV1TaskOpportunityService,
   universalV1TaskOpportunityAuthority,
 } from '../../src/services/UniversalV1TaskOpportunityService.js';
+import { UniversalV1StandardizedQuoteApplication } from '../../src/services/UniversalV1StandardizedQuoteApplication.js';
+import { UniversalV1StandardizedQuotePostgresRepository } from '../../src/services/UniversalV1StandardizedQuotePostgresRepository.js';
 import {
   claimUniversalV1TaskDraft,
   type UniversalV1TaskDraftClaimDependencies,
@@ -32,6 +41,7 @@ import {
   SYNTHETIC_SERVICE_CELL_POSTAL_CODE,
   SYNTHETIC_SERVICE_CELL_REGION_CODE,
 } from '../helpers/universal-v1-service-cell-authority.js';
+import { createContext, router } from '../../src/trpc.js';
 
 const enabled = process.env.HX_ALLOW_TASK_DRAFT_INGRESS_PG === '1';
 const describePg = enabled ? describe : describe.skip;
@@ -40,20 +50,6 @@ const applicationDatabaseUrl = process.env.DATABASE_URL ?? '';
 const now = 1_800_000_000_000;
 const localCertificationSecret =
   'required-test-opportunity-http-auth-secret-v1-0000000000000000';
-const relationshipOriginMigration = readFileSync(
-  resolve(
-    process.cwd(),
-    'backend/database/migrations/20261001_universal_v1_relationship_origin_v1.sql'
-  ),
-  'utf8'
-);
-const opportunityMigration = readFileSync(
-  resolve(
-    process.cwd(),
-    'backend/database/migrations/20261003_universal_v1_task_opportunities_v1.sql'
-  ),
-  'utf8'
-);
 
 interface ProviderFixture {
   userId: string;
@@ -123,10 +119,22 @@ interface ApiOpportunity {
   opportunityVersion: number;
   taskDraftId: string;
   workCategoryCode: string;
-  privacyPosture: 'ROUTE_CONTEXT_ALLOWLIST_ONLY';
+  privacyPosture:
+    | 'ROUTE_CONTEXT_ALLOWLIST_ONLY'
+    | 'STANDARDIZED_SCOPE_ALLOWLIST_ONLY';
   assignmentAuthority: 'NONE';
   addressContactAuthority: 'NONE';
   financialAuthority: 'NONE';
+  standardizedQuote?: {
+    quoteVersionId: string;
+    quoteVersion: number;
+    customerTotalCents: number;
+    currency: 'usd';
+    fakePaymentMethodReady: boolean;
+    paymentMethodReadinessPosture: string;
+    paymentCreationCreated: false;
+    financialSecurityEventCreated: false;
+  } | null;
 }
 
 interface ApiBrowseResult {
@@ -173,6 +181,73 @@ interface ApiJourneyResult {
     addressContactAuthority: 'NONE';
     financialAuthority: 'NONE';
   };
+}
+
+interface ApiStandardizedQuoteResult {
+  state: 'QUOTED';
+  quote: {
+    quoteVersionId: string;
+    quoteVersion: number;
+    taskDraftId: string;
+    routingDecisionVersion: number;
+    workCategoryCode: string;
+    customerTotalCents: number;
+    currency: 'usd';
+  };
+  paymentCreationFrozen: true;
+  taskCreated: false;
+  assignmentCreated: false;
+  workOrderCreated: false;
+}
+
+interface ApiStandardizedAcceptanceResult {
+  state: 'ACCEPTED';
+  acceptance: {
+    acceptanceFactId: string;
+    acceptanceVersion: 1;
+    quoteVersionId: string;
+  };
+  paymentCreationCreated: false;
+  financialSecurityEventCreated: false;
+  taskCreated: false;
+  assignmentCreated: false;
+  workOrderCreated: false;
+}
+
+interface ApiFakeReadinessResult {
+  state: 'FAKE_PAYMENT_METHOD_READY';
+  readiness: {
+    readinessFactId: string;
+    readinessVersion: number;
+    acceptanceFactId: string;
+    providerKind: 'FAKE';
+  };
+  providerKind: 'FAKE';
+  networkCalled: false;
+  externalValueCreated: false;
+  customerMoneyCreated: false;
+  authorizationCreated: false;
+  financialSecurityEventCreated: false;
+  taskCreated: false;
+  assignmentCreated: false;
+  workOrderCreated: false;
+  settlementCreated: false;
+  payoutCreated: false;
+}
+
+interface ApiStandardizedCurrentResult {
+  quote: ApiStandardizedQuoteResult['quote'] | null;
+  acceptance: ApiStandardizedAcceptanceResult['acceptance'] | null;
+  readiness: ApiFakeReadinessResult['readiness'] | null;
+  routingCurrent: boolean;
+  acceptanceOpen: boolean;
+  priceLocked: boolean;
+  fakePaymentMethodReady: boolean;
+  actionableState: string;
+  paymentCreationFrozen: true;
+  taskCreated: false;
+  assignmentCreated: false;
+  workOrderCreated: false;
 }
 
 function assertDisposableDatabase(value: string): void {
@@ -361,6 +436,50 @@ describePg('Universal V1 Task Opportunities PostgreSQL authority', () => {
     },
     transaction,
   };
+  const applicationTransaction: Database['transaction'] = async (callback) => {
+    const client = await applicationPool.connect();
+    try {
+      await client.query('BEGIN');
+      const query: QueryFn = async <Row = Record<string, unknown>>(
+        sql: string,
+        params?: unknown[]
+      ) => {
+        const result = await client.query(sql, params);
+        return { rows: result.rows as Row[], rowCount: result.rowCount ?? 0 };
+      };
+      const value = await callback(query);
+      await client.query('COMMIT');
+      return value;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  };
+  const applicationDatabase: Database = {
+    query: async <Row = Record<string, unknown>>(sql: string, params?: unknown[]) => {
+      const result = await applicationPool.query(sql, params);
+      return { rows: result.rows as Row[], rowCount: result.rowCount ?? 0 };
+    },
+    readQuery: async <Row = Record<string, unknown>>(sql: string, params?: unknown[]) => {
+      const result = await applicationPool.query(sql, params);
+      return { rows: result.rows as Row[], rowCount: result.rowCount ?? 0 };
+    },
+    transaction: applicationTransaction,
+    serializableTransaction: applicationTransaction,
+    healthCheck: async () => ({ connected: true, schemaVersion: null, latencyMs: 0 }),
+    getPool: () => applicationPool,
+    getPoolStats: () => ({
+      totalConnections: applicationPool.totalCount,
+      idleConnections: applicationPool.idleCount,
+      waitingRequests: applicationPool.waitingCount,
+      maxConnections: 10,
+      utilizationPercent: 0,
+      replicaConnections: null,
+    }),
+    close: async () => undefined,
+  };
   const service = new UniversalV1TaskOpportunityService(database);
 
   const ingressDependencies: Partial<TaskDraftIngressDependencies> = {
@@ -402,17 +521,12 @@ describePg('Universal V1 Task Opportunities PostgreSQL authority', () => {
     await pool.query('SELECT 1');
     await applicationPool.query('SELECT 1');
 
-    // The required test gate recreates this database from the registered
-    // canonical baseline. These unregistered successors are installed in
-    // dependency order here, so the first run is a clean installation and
-    // later diagnostic runs prove deterministic replay.
-    await pool.query(relationshipOriginMigration);
-    await pool.query(opportunityMigration);
-    await pool.query(opportunityMigration);
+    // The required gate recreates both databases from the canonical baseline
+    // and applies every registered migration in order. Do not replay an older
+    // predecessor after its registered successor: migration 143 deliberately
+    // extends the opportunity view contract. Migration replay is proven at the
+    // current head by its dedicated PostgreSQL system test.
     await ensureUniversalV1SyntheticServiceCell(pool);
-    await applicationPool.query(relationshipOriginMigration);
-    await applicationPool.query(opportunityMigration);
-    await applicationPool.query(opportunityMigration);
     await ensureUniversalV1SyntheticServiceCell(applicationPool);
   }, 120_000);
 
@@ -467,6 +581,32 @@ describePg('Universal V1 Task Opportunities PostgreSQL authority', () => {
        VALUES ($1, 1, $2)`,
       [userId, providerClass]
     );
+  }
+
+  function gate25HttpApp(requestNow: number): HustleApp {
+    const standardizedApplication = new UniversalV1StandardizedQuoteApplication(
+      new UniversalV1StandardizedQuotePostgresRepository(),
+      {
+        now: () => requestNow,
+        runtimeEvidence: () => ({
+          environment: 'local',
+          buildCommitSha: 'a'.repeat(40),
+          releaseManifestDigest: `sha256:${'b'.repeat(64)}`,
+          capabilityPolicyDigest: `sha256:${'c'.repeat(64)}`,
+        }),
+      }
+    );
+    const gate25Router = router({
+      webTaskDrafts: webTaskDraftsRouter,
+      webLeads: webLeadsRouter,
+      universalV1StandardizedQuotes:
+        createUniversalV1StandardizedQuotesRouter(standardizedApplication),
+      universalV1TaskOpportunities: universalV1TaskOpportunitiesRouter,
+      universalOccurrence: universalOccurrenceRouter,
+    });
+    const app = new Hono() as unknown as HustleApp;
+    app.use('/trpc/*', trpcServer({ router: gate25Router, createContext }));
+    return app;
   }
 
   async function generalIndividualFixture(): Promise<ProviderFixture> {
@@ -729,7 +869,256 @@ describePg('Universal V1 Task Opportunities PostgreSQL authority', () => {
     return result.rows[0]!;
   }
 
-  it('installs and replays after RelationshipOrigin with fixed search paths and no PUBLIC power', async () => {
+  async function deliverLeadConfirmationToSyntheticSink(
+    leadId: string,
+    toEmail: string
+  ): Promise<void> {
+    const canonical = await applicationPool.query<{
+      email_id: string;
+      user_id: string | null;
+      lead_id: string;
+      to_email: string;
+      template: string;
+      params_json: Record<string, unknown>;
+      email_status: string;
+      email_idempotency_key: string;
+      outbox_id: string;
+      event_type: string;
+      aggregate_type: string;
+      aggregate_id: string;
+      event_version: number;
+      queue_name: string;
+      outbox_status: string;
+      payload: {
+        emailId: string;
+        toEmail: string;
+        template: string;
+        params: Record<string, unknown>;
+      };
+    }>(
+      `SELECT email.id AS email_id,email.user_id,email.lead_id,email.to_email,
+              email.template,email.params_json,email.status AS email_status,
+              email.idempotency_key AS email_idempotency_key,
+              outbox.id AS outbox_id,outbox.event_type,outbox.aggregate_type,
+              outbox.aggregate_id,outbox.event_version,outbox.queue_name,
+              outbox.status AS outbox_status,outbox.payload
+         FROM public.email_outbox email
+         JOIN public.outbox_events outbox
+           ON outbox.idempotency_key=email.idempotency_key
+          AND outbox.event_type='email.send_requested'
+        WHERE email.lead_id=$1::UUID
+          AND email.user_id IS NULL
+          AND email.notification_id IS NULL
+          AND email.task_completion_notice_request_id IS NULL`,
+      [leadId]
+    );
+    expect(canonical.rows).toHaveLength(1);
+    const canonicalRow = canonical.rows[0]!;
+    const expectedParams = { leadType: 'poster', firstName: 'Private' };
+    expect(canonicalRow).toMatchObject({
+      user_id: null,
+      lead_id: leadId,
+      to_email: toEmail,
+      template: 'lead_confirmation',
+      params_json: expectedParams,
+      email_status: 'pending',
+      event_type: 'email.send_requested',
+      aggregate_type: 'lead',
+      aggregate_id: leadId,
+      event_version: 1,
+      queue_name: 'user_notifications',
+      outbox_status: 'pending',
+    });
+    expect(canonicalRow.payload).toEqual({
+      emailId: canonicalRow.email_id,
+      toEmail,
+      template: 'lead_confirmation',
+      params: expectedParams,
+    });
+
+    const dispatchAttemptId = randomUUID();
+    const bullmqJobId = `gate25-lead-confirmation:${randomUUID()}`;
+    const dispatched = await applicationPool.query<{
+      email_id: string;
+      email_idempotency_key: string;
+      event_version: number;
+      payload: {
+        emailId: string;
+        toEmail: string;
+        template: string;
+        params: Record<string, unknown>;
+      };
+    }>(
+      `UPDATE public.outbox_events outbox
+          SET status='enqueued',dispatch_attempt_id=$3::UUID,bullmq_job_id=$4,
+              dispatch_deadline_at=clock_timestamp()+INTERVAL '5 minutes',
+              updated_at=clock_timestamp()
+         FROM public.email_outbox email
+        WHERE outbox.id=$1::UUID
+          AND email.id=$2::UUID
+          AND outbox.idempotency_key=email.idempotency_key
+          AND outbox.event_type='email.send_requested'
+          AND outbox.aggregate_type='lead'
+          AND outbox.aggregate_id=email.lead_id
+          AND outbox.queue_name='user_notifications'
+          AND outbox.status='pending'
+        RETURNING email.id AS email_id,email.idempotency_key AS email_idempotency_key,
+                  outbox.event_version,outbox.payload`,
+      [canonicalRow.outbox_id, canonicalRow.email_id, dispatchAttemptId, bullmqJobId]
+    );
+    expect(dispatched.rows).toHaveLength(1);
+    const dispatchRow = dispatched.rows[0]!;
+    expect(dispatchRow.payload).toEqual(canonicalRow.payload);
+
+    const acceptedMessages: string[] = [];
+    let acceptedRecipient: string | null = null;
+    const smtpServer = createServer((socket) => {
+      let buffer = '';
+      let readingData = false;
+      let recipient: string | null = null;
+      let messageLines: string[] = [];
+      socket.on('error', () => undefined);
+      socket.write('220 hustlexp-gate25-lead-sink ready\r\n');
+      socket.on('data', (chunk) => {
+        buffer += chunk.toString('utf8');
+        const lines = buffer.split('\r\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          if (readingData) {
+            if (line === '.') {
+              readingData = false;
+              if (recipient === toEmail) {
+                acceptedRecipient = recipient;
+                acceptedMessages.push(messageLines.join('\r\n'));
+                socket.write('250 lead confirmation accepted\r\n');
+              } else {
+                socket.write('550 recipient outside targeted synthetic sink\r\n');
+              }
+              socket.end();
+              continue;
+            }
+            messageLines.push(line.startsWith('..') ? line.slice(1) : line);
+            continue;
+          }
+          if (line.startsWith('EHLO ')) {
+            socket.write('250-hustlexp-gate25-lead-sink\r\n250 8BITMIME\r\n');
+          } else if (line.startsWith('MAIL FROM:')) {
+            socket.write('250 accepted\r\n');
+          } else if (line.startsWith('RCPT TO:')) {
+            recipient = line.slice('RCPT TO:<'.length, -1);
+            socket.write(recipient === toEmail ? '250 accepted\r\n' : '550 rejected\r\n');
+          } else if (line === 'DATA') {
+            readingData = true;
+            messageLines = [];
+            socket.write('354 end with dot\r\n');
+          }
+        }
+      });
+    });
+    await new Promise<void>((resolveListen, rejectListen) => {
+      smtpServer.once('error', rejectListen);
+      smtpServer.listen(0, '127.0.0.1', () => {
+        smtpServer.off('error', rejectListen);
+        resolveListen();
+      });
+    });
+    const smtpAddress = smtpServer.address();
+    if (!smtpAddress || typeof smtpAddress === 'string') {
+      throw new Error('Gate 2.5 lead-confirmation SMTP sink did not bind TCP');
+    }
+
+    vi.stubEnv('HX_OUTBOUND_COMMUNICATION_MODE', 'sink');
+    vi.stubEnv('HX_EMAIL_DELIVERY_MODE', 'sink');
+    vi.stubEnv('HX_LIVE_DELIVERY', 'false');
+    vi.stubEnv('HX_LIVE_PROVIDER_ACCESS', 'false');
+    vi.stubEnv('HX_EXTERNAL_VALUE', 'false');
+    vi.stubEnv('SMTP_URL', `smtp://127.0.0.1:${smtpAddress.port}`);
+    const leadConfirmationJob = {
+      id: bullmqJobId,
+      data: {
+        aggregate_type: 'lead',
+        aggregate_id: leadId,
+        event_version: dispatchRow.event_version,
+        outbox_idempotency_key: dispatchRow.email_idempotency_key,
+        outbox_dispatch_attempt_id: dispatchAttemptId,
+        outbox_bullmq_job_id: bullmqJobId,
+        payload: dispatchRow.payload,
+      },
+    } as never;
+    try {
+      await processEmailJob(leadConfirmationJob, applicationDatabase);
+      await processEmailJob(leadConfirmationJob, applicationDatabase);
+    } finally {
+      await new Promise<void>((resolveClose, rejectClose) =>
+        smtpServer.close((error) => {
+          if (error) rejectClose(error);
+          else resolveClose();
+        })
+      );
+    }
+
+    expect(acceptedRecipient).toBe(toEmail);
+    expect(acceptedMessages).toHaveLength(1);
+    const rawMessage = acceptedMessages[0]!;
+    expect(rawMessage).toContain(`To: ${toEmail}`);
+    expect(rawMessage).toContain(
+      `X-HustleXP-Idempotency-Key: ${canonicalRow.email_idempotency_key}`
+    );
+    expect(rawMessage).toContain(
+      `Subject: =?UTF-8?B?${Buffer.from(
+        'Your HustleXP work request is recorded',
+        'utf8'
+      ).toString('base64')}?=`
+    );
+    expect(rawMessage).toContain(
+      'The next result may be fulfillment review, an estimate, manual sourcing, referral, waitlist, or decline.'
+    );
+    expect(rawMessage).toContain('No provider assignment or payment has been created.');
+
+    const delivery = await applicationPool.query<{
+      user_id: string | null;
+      lead_id: string;
+      notification_id: string | null;
+      email_status: string;
+      provider_name: string;
+      provider_msg_id: string;
+      sent_at: Date | null;
+      aggregate_type: string;
+      aggregate_id: string;
+      outbox_status: string;
+      processed_at: Date | null;
+      payload: Record<string, unknown>;
+    }>(
+      `SELECT email.user_id,email.lead_id,email.notification_id,
+              email.status AS email_status,email.provider_name,email.provider_msg_id,
+              email.sent_at,outbox.aggregate_type,outbox.aggregate_id,
+              outbox.status AS outbox_status,outbox.processed_at,outbox.payload
+         FROM public.email_outbox email
+         JOIN public.outbox_events outbox
+           ON outbox.idempotency_key=email.idempotency_key
+        WHERE email.id=$1::UUID`,
+      [canonicalRow.email_id]
+    );
+    expect(delivery.rows).toHaveLength(1);
+    expect(delivery.rows[0]).toMatchObject({
+      user_id: null,
+      lead_id: leadId,
+      notification_id: null,
+      email_status: 'sent',
+      provider_name: 'smtp_sink',
+      aggregate_type: 'lead',
+      aggregate_id: leadId,
+      outbox_status: 'processed',
+      payload: canonicalRow.payload,
+    });
+    expect(delivery.rows[0]!.provider_msg_id).toBe(
+      `smtp-sink-${sha256(`email:${canonicalRow.email_idempotency_key}`)}`
+    );
+    expect(delivery.rows[0]!.sent_at).toBeInstanceOf(Date);
+    expect(delivery.rows[0]!.processed_at).toBeInstanceOf(Date);
+  }
+
+  it('is installed in registered order with fixed search paths and no PUBLIC power', async () => {
     const installed = await pool.query<{
       view_installed: boolean;
       opportunity_constraint_valid: boolean;
@@ -1261,14 +1650,513 @@ describePg('Universal V1 Task Opportunities PostgreSQL authority', () => {
     expect(claimedOwner.rows).toEqual([{ poster_user_id: posterUserId, task_id: null }]);
   }, 60_000);
 
+  it('runs furniture assembly through public quote readiness and provider interest only', async () => {
+    vi.stubEnv('NODE_ENV', 'test');
+    vi.stubEnv('HX_ENVIRONMENT', 'test');
+    vi.stubEnv('ENGINE_API_MODE', 'test');
+    vi.stubEnv('STRIPE_MODE', 'test');
+    vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'frozen');
+    vi.stubEnv('HXOS_ALLOW_LOCAL_TEST_AUTH', 'true');
+    vi.stubEnv('HXOS_LOCAL_TEST_AUTH_SECRET', localCertificationSecret);
+    vi.stubEnv('HX_HUMAN_VERIFICATION_MODE', 'synthetic');
+    vi.stubEnv(
+      'HX_HUMAN_VERIFICATION_URL',
+      'http://127.0.0.1:8080/v1/human-verification/verify'
+    );
+    vi.stubEnv(
+      'HX_HUMAN_VERIFICATION_SECRET',
+      'required-test-human-verification-secret-v1'
+    );
+    vi.stubEnv('PUBLIC_INGRESS_IP_HASH_SALT', 'required-test-gate25-http-ip-salt-v1');
+    vi.stubEnv('TASK_DRAFT_RATE_LIMIT_PER_IP_HOUR', '1000');
+    vi.stubEnv('LEAD_PRIVACY_HASH_SALT', 'required-test-gate25-http-lead-salt-v1');
+    vi.stubEnv('LEAD_RATE_LIMIT_PER_IP_TYPE_HOUR', '1000');
+    vi.stubEnv('ALLOWED_ORIGINS', 'http://localhost:5173');
+    const taskVerificationToken = `synthetic-http-task-${randomUUID()}`;
+    const humanVerificationFetch = vi.fn(async (input: unknown, init?: RequestInit) => {
+      expect(String(input)).toBe(
+        'http://127.0.0.1:8080/v1/human-verification/verify'
+      );
+      expect(init).toMatchObject({
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      });
+      expect(init?.body).toBeInstanceOf(URLSearchParams);
+      expect(Object.fromEntries((init?.body as URLSearchParams).entries())).toEqual({
+        secret: 'required-test-human-verification-secret-v1',
+        response: taskVerificationToken,
+        remoteip: '127.0.0.1',
+        expected_action: 'task',
+      });
+      return new Response(
+        JSON.stringify({
+          success: true,
+          action: 'task',
+          hostname: 'synthetic.invalid',
+          metadata: { result_with_testing_key: true },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      );
+    });
+    vi.stubGlobal('fetch', humanVerificationFetch);
+
+    const requestNow = Date.now();
+    const app = gate25HttpApp(requestNow);
+    const posterUid = `hxos-local-poster-gate25-${randomUUID()}`;
+    const providerUid = `hxos-local-hustler-gate25-${randomUUID()}`;
+    const posterUserId = await userFixture(
+      'poster',
+      'ACTIVE',
+      false,
+      false,
+      applicationPool,
+      posterUid
+    );
+    const providerUserId = await userFixture(
+      'worker',
+      'ACTIVE',
+      false,
+      false,
+      applicationPool,
+      providerUid
+    );
+    await capabilityFixture(providerUserId, 'GENERAL_SERVICE_PROVIDER', applicationPool);
+    const posterToken = localCertificationToken(posterUid);
+    const providerToken = localCertificationToken(providerUid);
+    const before = await consequentialState(applicationPool);
+
+    const submissionId = randomUUID();
+    const cardToken = randomBytes(32).toString('hex');
+    const leadSubmissionId = randomUUID();
+    const leadEmail = `${randomUUID()}@private-gate25.example.invalid`;
+    const createInput: TaskDraftIngressInput = {
+      action: 'create',
+      submission_id: submissionId,
+      expected_version: 0,
+      card_token: cardToken,
+      raw_input: `Assemble a sealed-box dresser ${randomUUID()}`,
+      category: 'furniture_assembly',
+      answers: {
+        assembly_scope_class: 'STANDARD_SINGLE_FLAT_PACK_ITEM_V1',
+        item_count_class: 'one',
+        item: 'Dresser',
+        new_in_box: true,
+        tools_included: true,
+        old_item_removal: false,
+        timing: 'Flexible weekday afternoon',
+        scope_confirmed_at: new Date(requestNow).toISOString(),
+      },
+      zip: SYNTHETIC_SERVICE_CELL_POSTAL_CODE,
+      region: 'untrusted-client-location-hint',
+      photo_count: 0,
+      consent_version: 'v1',
+      turnstile_token: taskVerificationToken,
+      client_ts: requestNow,
+    };
+    const created = await callTrpc<ApiTaskDraftResult>(
+      app,
+      'webTaskDrafts.submit',
+      'mutation',
+      createInput
+    );
+    expect(created).toMatchObject({
+      status: 'anonymous_task_draft',
+      version: 1,
+      routing: { outcome: 'FULFILLMENT_CANDIDATE', decision_version: 1 },
+      payment_creation_frozen: true,
+      hard_assignment_created: false,
+    });
+    expect(humanVerificationFetch).toHaveBeenCalledTimes(1);
+    const lead = await callTrpc<ApiLeadResult>(
+      app,
+      'webLeads.submitLead',
+      'mutation',
+      {
+        submission_id: leadSubmissionId,
+        lead_type: 'poster',
+        email: leadEmail,
+        name: 'Private Gate 2.5 Customer',
+        region: SYNTHETIC_SERVICE_CELL_REGION_CODE,
+        zip: SYNTHETIC_SERVICE_CELL_POSTAL_CODE,
+        consent_version: 'v1',
+        draft_submission_id: submissionId,
+        draft_card_token: cardToken,
+        client_ts: requestNow + 1,
+      }
+    );
+    expect(lead).toMatchObject({ ok: true, status: 'new' });
+    await deliverLeadConfirmationToSyntheticSink(lead.lead_id, leadEmail);
+    expect(await consequentialState(applicationPool)).toEqual(before);
+    const linked = await callTrpc<ApiTaskDraftResult>(
+      app,
+      'webTaskDrafts.submit',
+      'mutation',
+      {
+        ...createInput,
+        action: 'link_contact',
+        expected_version: created.version,
+        raw_input: 'contact link',
+        lead_submission_id: leadSubmissionId,
+        turnstile_token: undefined,
+        client_ts: requestNow + 2,
+      }
+    );
+    expect(linked).toMatchObject({
+      status: 'contact_captured',
+      version: 2,
+      routing: { outcome: 'FULFILLMENT_CANDIDATE', decision_version: 2 },
+    });
+    const claimed = await callTrpc<ApiClaimResult>(
+      app,
+      'webTaskDrafts.claim',
+      'mutation',
+      {
+        submission_id: submissionId,
+        card_token: cardToken,
+        expected_version: 0,
+        idempotency_key: `gate25-claim:${submissionId}`,
+        client_ts: requestNow + 3,
+      },
+      posterToken
+    );
+    expect(claimed).toMatchObject({
+      draft_id: created.draft_id,
+      status: 'account_claimed',
+      payment_creation_frozen: true,
+      hard_assignment_created: false,
+    });
+
+    const quoted = await callTrpc<ApiStandardizedQuoteResult>(
+      app,
+      'universalV1StandardizedQuotes.prepare',
+      'mutation',
+      {
+        taskDraftId: created.draft_id,
+        expectedRoutingDecisionVersion: linked.routing.decision_version,
+        expectedQuoteVersion: 0,
+        idempotencyKey: `gate25-quote:${randomUUID()}`,
+        clientTs: requestNow + 4,
+      },
+      posterToken
+    );
+    expect(quoted).toMatchObject({
+      state: 'QUOTED',
+      quote: {
+        taskDraftId: created.draft_id,
+        routingDecisionVersion: linked.routing.decision_version,
+        quoteVersion: 1,
+        workCategoryCode: 'furniture_assembly',
+        currency: 'usd',
+      },
+      paymentCreationFrozen: true,
+      taskCreated: false,
+      assignmentCreated: false,
+      workOrderCreated: false,
+    });
+    const quotedCurrent = await callTrpc<ApiStandardizedCurrentResult>(
+      app,
+      'universalV1StandardizedQuotes.getCurrent',
+      'query',
+      { taskDraftId: created.draft_id },
+      posterToken
+    );
+    expect(quotedCurrent).toMatchObject({
+      acceptance: null,
+      readiness: null,
+      routingCurrent: true,
+      acceptanceOpen: true,
+      priceLocked: false,
+      fakePaymentMethodReady: false,
+      actionableState: 'ACCEPT_QUOTE',
+    });
+    const accepted = await callTrpc<ApiStandardizedAcceptanceResult>(
+      app,
+      'universalV1StandardizedQuotes.accept',
+      'mutation',
+      {
+        taskDraftId: created.draft_id,
+        quoteVersionId: quoted.quote.quoteVersionId,
+        expectedRoutingDecisionVersion: linked.routing.decision_version,
+        expectedQuoteVersion: quoted.quote.quoteVersion,
+        expectedAcceptanceVersion: 0,
+        idempotencyKey: `gate25-accept:${randomUUID()}`,
+        clientTs: requestNow + 5,
+      },
+      posterToken
+    );
+    expect(accepted).toMatchObject({
+      state: 'ACCEPTED',
+      paymentCreationCreated: false,
+      financialSecurityEventCreated: false,
+      taskCreated: false,
+      assignmentCreated: false,
+      workOrderCreated: false,
+    });
+    const acceptedCurrent = await callTrpc<ApiStandardizedCurrentResult>(
+      app,
+      'universalV1StandardizedQuotes.getCurrent',
+      'query',
+      { taskDraftId: created.draft_id },
+      posterToken
+    );
+    expect(acceptedCurrent).toMatchObject({
+      priceLocked: true,
+      fakePaymentMethodReady: false,
+      actionableState: 'PREPARE_OR_RENEW_FAKE_PAYMENT_METHOD',
+    });
+    const readiness = await callTrpc<ApiFakeReadinessResult>(
+      app,
+      'universalV1StandardizedQuotes.prepareFakePaymentMethod',
+      'mutation',
+      {
+        taskDraftId: created.draft_id,
+        acceptanceFactId: accepted.acceptance.acceptanceFactId,
+        expectedQuoteVersion: quoted.quote.quoteVersion,
+        expectedReadinessVersion: 0,
+        idempotencyKey: `gate25-readiness:${randomUUID()}`,
+        clientTs: requestNow + 6,
+      },
+      posterToken
+    );
+    expect(readiness).toMatchObject({
+      state: 'FAKE_PAYMENT_METHOD_READY',
+      providerKind: 'FAKE',
+      networkCalled: false,
+      externalValueCreated: false,
+      customerMoneyCreated: false,
+      authorizationCreated: false,
+      financialSecurityEventCreated: false,
+      taskCreated: false,
+      assignmentCreated: false,
+      workOrderCreated: false,
+      settlementCreated: false,
+      payoutCreated: false,
+    });
+    const readyCurrent = await callTrpc<ApiStandardizedCurrentResult>(
+      app,
+      'universalV1StandardizedQuotes.getCurrent',
+      'query',
+      { taskDraftId: created.draft_id },
+      posterToken
+    );
+    expect(readyCurrent).toMatchObject({
+      routingCurrent: true,
+      acceptanceOpen: false,
+      priceLocked: true,
+      fakePaymentMethodReady: true,
+      actionableState: 'READY_FOR_PROVIDER_DISCOVERY',
+      paymentCreationFrozen: true,
+      taskCreated: false,
+      assignmentCreated: false,
+      workOrderCreated: false,
+    });
+
+    const rawCustomerOccurrence = await new PostgresUniversalV1OccurrenceFactReader(
+      applicationDatabase.query
+    ).loadCustomer(created.draft_id, posterUserId);
+    expect(rawCustomerOccurrence).toMatchObject({
+      task_draft_id: created.draft_id,
+      standardized_quote_routing_current: true,
+      standardized_readiness_routing_current: true,
+    });
+    const customerOccurrence = await callTrpc<Record<string, unknown>>(
+      app,
+      'universalOccurrence.customer',
+      'query',
+      { task_draft_id: created.draft_id },
+      posterToken
+    );
+    expect(customerOccurrence).toMatchObject({
+      task_draft_id: created.draft_id,
+      perspective: 'CUSTOMER',
+      task: null,
+      eligibility: null,
+      hold: null,
+      work_order: null,
+      financial_lifecycle: null,
+      next_action: 'WAIT_FOR_PROVIDER_INTEREST',
+      payment_creation_frozen: true,
+      hard_assignment_created: false,
+      commercial: {
+        standardized_quote: {
+          quote: {
+            quote_version_id: quoted.quote.quoteVersionId,
+            quote_version: 1,
+            customer_total_cents: quoted.quote.customerTotalCents,
+            currency: 'usd',
+          },
+          acceptance: {
+            acceptance_fact_id: accepted.acceptance.acceptanceFactId,
+            acceptance_version: 1,
+          },
+          readiness: {
+            readiness_fact_id: readiness.readiness.readinessFactId,
+            readiness_version: 1,
+            provider_kind: 'FAKE',
+            current_status: 'CURRENT',
+            is_current: true,
+          },
+          routing_current: true,
+          price_locked: true,
+          fake_payment_method_ready: true,
+          actionable_state: 'READY_FOR_PROVIDER_DISCOVERY',
+        },
+      },
+    });
+
+    const listing = await callTrpc<ApiBrowseResult>(
+      app,
+      'universalV1TaskOpportunities.browse',
+      'query',
+      {
+        serviceCellAuthorityId: SYNTHETIC_SERVICE_CELL_AUTHORITY_ID,
+        workCategoryCode: 'furniture_assembly',
+        limit: 100,
+        offset: 0,
+      },
+      providerToken
+    );
+    const opportunity = listing.opportunities.find(
+      (candidate) => candidate.taskDraftId === created.draft_id
+    );
+    expect(opportunity).toMatchObject({
+      privacyPosture: 'STANDARDIZED_SCOPE_ALLOWLIST_ONLY',
+      standardizedQuote: {
+        quoteVersionId: quoted.quote.quoteVersionId,
+        quoteVersion: 1,
+        customerTotalCents: quoted.quote.customerTotalCents,
+        currency: 'usd',
+        fakePaymentMethodReady: true,
+        paymentMethodReadinessPosture: 'FAKE_PAYMENT_METHOD_READY_NO_FINANCIAL_EFFECT',
+        paymentCreationCreated: false,
+        financialSecurityEventCreated: false,
+      },
+      assignmentAuthority: 'NONE',
+      addressContactAuthority: 'NONE',
+      financialAuthority: 'NONE',
+    });
+    if (!opportunity) throw new Error('Gate 2.5 furniture opportunity was not published.');
+    const interest = await callTrpc<ApiInterestResult>(
+      app,
+      'universalV1TaskOpportunities.expressInterest',
+      'mutation',
+      {
+        opportunityId: opportunity.opportunityId,
+        expectedOpportunityVersion: opportunity.opportunityVersion,
+        idempotencyKey: `gate25-interest:${randomUUID()}`,
+      },
+      providerToken
+    );
+    expect(interest).toMatchObject({
+      taskDraftId: created.draft_id,
+      reservationCreated: false,
+      eligibilityDecisionCreated: false,
+      assignmentCreated: false,
+      addressContactAccessGranted: false,
+      financialEventCreated: false,
+      payableCreated: false,
+      guaranteedEarning: false,
+    });
+    const providerOccurrence = await callTrpc<Record<string, unknown>>(
+      app,
+      'universalOccurrence.provider',
+      'query',
+      { task_draft_id: created.draft_id },
+      providerToken
+    );
+    expect(providerOccurrence).toMatchObject({
+      provider: {
+        provider_class: 'GENERAL_SERVICE_PROVIDER',
+        provider_user_id: providerUserId,
+        provider_organization_id: null,
+      },
+      interest: { interest_application_id: interest.interestId, status: 'pending' },
+      eligibility: null,
+      task: null,
+      hold: null,
+      work_order: null,
+      financial_lifecycle: null,
+      next_action: 'WAIT_FOR_ELIGIBILITY',
+      payment_creation_frozen: true,
+      hard_assignment_created: false,
+      commercial: {
+        standardized_quote: {
+          fake_payment_method_ready: true,
+          actionable_state: 'READY_FOR_PROVIDER_DISCOVERY',
+        },
+      },
+    });
+
+    expect(await consequentialState(applicationPool)).toEqual(before);
+    const bounded = await applicationPool.query<{
+      task_id: string | null;
+      quotes: number;
+      acceptances: number;
+      readiness: number;
+      interests: number;
+      eligibility: number;
+      reservations: number;
+      financial_operations: number;
+      financial_events: number;
+      work_orders: number;
+    }>(
+      `SELECT draft.task_id,
+              (SELECT COUNT(*)::INTEGER
+                 FROM public.task_draft_standardized_quote_versions quote
+                WHERE quote.task_draft_id = draft.id) AS quotes,
+              (SELECT COUNT(*)::INTEGER
+                 FROM public.task_draft_standardized_quote_acceptance_facts acceptance
+                WHERE acceptance.task_draft_id = draft.id) AS acceptances,
+              (SELECT COUNT(*)::INTEGER
+                 FROM public.task_draft_payment_method_readiness_facts readiness
+                WHERE readiness.task_draft_id = draft.id) AS readiness,
+              (SELECT COUNT(*)::INTEGER
+                 FROM public.task_applications interest
+                WHERE interest.task_draft_id = draft.id) AS interests,
+              (SELECT COUNT(*)::INTEGER
+                 FROM public.task_provider_eligibility_decisions eligibility
+                WHERE eligibility.task_draft_id = draft.id) AS eligibility,
+              (SELECT COUNT(*)::INTEGER
+                 FROM public.task_reservations reservation
+                WHERE reservation.task_id = draft.task_id) AS reservations,
+              (SELECT COUNT(*)::INTEGER
+                 FROM public.task_financial_operations operation
+                WHERE operation.task_draft_id = draft.id) AS financial_operations,
+              (SELECT COUNT(*)::INTEGER
+                 FROM public.task_financial_security_events event
+                WHERE event.task_draft_id = draft.id) AS financial_events,
+              (SELECT COUNT(*)::INTEGER
+                 FROM public.task_work_orders work_order
+                WHERE work_order.task_draft_id = draft.id) AS work_orders
+         FROM public.task_drafts draft
+        WHERE draft.id = $1::UUID`,
+      [created.draft_id]
+    );
+    expect(bounded.rows).toEqual([{
+      task_id: null,
+      quotes: 1,
+      acceptances: 1,
+      readiness: 1,
+      interests: 1,
+      eligibility: 0,
+      reservations: 0,
+      financial_operations: 0,
+      financial_events: 0,
+      work_orders: 0,
+    }]);
+    expect(posterUserId).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(JSON.stringify({ customerOccurrence, opportunity, providerOccurrence }))
+      .not.toContain(leadEmail);
+  }, 60_000);
+
   it('lets general individuals and general businesses browse and express observation-only interest', async () => {
-    const opportunity = await claimedOpportunityFixture('furniture_assembly', 'general-shapes');
+    const opportunity = await claimedOpportunityFixture('handyman', 'general-shapes');
     const individual = await generalIndividualFixture();
     const business = await generalBusinessFixture();
     const before = await consequentialState();
 
     for (const provider of [individual, business]) {
-      const listing = await browse(provider, 'furniture_assembly');
+      const listing = await browse(provider, 'plumbing');
       expect(listing.state).toBe('READY');
       if (listing.state !== 'READY') throw new Error('general provider browse was held');
       const visible = listing.opportunities.find(
@@ -1277,7 +2165,7 @@ describePg('Universal V1 Task Opportunities PostgreSQL authority', () => {
       expect(visible).toMatchObject({
         taskDraftId: opportunity.taskDraftId,
         opportunityVersion: opportunity.opportunityVersion,
-        workCategoryCode: 'furniture_assembly',
+        workCategoryCode: 'plumbing',
         privacyPosture: 'ROUTE_CONTEXT_ALLOWLIST_ONLY',
         eligibilityStatus: 'PENDING',
         assignmentStatus: 'PENDING',
@@ -1498,10 +2386,7 @@ describePg('Universal V1 Task Opportunities PostgreSQL authority', () => {
   });
 
   it('serializes identical interest and rejects divergent or different-key reuse', async () => {
-    const opportunity = await claimedOpportunityFixture(
-      'furniture_assembly',
-      'concurrent-interest'
-    );
+    const opportunity = await claimedOpportunityFixture('handyman', 'concurrent-interest');
     const provider = await generalIndividualFixture();
     const key = `express-concurrent:${randomUUID()}`;
     const results = await Promise.all(
@@ -1568,7 +2453,7 @@ describePg('Universal V1 Task Opportunities PostgreSQL authority', () => {
     });
 
     const active = await generalIndividualFixture();
-    const opportunity = await claimedOpportunityFixture('furniture_assembly', 'state-recheck');
+    const opportunity = await claimedOpportunityFixture('handyman', 'state-recheck');
     await express(active, opportunity, `express-before-hold:${randomUUID()}`);
     await pool.query(`UPDATE public.users SET account_status = 'SUSPENDED' WHERE id = $1`, [
       active.userId,
@@ -1585,7 +2470,7 @@ describePg('Universal V1 Task Opportunities PostgreSQL authority', () => {
   });
 
   it('rejects stale and directly forged route, origin, scope, and free-text fields', async () => {
-    const opportunity = await claimedOpportunityFixture('furniture_assembly', 'forgery-rejection');
+    const opportunity = await claimedOpportunityFixture('handyman', 'forgery-rejection');
     const provider = await generalIndividualFixture();
     await expect(
       service.expressInterest(providerContext(provider.userId), {
@@ -1745,7 +2630,7 @@ describePg('Universal V1 Task Opportunities PostgreSQL authority', () => {
     ).rejects.toThrow(/task_applications_interest_authority_check/u);
 
     const postEstimateDraft = await claimedOpportunityFixture(
-      'furniture_assembly',
+      'handyman',
       'post-estimate-preservation'
     );
     const postEstimateProvider = await generalIndividualFixture();
@@ -1774,10 +2659,56 @@ describePg('Universal V1 Task Opportunities PostgreSQL authority', () => {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      await client.query(
+        `INSERT INTO public.task_routing_decisions(
+           task_draft_id, decision_version, supersedes_decision_id, outcome,
+           reason_codes, policy_version, category_snapshot,
+           service_cell_snapshot, service_cell_authority_id,
+           decision_authority, decided_by, evidence, idempotency_key
+         )
+         SELECT prior.task_draft_id, prior.decision_version + 1, prior.id,
+                'FULFILLMENT_CANDIDATE', ARRAY['CUSTOMER_ACCEPTED_PROVIDER_ESTIMATE'],
+                'universal-v1-estimate-acceptance-1.1.0', prior.category_snapshot,
+                prior.service_cell_snapshot, prior.service_cell_authority_id,
+                'DETERMINISTIC_POLICY', NULL, prior.evidence - 'ingress_action', $2
+         FROM public.task_routing_decisions prior
+         WHERE prior.id = $1`,
+        [
+          postEstimateDraft.routingDecisionId,
+          `post-estimate-route:${randomUUID()}`,
+        ]
+      );
       await client.query(`UPDATE public.task_drafts SET task_id = $2 WHERE id = $1`, [
         postEstimateDraft.taskDraftId,
         task.id,
       ]);
+      const postEstimateState = await client.query<{
+        draft_task_id: string;
+        route_outcome: string;
+        worker_id: string | null;
+        current_opportunity_visible: boolean;
+      }>(
+        `SELECT draft.task_id AS draft_task_id,
+                routing.outcome AS route_outcome,
+                task.worker_id,
+                EXISTS (
+                  SELECT 1
+                  FROM public.current_universal_v1_task_opportunities_v1 opportunity
+                  WHERE opportunity.task_draft_id = draft.id
+                ) AS current_opportunity_visible
+         FROM public.task_drafts draft
+         JOIN public.task_routing_decisions routing
+           ON routing.id = draft.active_routing_decision_id
+         JOIN public.tasks task ON task.id = draft.task_id
+         WHERE draft.id = $1`,
+        [postEstimateDraft.taskDraftId]
+      );
+      expect(postEstimateState.rows[0]).toEqual({
+        draft_task_id: task.id,
+        route_outcome: 'FULFILLMENT_CANDIDATE',
+        worker_id: null,
+        current_opportunity_visible: false,
+      });
       const preserved = await client.query<{ id: string }>(
         `INSERT INTO public.task_applications(
            task_id, hustler_id, message, status, universal_contract_version,

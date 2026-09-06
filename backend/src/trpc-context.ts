@@ -1,4 +1,3 @@
-import { timingSafeEqual } from 'node:crypto';
 import { firebaseAuth } from './auth/firebase.js';
 import { ensureUserRowForFirebaseUid } from './auth/ensure-user.js';
 import { authCache, authCacheKey, authCacheGet, authCacheSet } from './auth-cache.js';
@@ -11,6 +10,8 @@ import {
   identityAssuranceFromVerifiedToken,
   type IdentityAssurance,
 } from './auth/operator-identity-assurance.js';
+import type { UniversalV1ActorAttestationHandle } from './auth/universal-v1-actor-attestation-contracts.js';
+import { createUniversalV1ActorAttestationHandle } from './services/UniversalV1ActorAttesterClient.js';
 import type { User } from './types.js';
 
 const log = logger.child({ module: 'trpc-context' });
@@ -25,8 +26,8 @@ export interface Context extends Record<string, unknown> {
   origin?: string | null;
   userAgent?: string | null;
   responseHeaders?: Headers;
-  engineBridgeAuthorized?: boolean;
-  engineBridgeActorId?: string | null;
+  /** Request-scoped closure; it contains no enumerable bearer/token field. */
+  actorAttestation?: UniversalV1ActorAttestationHandle;
 }
 
 export interface AuthedContext extends Context {
@@ -38,37 +39,24 @@ function extractIp(req: Request): string | null {
   if (cfIp) return cfIp.trim() || null;
   const xff = req.headers.get('x-forwarded-for');
   if (xff) {
-    const parts = xff.split(',').map((part) => part.trim()).filter(Boolean);
+    const parts = xff
+      .split(',')
+      .map((part) => part.trim())
+      .filter(Boolean);
     return parts.at(-1) ?? null;
   }
   return req.headers.get('x-real-ip') || null;
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-function bridgeIdentity(req: Request): Pick<Context, 'engineBridgeAuthorized' | 'engineBridgeActorId'> {
-  const expected = (process.env.ENGINE_BRIDGE_WRITE_KEY ?? '').trim();
-  const provided = (req.headers.get('x-engine-bridge-key') ?? '').trim();
-  const actorId = (process.env.ENGINE_BRIDGE_ACTOR_ID ?? '').trim();
-  const comparable = expected.length >= 32 && provided.length === expected.length && UUID_RE.test(actorId);
-  const authorized = comparable
-    && timingSafeEqual(Buffer.from(provided, 'utf8'), Buffer.from(expected, 'utf8'));
-  return { engineBridgeAuthorized: authorized, engineBridgeActorId: authorized ? actorId : null };
-}
-
 function requestIdentity(
   req: Request,
-  responseHeaders?: Headers,
-): Pick<
-  Context,
-  'ip' | 'origin' | 'userAgent' | 'responseHeaders' | 'engineBridgeAuthorized' | 'engineBridgeActorId'
-> {
+  responseHeaders?: Headers
+): Pick<Context, 'ip' | 'origin' | 'userAgent' | 'responseHeaders'> {
   return {
     ip: extractIp(req),
     origin: req.headers.get('origin'),
     userAgent: req.headers.get('user-agent'),
     responseHeaders,
-    ...bridgeIdentity(req),
   };
 }
 
@@ -78,9 +66,7 @@ function anonymousContext(req: Request, responseHeaders?: Headers): Context {
 
 function isInactive(user: User): boolean {
   return Boolean(
-    user.is_banned
-    || user.account_status === 'SUSPENDED'
-    || user.account_status === 'DELETED'
+    user.is_banned || user.account_status === 'SUSPENDED' || user.account_status === 'DELETED'
   );
 }
 
@@ -94,8 +80,9 @@ async function applyAdminFlag(user: User): Promise<void> {
 
 async function loadUser(firebaseUid: string, allowLazyProvisioning = true): Promise<User | null> {
   const result = await db.query<User>('SELECT * FROM users WHERE firebase_uid = $1', [firebaseUid]);
-  const user = result.rows[0]
-    ?? (allowLazyProvisioning ? await ensureUserRowForFirebaseUid(firebaseUid) : null);
+  const user =
+    result.rows[0] ??
+    (allowLazyProvisioning ? await ensureUserRowForFirebaseUid(firebaseUid) : null);
   if (user) await applyAdminFlag(user);
   return user;
 }
@@ -103,7 +90,7 @@ async function loadUser(firebaseUid: string, allowLazyProvisioning = true): Prom
 async function cachedContext(
   token: string,
   req: Request,
-  responseHeaders?: Headers,
+  responseHeaders?: Headers
 ): Promise<Context | null> {
   const cached = authCacheGet(token);
   if (!cached) return null;
@@ -114,6 +101,7 @@ async function cachedContext(
         user: cached.user,
         firebaseUid: cached.firebaseUid,
         identityAssurance: cached.identityAssurance,
+        actorAttestation: createUniversalV1ActorAttestationHandle(token),
         ...requestIdentity(req, responseHeaders),
       };
     }
@@ -133,14 +121,15 @@ function safeAuthError(error: unknown): string {
 async function verifiedContext(
   token: string,
   req: Request,
-  responseHeaders?: Headers,
+  responseHeaders?: Headers
 ): Promise<Context> {
   const syntheticOperator = verifyDeployedSyntheticOperatorToken(token);
-  const decoded = syntheticOperator
-    ?? verifyLocalCertificationToken(token)
-    ?? await firebaseAuth.verifyIdToken(token, true);
+  const decoded =
+    syntheticOperator ??
+    verifyLocalCertificationToken(token) ??
+    (await firebaseAuth.verifyIdToken(token, true));
   const identityAssurance = identityAssuranceFromVerifiedToken(
-    decoded as unknown as Record<string, unknown>,
+    decoded as unknown as Record<string, unknown>
   );
   // A signed nonprod operator must already be a named seeded user with an
   // explicit admin_roles row. Unlike Firebase customer auth, this path never
@@ -153,6 +142,7 @@ async function verifiedContext(
     user,
     firebaseUid: decoded.uid,
     identityAssurance,
+    actorAttestation: createUniversalV1ActorAttestationHandle(token),
     ...requestIdentity(req, responseHeaders),
   };
 }

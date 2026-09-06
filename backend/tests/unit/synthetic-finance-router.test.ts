@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   assertWebhookBoundary: vi.fn(),
   assertHmac: vi.fn(),
   enqueueEvent: vi.fn(),
+  readProgress: vi.fn(),
   enqueueReconciliation: vi.fn(),
   recordInbox: vi.fn(),
   materializeAccount: vi.fn(),
@@ -39,15 +40,25 @@ vi.mock('../../src/services/payment/SyntheticFinancialCommandAuthority.js', () =
   };
 });
 
-vi.mock('../../src/jobs/synthetic-financial-worker.js', () => ({
-  enqueueSyntheticFinancialEvent: mocks.enqueueEvent,
-  enqueueSyntheticReconciliation: mocks.enqueueReconciliation,
+vi.mock('../../src/services/payment/UniversalV1FinancialRequestService.js', () => ({
+  createUniversalV1FinancialRequestService: () => ({
+    requestFinancialEvent: mocks.enqueueEvent,
+    readProgress: mocks.readProgress,
+  }),
 }));
 
 vi.mock('../../src/services/payment/UniversalV1FakeProviderAccountRepository.js', () => ({
   PostgresUniversalV1FakeProviderAccountRepository: class {
     materializeFromDurableEvidence(input: unknown) {
       return mocks.materializeAccount(input);
+    }
+  },
+}));
+
+vi.mock('../../src/services/payment/SealedSyntheticFinancialWebhookInbox.js', () => ({
+  SealedSyntheticFinancialWebhookInbox: class {
+    record(input: unknown) {
+      return mocks.recordInbox(input);
     }
   },
 }));
@@ -101,6 +112,7 @@ const refreshEvidence = {
   fakeOperationEventId: '00000000-0000-4000-8000-000000000221',
 };
 
+const actorAttestation = { issue: vi.fn() };
 function caller() {
   return universalFinanceRouter.createCaller({
     user: {
@@ -109,6 +121,7 @@ function caller() {
       account_status: 'ACTIVE',
     } as never,
     firebaseUid: 'synthetic-user',
+    actorAttestation,
     ip: '127.0.0.1',
   });
 }
@@ -212,7 +225,14 @@ beforeEach(() => {
     durableFakeEvidence: refreshEvidence,
   });
   mocks.webhook.mockResolvedValue({ operationId: ids.operation });
-  mocks.enqueueEvent.mockResolvedValue({ queue: 'synthetic_finance', jobId: 'event-job' });
+  mocks.enqueueEvent.mockResolvedValue({
+    commandId: ids.operation,
+    preparedCommandId: ids.related,
+    operationId: ids.operation,
+    requestState: 'REQUESTED',
+    requestedAt: '2026-09-05T00:00:00.000Z',
+    idempotencyReplayed: false,
+  });
   mocks.enqueueReconciliation.mockResolvedValue({
     queue: 'synthetic_finance',
     jobId: 'reconciliation-job',
@@ -229,6 +249,56 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe('universalFinanceRouter', () => {
+  it('reads progress using only the server actor and request attestation', async () => {
+    const result = { commandId: ids.operation, progressState: 'REQUESTED' };
+    mocks.readProgress.mockResolvedValueOnce(result);
+    expect(await caller().requestProgress({ commandId: ids.operation })).toEqual(result);
+    expect(mocks.readProgress).toHaveBeenCalledExactlyOnceWith(
+      ids.operation,
+      ids.actor,
+      actorAttestation
+    );
+    expect(mocks.enqueueEvent).not.toHaveBeenCalled();
+    expect(mocks.executeEvent).not.toHaveBeenCalled();
+    expect(mocks.assertTask).not.toHaveBeenCalled();
+  });
+  it('rejects actor and provider attributes in progress input before service access', async () => {
+    await expect(
+      caller().requestProgress({
+        commandId: ids.operation,
+        actorId: ids.actor,
+        externalReference: 'private',
+      } as never)
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    expect(mocks.readProgress).not.toHaveBeenCalled();
+  });
+  it('requires login to read progress', async () => {
+    const anonymous = universalFinanceRouter.createCaller({
+      user: null,
+      firebaseUid: null,
+      ip: '127.0.0.1',
+    });
+    await expect(anonymous.requestProgress({ commandId: ids.operation })).rejects.toMatchObject({
+      code: 'UNAUTHORIZED',
+    });
+    expect(mocks.readProgress).not.toHaveBeenCalled();
+  });
+  it('returns a generic absence for unknown and unauthorized progress', async () => {
+    mocks.readProgress.mockResolvedValueOnce(null);
+    await expect(caller().requestProgress({ commandId: ids.operation })).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+      message: 'Financial request not found.',
+    });
+  });
+  it('sanitizes progress failure details', async () => {
+    mocks.readProgress.mockRejectedValueOnce(
+      new Error('SQL private-provider-reference actor-token')
+    );
+    await expect(caller().requestProgress({ commandId: ids.operation })).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: 'Financial request progress is temporarily unavailable.',
+    });
+  });
   it('keeps the synthetic route name as an exact compatibility alias', () => {
     expect(syntheticFinanceRouter).toBe(universalFinanceRouter);
   });
@@ -246,7 +316,10 @@ describe('universalFinanceRouter', () => {
   it('forces the authenticated actor into a participant-authorized event command', async () => {
     await caller().executeEvent(event);
     expect(mocks.assertTask).toHaveBeenCalledWith(ids.actor, ids.draft, ids.task);
-    expect(mocks.executeEvent).toHaveBeenCalledWith({ ...event, recordedBy: ids.actor });
+    expect(mocks.executeEvent).toHaveBeenCalledWith(
+      { ...event, recordedBy: ids.actor },
+      actorAttestation
+    );
   });
 
   it.each(['AUTHORIZE', 'SECURE'] as const)(
@@ -273,10 +346,13 @@ describe('universalFinanceRouter', () => {
       await caller().executeEvent(command);
 
       expect(mocks.assertTask).toHaveBeenCalledWith(ids.actor, ids.draft, ids.task);
-      expect(mocks.executeEvent).toHaveBeenCalledWith({
-        ...command,
-        recordedBy: ids.actor,
-      });
+      expect(mocks.executeEvent).toHaveBeenCalledWith(
+        {
+          ...command,
+          recordedBy: ids.actor,
+        },
+        actorAttestation
+      );
     }
   );
 
@@ -326,7 +402,10 @@ describe('universalFinanceRouter', () => {
     expect(mocks.enqueueEvent).not.toHaveBeenCalled();
 
     await caller().enqueueEvent(event);
-    expect(mocks.enqueueEvent).toHaveBeenCalledWith(ids.actor, event);
+    expect(mocks.enqueueEvent).toHaveBeenCalledWith(
+      { ...event, recordedBy: ids.actor },
+      actorAttestation
+    );
   });
 
   it('refuses direct and queued generic reconciliation before service, authority, or queue calls', async () => {
@@ -371,7 +450,7 @@ describe('universalFinanceRouter', () => {
     const webhook = financialObservation('synthetic-event-1');
     const rawBody = JSON.stringify(webhook);
     const signature = 'a'.repeat(64);
-    const queued = await caller().ingestWebhook({ rawBody, signature });
+    const queued = await caller().ingestWebhook({ keyId: ids.operation, rawBody, signature });
     expect(queued).toEqual({
       received: true,
       queued: true,
@@ -383,20 +462,12 @@ describe('universalFinanceRouter', () => {
       idempotencyReplayed: false,
     });
     expect(mocks.authorizeNonproduction).toHaveBeenCalledWith({ component: 'backend' });
-    expect(mocks.assertHmac).toHaveBeenCalledWith(rawBody, signature);
+    expect(mocks.assertHmac).not.toHaveBeenCalled();
     expect(mocks.recordInbox).toHaveBeenCalledWith({
-      providerKind: 'FAKE',
-      providerEventReference: 'synthetic-event-1',
-      providerEventKind: 'FINANCIAL_OPERATION_OBSERVED',
-      operationId: ids.operation,
+      keyId: ids.operation,
+      rawBody,
+      signature,
       ingressIdempotencyKey: `provider-event:${sha256('FAKE\0synthetic-event-1')}`,
-      rawPayload: Buffer.from(rawBody, 'utf8'),
-      authentication: {
-        status: 'VERIFIED',
-        scheme: 'HMAC_SHA256',
-        evidenceSha256: sha256(`HUSTLEXP_SYNTHETIC_WEBHOOK_HMAC_SHA256_V1\0${signature}`),
-        verifiedAt: expect.any(String),
-      },
     });
     expect(mocks.assertTask).not.toHaveBeenCalled();
     expect(mocks.assertWebhookBoundary).not.toHaveBeenCalled();
@@ -489,10 +560,7 @@ describe('universalFinanceRouter', () => {
     const rawBody = JSON.stringify(webhook);
 
     await expect(
-      caller().ingestWebhook({
-        rawBody,
-        signature: 'b'.repeat(64),
-      })
+      caller().ingestWebhook({ keyId: ids.operation, rawBody, signature: 'b'.repeat(64) })
     ).resolves.toMatchObject({ received: true, queued: true });
 
     expect(mocks.recordInbox).toHaveBeenCalledTimes(1);
@@ -506,10 +574,7 @@ describe('universalFinanceRouter', () => {
     const rawBody = JSON.stringify(financialObservation('synthetic-event-unavailable'));
 
     await expect(
-      caller().ingestWebhook({
-        rawBody,
-        signature: 'c'.repeat(64),
-      })
+      caller().ingestWebhook({ keyId: ids.operation, rawBody, signature: 'c'.repeat(64) })
     ).rejects.toMatchObject({
       code: 'INTERNAL_SERVER_ERROR',
       message: 'Synthetic webhook evidence is temporarily unavailable.',
@@ -522,16 +587,16 @@ describe('universalFinanceRouter', () => {
   it('does not trust an authenticated tRPC caller without fake-provider HMAC authority', async () => {
     const { SyntheticFinancialAuthorityError } =
       await import('../../src/services/payment/SyntheticFinancialCommandAuthority.js');
-    mocks.assertHmac.mockImplementationOnce(() => {
-      throw new SyntheticFinancialAuthorityError('WEBHOOK_HMAC_INVALID');
-    });
+    mocks.recordInbox.mockRejectedValueOnce(
+      new SyntheticFinancialAuthorityError('WEBHOOK_HMAC_INVALID')
+    );
     const rawBody = JSON.stringify(financialObservation('synthetic-event-unsigned'));
     await expect(
-      caller().ingestWebhook({ rawBody, signature: '0'.repeat(64) })
+      caller().ingestWebhook({ keyId: ids.operation, rawBody, signature: '0'.repeat(64) })
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
     expect(mocks.assertTask).not.toHaveBeenCalled();
     expect(mocks.assertWebhookBoundary).not.toHaveBeenCalled();
-    expect(mocks.recordInbox).not.toHaveBeenCalled();
+    expect(mocks.recordInbox).toHaveBeenCalledTimes(1);
     expect(mocks.webhook).not.toHaveBeenCalled();
   });
 
@@ -542,7 +607,7 @@ describe('universalFinanceRouter', () => {
     const rawBody = JSON.stringify(financialObservation('synthetic-event-production'));
 
     await expect(
-      caller().ingestWebhook({ rawBody, signature: 'd'.repeat(64) })
+      caller().ingestWebhook({ keyId: ids.operation, rawBody, signature: 'd'.repeat(64) })
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
     expect(mocks.assertHmac).not.toHaveBeenCalled();
     expect(mocks.recordInbox).not.toHaveBeenCalled();
