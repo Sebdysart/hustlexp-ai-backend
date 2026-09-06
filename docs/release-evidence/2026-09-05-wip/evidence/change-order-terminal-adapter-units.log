@@ -1,0 +1,32 @@
+
+ RUN  v4.1.10 C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip
+
+ ✓ backend/tests/unit/change-order-recovery-terminals.test.ts > worker change order terminal adapter > commits a bound 'MATERIALIZED' receipt through its sealed port 11ms
+ ✓ backend/tests/unit/change-order-recovery-terminals.test.ts > worker change order terminal adapter > commits a bound 'COMPENSATED' receipt through its sealed port 1ms
+ ✓ backend/tests/unit/change-order-recovery-terminals.test.ts > worker change order terminal adapter > commits a bound 'NO_EFFECT' receipt through its sealed port 1ms
+ ✓ backend/tests/unit/change-order-recovery-terminals.test.ts > worker change order terminal adapter > commits a bound 'NO_EFFECT' receipt through its sealed port 1ms
+ ✓ backend/tests/unit/change-order-recovery-terminals.test.ts > worker change order terminal adapter > accepts original terminal replay after lease expiry under fresh current target authority 1ms
+ ✓ backend/tests/unit/change-order-recovery-terminals.test.ts > worker change order terminal adapter > rolls back an invalid terminal receipt {"proposal_id":"10000000-0000-4000-8000-000000000099"} 2ms
+ ✓ backend/tests/unit/change-order-recovery-terminals.test.ts > worker change order terminal adapter > rolls back an invalid terminal receipt {"recovery_lease_id":"10000000-0000-4000-8000-000000000099"} 1ms
+ ✓ backend/tests/unit/change-order-recovery-terminals.test.ts > worker change order terminal adapter > rolls back an invalid terminal receipt {"lease_owner_id":"10000000-0000-4000-8000-000000000099"} 1ms
+ ✓ backend/tests/unit/change-order-recovery-terminals.test.ts > worker change order terminal adapter > rolls back an invalid terminal receipt {"witness_request_sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"} 1ms
+ ✓ backend/tests/unit/change-order-recovery-terminals.test.ts > worker change order terminal adapter > rolls back an invalid terminal receipt {"recorded_by":"10000000-0000-4000-8000-000000000099"} 1ms
+ ✓ backend/tests/unit/change-order-recovery-terminals.test.ts > worker change order terminal adapter > rolls back an invalid terminal receipt {"amendment_id":"10000000-0000-4000-8000-000000000099"} 1ms
+ ✓ backend/tests/unit/change-order-recovery-terminals.test.ts > worker change order terminal adapter > rolls back an invalid terminal receipt {"adjustment_event_id":"10000000-0000-4000-8000-000000000099"} 1ms
+ ✓ backend/tests/unit/change-order-recovery-terminals.test.ts > worker change order terminal adapter > rolls back an invalid terminal receipt {"capture_resume_authorized":true} 1ms
+ ✓ backend/tests/unit/change-order-recovery-terminals.test.ts > worker change order terminal adapter > rolls back an invalid terminal receipt {"prior_secured_state_restored":true} 1ms
+ ✓ backend/tests/unit/change-order-recovery-terminals.test.ts > worker change order terminal adapter > rolls back an invalid terminal receipt {"recorded_at":"2026-09-06T00:06:00Z"} 1ms
+ ✓ backend/tests/unit/change-order-recovery-terminals.test.ts > worker change order terminal adapter > rolls back an invalid terminal receipt {"hard_assignment_created":true} 1ms
+ ✓ backend/tests/unit/change-order-recovery-terminals.test.ts > worker change order terminal adapter > rolls back an invalid terminal receipt {"unexpected_authority":true} 1ms
+ ✓ backend/tests/unit/change-order-recovery-terminals.test.ts > worker change order terminal adapter > rejects receipt cardinality 0 before commit 1ms
+ ✓ backend/tests/unit/change-order-recovery-terminals.test.ts > worker change order terminal adapter > rejects receipt cardinality 2 before commit 0ms
+ ✓ backend/tests/unit/change-order-recovery-terminals.test.ts > worker change order terminal adapter > rejects receipt cardinality null before commit 0ms
+ ✓ backend/tests/unit/change-order-recovery-terminals.test.ts > worker change order terminal adapter > rolls back a changed installed authority and surfaces uncertain commit acknowledgements 1ms
+ ✓ backend/tests/unit/change-order-recovery-terminals.test.ts > worker change order terminal adapter > rejects a mismatched runtime login before a terminal command 1ms
+ ✓ backend/tests/unit/change-order-recovery-terminals.test.ts > worker change order terminal adapter > rejects ambiguous no-effect evidence before opening a transaction 1ms
+
+ Test Files  1 passed (1)
+      Tests  23 passed (23)
+   Start at  22:05:15
+   Duration  1.82s (transform 569ms, setup 89ms, import 1.40s, tests 33ms, environment 0ms)
+

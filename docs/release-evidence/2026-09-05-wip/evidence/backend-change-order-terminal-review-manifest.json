@@ -1,0 +1,182 @@
+{
+  "recordedAt": "2026-09-06T05:24:38.841Z",
+  "repository": "C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip",
+  "head": "36255e604e718320ccae7d4e3ac269ad09678205",
+  "status": "LOCAL_CHANGE_ORDER_TERMINALS_AND_INTEGRATION_PASS",
+  "releaseEligible": false,
+  "goalComplete": false,
+  "productionEffects": "NONE",
+  "customerMoney": "FROZEN",
+  "hardAssignment": "FROZEN",
+  "previousGoalTurn": "PROGRESS_VERIFIED_WORKER_REVERSAL_ADAPTER_AND_REDIS",
+  "baseline": {
+    "path": "C:/Users/Manfish/Documents/Codex/2026-09-04/let/work/change-order-terminal-baseline.json",
+    "sha256": "ad360b91a5ce8ec0a427ca4ee0748640c26f7dbf735224d8983e09fd53f1aef0",
+    "sourcePublication": "df5a0dde3eff821718370b01d89cb2cbee90d69d"
+  },
+  "files": [
+    {
+      "path": "backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql",
+      "change": "modified",
+      "beforeSha256": "2449f38909588940089f50fa34de4c01b08bf8f449f1840579836fd37e083ff0",
+      "afterSha256": "275f00b59916f26627ca401512828c76195f2cc3ad45489aaadc3d40d3cafd68"
+    },
+    {
+      "path": "backend/src/jobs/change-order-terminal-role-plans.ts",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "489b550e5e700eeb2bb0fc1892c8dbe4e1003ca76a54be8cc0aeaa6f795fff0b"
+    },
+    {
+      "path": "backend/src/jobs/fake-financial-outbox-role-plans.ts",
+      "change": "modified",
+      "beforeSha256": "e0ba660887ea640b4ef77748f17a874e372982653b0b0eeb19e5812e3e238635",
+      "afterSha256": "eb3a65c6f25c372ed619efd017cd8d2430d0829a85baa1a72305041324c934bc"
+    },
+    {
+      "path": "backend/src/jobs/work-order-command-role-authority.ts",
+      "change": "modified",
+      "beforeSha256": "a97d859f0deabbd7ac9e5433664327e53a5c614cd32d801651e6eece3333c0c5",
+      "afterSha256": "c42a94ce914a5bfa23480564667266067e9baab38dbb29c0726346dc6cf2726c"
+    },
+    {
+      "path": "backend/src/services/UniversalV1ChangeOrderRecoveryTerminals.ts",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "0af7fca7aa20cbf71feabe1f613864615d0d2746098b8b091c7083b2f62a1558"
+    },
+    {
+      "path": "backend/src/services/payment/NonproductionFinancialBootstrapReadiness.ts",
+      "change": "modified",
+      "beforeSha256": "682b1d7533996723bb486172ab9ae20e8728136a41e727483b0029ae0aa48f12",
+      "afterSha256": "e3102d711f168019128a7993a01435767b699c62be04850e40a6882482548b1e"
+    },
+    {
+      "path": "backend/tests/helpers/universal-v1-synthetic-role-provisioning.ts",
+      "change": "modified",
+      "beforeSha256": "3a2c1d60b3f517b956ae9e0f8a1fa68ccb3b0f9594bafc4e32ce8978444c5202",
+      "afterSha256": "b7951f3c329b00fd29e5e7190640ee2fb4c208483ed183bbf29c66b6e12a03d6"
+    },
+    {
+      "path": "backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts",
+      "change": "modified",
+      "beforeSha256": "4cd15521d31694cc6430a004d0479a994a70ae10aac25d5e3030861a47042985",
+      "afterSha256": "2a31df10705cea592f7f4bec9fc34d46303c71eab6b43cfd983a60a618c92279"
+    },
+    {
+      "path": "backend/tests/unit/change-order-recovery-terminals.test.ts",
+      "change": "added",
+      "beforeSha256": null,
+      "afterSha256": "01def381333b24f00e45183226acc1b99a3a7356744bb3f2042cd1b355eaec54"
+    },
+    {
+      "path": "backend/tests/unit/work-order-command-role-authority.test.ts",
+      "change": "modified",
+      "beforeSha256": "9035a530d8984f6d2e27fcb47f5e0e181bc28f73efeda3e7ffa3b810038897d0",
+      "afterSha256": "a393fd7a23bbed386d65c590bc2716f869bc4536572032749c7f9b05f2d27e64"
+    }
+  ],
+  "patchSha256": "67f3bcfaef59d42f45b177421ee09db8a7431e6936b22ec0c0e4a7b9fb455247",
+  "logs": [
+    {
+      "path": "change-order-terminal-units-final.log",
+      "sha256": "9833fdc0e74f808f275223a2255c7f8fe61fd99359fd8747fa3c3e3242351634"
+    },
+    {
+      "path": "change-order-terminal-adapter-units.log",
+      "sha256": "b053bad1aa91554874fa8dd98058c61e71c4350a5947280ea691b4fd091492da"
+    },
+    {
+      "path": "change-order-terminal-integration.log",
+      "sha256": "451b849cb14ad7103758354834de74feccd685cfb3b0af1bdece76714e542fef"
+    },
+    {
+      "path": "change-order-terminal-types.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "change-order-terminal-lint.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "change-order-terminal-compile.log",
+      "sha256": "12f2c929527a138cb94108f43be9a72fb7de11fa15bad6ec16bdeece63f86e1a"
+    }
+  ],
+  "integrationObservation": {
+    "path": "work/change-order-terminal-integration-observation.json",
+    "sha256": "bd80d15b92f4ec5c21813547fe14f071e1e3c703b115c56494e651acf7628844",
+    "sourceUnchangedDuringValidation": true
+  },
+  "validation": {
+    "unitContracts": {
+      "files": 9,
+      "passed": 341,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    "restrictedRolePostgresRedis": {
+      "files": 2,
+      "passed": 164,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    "sourceCompilation": "PASS",
+    "expandedTestTypes": "PASS",
+    "allSourceLintZeroWarnings": "PASS",
+    "gitDiffCheck": "PASS",
+    "patchReverseCheck": "PASS",
+    "patchForwardByteReproduction": "PASS",
+    "unrelatedWorktreePreserved": true,
+    "baselineInventoryEntries": 1797,
+    "currentInventoryEntries": 1800,
+    "fullRequiredGate": {
+      "status": "FAIL",
+      "passed": 10571,
+      "failed": 27,
+      "skipped": 33,
+      "todo": 0,
+      "files": 684,
+      "sourceRelation": "Earlier full required run; not rerun on this checkpoint. Focused passes do not replace it."
+    }
+  },
+  "review": {
+    "kind": "Root and independent read-only agent review; not required human release approval",
+    "resolvedFindings": [
+      "Serialize fresh ADJUST REQUESTED against terminal cancellation, including old transaction snapshots",
+      "Bind no-effect outcome to historical target environment ancestry",
+      "Check cancellation for the complete Work Order"
+    ],
+    "evidenceBoundary": "Restricted worker SQL, actual database commits, publisher, Redis/BullMQ, processor and lifecycle materialization are real. Installed release/authentication composition is mocked to synthetic fixtures; scheduler and normal signed process boot are not established."
+  },
+  "behavior": [
+    "Three sealed worker-only materialized, compensated and no-effect terminal commands retain immutable lease/witness/actor/evidence identity",
+    "Typed adapter validates exact terminal receipt and installed runtime authority, preserving PostgreSQL timestamp precision",
+    "Real committed terminal facts survive lost COMMIT acknowledgements and expired-lease retries without duplicate rows",
+    "Fresh REQUESTED/admission, terminal, authority revocation, lock contention, lease expiry and target-rollover races are covered"
+  ],
+  "migrations": {
+    "changed": true,
+    "frozenPreviousPrefixPreserved": true,
+    "frozenPreviousPrefixSha256": "2449f38909588940089f50fa34de4c01b08bf8f449f1840579836fd37e083ff0",
+    "currentSha256": "275f00b59916f26627ca401512828c76195f2cc3ad45489aaadc3d40d3cafd68",
+    "sourceCatalogCheckpoint": "backend-change-order-terminal-catalog-capture.json",
+    "functions": 161,
+    "explicitTriggers": 348,
+    "addedFunctions": 4,
+    "replacedFunctions": 1,
+    "addedTables": 0
+  },
+  "docs": {
+    "checkedAtUtc": "2026-09-06 04:53:51 UTC",
+    "modificationTimesUnchanged": true
+  },
+  "remaining": [
+    "Worker ADJUST preparation and amendment materialization commands",
+    "Scheduled worker orchestration and remaining financial/account callers",
+    "Current-Docs product gaps, thirteen API-worker-web journeys and full required gate",
+    "Clean-clone/restart/restore, signed protected human review and isolated staging"
+  ]
+}

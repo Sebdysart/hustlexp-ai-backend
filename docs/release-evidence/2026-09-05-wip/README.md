@@ -2,16 +2,16 @@
 
 Published at the user's request. **Backend incomplete; release certification remains FAIL.** Production effects NONE; customer money and hard assignment FROZEN.
 
-This branch preserves the current backend source, tests, migrations and repository documentation, and adds the verified worker reversal adapter checkpoint. The source tree contains 1797 Git entries, including the unchanged tests-vault gitlink. Local development tooling, environment files and credentials are excluded by the existing repository rules.
+This branch preserves all 1800 source entries and previous evidence, and adds the verified change-order terminal checkpoint.
 
-[Current baseline-to-code gap matrix](evidence/backend-gap-matrix-current.md) — 60 required behaviors against eight controlled Docs, with existing code, missing implementation, required tests and external blockers. Live Doc modification times were checked at 2026-09-06 03:56:29 UTC and matched the preserved snapshots.
+[Current gap matrix](evidence/backend-gap-matrix-current.md) covers 60 required behaviors against eight controlled Docs, with existing code, missing implementation, required tests and external blockers. Live Doc modification times were checked at 2026-09-06 04:53:51 UTC and matched the preserved snapshots.
 
-[Latest worker reversal adapter checkpoint](evidence/backend-change-order-reversal-adapter-review.md): 291 unit tests across nine complete files and 129 PostgreSQL/Redis tests in the complete restricted-role cohort pass, with zero failures, skips or todos. Compilation, expanded types and zero-warning source lint pass. The new journeys inject lost PREPARED and REQUESTED commit acknowledgements, resume identical request identities, and execute through real Redis/BullMQ. Completed-job replay preserves one effect and one REVERSED lifecycle fact. Migrations and the prior verified catalog remain unchanged. Installed release/authentication composition is synthetic; normal signed process boot remains unproven.
+[Terminal checkpoint](evidence/backend-change-order-terminal-review.md): 341 unit tests across nine complete files and 164 PostgreSQL/Redis tests across two complete role/catalog/readiness cohorts pass with no failures, skips or todos. Compilation, expanded types and zero-warning source lint pass. Three sealed worker commands and a typed adapter record materialized, compensated or no-effect evidence. Real lost terminal COMMIT acknowledgements replay the original rows after lease expiry. Request/admission/cancellation races and target rollover are covered. Two fresh catalog captures verify 161 functions and 348 explicit triggers; the prior migration prefix is preserved.
 
-The last full required run, on earlier source, had 10,571 passes, 27 failures and 33 skips across 684 files. Focused passes do not replace that gate. Remaining work includes exact terminal recovery and scheduled-worker integration, remaining financial/account callers, current-Docs product behavior, all thirteen end-to-end journeys, clean-clone verification, signing, independent human review and isolated staging.
+Scheduled recovery still needs worker ADJUST preparation/request recovery and amendment materialization before connecting the existing poller. Remaining financial/account callers, current-Docs product behavior, thirteen complete journeys, clean-clone/restart/restore, signing, independent review and isolated staging remain. Installed release/authentication composition in integration is synthetic. The full required run on earlier source had 10,571 passes, 27 failures and 33 skips across 684 files; these focused results do not replace it.
 
-This WIP publication is not an approved production release. The local source branch and index are preserved. The publication uses the existing secure-keyring GitHub login; no chat token is stored in this branch.
+Public WIP only. Original local branch and index are preserved. Existing secure-keyring GitHub authentication is used; chat credentials are excluded.
 
 ## Archived evidence
 
-The evidence directory contains 25 review/matrix/validation artifacts linked from the current audit. Markdown source links are adapted for GitHub. JSON manifests preserve original local evidence paths and hashes. The copied Markdown evidence links were resolved during preparation.
+This checkpoint copies 22 review, matrix and validation artifacts. Markdown source links are adapted for GitHub; JSON manifests retain original evidence paths and hashes. Earlier public evidence is preserved.

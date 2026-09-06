@@ -1,0 +1,2425 @@
+diff --git a/backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql b/backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql
+index 53ef50b..3e88873 100644
+--- a/backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql
++++ b/backend/database/migrations/20261016_universal_v1_fake_financial_command_outbox_authority_v13.sql
+@@ -13962,3 +13962,635 @@ DO $worker_reversal_acl$ DECLARE r RECORD; grantee TEXT; BEGIN
+     EXECUTE 'REVOKE ALL ON FUNCTION '||r.identity||' FROM '||grantee||' CASCADE';
+   END LOOP;
+ END $worker_reversal_acl$;
++
++
++-- Exact worker terminal commands retain the immutable recovery relation and its
++-- v7 guard. Replay precedes lease expiry; creation serializes domain and finance.
++CREATE OR REPLACE FUNCTION hx_authority.record_fake_financial_change_order_terminal_v13(
++  p_target_authority_id UUID,p_target_database_name TEXT,
++  p_release_environment TEXT,p_release_manifest_digest TEXT,
++  p_proposal_id UUID,p_recovery_lease_id UUID,p_lease_owner_id UUID,
++  p_witness_request_sha256 TEXT,p_work_order_id UUID,p_kind TEXT,
++  p_amendment_id UUID,p_adjustment_event_id UUID,p_compensation_command_id UUID,
++  p_compensation_event_id UUID,p_no_effect_outcome_fact_id UUID,p_revocation_reason TEXT
++) RETURNS TABLE(terminal_fact JSONB,idempotency_replayed BOOLEAN,observed_at TIMESTAMPTZ,
++  target_authority_id UUID,release_manifest_digest TEXT)
++LANGUAGE plpgsql SECURITY DEFINER VOLATILE PARALLEL UNSAFE SET search_path=pg_catalog AS $$
++DECLARE
++  witness public.universal_v1_change_order_materialization_commands%ROWTYPE;
++  stored public.universal_v1_change_order_recovery_terminal_facts%ROWTYPE;
++  claim public.universal_v1_change_order_compensation_commands%ROWTYPE;
++  origin hx_authority.fake_financial_change_order_compensation_origins_v13%ROWTYPE;
++  provenance hx_authority.fake_financial_change_order_reversal_preparations_v13%ROWTYPE;
++  prepared public.universal_v1_prepared_financial_commands%ROWTYPE;
++  journal public.financial_provider_command_journal%ROWTYPE;
++  no_effect public.financial_provider_command_outcome_facts%ROWTYPE;
++  lease_expires_at TIMESTAMPTZ; adjustment_id UUID; witness_sha TEXT; amendment_sha TEXT;
++  financial RECORD; bridge RECORD; amendment RECORD; execution RECORD;
++  predecessor_execution RECORD; predecessor_amendment RECORD; original_target RECORD;
++  historical_target RECORD; request RECORD; admitted RECORD; effect RECORD; progress JSONB;
++  context RECORD; context_before JSONB; actor_ids UUID[]; pass INTEGER; lock_name TEXT; reason TEXT;
++BEGIN
++  IF pg_catalog.current_setting('transaction_isolation') <> 'read committed' THEN
++    RAISE EXCEPTION 'HXUV1-COTERMINAL-13-READ_COMMITTED_REQUIRED'; END IF;
++  IF p_target_authority_id IS NULL OR p_proposal_id IS NULL OR p_recovery_lease_id IS NULL
++    OR p_lease_owner_id IS NULL OR p_work_order_id IS NULL OR p_witness_request_sha256 IS NULL
++    OR p_witness_request_sha256 !~ '^[0-9a-f]{64}$'
++    OR p_kind IS NULL OR p_kind NOT IN('MATERIALIZED','COMPENSATED','NO_EFFECT')
++    OR (p_kind='MATERIALIZED' AND (p_amendment_id IS NULL OR p_adjustment_event_id IS NULL
++      OR p_compensation_command_id IS NOT NULL OR p_compensation_event_id IS NOT NULL
++      OR p_no_effect_outcome_fact_id IS NOT NULL OR p_revocation_reason IS NOT NULL))
++    OR (p_kind='COMPENSATED' AND (p_compensation_command_id IS NULL OR p_compensation_event_id IS NULL
++      OR p_amendment_id IS NOT NULL OR p_adjustment_event_id IS NOT NULL
++      OR p_no_effect_outcome_fact_id IS NOT NULL OR p_revocation_reason IS NOT NULL))
++    OR (p_kind='NO_EFFECT' AND (p_amendment_id IS NOT NULL OR p_adjustment_event_id IS NOT NULL
++      OR p_compensation_command_id IS NOT NULL OR p_compensation_event_id IS NOT NULL
++      OR ((p_no_effect_outcome_fact_id IS NULL)=(p_revocation_reason IS NULL)))) THEN
++    RAISE EXCEPTION 'HXUV1-COTERMINAL-13-INPUT_INVALID'; END IF;
++  PERFORM hx_authority.assert_fake_financial_outbox_target_v13(
++    p_target_authority_id,p_target_database_name,p_release_environment,p_release_manifest_digest);
++  IF NOT pg_catalog.pg_try_advisory_xact_lock(
++    pg_catalog.hashtextextended('universal-v1-change-order-proposal:'||p_proposal_id::TEXT,0)) THEN
++    RAISE EXCEPTION 'HXUV1-COTERMINAL-13-LOCK_BUSY'; END IF;
++  SELECT * INTO witness FROM public.universal_v1_change_order_materialization_commands c
++    WHERE c.proposal_id=p_proposal_id FOR SHARE NOWAIT;
++  IF witness.proposal_id IS NULL OR witness.work_order_id IS DISTINCT FROM p_work_order_id
++    OR witness.request_sha256 IS DISTINCT FROM p_witness_request_sha256 THEN
++    RAISE EXCEPTION 'HXUV1-COTERMINAL-13-WITNESS_MISMATCH'; END IF;
++  witness_sha:=public.universal_v1_change_order_materialization_request_sha256(
++    witness.proposal_id,witness.idempotency_key,witness.actor_user_id,witness.work_order_id,
++    witness.task_id,witness.task_draft_id,witness.eligibility_decision_id,
++    witness.base_scope_version_id,witness.replacement_scope_version_id,
++    witness.expected_proposal_version,witness.expected_scope_version,witness.expected_amendment_version,
++    witness.expected_execution_version,witness.expected_financial_version,witness.predecessor_event_id,
++    witness.predecessor_operation_id,witness.adjustment_operation_id);
++  IF witness_sha IS DISTINCT FROM p_witness_request_sha256 THEN
++    RAISE EXCEPTION 'HXUV1-COTERMINAL-13-WITNESS_MISMATCH'; END IF;
++  SELECT l.expires_at INTO lease_expires_at FROM public.universal_v1_change_order_recovery_leases l
++    WHERE l.proposal_id=p_proposal_id AND l.recovery_lease_id=p_recovery_lease_id
++      AND l.lease_owner_id=p_lease_owner_id FOR SHARE NOWAIT;
++  IF lease_expires_at IS NULL THEN RAISE EXCEPTION 'HXUV1-COTERMINAL-13-LEASE_MISMATCH'; END IF;
++  IF NOT pg_catalog.pg_try_advisory_xact_lock(
++    pg_catalog.hashtextextended('fulfillment:'||p_work_order_id::TEXT,0)) THEN
++    RAISE EXCEPTION 'HXUV1-COTERMINAL-13-LOCK_BUSY'; END IF;
++  SELECT * INTO stored FROM public.universal_v1_change_order_recovery_terminal_facts t
++    WHERE t.proposal_id=p_proposal_id;
++  IF stored.terminal_fact_id IS NOT NULL THEN
++    IF stored.terminal_fact_id IS DISTINCT FROM public.universal_v1_change_order_recovery_uuid_v1(witness.idempotency_key,'terminal-fact')
++      OR stored.witness_request_sha256 IS DISTINCT FROM p_witness_request_sha256
++      OR stored.recovery_lease_id IS DISTINCT FROM p_recovery_lease_id OR stored.lease_owner_id IS DISTINCT FROM p_lease_owner_id
++      OR stored.recorded_by IS DISTINCT FROM witness.actor_user_id
++      OR stored.prior_secured_state_restored IS DISTINCT FROM FALSE
++      OR stored.capture_resume_authorized IS DISTINCT FROM FALSE
++      OR stored.payment_creation_performed IS DISTINCT FROM FALSE OR stored.hard_assignment_created IS DISTINCT FROM FALSE
++      OR stored.amendment_id IS DISTINCT FROM p_amendment_id
++      OR stored.compensation_command_id IS DISTINCT FROM p_compensation_command_id
++      OR stored.compensation_event_id IS DISTINCT FROM p_compensation_event_id
++      OR stored.no_effect_outcome_fact_id IS DISTINCT FROM p_no_effect_outcome_fact_id
++      OR stored.authority_revocation_reason IS DISTINCT FROM p_revocation_reason
++      OR stored.outcome_state IS DISTINCT FROM (CASE WHEN p_kind='MATERIALIZED' THEN 'MATERIALIZED' ELSE 'CANCELLED' END)
++      OR stored.recovery_state IS DISTINCT FROM (CASE WHEN p_kind='MATERIALIZED' THEN 'NOT_REQUIRED' ELSE 'RECOVERY_REQUIRED' END)
++      OR stored.resolution_evidence_kind IS DISTINCT FROM (CASE p_kind WHEN 'MATERIALIZED' THEN 'AMENDMENT' WHEN 'COMPENSATED' THEN 'REVERSAL' ELSE 'NO_EFFECT' END)
++      OR stored.hold_clearance_kind IS DISTINCT FROM (CASE WHEN p_kind='MATERIALIZED' THEN 'EXACT_AMENDMENT' ELSE 'BOUNDED_CANCELLATION_RECOVERY' END)
++      OR stored.execution_resume_authorized IS DISTINCT FROM (p_kind='MATERIALIZED')
++      OR (p_kind='MATERIALIZED' AND stored.adjustment_event_id IS DISTINCT FROM p_adjustment_event_id) THEN
++      RAISE EXCEPTION 'HXUV1-COTERMINAL-13-IDEMPOTENCY_CONFLICT'; END IF;
++    RETURN QUERY SELECT pg_catalog.to_jsonb(stored),TRUE,pg_catalog.clock_timestamp(),p_target_authority_id,p_release_manifest_digest;
++    RETURN;
++  END IF;
++  IF lease_expires_at<=pg_catalog.clock_timestamp() THEN RAISE EXCEPTION 'HXUV1-COTERMINAL-13-LEASE_EXPIRED'; END IF;
++  -- Lock the historical FK actor without reauthorizing that participant.
++  PERFORM 1 FROM public.users WHERE id=witness.actor_user_id FOR KEY SHARE NOWAIT;
++  -- The current REQUESTED writer takes these keys before target acquisition.
++  -- Try-locking avoids inversion and excludes its uncommitted journal rows.
++  FOR lock_name IN SELECT value FROM pg_catalog.unnest(ARRAY[
++    'idempotency:'||witness.idempotency_key||':adjust',
++    'operation-version:FAKE:ADJUST:'||witness.adjustment_operation_id::TEXT||':0'
++  ]) locks(value) ORDER BY value COLLATE "C" LOOP
++    IF NOT pg_catalog.pg_try_advisory_xact_lock(pg_catalog.hashtext('financial-provider-command-journal-v1'),pg_catalog.hashtext(lock_name)) THEN
++      RAISE EXCEPTION 'HXUV1-COTERMINAL-13-LOCK_BUSY'; END IF;
++  END LOOP;
++  SELECT * INTO journal FROM public.financial_provider_command_journal c
++    WHERE c.operation_kind='ADJUST' AND c.operation_id=witness.adjustment_operation_id AND c.provider_kind='FAKE'
++      AND c.provider_expected_version=0 FOR SHARE NOWAIT;
++  IF NOT pg_catalog.pg_try_advisory_xact_lock(pg_catalog.hashtext('fake-financial-operation'),pg_catalog.hashtext(witness.adjustment_operation_id::TEXT))
++    OR (journal.command_id IS NOT NULL AND NOT pg_catalog.pg_try_advisory_xact_lock(
++      pg_catalog.hashtext('financial-provider-command-recovery-v1'),pg_catalog.hashtext(journal.command_id::TEXT))) THEN
++    RAISE EXCEPTION 'HXUV1-COTERMINAL-13-LOCK_BUSY'; END IF;
++  IF p_kind='COMPENSATED' THEN
++    SELECT * INTO claim FROM public.universal_v1_change_order_compensation_commands c
++      WHERE c.compensation_command_id=p_compensation_command_id FOR SHARE NOWAIT;
++    adjustment_id:=claim.adjustment_event_id;
++  ELSE adjustment_id:=p_adjustment_event_id;
++  END IF;
++  IF p_kind IN('MATERIALIZED','COMPENSATED') THEN
++    SELECT * INTO financial FROM public.task_financial_security_events f WHERE f.id=adjustment_id FOR SHARE NOWAIT;
++    SELECT * INTO bridge FROM public.universal_v1_fake_financial_lifecycle_bridges b WHERE b.task_financial_security_event_id=adjustment_id;
++    IF financial.id IS NULL OR bridge.bridge_id IS NULL OR bridge.command_id IS NULL
++     OR financial.operation_id IS DISTINCT FROM witness.adjustment_operation_id::TEXT
++     OR financial.idempotency_key IS DISTINCT FROM witness.idempotency_key||':adjust'
++     OR financial.event_kind IS DISTINCT FROM 'ADJUSTMENT_AUTHORIZED' OR financial.status IS DISTINCT FROM 'SUCCEEDED'
++     OR financial.provider_kind IS DISTINCT FROM 'FAKE' OR financial.recorded_by IS DISTINCT FROM witness.actor_user_id
++     OR financial.task_draft_id IS DISTINCT FROM witness.task_draft_id OR financial.task_id IS DISTINCT FROM witness.task_id
++     OR financial.eligibility_decision_id IS DISTINCT FROM witness.eligibility_decision_id
++     OR financial.scope_version_id IS DISTINCT FROM witness.replacement_scope_version_id
++     OR financial.change_order_id IS DISTINCT FROM witness.proposal_id
++     OR financial.predecessor_event_id IS DISTINCT FROM witness.predecessor_event_id
++     OR financial.expected_version::BIGINT IS DISTINCT FROM witness.expected_financial_version::BIGINT+1
++     OR financial.amount_cents IS DISTINCT FROM witness.customer_total_cents OR financial.currency IS DISTINCT FROM witness.currency
++     OR bridge.fake_operation_id IS DISTINCT FROM witness.adjustment_operation_id
++     OR bridge.fake_operation_kind IS DISTINCT FROM 'ADJUST'
++     OR bridge.lifecycle_event_kind IS DISTINCT FROM 'ADJUSTMENT_AUTHORIZED' OR bridge.lifecycle_status IS DISTINCT FROM 'SUCCEEDED' THEN
++    RAISE EXCEPTION 'HXUV1-COTERMINAL-13-ADJUSTMENT_MISMATCH'; END IF;
++  END IF;
++  IF p_kind='MATERIALIZED' THEN
++    SELECT a.id,a.work_order_id,a.amendment_version,a.supersedes_amendment_id,a.change_order_id,a.scope_version_id,
++      a.adjustment_event_id,a.expected_financial_version,a.idempotency_key,a.request_sha256,a.materialized_by
++      INTO amendment FROM public.task_work_order_amendments a WHERE a.id=p_amendment_id FOR SHARE NOWAIT;
++    IF amendment.id IS NULL OR EXISTS(SELECT 1 FROM public.universal_v1_change_order_compensation_commands c WHERE c.proposal_id=p_proposal_id) THEN
++      RAISE EXCEPTION 'HXUV1-COTERMINAL-13-AMENDMENT_MISMATCH'; END IF;
++    SELECT e.id,e.work_order_id,e.task_id,e.scope_version_id,e.execution_version,e.supersedes_fact_id,e.state,
++      e.transition_kind,e.completion_fact_id,e.work_order_amendment_id,e.actor_role,e.actor_user_id,e.reason,
++      e.idempotency_key,e.request_sha256,e.client_occurred_at,e.policy_version
++      INTO execution FROM public.task_work_order_execution_facts e
++      WHERE e.work_order_amendment_id=amendment.id AND e.transition_kind='APPLY_AMENDMENT';
++    SELECT e.id,e.work_order_id,e.task_id,e.scope_version_id,e.execution_version,e.state
++      INTO predecessor_execution FROM public.task_work_order_execution_facts e WHERE e.id=execution.supersedes_fact_id;
++    SELECT a.id,a.work_order_id,a.amendment_version,a.scope_version_id
++      INTO predecessor_amendment FROM public.task_work_order_amendments a WHERE a.id=amendment.supersedes_amendment_id;
++    amendment_sha:=public.universal_v1_change_amendment_request_sha256(
++      witness.work_order_id,witness.expected_amendment_version+1,amendment.supersedes_amendment_id,
++      witness.proposal_id,witness.replacement_scope_version_id,adjustment_id,witness.expected_financial_version,
++      witness.actor_user_id,witness.idempotency_key);
++    IF amendment.work_order_id IS DISTINCT FROM witness.work_order_id OR amendment.change_order_id IS DISTINCT FROM witness.proposal_id
++       OR amendment.amendment_version::BIGINT IS DISTINCT FROM witness.expected_amendment_version::BIGINT+1
++       OR amendment.scope_version_id IS DISTINCT FROM witness.replacement_scope_version_id
++       OR amendment.adjustment_event_id IS DISTINCT FROM adjustment_id
++       OR amendment.expected_financial_version IS DISTINCT FROM witness.expected_financial_version
++       OR amendment.idempotency_key IS DISTINCT FROM witness.idempotency_key OR amendment.materialized_by IS DISTINCT FROM witness.actor_user_id
++       OR amendment.request_sha256 IS DISTINCT FROM amendment_sha
++       OR (witness.expected_amendment_version=0 AND amendment.supersedes_amendment_id IS NOT NULL)
++       OR (witness.expected_amendment_version>0 AND (predecessor_amendment.id IS NULL
++         OR predecessor_amendment.work_order_id IS DISTINCT FROM witness.work_order_id
++         OR predecessor_amendment.amendment_version IS DISTINCT FROM witness.expected_amendment_version
++         OR predecessor_amendment.scope_version_id IS DISTINCT FROM witness.base_scope_version_id))
++       OR execution.id IS NULL OR execution.work_order_id IS DISTINCT FROM witness.work_order_id
++       OR execution.task_id IS DISTINCT FROM witness.task_id OR execution.scope_version_id IS DISTINCT FROM witness.replacement_scope_version_id
++       OR execution.execution_version::BIGINT IS DISTINCT FROM witness.expected_execution_version::BIGINT+1
++       OR execution.actor_user_id IS DISTINCT FROM witness.actor_user_id OR execution.actor_role IS DISTINCT FROM 'CUSTOMER'
++       OR execution.idempotency_key IS DISTINCT FROM witness.idempotency_key||':execution'
++       OR execution.completion_fact_id IS NOT NULL OR execution.reason IS NOT NULL
++       OR execution.policy_version IS DISTINCT FROM 'universal-v1-work-order-execution-1.0.0'
++       OR predecessor_execution.id IS NULL OR predecessor_execution.work_order_id IS DISTINCT FROM witness.work_order_id
++       OR predecessor_execution.task_id IS DISTINCT FROM witness.task_id
++       OR predecessor_execution.scope_version_id IS DISTINCT FROM witness.base_scope_version_id
++       OR predecessor_execution.execution_version IS DISTINCT FROM witness.expected_execution_version
++       OR execution.state IS DISTINCT FROM predecessor_execution.state
++       OR predecessor_execution.state NOT IN ('MATERIALIZED','ACKNOWLEDGED','EN_ROUTE','ARRIVED','PAUSED')
++       OR execution.request_sha256 IS DISTINCT FROM public.universal_v1_execution_internal_request_sha256(
++         witness.actor_user_id,witness.work_order_id,'APPLY_AMENDMENT',execution.state,witness.expected_execution_version,
++         witness.replacement_scope_version_id,NULL,amendment.id,witness.idempotency_key||':execution',
++         execution.client_occurred_at,NULL) THEN
++      RAISE EXCEPTION 'HXUV1-COTERMINAL-13-AMENDMENT_MISMATCH';
++    END IF;
++  ELSIF p_kind='COMPENSATED' THEN
++    SELECT * INTO origin FROM hx_authority.fake_financial_change_order_compensation_origins_v13 WHERE compensation_command_id=p_compensation_command_id;
++    SELECT * INTO original_target FROM hx_authority.universal_v1_work_order_target_authority_facts t WHERE t.target_authority_id=origin.target_authority_id;
++    SELECT * INTO prepared FROM public.universal_v1_prepared_financial_commands c
++      WHERE c.operation_kind='REVERSAL' AND c.operation_id=claim.reversal_operation_id AND c.provider_kind='FAKE'
++        AND c.provider_expected_version=0 FOR SHARE NOWAIT;
++    SELECT * INTO provenance FROM hx_authority.fake_financial_change_order_reversal_preparations_v13 WHERE prepared_command_id=prepared.prepared_command_id;
++    SELECT * INTO request FROM hx_authority.fake_financial_command_outbox_requests_v13 r WHERE r.prepared_command_id=prepared.prepared_command_id;
++    SELECT * INTO historical_target FROM hx_authority.universal_v1_work_order_target_authority_facts t WHERE t.target_authority_id=request.target_authority_id;
++    IF claim.compensation_command_id IS NULL OR origin.compensation_command_id IS NULL OR witness.proposal_id IS NULL
++    OR claim.proposal_id IS DISTINCT FROM witness.proposal_id
++    OR origin.proposal_id IS DISTINCT FROM claim.proposal_id OR origin.recovery_lease_id IS DISTINCT FROM claim.recovery_lease_id
++    OR origin.lease_owner_id IS DISTINCT FROM claim.lease_owner_id OR origin.witness_request_sha256 IS DISTINCT FROM claim.witness_request_sha256
++    OR origin.adjustment_event_id IS DISTINCT FROM claim.adjustment_event_id OR origin.revocation_reason IS DISTINCT FROM claim.authority_revocation_reason
++    OR original_target.target_database_name IS DISTINCT FROM pg_catalog.current_database()
++    OR original_target.environment IS DISTINCT FROM p_release_environment OR origin.release_environment IS DISTINCT FROM p_release_environment
++    OR origin.release_manifest_digest IS DISTINCT FROM original_target.release_manifest_sha256
++    OR NOT EXISTS(WITH RECURSIVE ancestry AS (
++      SELECT t.target_authority_id,t.supersedes_target_authority_id FROM hx_authority.universal_v1_work_order_target_authority_facts t WHERE t.target_authority_id=p_target_authority_id
++      UNION SELECT t.target_authority_id,t.supersedes_target_authority_id FROM hx_authority.universal_v1_work_order_target_authority_facts t JOIN ancestry a ON t.target_authority_id=a.supersedes_target_authority_id
++    ) SELECT 1 FROM ancestry a WHERE a.target_authority_id=origin.target_authority_id)
++    OR claim.compensation_command_id IS DISTINCT FROM public.universal_v1_change_order_recovery_uuid_v1(witness.idempotency_key,'compensation-command')
++    OR claim.reversal_operation_id IS DISTINCT FROM public.universal_v1_change_order_recovery_uuid_v1(witness.idempotency_key,'compensating-reversal')
++    OR claim.reversal_idempotency_key IS DISTINCT FROM witness.idempotency_key||':recovery:reversal'
++    OR claim.witness_request_sha256 IS DISTINCT FROM pg_catalog.btrim(witness.request_sha256)
++    OR claim.task_draft_id IS DISTINCT FROM witness.task_draft_id OR claim.task_id IS DISTINCT FROM witness.task_id
++    OR claim.work_order_id IS DISTINCT FROM witness.work_order_id OR claim.eligibility_decision_id IS DISTINCT FROM witness.eligibility_decision_id
++    OR claim.base_scope_version_id IS DISTINCT FROM witness.base_scope_version_id OR claim.adjustment_operation_id IS DISTINCT FROM witness.adjustment_operation_id
++    OR claim.lifecycle_expected_version::BIGINT IS DISTINCT FROM witness.expected_financial_version::BIGINT+2
++    OR claim.amount_cents IS DISTINCT FROM witness.customer_total_cents OR claim.currency IS DISTINCT FROM witness.currency
++    OR claim.requested_by IS DISTINCT FROM witness.actor_user_id OR claim.reason_code IS DISTINCT FROM 'FINALIZATION_AUTHORITY_REVOKED'
++    OR claim.semantic_limitation IS DISTINCT FROM 'PRIOR_SECURED_STATE_NOT_RESTORED' THEN
++    RAISE EXCEPTION 'HXUV1-COTERMINAL-13-ORIGIN_IDENTITY_INVALID'; END IF;
++    IF provenance.prepared_command_id IS NULL OR prepared.prepared_command_id IS NULL
++      OR provenance.compensation_command_id IS DISTINCT FROM claim.compensation_command_id
++      OR provenance.target_authority_id IS DISTINCT FROM request.target_authority_id OR provenance.release_manifest_sha256 IS DISTINCT FROM request.release_manifest_digest
++      OR prepared.command_state IS DISTINCT FROM 'PREPARED' OR prepared.provider_kind IS DISTINCT FROM 'FAKE'
++      OR prepared.operation_kind IS DISTINCT FROM 'REVERSAL' OR prepared.operation_id IS DISTINCT FROM claim.reversal_operation_id
++      OR prepared.idempotency_key IS DISTINCT FROM claim.reversal_idempotency_key OR prepared.provider_expected_version IS DISTINCT FROM 0::BIGINT
++      OR prepared.task_draft_id IS DISTINCT FROM claim.task_draft_id OR prepared.task_id IS DISTINCT FROM claim.task_id
++      OR prepared.work_order_id IS DISTINCT FROM claim.work_order_id OR prepared.eligibility_decision_id IS DISTINCT FROM claim.eligibility_decision_id
++      OR prepared.scope_version_id IS DISTINCT FROM claim.base_scope_version_id OR prepared.change_order_id IS NOT NULL OR prepared.completion_fact_id IS NOT NULL
++      OR prepared.predecessor_event_id IS DISTINCT FROM claim.adjustment_event_id OR prepared.related_operation_id IS DISTINCT FROM claim.adjustment_operation_id
++      OR prepared.lifecycle_expected_version IS DISTINCT FROM claim.lifecycle_expected_version
++      OR prepared.amount_cents IS DISTINCT FROM claim.amount_cents OR prepared.currency IS DISTINCT FROM claim.currency
++      OR prepared.recorded_by IS DISTINCT FROM claim.requested_by
++      OR provenance.provider_request_sha256 IS DISTINCT FROM pg_catalog.btrim(prepared.provider_request_sha256)
++      OR provenance.prepared_authority_sha256 IS DISTINCT FROM pg_catalog.btrim(prepared.authority_context_sha256) THEN
++      RAISE EXCEPTION 'HXUV1-COTERMINAL-13-PREPARATION_IDENTITY_INVALID'; END IF;
++    IF request.outbox_request_id IS NULL OR historical_target.target_database_name IS DISTINCT FROM p_target_database_name
++      OR historical_target.environment IS DISTINCT FROM p_release_environment
++      OR NOT EXISTS(WITH RECURSIVE ancestry AS (
++        SELECT t.target_authority_id,t.supersedes_target_authority_id FROM hx_authority.universal_v1_work_order_target_authority_facts t WHERE t.target_authority_id=request.target_authority_id
++        UNION SELECT t.target_authority_id,t.supersedes_target_authority_id FROM hx_authority.universal_v1_work_order_target_authority_facts t JOIN ancestry a ON t.target_authority_id=a.supersedes_target_authority_id
++      ) SELECT 1 FROM ancestry a WHERE a.target_authority_id=origin.target_authority_id)
++      OR EXISTS(SELECT 1 FROM public.task_work_order_amendments a WHERE a.change_order_id=p_proposal_id) THEN
++      RAISE EXCEPTION 'HXUV1-COTERMINAL-13-COMPENSATION_MISMATCH'; END IF;
++    PERFORM 1 FROM public.task_financial_security_events f WHERE f.id=p_compensation_event_id FOR SHARE NOWAIT;
++  ELSE
++    IF EXISTS(SELECT 1 FROM public.task_work_order_amendments a WHERE a.change_order_id=p_proposal_id)
++      OR EXISTS(SELECT 1 FROM public.universal_v1_change_order_compensation_commands c WHERE c.proposal_id=p_proposal_id) THEN
++      RAISE EXCEPTION 'HXUV1-COTERMINAL-13-NO_EFFECT_WINNER_CONFLICT'; END IF;
++    IF p_no_effect_outcome_fact_id IS NOT NULL THEN
++      SELECT * INTO no_effect FROM public.financial_provider_command_outcome_facts o
++        WHERE o.outcome_fact_id=p_no_effect_outcome_fact_id FOR SHARE NOWAIT;
++      SELECT * INTO prepared FROM public.universal_v1_prepared_financial_commands c
++        WHERE c.prepared_command_id=journal.prepared_financial_command_id FOR SHARE NOWAIT;
++      SELECT * INTO request FROM hx_authority.fake_financial_command_outbox_requests_v13 r WHERE r.command_id=journal.command_id;
++      IF no_effect.outcome_fact_id IS NULL OR journal.command_id IS NULL OR prepared.prepared_command_id IS NULL
++        OR no_effect.command_id IS DISTINCT FROM journal.command_id OR request.outbox_request_id IS NULL
++        OR no_effect.effect_certainty IS DISTINCT FROM 'CONFIRMED_NO_EFFECT' OR no_effect.retryable IS DISTINCT FROM FALSE
++        OR NOT(no_effect.outcome_kind='FAILED' OR (no_effect.outcome_kind='OUTCOME_OBSERVED' AND no_effect.provider_state IN('DECLINED','FAILED'))) THEN
++        RAISE EXCEPTION 'HXUV1-COTERMINAL-13-ADMITTED_NO_EFFECT_REQUIRED'; END IF;
++      IF request.target_database_name IS DISTINCT FROM p_target_database_name OR request.release_environment IS DISTINCT FROM p_release_environment
++        OR NOT EXISTS(WITH RECURSIVE ancestry AS (
++          SELECT t.target_authority_id,t.supersedes_target_authority_id FROM hx_authority.universal_v1_work_order_target_authority_facts t WHERE t.target_authority_id=p_target_authority_id
++          UNION SELECT t.target_authority_id,t.supersedes_target_authority_id FROM hx_authority.universal_v1_work_order_target_authority_facts t JOIN ancestry a ON t.target_authority_id=a.supersedes_target_authority_id
++        ) SELECT 1 FROM ancestry a WHERE a.target_authority_id=request.target_authority_id) THEN
++        RAISE EXCEPTION 'HXUV1-COTERMINAL-13-HISTORICAL_TARGET_MISMATCH'; END IF;
++      SELECT * INTO admitted FROM public.hxos_read_fake_financial_progress_v13(request.outbox_request_id,request.bullmq_job_id,request.job_authority_sha256);
++      IF admitted.recorded_outcome#>>'{outcome_fact,outcome_fact_id}' IS DISTINCT FROM p_no_effect_outcome_fact_id::TEXT
++        OR admitted.recovery_evidence->'admission_evidence' IS NULL
++        OR admitted.recovery_evidence#>>'{request_evidence,command_id}' IS DISTINCT FROM journal.command_id::TEXT THEN
++        RAISE EXCEPTION 'HXUV1-COTERMINAL-13-ADMITTED_NO_EFFECT_REQUIRED'; END IF;
++    ELSE
++      FOR pass IN 0..1 LOOP
++        SELECT t.poster_id,t.business_organization_id AS customer_organization_id,
++          w.provider_user_id,w.provider_organization_id,e.trade_credential_id,
++          ca.actor_id AS customer_approval_actor_id,pa.actor_id AS provider_approval_actor_id INTO context
++        FROM public.tasks t
++        JOIN public.task_drafts d ON d.id=witness.task_draft_id AND d.task_id=t.id
++        JOIN public.task_work_orders w ON w.id=witness.work_order_id AND w.task_id=t.id
++          AND w.task_draft_id=d.id AND w.eligibility_decision_id=witness.eligibility_decision_id
++        JOIN public.task_provider_eligibility_decisions e ON e.id=witness.eligibility_decision_id
++        LEFT JOIN public.task_scope_change_approvals ca ON ca.proposal_id=p_proposal_id AND ca.approver_role='CUSTOMER'
++        LEFT JOIN public.task_scope_change_approvals pa ON pa.proposal_id=p_proposal_id AND pa.approver_role='PROVIDER'
++        WHERE t.id=witness.task_id AND t.work_order_id=w.id AND t.active_scope_version_id=witness.base_scope_version_id
++          AND t.universal_contract_version=1 AND t.automation_classification='CONTROLLED_TEST'
++          AND t.universal_payment_posture='PAYMENT_CREATION_FROZEN' AND t.worker_id IS NULL
++          AND d.poster_user_id=t.poster_id AND d.claimed_at IS NOT NULL
++          AND d.universal_contract_version=1 AND d.ingress_origin='BACKEND_POSTGRESQL';
++        IF NOT FOUND THEN RAISE EXCEPTION 'HXUV1-COTERMINAL-13-CONTEXT_MISMATCH'; END IF;
++        IF pass=1 THEN
++          IF pg_catalog.to_jsonb(context) IS DISTINCT FROM context_before THEN
++            RAISE EXCEPTION 'HXUV1-COTERMINAL-13-DEPENDENCY_CHANGED'; END IF;
++          EXIT;
++        END IF;
++        context_before:=pg_catalog.to_jsonb(context);
++        PERFORM 1 FROM public.task_work_orders WHERE id=witness.work_order_id FOR UPDATE NOWAIT;
++        PERFORM 1 FROM public.tasks WHERE id=witness.task_id FOR UPDATE NOWAIT;
++        PERFORM 1 FROM public.task_drafts WHERE id=witness.task_draft_id FOR SHARE NOWAIT;
++        PERFORM 1 FROM public.task_scope_change_proposals WHERE id=p_proposal_id FOR UPDATE NOWAIT;
++        PERFORM 1 FROM public.task_provider_eligibility_decisions WHERE id=witness.eligibility_decision_id FOR SHARE NOWAIT;
++        PERFORM 1 FROM public.task_scope_versions WHERE id IN(witness.base_scope_version_id,witness.replacement_scope_version_id)
++          ORDER BY id FOR SHARE NOWAIT;
++        PERFORM 1 FROM public.task_scope_change_approvals WHERE proposal_id=p_proposal_id ORDER BY id FOR SHARE NOWAIT;
++        SELECT pg_catalog.array_agg(id ORDER BY id) INTO actor_ids FROM (
++          SELECT witness.actor_user_id AS id UNION SELECT context.poster_id UNION SELECT context.provider_user_id
++          UNION SELECT context.customer_approval_actor_id UNION SELECT context.provider_approval_actor_id
++        ) actors WHERE id IS NOT NULL;
++        -- UPDATE blocks users FK KEY SHARE for newly inserted memberships.
++        PERFORM 1 FROM public.users WHERE id=ANY(actor_ids) ORDER BY id FOR UPDATE NOWAIT;
++        PERFORM 1 FROM public.business_organizations WHERE id IN(context.customer_organization_id,context.provider_organization_id)
++          ORDER BY id FOR SHARE NOWAIT;
++        PERFORM 1 FROM public.business_memberships
++          WHERE organization_id IN(context.customer_organization_id,context.provider_organization_id) AND user_id=ANY(actor_ids)
++          ORDER BY organization_id,user_id,id FOR SHARE NOWAIT;
++        PERFORM 1 FROM public.capability_profiles WHERE user_id=context.provider_user_id ORDER BY user_id FOR SHARE NOWAIT;
++        PERFORM 1 FROM public.business_credentials WHERE id=context.trade_credential_id FOR SHARE NOWAIT;
++        PERFORM 1 FROM public.verified_trades WHERE user_id=context.provider_user_id
++          AND provider_organization_id IS NOT DISTINCT FROM context.provider_organization_id
++          AND business_credential_id IS NOT DISTINCT FROM context.trade_credential_id ORDER BY user_id,trade FOR SHARE NOWAIT;
++      END LOOP;
++      reason:=public.universal_v1_change_order_recovery_revocation_reason_v1(p_proposal_id);
++      IF reason IS NULL OR reason IS DISTINCT FROM p_revocation_reason
++        OR reason IN('AMENDMENT_CHAIN_CHANGED','FINANCIAL_CHAIN_CHANGED','WORK_ORDER_TERMINALIZED')
++        OR EXISTS(SELECT 1 FROM public.financial_provider_command_dispatch_attempts a WHERE a.command_id=journal.command_id)
++        OR EXISTS(SELECT 1 FROM public.task_financial_security_events f WHERE f.operation_id=witness.adjustment_operation_id::TEXT OR f.idempotency_key=witness.idempotency_key||':adjust')
++        OR EXISTS(SELECT 1 FROM public.hxos_fake_financial_operations_v1 f WHERE f.operation_id=witness.adjustment_operation_id)
++        OR EXISTS(SELECT 1 FROM public.hxos_fake_financial_operation_events_v1 f WHERE f.operation_id=witness.adjustment_operation_id OR f.idempotency_key=witness.idempotency_key||':adjust') THEN
++        RAISE EXCEPTION 'HXUV1-COTERMINAL-13-NO_DISPATCH_REVOCATION_REQUIRED'; END IF;
++    END IF;
++  END IF;
++  -- Public progress authenticates committed request/admission/outcome and exact
++  -- bridge bytes. Historical execution targets must precede this current writer.
++  FOR effect IN
++    SELECT journal.command_id AS command_id,witness.adjustment_operation_id AS operation_id,
++      'ADJUST'::TEXT AS operation_kind,adjustment_id AS event_id,'ADJUSTMENT_AUTHORIZED'::TEXT AS event_kind
++      WHERE p_kind IN('MATERIALIZED','COMPENSATED')
++    UNION ALL SELECT r.command_id,claim.reversal_operation_id,'REVERSAL',p_compensation_event_id,'REVERSED'
++      FROM hx_authority.fake_financial_command_outbox_requests_v13 r
++      WHERE p_kind='COMPENSATED' AND r.prepared_command_id=prepared.prepared_command_id
++  LOOP
++    IF effect.command_id IS NULL THEN RAISE EXCEPTION 'HXUV1-COTERMINAL-13-ADMITTED_EFFECT_REQUIRED'; END IF;
++    IF NOT pg_catalog.pg_try_advisory_xact_lock(pg_catalog.hashtext('financial-provider-command-recovery-v1'),pg_catalog.hashtext(effect.command_id::TEXT))
++      OR NOT pg_catalog.pg_try_advisory_xact_lock(pg_catalog.hashtext('fake-financial-operation'),pg_catalog.hashtext(effect.operation_id::TEXT)) THEN
++      RAISE EXCEPTION 'HXUV1-COTERMINAL-13-LOCK_BUSY'; END IF;
++    SELECT * INTO request FROM hx_authority.fake_financial_command_outbox_requests_v13 r WHERE r.command_id=effect.command_id;
++    IF request.target_database_name IS DISTINCT FROM p_target_database_name OR request.release_environment IS DISTINCT FROM p_release_environment
++      OR NOT EXISTS(WITH RECURSIVE ancestry AS (
++        SELECT t.target_authority_id,t.supersedes_target_authority_id FROM hx_authority.universal_v1_work_order_target_authority_facts t WHERE t.target_authority_id=p_target_authority_id
++        UNION SELECT t.target_authority_id,t.supersedes_target_authority_id FROM hx_authority.universal_v1_work_order_target_authority_facts t JOIN ancestry a ON t.target_authority_id=a.supersedes_target_authority_id
++      ) SELECT 1 FROM ancestry a WHERE a.target_authority_id=request.target_authority_id) THEN
++      RAISE EXCEPTION 'HXUV1-COTERMINAL-13-HISTORICAL_TARGET_MISMATCH'; END IF;
++    progress:=hx_authority.read_fake_financial_public_progress_v13(effect.command_id);
++    IF progress IS NULL OR progress->>'commandId' IS DISTINCT FROM effect.command_id::TEXT
++      OR progress->>'operationId' IS DISTINCT FROM effect.operation_id::TEXT OR progress->>'operationKind' IS DISTINCT FROM effect.operation_kind
++      OR progress->>'ownerActorId' IS DISTINCT FROM witness.actor_user_id::TEXT OR progress->>'environment' IS DISTINCT FROM p_release_environment
++      OR progress->>'taskDraftId' IS DISTINCT FROM witness.task_draft_id::TEXT OR progress->>'taskId' IS DISTINCT FROM witness.task_id::TEXT
++      OR progress->>'progressState' IS DISTINCT FROM 'MATERIALIZED'
++      OR progress->'financialEvent' IS DISTINCT FROM pg_catalog.jsonb_build_object('id',effect.event_id,'eventKind',effect.event_kind,'status','SUCCEEDED') THEN
++      RAISE EXCEPTION 'HXUV1-COTERMINAL-13-ADMITTED_EFFECT_REQUIRED'; END IF;
++  END LOOP;
++  INSERT INTO public.universal_v1_change_order_recovery_terminal_facts(
++    proposal_id,witness_request_sha256,recovery_lease_id,lease_owner_id,outcome_state,recovery_state,
++    amendment_id,adjustment_event_id,compensation_command_id,compensation_event_id,no_effect_outcome_fact_id,
++    authority_revocation_reason,hold_clearance_kind,execution_resume_authorized,recorded_by
++  ) VALUES(p_proposal_id,p_witness_request_sha256,p_recovery_lease_id,p_lease_owner_id,
++    CASE WHEN p_kind='MATERIALIZED' THEN 'MATERIALIZED' ELSE 'CANCELLED' END,
++    CASE WHEN p_kind='MATERIALIZED' THEN 'NOT_REQUIRED' ELSE 'RECOVERY_REQUIRED' END,
++    p_amendment_id,adjustment_id,p_compensation_command_id,p_compensation_event_id,p_no_effect_outcome_fact_id,
++    p_revocation_reason,CASE WHEN p_kind='MATERIALIZED' THEN 'EXACT_AMENDMENT' ELSE 'BOUNDED_CANCELLATION_RECOVERY' END,
++    p_kind='MATERIALIZED',witness.actor_user_id) RETURNING * INTO stored;
++  IF lease_expires_at<=pg_catalog.clock_timestamp() THEN RAISE EXCEPTION 'HXUV1-COTERMINAL-13-LEASE_EXPIRED'; END IF;
++  RETURN QUERY SELECT pg_catalog.to_jsonb(stored),FALSE,pg_catalog.clock_timestamp(),p_target_authority_id,p_release_manifest_digest;
++EXCEPTION WHEN lock_not_available THEN
++  RAISE EXCEPTION 'HXUV1-COTERMINAL-13-LOCK_BUSY';
++END;
++$$;
++
++CREATE OR REPLACE FUNCTION public.hxos_record_fake_financial_change_order_materialized_v13(
++  p_target_authority_id UUID,p_target_database_name TEXT,p_release_environment TEXT,p_release_manifest_digest TEXT,
++  p_proposal_id UUID,p_recovery_lease_id UUID,p_lease_owner_id UUID,p_witness_request_sha256 TEXT,p_work_order_id UUID,
++  p_amendment_id UUID,p_adjustment_event_id UUID
++) RETURNS TABLE(terminal_fact JSONB,idempotency_replayed BOOLEAN,observed_at TIMESTAMPTZ,
++  target_authority_id UUID,release_manifest_digest TEXT)
++LANGUAGE plpgsql SECURITY DEFINER VOLATILE PARALLEL UNSAFE SET search_path=pg_catalog AS $$
++BEGIN
++  RETURN QUERY SELECT * FROM hx_authority.record_fake_financial_change_order_terminal_v13(
++    p_target_authority_id,p_target_database_name,p_release_environment,p_release_manifest_digest,
++    p_proposal_id,p_recovery_lease_id,p_lease_owner_id,p_witness_request_sha256,p_work_order_id,'MATERIALIZED',
++    p_amendment_id,p_adjustment_event_id,NULL,NULL,NULL,NULL);
++END;
++$$;
++
++CREATE OR REPLACE FUNCTION public.hxos_record_fake_financial_change_order_compensated_v13(
++  p_target_authority_id UUID,p_target_database_name TEXT,p_release_environment TEXT,p_release_manifest_digest TEXT,
++  p_proposal_id UUID,p_recovery_lease_id UUID,p_lease_owner_id UUID,p_witness_request_sha256 TEXT,p_work_order_id UUID,
++  p_compensation_command_id UUID,p_compensation_event_id UUID
++) RETURNS TABLE(terminal_fact JSONB,idempotency_replayed BOOLEAN,observed_at TIMESTAMPTZ,
++  target_authority_id UUID,release_manifest_digest TEXT)
++LANGUAGE plpgsql SECURITY DEFINER VOLATILE PARALLEL UNSAFE SET search_path=pg_catalog AS $$
++BEGIN
++  RETURN QUERY SELECT * FROM hx_authority.record_fake_financial_change_order_terminal_v13(
++    p_target_authority_id,p_target_database_name,p_release_environment,p_release_manifest_digest,
++    p_proposal_id,p_recovery_lease_id,p_lease_owner_id,p_witness_request_sha256,p_work_order_id,'COMPENSATED',
++    NULL,NULL,p_compensation_command_id,p_compensation_event_id,NULL,NULL);
++END;
++$$;
++
++CREATE OR REPLACE FUNCTION public.hxos_record_fake_financial_change_order_no_effect_v13(
++  p_target_authority_id UUID,p_target_database_name TEXT,p_release_environment TEXT,p_release_manifest_digest TEXT,
++  p_proposal_id UUID,p_recovery_lease_id UUID,p_lease_owner_id UUID,p_witness_request_sha256 TEXT,p_work_order_id UUID,
++  p_no_effect_outcome_fact_id UUID,p_revocation_reason TEXT
++) RETURNS TABLE(terminal_fact JSONB,idempotency_replayed BOOLEAN,observed_at TIMESTAMPTZ,
++  target_authority_id UUID,release_manifest_digest TEXT)
++LANGUAGE plpgsql SECURITY DEFINER VOLATILE PARALLEL UNSAFE SET search_path=pg_catalog AS $$
++BEGIN
++  RETURN QUERY SELECT * FROM hx_authority.record_fake_financial_change_order_terminal_v13(
++    p_target_authority_id,p_target_database_name,p_release_environment,p_release_manifest_digest,
++    p_proposal_id,p_recovery_lease_id,p_lease_owner_id,p_witness_request_sha256,p_work_order_id,'NO_EFFECT',
++    NULL,NULL,NULL,NULL,p_no_effect_outcome_fact_id,p_revocation_reason);
++END;
++$$;
++
++CREATE OR REPLACE FUNCTION hx_authority.validate_fake_financial_outbox_request_v13()
++RETURNS TRIGGER
++LANGUAGE plpgsql
++SECURITY DEFINER
++VOLATILE
++PARALLEL UNSAFE
++SET search_path = pg_catalog
++AS $$
++DECLARE
++  command_record RECORD;
++  prepared_record RECORD;
++  target_record RECORD;
++  expected_job_authority_sha256 CHAR(64);
++  expected_bullmq_job_id TEXT;
++BEGIN
++  SELECT command.command_state,
++         command.operation_kind,
++         command.operation_id,
++         command.provider_kind,
++         command.idempotency_key,
++         command.provider_expected_version,
++         command.request_sha256,
++         command.command_identity_sha256,
++         command.prepared_financial_command_id,
++         command.prepared_authority_sha256,
++         command.release_manifest_digest,
++         command.release_id,
++         command.release_revision,
++         command.release_environment,
++         command.release_authentication_status
++    INTO command_record
++    FROM public.financial_provider_command_journal command
++   WHERE command.command_id = NEW.command_id
++   FOR SHARE;
++
++  SELECT prepared.command_state,
++         prepared.operation_kind,
++         prepared.operation_id,
++         prepared.provider_kind,
++         prepared.idempotency_key,
++         prepared.provider_expected_version,
++         prepared.provider_request_sha256,
++         prepared.authority_context_sha256
++    INTO prepared_record
++    FROM public.universal_v1_prepared_financial_commands prepared
++   WHERE prepared.prepared_command_id = NEW.prepared_command_id
++   FOR SHARE;
++
++  SELECT target.authority_version,
++         target.target_database_name,
++         target.environment,
++         target.release_manifest_sha256
++    INTO target_record
++    FROM hx_authority.universal_v1_work_order_target_authority_facts target
++   WHERE target.target_authority_id = NEW.target_authority_id
++   FOR SHARE;
++
++  PERFORM hx_authority.assert_fake_financial_outbox_target_v13(
++    NEW.target_authority_id,
++    NEW.target_database_name,
++    NEW.release_environment,
++    NEW.release_manifest_digest
++  );
++
++  -- ADJUST creation must observe a terminal committed while target acquisition
++  -- was waiting. Exact existing REQUESTED replay does not enter this trigger.
++  IF prepared_record.operation_kind='ADJUST' THEN
++    IF pg_catalog.current_setting('transaction_isolation')<>'read committed' THEN
++      RAISE EXCEPTION 'HXUV1-COTERMINAL-13-ADJUST_REQUEST_READ_COMMITTED_REQUIRED'; END IF;
++    IF EXISTS(SELECT 1 FROM public.universal_v1_prepared_financial_commands p
++      JOIN public.universal_v1_change_order_materialization_commands w ON w.work_order_id=p.work_order_id
++      JOIN public.universal_v1_change_order_recovery_terminal_facts t ON t.proposal_id=w.proposal_id
++      WHERE p.prepared_command_id=NEW.prepared_command_id AND w.work_order_id=p.work_order_id
++        AND t.outcome_state='CANCELLED') THEN
++      RAISE EXCEPTION 'HXUV1-COTERMINAL-13-ADJUST_REQUEST_CANCELLED'; END IF;
++  END IF;
++
++  IF NOT EXISTS (
++    SELECT 1 FROM hx_authority.fake_financial_preparation_authority_v13 provenance
++    JOIN public.universal_v1_prepared_financial_commands prepared
++      ON prepared.prepared_command_id = provenance.prepared_command_id
++    JOIN public.financial_provider_command_journal command
++      ON command.command_id = NEW.command_id
++    WHERE provenance.prepared_command_id = NEW.prepared_command_id
++      AND provenance.actor_user_id = prepared.recorded_by
++      AND provenance.actor_user_id = command.recorded_actor_id
++      AND command.recorded_actor_kind = 'PARTICIPANT'
++      AND provenance.target_authority_id = NEW.target_authority_id
++      AND provenance.release_manifest_sha256 = NEW.release_manifest_digest
++      AND NOT EXISTS(SELECT 1 FROM public.universal_v1_change_order_compensation_commands c
++        JOIN hx_authority.fake_financial_change_order_compensation_origins_v13 o USING(compensation_command_id)
++        WHERE c.reversal_operation_id=prepared.operation_id AND prepared.operation_kind='REVERSAL')
++  ) AND NOT EXISTS (
++    SELECT 1 FROM hx_authority.fake_financial_change_order_reversal_preparations_v13 provenance
++    JOIN public.universal_v1_prepared_financial_commands prepared ON prepared.prepared_command_id=provenance.prepared_command_id
++    JOIN public.financial_provider_command_journal command ON command.command_id=NEW.command_id
++    JOIN public.universal_v1_change_order_compensation_commands compensation ON compensation.compensation_command_id=provenance.compensation_command_id
++    WHERE provenance.prepared_command_id=NEW.prepared_command_id AND provenance.service_database_role=SESSION_USER
++      AND provenance.target_authority_id=NEW.target_authority_id AND provenance.release_manifest_sha256=NEW.release_manifest_digest
++      AND provenance.provider_request_sha256=command.request_sha256 AND provenance.prepared_authority_sha256=command.prepared_authority_sha256
++      AND prepared.recorded_by=compensation.requested_by AND command.recorded_actor_id=compensation.requested_by
++      AND command.recorded_actor_kind='PARTICIPANT' AND prepared.operation_kind='REVERSAL'
++      AND prepared.operation_id=compensation.reversal_operation_id
++  ) THEN RAISE EXCEPTION 'HXUV1-FINREQ-13-AUTHENTICATED_PREPARATION_REQUIRED'; END IF;
++
++  IF command_record.command_state IS DISTINCT FROM 'REQUESTED'
++     OR command_record.provider_kind IS DISTINCT FROM 'FAKE'
++     OR command_record.release_authentication_status IS DISTINCT FROM 'VERIFIED'
++     OR command_record.release_environment NOT IN ('local', 'preview', 'staging')
++     OR prepared_record.command_state IS DISTINCT FROM 'PREPARED'
++     OR prepared_record.provider_kind IS DISTINCT FROM 'FAKE'
++     OR command_record.prepared_financial_command_id IS DISTINCT FROM
++          NEW.prepared_command_id
++     OR command_record.prepared_authority_sha256 IS DISTINCT FROM
++          prepared_record.authority_context_sha256
++     OR command_record.request_sha256 IS DISTINCT FROM
++          prepared_record.provider_request_sha256
++     OR command_record.operation_kind IS DISTINCT FROM prepared_record.operation_kind
++     OR command_record.operation_id IS DISTINCT FROM prepared_record.operation_id
++     OR command_record.idempotency_key IS DISTINCT FROM prepared_record.idempotency_key
++     OR command_record.provider_expected_version IS DISTINCT FROM
++          prepared_record.provider_expected_version
++     OR NEW.prepared_state IS DISTINCT FROM prepared_record.command_state
++     OR NEW.command_state IS DISTINCT FROM command_record.command_state
++     OR NEW.provider_kind IS DISTINCT FROM command_record.provider_kind
++     OR NEW.operation_kind IS DISTINCT FROM command_record.operation_kind
++     OR NEW.operation_id IS DISTINCT FROM command_record.operation_id
++     OR NEW.idempotency_key IS DISTINCT FROM command_record.idempotency_key
++     OR NEW.provider_expected_version IS DISTINCT FROM
++          command_record.provider_expected_version
++     OR NEW.provider_request_sha256 IS DISTINCT FROM command_record.request_sha256
++     OR NEW.command_identity_sha256 IS DISTINCT FROM
++          command_record.command_identity_sha256
++     OR NEW.prepared_authority_sha256 IS DISTINCT FROM
++          prepared_record.authority_context_sha256
++     OR NEW.release_manifest_digest IS DISTINCT FROM
++          command_record.release_manifest_digest
++     OR NEW.release_id IS DISTINCT FROM command_record.release_id
++     OR NEW.release_revision IS DISTINCT FROM command_record.release_revision
++     OR NEW.release_environment IS DISTINCT FROM command_record.release_environment
++     OR NEW.target_authority_version IS DISTINCT FROM target_record.authority_version
++     OR NEW.target_database_name IS DISTINCT FROM target_record.target_database_name
++     OR NEW.release_environment IS DISTINCT FROM target_record.environment
++     OR NEW.release_manifest_digest IS DISTINCT FROM
++          target_record.release_manifest_sha256 THEN
++    RAISE EXCEPTION
++      'HXUV1-FINOUT-13-8: outbox request lacks exact PREPARED/REQUESTED/target authority'
++      USING ERRCODE = 'P0001';
++  END IF;
++
++  expected_job_authority_sha256 := hx_authority.fake_financial_job_digest_v13(
++    ARRAY[
++      'HXUV1_FAKE_FINANCIAL_BULLMQ_JOB_V13',
++      NEW.outbox_request_id::TEXT,
++      NEW.command_id::TEXT,
++      NEW.prepared_command_id::TEXT,
++      NEW.target_authority_id::TEXT,
++      NEW.target_authority_version::TEXT,
++      NEW.target_database_name,
++      NEW.release_environment,
++      NEW.release_manifest_digest,
++      NEW.release_id,
++      pg_catalog.btrim(NEW.release_revision),
++      NEW.operation_kind,
++      NEW.operation_id::TEXT,
++      NEW.idempotency_key,
++      NEW.provider_expected_version::TEXT,
++      pg_catalog.btrim(NEW.provider_request_sha256),
++      pg_catalog.btrim(NEW.command_identity_sha256),
++      pg_catalog.btrim(NEW.prepared_authority_sha256),
++      NEW.queue_name,
++      NEW.job_name,
++      NEW.payload_contract_version::TEXT
++    ]::TEXT[]
++  );
++  expected_bullmq_job_id := 'hx-fake-fin-'
++    || pg_catalog.replace(NEW.command_id::TEXT, '-', '')
++    || '-' || pg_catalog.btrim(expected_job_authority_sha256);
++  IF NEW.job_authority_sha256 IS DISTINCT FROM expected_job_authority_sha256
++     OR NEW.bullmq_job_id IS DISTINCT FROM expected_bullmq_job_id THEN
++    RAISE EXCEPTION
++      'HXUV1-FINOUT-13-9: deterministic BullMQ job identity mismatch'
++      USING ERRCODE = 'P0001';
++  END IF;
++
++  NEW.requested_at := pg_catalog.clock_timestamp();
++  RETURN NEW;
++END;
++$$;
++
++DO $change_order_terminal_acl$
++DECLARE signature TEXT; entry RECORD;
++BEGIN
++  FOREACH signature IN ARRAY ARRAY['hx_authority.record_fake_financial_change_order_terminal_v13(uuid,text,text,text,uuid,uuid,uuid,text,uuid,text,uuid,uuid,uuid,uuid,uuid,text)',
++    'public.hxos_record_fake_financial_change_order_materialized_v13(uuid,text,text,text,uuid,uuid,uuid,text,uuid,uuid,uuid)',
++    'public.hxos_record_fake_financial_change_order_compensated_v13(uuid,text,text,text,uuid,uuid,uuid,text,uuid,uuid,uuid)',
++    'public.hxos_record_fake_financial_change_order_no_effect_v13(uuid,text,text,text,uuid,uuid,uuid,text,uuid,uuid,text)'] LOOP
++    EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',signature);
++    FOR entry IN SELECT DISTINCT acl.grantee FROM pg_catalog.pg_proc p
++      CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))) acl
++      WHERE p.oid=signature::regprocedure AND acl.grantee<>0 AND acl.grantee<>p.proowner LOOP
++      EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %s FROM %I',signature,pg_catalog.pg_get_userbyid(entry.grantee));
++    END LOOP;
++  END LOOP;
++END;
++$change_order_terminal_acl$;
+diff --git a/backend/src/jobs/change-order-terminal-role-plans.ts b/backend/src/jobs/change-order-terminal-role-plans.ts
+new file mode 100644
+index 0000000..ce64bb4
+--- /dev/null
++++ b/backend/src/jobs/change-order-terminal-role-plans.ts
+@@ -0,0 +1,90 @@
++export const CHANGE_ORDER_TERMINAL_FUNCTIONS = [
++  'public.hxos_record_fake_financial_change_order_materialized_v13(uuid,text,text,text,uuid,uuid,uuid,text,uuid,uuid,uuid)',
++  'public.hxos_record_fake_financial_change_order_compensated_v13(uuid,text,text,text,uuid,uuid,uuid,text,uuid,uuid,uuid)',
++  'public.hxos_record_fake_financial_change_order_no_effect_v13(uuid,text,text,text,uuid,uuid,uuid,text,uuid,uuid,text)',
++] as const;
++export const CHANGE_ORDER_TERMINAL_INTERNAL_FUNCTION =
++  'hx_authority.record_fake_financial_change_order_terminal_v13(uuid,text,text,text,uuid,uuid,uuid,text,uuid,text,uuid,uuid,uuid,uuid,uuid,text)';
++
++export const CHANGE_ORDER_TERMINAL_DEPENDENCIES = [
++  'public.universal_v1_change_amendment_request_sha256(uuid,integer,uuid,uuid,uuid,uuid,integer,uuid,text)',
++  'public.universal_v1_execution_internal_request_sha256(uuid,uuid,text,text,integer,uuid,uuid,uuid,text,timestamptz,text)',
++] as const;
++
++// Only the NOLOGIN finance owner receives these named grants. Runtime workers
++// receive the three sealed commands; the legacy writers remain closed.
++export const CHANGE_ORDER_TERMINAL_INSERT_COLUMNS: Readonly<Record<string, readonly string[]>> = {
++  'public.universal_v1_change_order_recovery_terminal_facts': [
++    'proposal_id',
++    'witness_request_sha256',
++    'recovery_lease_id',
++    'lease_owner_id',
++    'outcome_state',
++    'recovery_state',
++    'amendment_id',
++    'adjustment_event_id',
++    'compensation_command_id',
++    'compensation_event_id',
++    'no_effect_outcome_fact_id',
++    'authority_revocation_reason',
++    'hold_clearance_kind',
++    'execution_resume_authorized',
++    'recorded_by',
++  ],
++};
++export const CHANGE_ORDER_TERMINAL_LOCK_COLUMNS: Readonly<Record<string, readonly string[]>> = {
++  'public.universal_v1_change_order_compensation_commands': ['compensation_command_id'],
++  'public.universal_v1_change_order_recovery_leases': ['recovery_lease_id'],
++  'public.task_work_order_amendments': ['id'],
++};
++export const CHANGE_ORDER_TERMINAL_READ_COLUMNS: Readonly<Record<string, readonly string[]>> = {
++  'public.universal_v1_change_order_recovery_terminal_facts': [
++    'terminal_fact_id',
++    'witness_request_sha256',
++    'recovery_lease_id',
++    'lease_owner_id',
++    'amendment_id',
++    'adjustment_event_id',
++    'compensation_command_id',
++    'compensation_event_id',
++    'no_effect_outcome_fact_id',
++    'authority_revocation_reason',
++    'resolution_evidence_kind',
++    'hold_clearance_kind',
++    'prior_secured_state_restored',
++    'execution_resume_authorized',
++    'capture_resume_authorized',
++    'payment_creation_performed',
++    'hard_assignment_created',
++    'recorded_by',
++    'recorded_at',
++    'terminal_fact_sha256',
++  ],
++  'public.task_work_order_amendments': [
++    'supersedes_amendment_id',
++    'idempotency_key',
++    'materialized_by',
++    'materialized_at',
++    'request_sha256',
++    'expected_financial_version',
++  ],
++  'public.task_work_order_execution_facts': [
++    'id',
++    'work_order_id',
++    'task_id',
++    'scope_version_id',
++    'execution_version',
++    'supersedes_fact_id',
++    'state',
++    'transition_kind',
++    'completion_fact_id',
++    'work_order_amendment_id',
++    'actor_role',
++    'actor_user_id',
++    'reason',
++    'idempotency_key',
++    'request_sha256',
++    'client_occurred_at',
++    'policy_version',
++  ],
++};
+diff --git a/backend/src/jobs/fake-financial-outbox-role-plans.ts b/backend/src/jobs/fake-financial-outbox-role-plans.ts
+index df323d7..6d02672 100644
+--- a/backend/src/jobs/fake-financial-outbox-role-plans.ts
++++ b/backend/src/jobs/fake-financial-outbox-role-plans.ts
+@@ -1,3 +1,7 @@
++import {
++  CHANGE_ORDER_TERMINAL_FUNCTIONS,
++  CHANGE_ORDER_TERMINAL_INTERNAL_FUNCTION,
++} from './change-order-terminal-role-plans.js';
+ import {
+   CHANGE_ORDER_REVERSAL_PREPARATION_FUNCTION,
+   CHANGE_ORDER_REVERSAL_INTERNAL_FUNCTIONS,
+@@ -58,6 +62,7 @@ export const FAKE_FINANCIAL_RECOVERY_ADMISSION_FUNCTION =
+   'hx_authority.read_fake_financial_admission_evidence_v13(uuid,uuid)';
+ 
+ export const FAKE_FINANCIAL_OUTBOX_WORKER_FUNCTIONS = [
++  ...CHANGE_ORDER_TERMINAL_FUNCTIONS,
+   CHANGE_ORDER_REVERSAL_PREPARATION_FUNCTION,
+   CHANGE_ORDER_RECOVERY_COMPENSATION_FUNCTION,
+   CHANGE_ORDER_RECOVERY_CLAIM_FUNCTION,
+@@ -91,6 +96,7 @@ export const FAKE_FINANCIAL_OUTCOME_ADMISSION_FUNCTION =
+   'hx_authority.read_fake_financial_outcome_admission_v13(uuid)';
+ 
+ export const FAKE_FINANCIAL_OUTBOX_DEFINER_FUNCTIONS = [
++  CHANGE_ORDER_TERMINAL_INTERNAL_FUNCTION,
+   ...CHANGE_ORDER_REVERSAL_INTERNAL_FUNCTIONS,
+   'hx_authority.read_fake_financial_terminal_observation_v13(uuid,uuid,uuid)',
+   'hx_authority.read_fake_financial_materialization_evidence_v13(uuid,uuid)',
+diff --git a/backend/src/jobs/work-order-command-role-authority.ts b/backend/src/jobs/work-order-command-role-authority.ts
+index b0bb658..795ad72 100644
+--- a/backend/src/jobs/work-order-command-role-authority.ts
++++ b/backend/src/jobs/work-order-command-role-authority.ts
+@@ -1,4 +1,10 @@
+ import { CHANGE_ORDER_REVERSAL_EXECUTION_FUNCTION } from './change-order-reversal-role-plans.js';
++import {
++  CHANGE_ORDER_TERMINAL_INSERT_COLUMNS,
++  CHANGE_ORDER_TERMINAL_LOCK_COLUMNS,
++  CHANGE_ORDER_TERMINAL_READ_COLUMNS,
++  CHANGE_ORDER_TERMINAL_DEPENDENCIES,
++} from './change-order-terminal-role-plans.js';
+ import {
+   CHANGE_ORDER_RECOVERY_COMPENSATION_INSERT_COLUMNS,
+   CHANGE_ORDER_RECOVERY_COMPENSATION_LOCK_COLUMNS,
+@@ -375,13 +381,13 @@ export const WORK_ORDER_TRIGGER_CATALOG_COUNT = 348;
+ // query below.  A migration changing even one edge must deliberately recapture
+ // this value and its focused PostgreSQL proof.
+ export const WORK_ORDER_TRIGGER_CATALOG_SHA256 =
+-  '93778ce6221d6403acff17c8afef32cd6a15f66dccb47de4719b799cb07f05fd';
++  'b69acb532dc9cf68d76972f8324e7f1da2e2fad2027cd0a383c139ac4ade899f';
+ 
+ // Re-captured from the exact PG16 ordinal-146 + v13 function family. Flags, owners,
+ // paths, and ACLs are checked independently; this digest closes source-body
+ // drift that could otherwise preserve superficial protocol fragments.
+ export const WORK_ORDER_AUTHORITY_FUNCTION_CATALOG_SHA256 =
+-  '7df21a11505d8269845bd85949b0e86836124fa11106021c2724895fddbf86be';
++  'b4030432b893610fddbedbc78a200f28ae0c081df05846bd65e22d362459ef6e';
+ 
+ export const WORK_ORDER_ORDINAL146_SQL_SHA256 =
+   '3920ac8d3208b9f573dc331cab60c373d0349611700c6e14a6e4c1dd8c53aac4';
+@@ -390,7 +396,7 @@ export const WORK_ORDER_FAKE_FINANCIAL_V12_SQL_SHA256 =
+ export const WORK_ORDER_BOOTSTRAP_SEAL_SQL_SHA256 =
+   'c69825589193885d0f6a3b93930880998e95e1c5cd44bb9b5999cb457192b2bd';
+ export const FAKE_FINANCIAL_OUTBOX_V13_SQL_SHA256 =
+-  '2449f38909588940089f50fa34de4c01b08bf8f449f1840579836fd37e083ff0';
++  '275f00b59916f26627ca401512828c76195f2cc3ad45489aaadc3d40d3cafd68';
+ 
+ export interface WorkOrderCommandRoleNames {
+   migrationRole: string;
+@@ -625,7 +631,9 @@ const FUNCTION_PLANS: readonly FunctionPlan[] = [
+           ? ['migrationRole', 'commandOwnerRole', 'financeOwnerRole']
+           : CHANGE_ORDER_MATERIALIZATION_PUBLIC_FUNCTIONS.some((value) => value === identity)
+             ? ['commandOwnerRole', 'apiRole']
+-            : ['commandOwnerRole']
++            : CHANGE_ORDER_TERMINAL_DEPENDENCIES.some((value) => value === identity)
++              ? ['commandOwnerRole', 'financeOwnerRole']
++              : ['commandOwnerRole']
+       ),
+       sourceKind:
+         hash || deferred
+@@ -993,7 +1001,7 @@ const FUNCTION_PLANS: readonly FunctionPlan[] = [
+           ? ['migrationRole', 'commandOwnerRole', 'financeOwnerRole', 'telemetryOwnerRole']
+           : isLock || isSealedTriggerDependency
+             ? ['commandOwnerRole']
+-            : isEffectiveExpiry || isFinancialCurrent || isCurrentAuthority
++            : isEffectiveExpiry || isFinancialCurrent || isCurrentAuthority || isExecutionDigest
+               ? ['migrationRole', 'commandOwnerRole', 'financeOwnerRole']
+               : ['migrationRole', 'commandOwnerRole']
+       ),
+@@ -1601,6 +1609,14 @@ const RELATION_PLANS: readonly RelationPlan[] = BASE_RELATION_PLANS.map((plan) =
+     ...plan,
+     permittedColumnUpdates: [
+       ...(plan.permittedColumnUpdates ?? []),
++      ...(CHANGE_ORDER_TERMINAL_LOCK_COLUMNS[plan.relation]
++        ? [
++            {
++              role: 'financeOwnerRole' as const,
++              columns: CHANGE_ORDER_TERMINAL_LOCK_COLUMNS[plan.relation]!,
++            },
++          ]
++        : []),
+       ...(CHANGE_ORDER_RECOVERY_COMPENSATION_LOCK_COLUMNS[plan.relation]
+         ? [
+             {
+@@ -1633,6 +1649,14 @@ const RELATION_PLANS: readonly RelationPlan[] = BASE_RELATION_PLANS.map((plan) =
+     ],
+     permittedColumnSelects: [
+       ...plan.permittedColumnSelects,
++      ...(CHANGE_ORDER_TERMINAL_READ_COLUMNS[plan.relation]
++        ? [
++            {
++              role: 'financeOwnerRole' as const,
++              columns: CHANGE_ORDER_TERMINAL_READ_COLUMNS[plan.relation]!,
++            },
++          ]
++        : []),
+       ...(CHANGE_ORDER_RECOVERY_COMPENSATION_READ_COLUMNS[plan.relation]
+         ? [
+             {
+@@ -1669,6 +1693,14 @@ const RELATION_PLANS: readonly RelationPlan[] = BASE_RELATION_PLANS.map((plan) =
+     ],
+     permittedColumnInserts: [
+       ...(plan.permittedColumnInserts ?? []),
++      ...(CHANGE_ORDER_TERMINAL_INSERT_COLUMNS[plan.relation]
++        ? [
++            {
++              role: 'financeOwnerRole' as const,
++              columns: CHANGE_ORDER_TERMINAL_INSERT_COLUMNS[plan.relation]!,
++            },
++          ]
++        : []),
+       ...(CHANGE_ORDER_RECOVERY_COMPENSATION_INSERT_COLUMNS[plan.relation]
+         ? [
+             {
+diff --git a/backend/src/services/UniversalV1ChangeOrderRecoveryTerminals.ts b/backend/src/services/UniversalV1ChangeOrderRecoveryTerminals.ts
+new file mode 100644
+index 0000000..f59ca95
+--- /dev/null
++++ b/backend/src/services/UniversalV1ChangeOrderRecoveryTerminals.ts
+@@ -0,0 +1,323 @@
++import { z } from 'zod';
++import { db, type Database } from '../db.js';
++import { authorizedChangeOrderReversalRequests } from './payment/UniversalV1ChangeOrderReversalRequest.js';
++
++const uuid = z
++  .string()
++  .regex(/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u);
++const digest = z
++  .string()
++  .regex(/^[a-f0-9]{64}$/u)
++  .refine((value) => value !== '0'.repeat(64));
++const manifestDigest = z
++  .string()
++  .regex(/^sha256:[a-f0-9]{64}$/u)
++  .refine((value) => value !== 'sha256:' + '0'.repeat(64));
++const environment = z.enum(['local', 'preview', 'staging']);
++// JSON timestamps preserve the original PostgreSQL fractional seconds. Only the
++// driver's top-level timestamptz and lease Date values need normalization.
++const timestamp = z.string().datetime({ offset: true });
++const driverTimestamp = z.preprocess(
++  (value) => (value instanceof Date ? value.toISOString() : value),
++  timestamp
++);
++const revocationReason = z.enum([
++  'PROPOSAL_NOT_APPROVED',
++  'TASK_AUTHORITY_REVOKED',
++  'CUSTOMER_ACTOR_AUTHORITY_REVOKED',
++  'CUSTOMER_APPROVAL_AUTHORITY_REVOKED',
++  'PROVIDER_ACTOR_AUTHORITY_REVOKED',
++  'PROVIDER_APPROVAL_AUTHORITY_REVOKED',
++  'PROVIDER_ELIGIBILITY_REVOKED',
++  'EXECUTION_AUTHORITY_REVOKED',
++  'FINANCIAL_SECURITY_EXPIRED',
++]);
++const authoritySchema = z
++  .object({
++    databaseName: z.string().min(1).max(63),
++    serviceLogin: z.string().min(1).max(63),
++    environment,
++    manifestDigest,
++    targetDigest: manifestDigest,
++  })
++  .strict();
++const leaseSchema = z
++  .object({
++    proposal_id: uuid,
++    recovery_lease_id: uuid,
++    lease_owner_id: uuid,
++    witness_request_sha256: digest,
++    work_order_id: uuid,
++    acquired_at: driverTimestamp,
++    expires_at: driverTimestamp,
++    target_authority_id: uuid,
++    release_manifest_digest: manifestDigest,
++  })
++  .strict();
++const commonInput = { lease: leaseSchema, actorUserId: uuid };
++const commandSchema = z
++  .discriminatedUnion('kind', [
++    z
++      .object({
++        ...commonInput,
++        kind: z.literal('MATERIALIZED'),
++        amendmentId: uuid,
++        adjustmentEventId: uuid,
++      })
++      .strict(),
++    z
++      .object({
++        ...commonInput,
++        kind: z.literal('COMPENSATED'),
++        compensationCommandId: uuid,
++        compensationEventId: uuid,
++        adjustmentEventId: uuid,
++      })
++      .strict(),
++    z
++      .object({
++        ...commonInput,
++        kind: z.literal('NO_EFFECT'),
++        adjustmentEventId: uuid.nullable(),
++        noEffectOutcomeFactId: uuid.nullable(),
++        authorityRevocationReason: revocationReason.nullable(),
++      })
++      .strict(),
++  ])
++  .superRefine((value, context) => {
++    if (Date.parse(value.lease.expires_at) <= Date.parse(value.lease.acquired_at))
++      context.addIssue({ code: z.ZodIssueCode.custom, message: 'LEASE_WINDOW_INVALID' });
++    if (
++      value.kind === 'NO_EFFECT' &&
++      (value.noEffectOutcomeFactId === null) === (value.authorityRevocationReason === null)
++    )
++      context.addIssue({
++        code: z.ZodIssueCode.custom,
++        message: 'EXACT_NO_EFFECT_EVIDENCE_REQUIRED',
++      });
++    if (
++      value.kind === 'NO_EFFECT' &&
++      value.authorityRevocationReason !== null &&
++      value.adjustmentEventId !== null
++    )
++      context.addIssue({ code: z.ZodIssueCode.custom, message: 'NO_DISPATCH_EVENT_FORBIDDEN' });
++  });
++const metadataSchema = z
++  .object({
++    session_database_role: z.string(),
++    target_authority_id: uuid,
++    target_database_name: z.string(),
++    environment,
++    release_manifest_sha256: manifestDigest,
++  })
++  .strict();
++const commonFact = {
++  terminal_fact_id: uuid,
++  proposal_id: uuid,
++  witness_request_sha256: digest,
++  recovery_lease_id: uuid,
++  lease_owner_id: uuid,
++  prior_secured_state_restored: z.literal(false),
++  capture_resume_authorized: z.literal(false),
++  payment_creation_performed: z.literal(false),
++  hard_assignment_created: z.literal(false),
++  recorded_by: uuid,
++  recorded_at: timestamp,
++  terminal_fact_sha256: digest,
++};
++const cancellation = {
++  outcome_state: z.literal('CANCELLED'),
++  recovery_state: z.literal('RECOVERY_REQUIRED'),
++  hold_clearance_kind: z.literal('BOUNDED_CANCELLATION_RECOVERY'),
++  execution_resume_authorized: z.literal(false),
++};
++const terminalSchema = z.discriminatedUnion('resolution_evidence_kind', [
++  z
++    .object({
++      ...commonFact,
++      resolution_evidence_kind: z.literal('AMENDMENT'),
++      outcome_state: z.literal('MATERIALIZED'),
++      recovery_state: z.literal('NOT_REQUIRED'),
++      amendment_id: uuid,
++      adjustment_event_id: uuid,
++      compensation_command_id: z.null(),
++      compensation_event_id: z.null(),
++      no_effect_outcome_fact_id: z.null(),
++      authority_revocation_reason: z.null(),
++      hold_clearance_kind: z.literal('EXACT_AMENDMENT'),
++      execution_resume_authorized: z.literal(true),
++    })
++    .strict(),
++  z
++    .object({
++      ...commonFact,
++      ...cancellation,
++      resolution_evidence_kind: z.literal('REVERSAL'),
++      amendment_id: z.null(),
++      adjustment_event_id: uuid,
++      compensation_command_id: uuid,
++      compensation_event_id: uuid,
++      no_effect_outcome_fact_id: z.null(),
++      authority_revocation_reason: z.null(),
++    })
++    .strict(),
++  z
++    .object({
++      ...commonFact,
++      ...cancellation,
++      resolution_evidence_kind: z.literal('NO_EFFECT'),
++      amendment_id: z.null(),
++      adjustment_event_id: uuid.nullable(),
++      compensation_command_id: z.null(),
++      compensation_event_id: z.null(),
++      no_effect_outcome_fact_id: uuid.nullable(),
++      authority_revocation_reason: revocationReason.nullable(),
++    })
++    .strict(),
++]);
++const receiptSchema = z
++  .object({
++    terminal_fact: terminalSchema,
++    idempotency_replayed: z.boolean(),
++    observed_at: driverTimestamp,
++    target_authority_id: uuid,
++    release_manifest_digest: manifestDigest,
++  })
++  .strict();
++export type ChangeOrderTerminalCommand = z.infer<typeof commandSchema>;
++export type ChangeOrderTerminalAuthority = Readonly<z.infer<typeof authoritySchema>>;
++export interface ChangeOrderTerminalReceipt {
++  readonly terminalFact: Readonly<z.infer<typeof terminalSchema>>;
++  readonly idempotencyReplayed: boolean;
++  readonly observedAt: string;
++  readonly targetAuthorityId: string;
++  readonly releaseManifestDigest: string;
++}
++function refuse(reason: string): never {
++  throw new Error('CHANGE_ORDER_TERMINAL_' + reason);
++}
++
++export function authorizedChangeOrderRecoveryTerminals(): ChangeOrderTerminalAuthority {
++  // Reuse the installed worker manifest/signature and runtime identity check.
++  const verified = authorizedChangeOrderReversalRequests();
++  return Object.freeze(
++    authoritySchema.parse({
++      databaseName: verified.databaseName,
++      serviceLogin: verified.serviceLogin,
++      environment: verified.environment,
++      manifestDigest: verified.manifestDigest,
++      targetDigest: verified.targetDigest,
++    })
++  );
++}
++
++/** Records one exact terminal outcome. It performs no financial request,
++ * provider execution, amendment, assignment, or capture resumption. */
++export class PostgresUniversalV1ChangeOrderRecoveryTerminals {
++  constructor(
++    private readonly database: Pick<Database, 'transaction'> = db,
++    private readonly authorize: () => ChangeOrderTerminalAuthority = authorizedChangeOrderRecoveryTerminals
++  ) {}
++  async record(raw: ChangeOrderTerminalCommand): Promise<ChangeOrderTerminalReceipt> {
++    const input = commandSchema.parse(raw);
++    Object.freeze(input.lease);
++    Object.freeze(input);
++    const authority = Object.freeze(authoritySchema.parse(this.authorize()));
++    const stableAuthority = () => {
++      if (JSON.stringify(authoritySchema.parse(this.authorize())) !== JSON.stringify(authority))
++        return refuse('AUTHORITY_CHANGED');
++    };
++    const result = await this.database.transaction(async (query) => {
++      const metadata = await query(
++        'SELECT session_database_role,target_authority_id,target_database_name,environment,release_manifest_sha256 FROM public.hxos_read_universal_v1_fake_financial_runtime_authority_v13()'
++      );
++      if (metadata.rowCount !== 1 || metadata.rows.length !== 1)
++        return refuse('TARGET_CARDINALITY');
++      const target = metadataSchema.parse(metadata.rows[0]);
++      if (
++        target.session_database_role !== authority.serviceLogin ||
++        target.target_database_name !== authority.databaseName ||
++        target.environment !== authority.environment ||
++        target.release_manifest_sha256 !== authority.manifestDigest
++      )
++        return refuse('TARGET_BINDING_MISMATCH');
++      const evidence =
++        input.kind === 'MATERIALIZED'
++          ? [input.amendmentId, input.adjustmentEventId]
++          : input.kind === 'COMPENSATED'
++            ? [input.compensationCommandId, input.compensationEventId]
++            : [input.noEffectOutcomeFactId, input.authorityRevocationReason];
++      const sql =
++        input.kind === 'MATERIALIZED'
++          ? 'SELECT * FROM public.hxos_record_fake_financial_change_order_materialized_v13($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)'
++          : input.kind === 'COMPENSATED'
++            ? 'SELECT * FROM public.hxos_record_fake_financial_change_order_compensated_v13($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)'
++            : 'SELECT * FROM public.hxos_record_fake_financial_change_order_no_effect_v13($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)';
++      // A historical lease may precede the current target. SQL validates both the
++      // immutable lease and each branch's historical evidence under current custody.
++      const reply = await query(sql, [
++        target.target_authority_id,
++        authority.databaseName,
++        authority.environment,
++        authority.manifestDigest,
++        input.lease.proposal_id,
++        input.lease.recovery_lease_id,
++        input.lease.lease_owner_id,
++        input.lease.witness_request_sha256,
++        input.lease.work_order_id,
++        ...evidence,
++      ]);
++      if (reply.rowCount !== 1 || reply.rows.length !== 1) return refuse('RECEIPT_CARDINALITY');
++      const receipt = receiptSchema.parse(reply.rows[0]);
++      const fact = receipt.terminal_fact;
++      const observed = Date.parse(receipt.observed_at);
++      const recorded = Date.parse(fact.recorded_at);
++      if (
++        receipt.target_authority_id !== target.target_authority_id ||
++        receipt.release_manifest_digest !== authority.manifestDigest ||
++        fact.proposal_id !== input.lease.proposal_id ||
++        fact.recovery_lease_id !== input.lease.recovery_lease_id ||
++        fact.lease_owner_id !== input.lease.lease_owner_id ||
++        fact.witness_request_sha256 !== input.lease.witness_request_sha256 ||
++        fact.recorded_by !== input.actorUserId ||
++        fact.adjustment_event_id !== input.adjustmentEventId ||
++        recorded < Date.parse(input.lease.acquired_at) ||
++        recorded >= Date.parse(input.lease.expires_at) ||
++        recorded > observed ||
++        (!receipt.idempotency_replayed && observed >= Date.parse(input.lease.expires_at))
++      )
++        return refuse('RECEIPT_BINDING_MISMATCH');
++      if (input.kind === 'MATERIALIZED') {
++        if (
++          fact.resolution_evidence_kind !== 'AMENDMENT' ||
++          fact.amendment_id !== input.amendmentId
++        )
++          return refuse('AMENDMENT_BINDING_MISMATCH');
++      } else if (input.kind === 'COMPENSATED') {
++        if (
++          fact.resolution_evidence_kind !== 'REVERSAL' ||
++          fact.compensation_command_id !== input.compensationCommandId ||
++          fact.compensation_event_id !== input.compensationEventId
++        )
++          return refuse('COMPENSATION_BINDING_MISMATCH');
++      } else if (
++        fact.resolution_evidence_kind !== 'NO_EFFECT' ||
++        fact.no_effect_outcome_fact_id !== input.noEffectOutcomeFactId ||
++        fact.authority_revocation_reason !== input.authorityRevocationReason
++      )
++        return refuse('NO_EFFECT_BINDING_MISMATCH');
++      stableAuthority();
++      return Object.freeze({
++        terminalFact: Object.freeze(fact),
++        idempotencyReplayed: receipt.idempotency_replayed,
++        observedAt: receipt.observed_at,
++        targetAuthorityId: receipt.target_authority_id,
++        releaseManifestDigest: receipt.release_manifest_digest,
++      });
++    });
++    // A post-COMMIT authority change is an uncertain result; exact replay recovers
++    // the original fact, including after its lease or participant access expires.
++    stableAuthority();
++    return result;
++  }
++}
+diff --git a/backend/src/services/payment/NonproductionFinancialBootstrapReadiness.ts b/backend/src/services/payment/NonproductionFinancialBootstrapReadiness.ts
+index 120c4b4..6bebd8a 100644
+--- a/backend/src/services/payment/NonproductionFinancialBootstrapReadiness.ts
++++ b/backend/src/services/payment/NonproductionFinancialBootstrapReadiness.ts
+@@ -411,7 +411,7 @@ const CRITICAL_SCHEMA_EVIDENCE = Object.freeze([
+   },
+   {
+     identityName: 'functions',
+-    sha256: '0299eb25dbb946cbfbc3a77a48ad6c301939df3a66ca101b8800a174826b2088',
++    sha256: 'bed41418e53a82d010c8d570a98230dbfccaf74f71d592ff8655b513e5dfb3ad',
+   },
+   {
+     identityName: 'triggers',
+diff --git a/backend/tests/helpers/universal-v1-synthetic-role-provisioning.ts b/backend/tests/helpers/universal-v1-synthetic-role-provisioning.ts
+index bdef680..5adbfdd 100644
+--- a/backend/tests/helpers/universal-v1-synthetic-role-provisioning.ts
++++ b/backend/tests/helpers/universal-v1-synthetic-role-provisioning.ts
+@@ -1,3 +1,9 @@
++import {
++  CHANGE_ORDER_TERMINAL_INSERT_COLUMNS,
++  CHANGE_ORDER_TERMINAL_LOCK_COLUMNS,
++  CHANGE_ORDER_TERMINAL_READ_COLUMNS,
++  CHANGE_ORDER_TERMINAL_DEPENDENCIES,
++} from '../../src/jobs/change-order-terminal-role-plans.js';
+ import {
+   CHANGE_ORDER_RECOVERY_COMPENSATION_INSERT_COLUMNS,
+   CHANGE_ORDER_RECOVERY_COMPENSATION_LOCK_COLUMNS,
+@@ -507,6 +513,9 @@ export async function provisionUniversalV1SyntheticRoles(
+       quote(roles.migrationRole)
+   );
+   for (const [privilege, grants] of [
++    ['INSERT', CHANGE_ORDER_TERMINAL_INSERT_COLUMNS],
++    ['UPDATE', CHANGE_ORDER_TERMINAL_LOCK_COLUMNS],
++    ['SELECT', CHANGE_ORDER_TERMINAL_READ_COLUMNS],
+     ['INSERT', CHANGE_ORDER_RECOVERY_COMPENSATION_INSERT_COLUMNS],
+     ['UPDATE', CHANGE_ORDER_RECOVERY_COMPENSATION_LOCK_COLUMNS],
+     ['SELECT', CHANGE_ORDER_RECOVERY_COMPENSATION_READ_COLUMNS],
+@@ -547,6 +556,7 @@ export async function provisionUniversalV1SyntheticRoles(
+         .join(',')
+   );
+   for (const identity of [
++    ...CHANGE_ORDER_TERMINAL_DEPENDENCIES,
+     ...CHANGE_ORDER_RECOVERY_OBSERVATION_DEPENDENCIES,
+     ...CHANGE_ORDER_RECOVERY_COMPENSATION_DEPENDENCIES,
+   ])
+diff --git a/backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts b/backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts
+index 8e59a24..bb32553 100644
+--- a/backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts
++++ b/backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts
+@@ -1,4 +1,8 @@
+ import { PostgresUniversalV1ChangeOrderMaterialization } from '../../src/services/UniversalV1ChangeOrderMaterialization.js';
++import {
++  PostgresUniversalV1ChangeOrderRecoveryTerminals,
++  type ChangeOrderTerminalCommand,
++} from '../../src/services/UniversalV1ChangeOrderRecoveryTerminals.js';
+ import { PostgresUniversalV1ChangeOrderRecoveryCompensation } from '../../src/services/UniversalV1ChangeOrderRecoveryCompensation.js';
+ import { PostgresUniversalV1ChangeOrderReversalRequests } from '../../src/services/payment/UniversalV1ChangeOrderReversalRequest.js';
+ import { UniversalV1WorkOrderApplication } from '../../src/services/UniversalV1WorkOrderApplication.js';
+@@ -2933,8 +2937,8 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
+     360_000
+   );
+ 
+-  async function adjustmentExecutionFixture() {
+-    const { lane, common, request, admit, execute, workOrder } =
++  async function adjustmentWitnessFixture() {
++    const { apiDatabase, release, lane, common, request, admit, execute, workOrder } =
+       await changeOrderWorkOrderFixture();
+     const changeOrders = new PostgresUniversalV1ChangeOrderRepository(preparationDatabase());
+     const economics = (
+@@ -2984,7 +2988,9 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
+     });
+     if (changePhase.completed) throw Error('ADJUSTMENT_FIXTURE_ALREADY_COMPLETED');
+     const c = changePhase.context;
+-    const requested = await request({
++    const adjustmentInput = (
++      scenario: 'SUCCESS' | 'DECLINE' = 'SUCCESS'
++    ): ExecuteUniversalV1FinancialEventCommand => ({
+       ...common,
+       operationKind: 'ADJUST',
+       operationId: c.adjustmentOperationId,
+@@ -2997,18 +3003,20 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
+       amountCents: c.customerTotalCents,
+       currency: c.currency.toLowerCase(),
+       occurredAt: c.occurredAt,
++      scenario,
+     });
+-    const binding = await admit(requested.commandId);
+     return {
++      apiDatabase,
++      release,
+       lane,
+       changeOrders,
+       admit,
+       executeBinding: execute,
+       changePhase,
+-      requested,
+-      binding,
+       workOrder,
+-      execute: (client?: pg.Client) => execute(binding, client),
++      adjustmentInput,
++      requestAdjustment: (scenario: 'SUCCESS' | 'DECLINE' = 'SUCCESS') =>
++        request(adjustmentInput(scenario)),
+       effects: async () =>
+         (
+           await fixture.pool.query(
+@@ -3021,6 +3029,18 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
+     };
+   }
+ 
++  async function adjustmentExecutionFixture() {
++    const setup = await adjustmentWitnessFixture();
++    const requested = await setup.requestAdjustment();
++    const binding = await setup.admit(requested.commandId);
++    return {
++      ...setup,
++      requested,
++      binding,
++      execute: (client?: pg.Client) => setup.executeBinding(binding, client),
++    };
++  }
++
+   it.each([
+     'success',
+     'customer_revoked',
+@@ -3176,7 +3196,7 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
+   }
+ 
+   async function recoveryObservationLease(
+-    setup: Awaited<ReturnType<typeof changeOrderHistoryFixture>>,
++    setup: Pick<Awaited<ReturnType<typeof adjustmentWitnessFixture>>, 'changePhase'>,
+     leaseDurationSeconds = 300
+   ) {
+     await fixture.pool.query(
+@@ -3189,7 +3209,9 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
+       [],
+       leaseDurationSeconds
+     );
+-    const lease = result.rows.find((row) => row.proposal_id === setup.payload.proposal_id)!;
++    const lease = result.rows.find(
++      (row) => row.proposal_id === setup.changePhase.context.proposalId
++    )!;
+     expect(lease).toBeDefined();
+     return lease;
+   }
+@@ -3373,6 +3395,29 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
+     return { ...f, winner, request, prepareArgs, prepare, journalInput, requested, counts };
+   }
+ 
++  async function completedWorkerReversalFixture(leaseSeconds = 300) {
++    const f = await workerReversalFixture(leaseSeconds);
++    const prepared = await f.prepare();
++    const requested = await f.requested(prepared.prepared_command);
++    const binding = await f.setup.admit(requested.commandId);
++    await f.setup.executeBinding(binding);
++    const worker = clients.get('workerRole')!;
++    const outcome = (
++      await worker.query('SELECT * FROM public.hxos_record_fake_financial_outcome_v13($1,$2,$3)', [
++        binding.admission.job_validation_id,
++        binding.workerId,
++        binding.admission.recovery_lease_id,
++      ])
++    ).rows[0];
++    const reversalEvent = (
++      await worker.query('SELECT * FROM public.hxos_materialize_fake_financial_event_v13($1,$2)', [
++        binding.admission.job_validation_id,
++        outcome.outcome_fact.outcome_fact_id,
++      ])
++    ).rows[0].financial_event;
++    return { ...f, reversalEvent };
++  }
++
+   it.each(['PREPARED', 'REQUESTED'] as const)(
+     'worker reversal adapter resumes lost %s acknowledgement through real Redis delivery',
+     async (lostPhase) => {
+@@ -4108,6 +4153,639 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
+     }
+   }, 60_000);
+ 
++  function recordChangeOrderTerminal(
++    kind: 'materialized' | 'compensated' | 'no_effect',
++    lease: pg.QueryResultRow,
++    evidence: [string | null, string | null],
++    client = clients.get('workerRole')!,
++    overrides?: unknown[]
++  ) {
++    return client.query(
++      `SELECT * FROM public.hxos_record_fake_financial_change_order_${kind}_v13($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
++      overrides ?? [
++        lease.target_authority_id,
++        new URL(fixture.databaseUrl).pathname.slice(1),
++        'local',
++        lease.release_manifest_digest,
++        lease.proposal_id,
++        lease.recovery_lease_id,
++        lease.lease_owner_id,
++        lease.witness_request_sha256,
++        lease.work_order_id,
++        ...evidence,
++      ]
++    );
++  }
++
++  async function preparedAdjustmentRequestFixture() {
++    const setup = await adjustmentWitnessFixture();
++    let captured: { sql: string; params: unknown[] } | undefined;
++    const journalDatabase: Pick<Database, 'transaction'> = {
++      transaction: async (work) =>
++        work(async (sql, params) => {
++          if (!sql.includes('hxos_request_fake_financial_command_v13') || !params)
++            throw new Error('UNEXPECTED_JOURNAL_QUERY');
++          captured = { sql, params };
++          throw new Error('REQUEST_CAPTURED_BEFORE_EXECUTION');
++        }),
++    };
++    const service = new requestApplication.UniversalV1FinancialRequestService(
++      new PostgresUniversalV1PreparedFinancialCommandAuthority(setup.apiDatabase),
++      new PostgresFinancialProviderCommandJournal(journalDatabase),
++      () => setup.release,
++      new PostgresUniversalV1FinancialRequestProgressReader(setup.apiDatabase),
++      new PostgresUniversalV1FinancialPredecessorReader(setup.apiDatabase)
++    );
++    // The real service commits authenticated preparation; intercept only the
++    // later request call so tests can control its outer database transaction.
++    await expect(
++      service.requestFinancialEvent(
++        setup.adjustmentInput(),
++        await preparationAttestation(setup.lane.posterUserId)
++      )
++    ).rejects.toThrow('REQUEST_CAPTURED_BEFORE_EXECUTION');
++    if (!captured) throw new Error('REQUEST_NOT_CAPTURED');
++    const request = captured;
++    return {
++      ...setup,
++      request: (client = clients.get('apiRole')!) => client.query(request.sql, request.params),
++    };
++  }
++
++  async function waitForDatabaseLock(pid: number) {
++    let waiting = false;
++    for (let i = 0; i < 60 && !waiting; i++) {
++      waiting = (
++        await fixture.pool.query(
++          'SELECT EXISTS(SELECT 1 FROM pg_locks WHERE pid=$1 AND NOT granted) AS waiting',
++          [pid]
++        )
++      ).rows[0].waiting;
++      if (!waiting) await new Promise((resolve) => setTimeout(resolve, 25));
++    }
++    expect(waiting).toBe(true);
++  }
++
++  it('worker change order terminal fences a concurrent new request after cancellation commits', async () => {
++    const setup = await preparedAdjustmentRequestFixture();
++    const lease = await recoveryObservationLease(setup);
++    await fixture.pool.query('UPDATE public.users SET is_banned=TRUE WHERE id=$1', [
++      setup.lane.posterUserId,
++    ]);
++    const worker = clients.get('workerRole')!;
++    const api = clients.get('apiRole')!;
++    const apiPid = (await api.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
++    let pending: Promise<{ error?: unknown; value?: pg.QueryResult }> | undefined;
++    try {
++      await worker.query('BEGIN');
++      await recordChangeOrderTerminal(
++        'no_effect',
++        lease,
++        [null, 'CUSTOMER_ACTOR_AUTHORITY_REVOKED'],
++        worker
++      );
++      pending = setup.request(api).then(
++        (value) => ({ value }),
++        (error) => ({ error })
++      );
++      await waitForDatabaseLock(apiPid);
++      await worker.query('COMMIT');
++      expect((await pending).error).toMatchObject({
++        message: expect.stringContaining('HXUV1-CHANGE-RECOVERY-18:'),
++      });
++      expect(
++        (
++          await fixture.pool.query(
++            `SELECT
++          (SELECT count(*)::int FROM public.financial_provider_command_journal WHERE operation_id=$1) AS requests,
++          (SELECT count(*)::int FROM hx_authority.fake_financial_command_outbox_requests_v13 WHERE operation_id=$1) AS outbox,
++          (SELECT count(*)::int FROM public.hxos_fake_financial_operation_events_v1 WHERE operation_id=$1) AS effects`,
++            [setup.changePhase.context.adjustmentOperationId]
++          )
++        ).rows[0]
++      ).toEqual({ requests: 0, outbox: 0, effects: 0 });
++    } finally {
++      await worker.query('ROLLBACK');
++      if (pending) await pending;
++    }
++  }, 60_000);
++
++  it.each(['REPEATABLE READ', 'SERIALIZABLE'] as const)(
++    'worker change order terminal prevents a new ADJUST from a stale %s snapshot',
++    async (isolation) => {
++      const setup = await preparedAdjustmentRequestFixture();
++      const lease = await recoveryObservationLease(setup);
++      const api = clients.get('apiRole')!;
++      try {
++        await api.query(`BEGIN ISOLATION LEVEL ${isolation}`);
++        await api.query('SELECT transaction_timestamp()');
++        await fixture.pool.query('UPDATE public.users SET is_banned=TRUE WHERE id=$1', [
++          setup.lane.posterUserId,
++        ]);
++        await recordChangeOrderTerminal('no_effect', lease, [
++          null,
++          'CUSTOMER_ACTOR_AUTHORITY_REVOKED',
++        ]);
++        await expect(setup.request(api)).rejects.toThrow(/READ_COMMITTED_REQUIRED|serialize/u);
++      } finally {
++        await api.query('ROLLBACK');
++      }
++      expect(
++        (
++          await fixture.pool.query(
++            'SELECT count(*)::int AS n FROM public.financial_provider_command_journal WHERE operation_id=$1',
++            [setup.changePhase.context.adjustmentOperationId]
++          )
++        ).rows[0].n
++      ).toBe(0);
++    },
++    60_000
++  );
++
++  it.each(['terminal_first', 'admission_first'] as const)(
++    'worker change order terminal serializes first admission: %s',
++    async (order) => {
++      const setup = await preparedAdjustmentRequestFixture();
++      const requested = (await setup.request()).rows[0];
++      const worker = clients.get('workerRole')!;
++      const claim = (
++        await worker.query('SELECT * FROM public.hxos_claim_fake_financial_outbox_v13($1,300)', [
++          randomUUID(),
++        ])
++      ).rows[0];
++      expect(claim.command_id).toBe(requested.command_id);
++      await worker.query(
++        "SELECT public.hxos_record_fake_financial_publish_outcome_v13($1,'BULLMQ_CONFIRMED',$2,$3,NULL,NULL)",
++        [claim.publish_claim_id, claim.bullmq_job_id, claim.job_authority_sha256]
++      );
++      const workerUrl = new URL(fixture.databaseUrl);
++      workerUrl.username = roles.workerRole;
++      workerUrl.password = password;
++      const consumer = new pg.Client({ connectionString: workerUrl.toString() });
++      await consumer.connect();
++      const consumerPid = (await consumer.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
++      const admission = () =>
++        consumer.query(
++          'SELECT * FROM hx_authority.record_fake_financial_job_dispatch_evidence_v13($1,$2,$3,$4,0,30,2)',
++          [claim.outbox_request_id, claim.bullmq_job_id, claim.job_authority_sha256, randomUUID()]
++        );
++      const lease = await recoveryObservationLease(setup);
++      await fixture.pool.query('UPDATE public.users SET is_banned=TRUE WHERE id=$1', [
++        setup.lane.posterUserId,
++      ]);
++      let pending: Promise<{ error?: unknown; value?: pg.QueryResult }> | undefined;
++      try {
++        if (order === 'terminal_first') {
++          await worker.query('BEGIN');
++          await recordChangeOrderTerminal(
++            'no_effect',
++            lease,
++            [null, 'CUSTOMER_ACTOR_AUTHORITY_REVOKED'],
++            worker
++          );
++          pending = admission().then(
++            (value) => ({ value }),
++            (error) => ({ error })
++          );
++          await waitForDatabaseLock(consumerPid);
++          await worker.query('COMMIT');
++          expect((await pending).error).toMatchObject({
++            message: expect.stringContaining('HXUV1-CHANGE-RECOVERY-18:'),
++          });
++          const replay = (await setup.request()).rows[0];
++          expect(replay.command_id).toBe(requested.command_id);
++          expect(replay.idempotency_replayed).toBe(true);
++        } else {
++          await admission();
++          await expect(
++            recordChangeOrderTerminal('no_effect', lease, [
++              null,
++              'CUSTOMER_ACTOR_AUTHORITY_REVOKED',
++            ])
++          ).rejects.toThrow('NO_DISPATCH_REVOCATION_REQUIRED');
++        }
++        expect(
++          (
++            await fixture.pool.query(
++              `SELECT
++            (SELECT count(*)::int FROM public.universal_v1_change_order_recovery_terminal_facts WHERE proposal_id=$1) AS terminals,
++            (SELECT count(*)::int FROM hx_authority.fake_financial_dispatch_admissions_v13 WHERE command_id=$2) AS admissions,
++            (SELECT count(*)::int FROM public.hxos_fake_financial_operation_events_v1 WHERE operation_id=$3) AS effects`,
++              [
++                lease.proposal_id,
++                requested.command_id,
++                setup.changePhase.context.adjustmentOperationId,
++              ]
++            )
++          ).rows[0]
++        ).toEqual({
++          terminals: order === 'terminal_first' ? 1 : 0,
++          admissions: order === 'terminal_first' ? 0 : 1,
++          effects: 0,
++        });
++      } finally {
++        await worker.query('ROLLBACK');
++        if (pending) await pending;
++        await consumer.end();
++      }
++    },
++    60_000
++  );
++
++  it.each(['confirmed_decline', 'unknown'] as const)(
++    'worker change order terminal requires an admitted nonretryable no-effect outcome: %s',
++    async (kind) => {
++      const setup = await adjustmentWitnessFixture();
++      const requested = await setup.requestAdjustment(
++        kind === 'confirmed_decline' ? 'DECLINE' : 'SUCCESS'
++      );
++      const binding = await setup.admit(requested.commandId);
++      if (kind === 'confirmed_decline') await setup.executeBinding(binding);
++      const worker = clients.get('workerRole')!;
++      const outcome = (
++        await worker.query(
++          'SELECT * FROM public.hxos_record_fake_financial_outcome_v13($1,$2,$3)',
++          [
++            binding.admission.job_validation_id,
++            binding.workerId,
++            binding.admission.recovery_lease_id,
++          ]
++        )
++      ).rows[0];
++      const lease = await recoveryObservationLease(setup);
++      if (kind === 'unknown') {
++        expect(outcome.outcome_fact.effect_certainty).toBe('UNKNOWN');
++        await expect(
++          recordChangeOrderTerminal('no_effect', lease, [
++            outcome.outcome_fact.outcome_fact_id,
++            null,
++          ])
++        ).rejects.toThrow('ADMITTED_NO_EFFECT_REQUIRED');
++        expect(
++          (
++            await fixture.pool.query(
++              'SELECT count(*)::int AS n FROM public.universal_v1_change_order_recovery_terminal_facts WHERE proposal_id=$1',
++              [lease.proposal_id]
++            )
++          ).rows[0].n
++        ).toBe(0);
++      } else {
++        expect(outcome.outcome_fact).toMatchObject({
++          effect_certainty: 'CONFIRMED_NO_EFFECT',
++          retryable: false,
++        });
++        const result = (
++          await recordChangeOrderTerminal('no_effect', lease, [
++            outcome.outcome_fact.outcome_fact_id,
++            null,
++          ])
++        ).rows[0];
++        expect(result.terminal_fact).toMatchObject({
++          outcome_state: 'CANCELLED',
++          resolution_evidence_kind: 'NO_EFFECT',
++          no_effect_outcome_fact_id: outcome.outcome_fact.outcome_fact_id,
++          authority_revocation_reason: null,
++          adjustment_event_id: null,
++          execution_resume_authorized: false,
++          capture_resume_authorized: false,
++        });
++        expect(
++          (
++            await recordChangeOrderTerminal('no_effect', lease, [
++              outcome.outcome_fact.outcome_fact_id,
++              null,
++            ])
++          ).rows[0].terminal_fact
++        ).toEqual(result.terminal_fact);
++      }
++    },
++    60_000
++  );
++
++  it('worker change order terminal rejects wrong bindings and busy domain and financial locks', async () => {
++    const setup = await adjustmentWitnessFixture();
++    const lease = await recoveryObservationLease(setup);
++    const args = [
++      lease.target_authority_id,
++      new URL(fixture.databaseUrl).pathname.slice(1),
++      'local',
++      lease.release_manifest_digest,
++      lease.proposal_id,
++      lease.recovery_lease_id,
++      lease.lease_owner_id,
++      lease.witness_request_sha256,
++      lease.work_order_id,
++      null,
++      'CUSTOMER_ACTOR_AUTHORITY_REVOKED',
++    ];
++    await fixture.pool.query('UPDATE public.users SET is_banned=TRUE WHERE id=$1', [
++      setup.lane.posterUserId,
++    ]);
++    for (const [index, value] of [
++      [0, randomUUID()],
++      [1, 'wrong_db'],
++      [2, 'staging'],
++      [3, 'sha256:' + 'e'.repeat(64)],
++      [4, randomUUID()],
++      [5, randomUUID()],
++      [6, randomUUID()],
++      [7, 'f'.repeat(64)],
++      [8, randomUUID()],
++      [10, 'FINANCIAL_CHAIN_CHANGED'],
++    ] as const) {
++      const altered = [...args];
++      altered[index] = value;
++      await expect(
++        recordChangeOrderTerminal(
++          'no_effect',
++          lease,
++          [null, args[10]],
++          clients.get('workerRole')!,
++          altered
++        )
++      ).rejects.toThrow();
++    }
++    const holder = await fixture.pool.connect();
++    try {
++      for (const [family, key] of [
++        ['domain', 'universal-v1-change-order-proposal:' + lease.proposal_id],
++        ['domain', 'fulfillment:' + lease.work_order_id],
++        [
++          'financial-provider-command-journal-v1',
++          'idempotency:' + setup.changePhase.idempotencyKey + ':adjust',
++        ],
++        [
++          'financial-provider-command-journal-v1',
++          'operation-version:FAKE:ADJUST:' + setup.changePhase.context.adjustmentOperationId + ':0',
++        ],
++        ['fake-financial-operation', setup.changePhase.context.adjustmentOperationId],
++      ]) {
++        await holder.query('BEGIN');
++        await holder.query(
++          family === 'domain'
++            ? 'SELECT pg_advisory_xact_lock(hashtextextended($1,0))'
++            : 'SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))',
++          family === 'domain' ? [key] : [family, key]
++        );
++        await expect(
++          recordChangeOrderTerminal('no_effect', lease, [null, 'CUSTOMER_ACTOR_AUTHORITY_REVOKED'])
++        ).rejects.toThrow('LOCK_BUSY');
++        await holder.query('ROLLBACK');
++      }
++      await holder.query('BEGIN');
++      await holder.query('UPDATE public.users SET is_banned=is_banned WHERE id=$1', [
++        setup.lane.posterUserId,
++      ]);
++      await expect(
++        recordChangeOrderTerminal('no_effect', lease, [null, 'CUSTOMER_ACTOR_AUTHORITY_REVOKED'])
++      ).rejects.toThrow('LOCK_BUSY');
++      await holder.query('ROLLBACK');
++      expect(
++        (
++          await recordChangeOrderTerminal('no_effect', lease, [
++            null,
++            'CUSTOMER_ACTOR_AUTHORITY_REVOKED',
++          ])
++        ).rows[0].idempotency_replayed
++      ).toBe(false);
++    } finally {
++      await holder.query('ROLLBACK');
++      holder.release();
++    }
++  }, 60_000);
++
++  it.each(['target', 'persistence'] as const)(
++    'worker change order terminal rolls back when the lease expires during a %s wait',
++    async (lock) => {
++      const setup = await adjustmentWitnessFixture();
++      const lease = await recoveryObservationLease(setup, 5);
++      await fixture.pool.query('UPDATE public.users SET is_banned=TRUE WHERE id=$1', [
++        setup.lane.posterUserId,
++      ]);
++      const worker = clients.get('workerRole')!;
++      const pid = (await worker.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
++      const holder = await fixture.pool.connect();
++      let pending: Promise<{ error?: unknown; value?: pg.QueryResult }> | undefined;
++      try {
++        await holder.query('BEGIN');
++        await holder.query(
++          lock === 'target'
++            ? "SELECT pg_advisory_xact_lock(hashtextextended('hxuv1-work-order-target-authority-v1',0))"
++            : 'LOCK TABLE public.universal_v1_change_order_recovery_terminal_facts IN SHARE MODE'
++        );
++        pending = recordChangeOrderTerminal('no_effect', lease, [
++          null,
++          'CUSTOMER_ACTOR_AUTHORITY_REVOKED',
++        ]).then(
++          (value) => ({ value }),
++          (error) => ({ error })
++        );
++        await waitForDatabaseLock(pid);
++        await holder.query(
++          'SELECT pg_sleep(GREATEST(0,EXTRACT(EPOCH FROM ($1::timestamptz-clock_timestamp()))+0.05))',
++          [lease.expires_at]
++        );
++        await holder.query('COMMIT');
++        expect((await pending).error).toMatchObject({
++          message: expect.stringMatching(
++            /LEASE_EXPIRED|exact immutable Phase-A witness and lease/u
++          ),
++        });
++        expect(
++          (
++            await fixture.pool.query(
++              'SELECT count(*)::int AS n FROM public.universal_v1_change_order_recovery_terminal_facts WHERE proposal_id=$1',
++              [lease.proposal_id]
++            )
++          ).rows[0].n
++        ).toBe(0);
++      } finally {
++        await holder.query('ROLLBACK');
++        if (pending) await pending;
++        holder.release();
++      }
++    },
++    60_000
++  );
++
++  it.each(['materialized', 'compensated', 'no_effect'] as const)(
++    'worker change order terminal records %s once and replays after lease expiry',
++    async (kind) => {
++      let lease: pg.QueryResultRow;
++      let evidence: [string | null, string | null];
++      let actorId: string;
++      let adjustmentEventId: string | null = null;
++      if (kind === 'materialized') {
++        const f = await compensationWinnerFixture(5);
++        const completed = await f.setup.changeOrders.finalizePriceAndScopeMaterialization(
++          f.setup.changePhase,
++          f.event.id,
++          f.setup.lane.posterUserId
++        );
++        lease = f.lease;
++        evidence = [completed.amendment_id, f.event.id];
++        adjustmentEventId = f.event.id;
++        actorId = f.setup.lane.posterUserId;
++      } else if (kind === 'compensated') {
++        const f = await workerReversalFixture(5);
++        const prepared = await f.prepare();
++        const requested = await f.requested(prepared.prepared_command);
++        const binding = await f.setup.admit(requested.commandId);
++        await f.setup.executeBinding(binding);
++        const worker = clients.get('workerRole')!;
++        const outcome = (
++          await worker.query(
++            'SELECT * FROM public.hxos_record_fake_financial_outcome_v13($1,$2,$3)',
++            [
++              binding.admission.job_validation_id,
++              binding.workerId,
++              binding.admission.recovery_lease_id,
++            ]
++          )
++        ).rows[0];
++        const event = (
++          await worker.query(
++            'SELECT * FROM public.hxos_materialize_fake_financial_event_v13($1,$2)',
++            [binding.admission.job_validation_id, outcome.outcome_fact.outcome_fact_id]
++          )
++        ).rows[0].financial_event;
++        lease = f.lease;
++        evidence = [f.winner.compensation_command_id, event.id];
++        adjustmentEventId = f.event.id;
++        actorId = f.setup.lane.posterUserId;
++      } else {
++        const setup = await adjustmentWitnessFixture();
++        actorId = setup.lane.posterUserId;
++        await fixture.pool.query('UPDATE public.users SET is_banned=TRUE WHERE id=$1', [actorId]);
++        await fixture.pool.query(
++          'SELECT pg_sleep(GREATEST(0,5.05-EXTRACT(EPOCH FROM (clock_timestamp()-prepared_at)))) FROM public.universal_v1_change_order_materialization_commands WHERE proposal_id=$1',
++          [setup.changePhase.context.proposalId]
++        );
++        lease = (
++          await claimChangeOrderRecovery(clients.get('workerRole')!, undefined, [], 5)
++        ).rows.find((row) => row.proposal_id === setup.changePhase.context.proposalId)!;
++        expect(lease).toBeDefined();
++        evidence = [null, 'CUSTOMER_ACTOR_AUTHORITY_REVOKED'];
++      }
++      // Immutable historical attribution remains valid after participant revocation.
++      await fixture.pool.query('UPDATE public.users SET is_banned=TRUE WHERE id=$1', [actorId]);
++      for (const role of ['apiRole', 'attesterRole'] as const) {
++        await expect(
++          recordChangeOrderTerminal(kind, lease, evidence, clients.get(role)!)
++        ).rejects.toThrow(/permission denied/u);
++      }
++      const typedLease = {
++        proposal_id: lease.proposal_id,
++        recovery_lease_id: lease.recovery_lease_id,
++        lease_owner_id: lease.lease_owner_id,
++        witness_request_sha256: lease.witness_request_sha256,
++        work_order_id: lease.work_order_id,
++        acquired_at: lease.acquired_at.toISOString(),
++        expires_at: lease.expires_at.toISOString(),
++        target_authority_id: lease.target_authority_id,
++        release_manifest_digest: lease.release_manifest_digest,
++      };
++      const input: ChangeOrderTerminalCommand =
++        kind === 'materialized'
++          ? {
++              kind: 'MATERIALIZED',
++              lease: typedLease,
++              actorUserId: actorId,
++              amendmentId: evidence[0]!,
++              adjustmentEventId: adjustmentEventId!,
++            }
++          : kind === 'compensated'
++            ? {
++                kind: 'COMPENSATED',
++                lease: typedLease,
++                actorUserId: actorId,
++                compensationCommandId: evidence[0]!,
++                compensationEventId: evidence[1]!,
++                adjustmentEventId: adjustmentEventId!,
++              }
++            : {
++                kind: 'NO_EFFECT',
++                lease: typedLease,
++                actorUserId: actorId,
++                adjustmentEventId: null,
++                noEffectOutcomeFactId: null,
++                authorityRevocationReason: 'CUSTOMER_ACTOR_AUTHORITY_REVOKED',
++              };
++      const authorize = () => ({
++        databaseName: new URL(fixture.databaseUrl).pathname.slice(1),
++        serviceLogin: roles.workerRole,
++        environment: 'local' as const,
++        manifestDigest: lease.release_manifest_digest,
++        targetDigest: 'sha256:' + 'd'.repeat(64),
++      });
++      const database = preparationDatabase(clients.get('workerRole')!);
++      const lost = new PostgresUniversalV1ChangeOrderRecoveryTerminals(
++        {
++          transaction: async (work) => {
++            await database.transaction(work);
++            throw new Error('TERMINAL_COMMIT_ACKNOWLEDGEMENT_LOST');
++          },
++        },
++        authorize
++      );
++      // Inject loss only after the actual outer COMMIT on the restricted login.
++      await expect(lost.record(input)).rejects.toThrow('TERMINAL_COMMIT_ACKNOWLEDGEMENT_LOST');
++      const result = await recordChangeOrderTerminal(kind, lease, evidence);
++      expect(result.rows).toHaveLength(1);
++      const original = result.rows[0];
++      expect(original).toMatchObject({
++        idempotency_replayed: true,
++        target_authority_id: lease.target_authority_id,
++        release_manifest_digest: lease.release_manifest_digest,
++        terminal_fact: {
++          proposal_id: lease.proposal_id,
++          witness_request_sha256: lease.witness_request_sha256,
++          recovery_lease_id: lease.recovery_lease_id,
++          lease_owner_id: lease.lease_owner_id,
++          recorded_by: actorId,
++          outcome_state: kind === 'materialized' ? 'MATERIALIZED' : 'CANCELLED',
++          recovery_state: kind === 'materialized' ? 'NOT_REQUIRED' : 'RECOVERY_REQUIRED',
++          resolution_evidence_kind:
++            kind === 'materialized'
++              ? 'AMENDMENT'
++              : kind === 'compensated'
++                ? 'REVERSAL'
++                : 'NO_EFFECT',
++          execution_resume_authorized: kind === 'materialized',
++          prior_secured_state_restored: false,
++          capture_resume_authorized: false,
++          payment_creation_performed: false,
++          hard_assignment_created: false,
++        },
++      });
++      await fixture.pool.query(
++        'SELECT pg_sleep(GREATEST(0,EXTRACT(EPOCH FROM ($1::timestamptz-clock_timestamp()))+0.05))',
++        [lease.expires_at]
++      );
++      // Restoring a user cannot change an already committed no-effect decision.
++      await fixture.pool.query('UPDATE public.users SET is_banned=FALSE WHERE id=$1', [actorId]);
++      const replay = await new PostgresUniversalV1ChangeOrderRecoveryTerminals(
++        database,
++        authorize
++      ).record(input);
++      expect(replay.terminalFact).toEqual(original.terminal_fact);
++      expect(replay.idempotencyReplayed).toBe(true);
++      await expect(
++        recordChangeOrderTerminal(kind, lease, [randomUUID(), evidence[1]])
++      ).rejects.toThrow(/CONFLICT|INPUT_INVALID/u);
++      expect(
++        (
++          await fixture.pool.query(
++            'SELECT count(*)::int AS n FROM public.universal_v1_change_order_recovery_terminal_facts WHERE proposal_id=$1',
++            [lease.proposal_id]
++          )
++        ).rows[0].n
++      ).toBe(1);
++      expect((await observeChangeOrderRecovery(lease)).rows).toHaveLength(0);
++    },
++    60_000
++  );
++
+   it('worker change order compensation preserves an amendment winner and suppresses terminal lease observation', async () => {
+     const { setup, event, lease } = await compensationWinnerFixture();
+     const completed = await setup.changeOrders.finalizePriceAndScopeMaterialization(
+@@ -4123,7 +4801,7 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
+       amendmentId: completed.amendment_id,
+       adjustmentEventId: event.id,
+     });
+-    // Historical terminal setup uses the frozen owner function; the new terminal writer remains pending.
++    // Historical setup intentionally exercises the retained owner-only terminal writer.
+     await fixture.pool.query(
+       'SELECT * FROM public.record_universal_v1_change_order_materialized_recovery_v1($1,$2,$3,$4,$5)',
+       [
+@@ -7304,6 +7982,22 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
+       resolved.outcome_fact.outcome_fact_id,
+     ]);
+     // First let the existing rollover fixture lease older queued-only requests.
++    const completedReversal = await completedWorkerReversalFixture();
++    const declinedAdjustment = await adjustmentWitnessFixture();
++    const declineRequest = await declinedAdjustment.requestAdjustment('DECLINE');
++    const declineBinding = await declinedAdjustment.admit(declineRequest.commandId);
++    await declinedAdjustment.executeBinding(declineBinding);
++    const declineOutcome = (
++      await f.worker.query(
++        'SELECT * FROM public.hxos_record_fake_financial_outcome_v13($1,$2,$3)',
++        [
++          declineBinding.admission.job_validation_id,
++          declineBinding.workerId,
++          declineBinding.admission.recovery_lease_id,
++        ]
++      )
++    ).rows[0];
++    const declineLease = await recoveryObservationLease(declinedAdjustment);
+     const unpreparedReversal = await workerReversalFixture(),
+       preparedReversal = await workerReversalFixture();
+     const beforeReversal = await preparedReversal.prepare();
+@@ -7338,6 +8032,28 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
+         ]
+       )
+     ).rows[0];
++    const compensated = (
++      await recordChangeOrderTerminal(
++        'compensated',
++        {
++          ...completedReversal.lease,
++          target_authority_id: next.target_authority_id,
++          release_manifest_digest: newRelease,
++        },
++        [completedReversal.winner.compensation_command_id, completedReversal.reversalEvent.id]
++      )
++    ).rows[0];
++    expect(compensated).toMatchObject({
++      target_authority_id: next.target_authority_id,
++      release_manifest_digest: newRelease,
++      terminal_fact: {
++        compensation_command_id: completedReversal.winner.compensation_command_id,
++        compensation_event_id: completedReversal.reversalEvent.id,
++        resolution_evidence_kind: 'REVERSAL',
++        prior_secured_state_restored: false,
++        capture_resume_authorized: false,
++      },
++    });
+     // A committed compensation origin survives target succession. A PREPARED record cannot retarget.
+     const freshReversalArgs = [...unpreparedReversal.prepareArgs];
+     freshReversalArgs[0] = next.target_authority_id;
+@@ -7412,5 +8128,50 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
+     await expect(reader.read(payload, f.ownerActorId, handle, f.release)).rejects.toThrow(
+       'RECEIPT_BINDING_MISMATCH'
+     );
+-  }, 30_000);
++    // Historical admitted outcomes cannot authorize a different environment.
++    const previewRelease = 'sha256:' + '9'.repeat(64);
++    const preview = (
++      await fixture.pool.query(
++        `INSERT INTO hx_authority.universal_v1_work_order_target_authority_facts
++        (authority_version,target_database_name,environment,release_manifest_sha256,activation_request_sha256,supersedes_target_authority_id)
++       SELECT authority_version+1,current_database(),'preview',$2,$3,target_authority_id
++         FROM hx_authority.universal_v1_work_order_target_authority_facts WHERE target_authority_id=$1
++       RETURNING target_authority_id`,
++        [
++          next.target_authority_id,
++          previewRelease,
++          createHash('sha256').update(randomUUID()).digest('hex'),
++        ]
++      )
++    ).rows[0];
++    await expect(
++      recordChangeOrderTerminal(
++        'no_effect',
++        declineLease,
++        [declineOutcome.outcome_fact.outcome_fact_id, null],
++        f.worker,
++        [
++          preview.target_authority_id,
++          new URL(fixture.databaseUrl).pathname.slice(1),
++          'preview',
++          previewRelease,
++          declineLease.proposal_id,
++          declineLease.recovery_lease_id,
++          declineLease.lease_owner_id,
++          declineLease.witness_request_sha256,
++          declineLease.work_order_id,
++          declineOutcome.outcome_fact.outcome_fact_id,
++          null,
++        ]
++      )
++    ).rejects.toThrow('HISTORICAL_TARGET_MISMATCH');
++    expect(
++      (
++        await fixture.pool.query(
++          'SELECT count(*)::int AS n FROM public.universal_v1_change_order_recovery_terminal_facts WHERE proposal_id=$1',
++          [declineLease.proposal_id]
++        )
++      ).rows[0].n
++    ).toBe(0);
++  }, 60_000);
+ });
+diff --git a/backend/tests/unit/change-order-recovery-terminals.test.ts b/backend/tests/unit/change-order-recovery-terminals.test.ts
+new file mode 100644
+index 0000000..d29024e
+--- /dev/null
++++ b/backend/tests/unit/change-order-recovery-terminals.test.ts
+@@ -0,0 +1,252 @@
++import { describe, expect, it } from 'vitest';
++import type { Database, QueryFn } from '../../src/db.js';
++import {
++  PostgresUniversalV1ChangeOrderRecoveryTerminals,
++  type ChangeOrderTerminalCommand,
++} from '../../src/services/UniversalV1ChangeOrderRecoveryTerminals.js';
++
++const id = (n: number) => `10000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
++const authority = {
++  databaseName: 'hx_ci_terminal',
++  serviceLogin: 'hx_ci_worker',
++  environment: 'local' as const,
++  manifestDigest: 'sha256:' + 'a'.repeat(64),
++  targetDigest: 'sha256:' + 'b'.repeat(64),
++};
++const lease = {
++  proposal_id: id(1),
++  recovery_lease_id: id(2),
++  lease_owner_id: id(3),
++  work_order_id: id(4),
++  witness_request_sha256: 'c'.repeat(64),
++  acquired_at: '2026-09-06T00:00:00.000Z',
++  expires_at: '2026-09-06T00:05:00.000Z',
++  target_authority_id: id(5),
++  release_manifest_digest: authority.manifestDigest,
++};
++const command: ChangeOrderTerminalCommand = {
++  kind: 'MATERIALIZED',
++  lease,
++  actorUserId: id(6),
++  amendmentId: id(7),
++  adjustmentEventId: id(8),
++};
++function fixture(input: ChangeOrderTerminalCommand = command, replay = false) {
++  const metadata = {
++    session_database_role: authority.serviceLogin,
++    target_authority_id: id(5),
++    target_database_name: authority.databaseName,
++    environment: authority.environment,
++    release_manifest_sha256: authority.manifestDigest,
++  };
++  const terminal = {
++    terminal_fact_id: id(9),
++    proposal_id: lease.proposal_id,
++    witness_request_sha256: lease.witness_request_sha256,
++    recovery_lease_id: lease.recovery_lease_id,
++    lease_owner_id: lease.lease_owner_id,
++    outcome_state: input.kind === 'MATERIALIZED' ? 'MATERIALIZED' : 'CANCELLED',
++    recovery_state: input.kind === 'MATERIALIZED' ? 'NOT_REQUIRED' : 'RECOVERY_REQUIRED',
++    amendment_id: input.kind === 'MATERIALIZED' ? input.amendmentId : null,
++    adjustment_event_id: input.adjustmentEventId,
++    compensation_command_id: input.kind === 'COMPENSATED' ? input.compensationCommandId : null,
++    compensation_event_id: input.kind === 'COMPENSATED' ? input.compensationEventId : null,
++    no_effect_outcome_fact_id: input.kind === 'NO_EFFECT' ? input.noEffectOutcomeFactId : null,
++    authority_revocation_reason:
++      input.kind === 'NO_EFFECT' ? input.authorityRevocationReason : null,
++    resolution_evidence_kind:
++      input.kind === 'MATERIALIZED'
++        ? 'AMENDMENT'
++        : input.kind === 'COMPENSATED'
++          ? 'REVERSAL'
++          : 'NO_EFFECT',
++    hold_clearance_kind:
++      input.kind === 'MATERIALIZED' ? 'EXACT_AMENDMENT' : 'BOUNDED_CANCELLATION_RECOVERY',
++    execution_resume_authorized: input.kind === 'MATERIALIZED',
++    prior_secured_state_restored: false,
++    capture_resume_authorized: false,
++    payment_creation_performed: false,
++    hard_assignment_created: false,
++    recorded_by: input.actorUserId,
++    recorded_at: '2026-09-06T00:01:00.123456+00:00',
++    terminal_fact_sha256: 'd'.repeat(64),
++  };
++  const receipt = {
++    terminal_fact: terminal,
++    idempotency_replayed: replay,
++    observed_at: new Date(replay ? '2026-09-06T02:00:00Z' : '2026-09-06T00:01:01Z'),
++    target_authority_id: metadata.target_authority_id,
++    release_manifest_digest: authority.manifestDigest,
++  };
++  const calls: { sql: string; params?: unknown[] }[] = [];
++  const events: string[] = [];
++  let receiptRows: unknown[] = [receipt];
++  let rowCount = 1;
++  let authorizeCount = 0;
++  let driftAt = Infinity;
++  let commitLoss = false;
++  const query: QueryFn = async <Row>(sql: string, params?: unknown[]) => {
++    calls.push({ sql, params });
++    return sql.includes('hxos_read_universal_v1_fake_financial_runtime_authority_v13')
++      ? { rows: [metadata] as Row[], rowCount: 1 }
++      : { rows: receiptRows as Row[], rowCount };
++  };
++  const database: Pick<Database, 'transaction'> = {
++    transaction: async (work) => {
++      events.push('BEGIN');
++      let result;
++      try {
++        result = await work(query);
++      } catch (error) {
++        events.push('ROLLBACK');
++        throw error;
++      }
++      events.push('COMMIT');
++      if (commitLoss) throw new Error('LOST_COMMIT_ACKNOWLEDGEMENT');
++      return result;
++    },
++  };
++  const adapter = new PostgresUniversalV1ChangeOrderRecoveryTerminals(database, () => ({
++    ...authority,
++    targetDigest: ++authorizeCount >= driftAt ? 'sha256:' + 'f'.repeat(64) : authority.targetDigest,
++  }));
++  return {
++    adapter,
++    terminal,
++    metadata,
++    receipt,
++    calls,
++    events,
++    rows: (rows: unknown[], count = rows.length) => {
++      receiptRows = rows;
++      rowCount = count;
++    },
++    drift: (at: number) => {
++      driftAt = at;
++    },
++    loseCommit: () => {
++      commitLoss = true;
++    },
++  };
++}
++
++describe('worker change order terminal adapter', () => {
++  it.each([
++    command,
++    {
++      kind: 'COMPENSATED',
++      lease,
++      actorUserId: id(6),
++      adjustmentEventId: id(8),
++      compensationCommandId: id(10),
++      compensationEventId: id(11),
++    },
++    {
++      kind: 'NO_EFFECT',
++      lease,
++      actorUserId: id(6),
++      adjustmentEventId: null,
++      noEffectOutcomeFactId: null,
++      authorityRevocationReason: 'CUSTOMER_ACTOR_AUTHORITY_REVOKED',
++    },
++    {
++      kind: 'NO_EFFECT',
++      lease,
++      actorUserId: id(6),
++      adjustmentEventId: id(8),
++      noEffectOutcomeFactId: id(12),
++      authorityRevocationReason: null,
++    },
++  ] satisfies ChangeOrderTerminalCommand[])(
++    'commits a bound $kind receipt through its sealed port',
++    async (input) => {
++      const f = fixture(input);
++      const result = await f.adapter.record(input);
++      expect(result.terminalFact).toEqual(f.terminal);
++      expect(result.terminalFact.recorded_at).toBe('2026-09-06T00:01:00.123456+00:00');
++      expect(Object.isFrozen(result)).toBe(true);
++      expect(Object.isFrozen(result.terminalFact)).toBe(true);
++      expect(f.events).toEqual(['BEGIN', 'COMMIT']);
++      expect(f.calls).toHaveLength(2);
++      expect(f.calls[1]!.sql).toContain(
++        `hxos_record_fake_financial_change_order_${input.kind.toLowerCase()}_v13`
++      );
++      expect(f.calls[1]!.params?.slice(0, 9)).toEqual([
++        id(5),
++        authority.databaseName,
++        'local',
++        authority.manifestDigest,
++        lease.proposal_id,
++        lease.recovery_lease_id,
++        lease.lease_owner_id,
++        lease.witness_request_sha256,
++        lease.work_order_id,
++      ]);
++    }
++  );
++  it('accepts original terminal replay after lease expiry under fresh current target authority', async () => {
++    const f = fixture(command, true);
++    f.metadata.target_authority_id = id(30);
++    f.receipt.target_authority_id = id(30);
++    const result = await f.adapter.record(command);
++    expect(result.idempotencyReplayed).toBe(true);
++    expect(f.calls[1]!.params?.[0]).toBe(id(30));
++    expect(result.terminalFact.recorded_at).toBe(f.terminal.recorded_at);
++  });
++  it.each([
++    { proposal_id: id(99) },
++    { recovery_lease_id: id(99) },
++    { lease_owner_id: id(99) },
++    { witness_request_sha256: 'e'.repeat(64) },
++    { recorded_by: id(99) },
++    { amendment_id: id(99) },
++    { adjustment_event_id: id(99) },
++    { capture_resume_authorized: true },
++    { prior_secured_state_restored: true },
++    { recorded_at: '2026-09-06T00:06:00Z' },
++    { hard_assignment_created: true },
++    { unexpected_authority: true },
++  ])('rolls back an invalid terminal receipt %j', async (altered) => {
++    const f = fixture();
++    Object.assign(f.terminal, altered);
++    await expect(f.adapter.record(command)).rejects.toThrow();
++    expect(f.events).toEqual(['BEGIN', 'ROLLBACK']);
++  });
++  it.each([0, 2, null])('rejects receipt cardinality %s before commit', async (count) => {
++    const f = fixture();
++    f.rows(count === 0 ? [] : count === 2 ? [f.receipt, f.receipt] : [f.receipt], count as number);
++    await expect(f.adapter.record(command)).rejects.toThrow('CARDINALITY');
++    expect(f.events).toEqual(['BEGIN', 'ROLLBACK']);
++  });
++  it('rolls back a changed installed authority and surfaces uncertain commit acknowledgements', async () => {
++    const f = fixture();
++    f.drift(2);
++    await expect(f.adapter.record(command)).rejects.toThrow('AUTHORITY_CHANGED');
++    expect(f.events).toEqual(['BEGIN', 'ROLLBACK']);
++    const lost = fixture();
++    lost.loseCommit();
++    await expect(lost.adapter.record(command)).rejects.toThrow('LOST_COMMIT_ACKNOWLEDGEMENT');
++    expect(lost.events).toEqual(['BEGIN', 'COMMIT']);
++  });
++  it('rejects a mismatched runtime login before a terminal command', async () => {
++    const f = fixture();
++    f.metadata.session_database_role = 'hx_ci_api';
++    await expect(f.adapter.record(command)).rejects.toThrow('TARGET_BINDING_MISMATCH');
++    expect(f.calls).toHaveLength(1);
++    expect(f.events).toEqual(['BEGIN', 'ROLLBACK']);
++  });
++  it('rejects ambiguous no-effect evidence before opening a transaction', async () => {
++    const f = fixture();
++    await expect(
++      f.adapter.record({
++        kind: 'NO_EFFECT',
++        lease,
++        actorUserId: id(6),
++        adjustmentEventId: null,
++        noEffectOutcomeFactId: id(12),
++        authorityRevocationReason: 'CUSTOMER_ACTOR_AUTHORITY_REVOKED',
++      })
++    ).rejects.toThrow();
++    expect(f.events).toEqual([]);
++  });
++});
+diff --git a/backend/tests/unit/work-order-command-role-authority.test.ts b/backend/tests/unit/work-order-command-role-authority.test.ts
+index 8d03a10..ae0465a 100644
+--- a/backend/tests/unit/work-order-command-role-authority.test.ts
++++ b/backend/tests/unit/work-order-command-role-authority.test.ts
+@@ -1,4 +1,10 @@
+ import { CHANGE_ORDER_REVERSAL_EXECUTION_FUNCTION } from '../../src/jobs/change-order-reversal-role-plans.js';
++import {
++  CHANGE_ORDER_TERMINAL_INSERT_COLUMNS,
++  CHANGE_ORDER_TERMINAL_LOCK_COLUMNS,
++  CHANGE_ORDER_TERMINAL_READ_COLUMNS,
++  CHANGE_ORDER_TERMINAL_DEPENDENCIES,
++} from '../../src/jobs/change-order-terminal-role-plans.js';
+ import {
+   CHANGE_ORDER_RECOVERY_COMPENSATION_INSERT_COLUMNS,
+   CHANGE_ORDER_RECOVERY_COMPENSATION_LOCK_COLUMNS,
+@@ -1097,6 +1103,7 @@ function functionRow(identity: (typeof WORK_ORDER_AUTHORITY_FUNCTIONS)[number])
+     };
+   if (
+     ![
++      ...CHANGE_ORDER_TERMINAL_DEPENDENCIES,
+       ...CHANGE_ORDER_RECOVERY_OBSERVATION_DEPENDENCIES,
+       ...CHANGE_ORDER_RECOVERY_COMPENSATION_DEPENDENCIES,
+     ].some((dependency) => dependency === identity)
+@@ -1198,6 +1205,10 @@ function relationRow(
+     row.acl_grants!.push(names.commandOwnerRole + '|INSERT|' + column);
+   for (const column of CHANGE_ORDER_RECOVERY_CLAIM_INSERT_COLUMNS[relation] ?? [])
+     row.acl_grants!.push(names.financeOwnerRole + '|INSERT|' + column);
++  for (const column of CHANGE_ORDER_TERMINAL_INSERT_COLUMNS[relation] ?? [])
++    row.acl_grants!.push(names.financeOwnerRole + '|INSERT|' + column);
++  for (const column of CHANGE_ORDER_TERMINAL_READ_COLUMNS[relation] ?? [])
++    row.acl_grants!.push(names.financeOwnerRole + '|SELECT|' + column);
+   for (const column of CHANGE_ORDER_RECOVERY_COMPENSATION_INSERT_COLUMNS[relation] ?? [])
+     row.acl_grants!.push(names.financeOwnerRole + '|INSERT|' + column);
+   for (const column of CHANGE_ORDER_RECOVERY_COMPENSATION_READ_COLUMNS[relation] ?? [])
+@@ -1205,6 +1216,7 @@ function relationRow(
+   for (const column of CHANGE_ORDER_RECOVERY_OBSERVATION_READ_COLUMNS[relation] ?? [])
+     row.acl_grants!.push(names.financeOwnerRole + '|SELECT|' + column);
+   for (const column of [
++    ...(CHANGE_ORDER_TERMINAL_LOCK_COLUMNS[relation] ?? []),
+     ...(CHANGE_ORDER_RECOVERY_CLAIM_LOCK_COLUMNS[relation] ?? []),
+     ...(CHANGE_ORDER_RECOVERY_COMPENSATION_LOCK_COLUMNS[relation] ?? []),
+   ]) {

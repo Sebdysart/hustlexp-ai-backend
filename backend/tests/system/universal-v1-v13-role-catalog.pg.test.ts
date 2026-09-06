@@ -1,4 +1,8 @@
 import { PostgresUniversalV1ChangeOrderMaterialization } from '../../src/services/UniversalV1ChangeOrderMaterialization.js';
+import {
+  PostgresUniversalV1ChangeOrderRecoveryTerminals,
+  type ChangeOrderTerminalCommand,
+} from '../../src/services/UniversalV1ChangeOrderRecoveryTerminals.js';
 import { PostgresUniversalV1ChangeOrderRecoveryCompensation } from '../../src/services/UniversalV1ChangeOrderRecoveryCompensation.js';
 import { PostgresUniversalV1ChangeOrderReversalRequests } from '../../src/services/payment/UniversalV1ChangeOrderReversalRequest.js';
 import { UniversalV1WorkOrderApplication } from '../../src/services/UniversalV1WorkOrderApplication.js';
@@ -2933,8 +2937,8 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
     360_000
   );
 
-  async function adjustmentExecutionFixture() {
-    const { lane, common, request, admit, execute, workOrder } =
+  async function adjustmentWitnessFixture() {
+    const { apiDatabase, release, lane, common, request, admit, execute, workOrder } =
       await changeOrderWorkOrderFixture();
     const changeOrders = new PostgresUniversalV1ChangeOrderRepository(preparationDatabase());
     const economics = (
@@ -2984,7 +2988,9 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
     });
     if (changePhase.completed) throw Error('ADJUSTMENT_FIXTURE_ALREADY_COMPLETED');
     const c = changePhase.context;
-    const requested = await request({
+    const adjustmentInput = (
+      scenario: 'SUCCESS' | 'DECLINE' = 'SUCCESS'
+    ): ExecuteUniversalV1FinancialEventCommand => ({
       ...common,
       operationKind: 'ADJUST',
       operationId: c.adjustmentOperationId,
@@ -2997,18 +3003,20 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
       amountCents: c.customerTotalCents,
       currency: c.currency.toLowerCase(),
       occurredAt: c.occurredAt,
+      scenario,
     });
-    const binding = await admit(requested.commandId);
     return {
+      apiDatabase,
+      release,
       lane,
       changeOrders,
       admit,
       executeBinding: execute,
       changePhase,
-      requested,
-      binding,
       workOrder,
-      execute: (client?: pg.Client) => execute(binding, client),
+      adjustmentInput,
+      requestAdjustment: (scenario: 'SUCCESS' | 'DECLINE' = 'SUCCESS') =>
+        request(adjustmentInput(scenario)),
       effects: async () =>
         (
           await fixture.pool.query(
@@ -3018,6 +3026,18 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
             [c.adjustmentOperationId]
           )
         ).rows[0],
+    };
+  }
+
+  async function adjustmentExecutionFixture() {
+    const setup = await adjustmentWitnessFixture();
+    const requested = await setup.requestAdjustment();
+    const binding = await setup.admit(requested.commandId);
+    return {
+      ...setup,
+      requested,
+      binding,
+      execute: (client?: pg.Client) => setup.executeBinding(binding, client),
     };
   }
 
@@ -3176,7 +3196,7 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
   }
 
   async function recoveryObservationLease(
-    setup: Awaited<ReturnType<typeof changeOrderHistoryFixture>>,
+    setup: Pick<Awaited<ReturnType<typeof adjustmentWitnessFixture>>, 'changePhase'>,
     leaseDurationSeconds = 300
   ) {
     await fixture.pool.query(
@@ -3189,7 +3209,9 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
       [],
       leaseDurationSeconds
     );
-    const lease = result.rows.find((row) => row.proposal_id === setup.payload.proposal_id)!;
+    const lease = result.rows.find(
+      (row) => row.proposal_id === setup.changePhase.context.proposalId
+    )!;
     expect(lease).toBeDefined();
     return lease;
   }
@@ -3371,6 +3393,29 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
         )
       ).rows[0];
     return { ...f, winner, request, prepareArgs, prepare, journalInput, requested, counts };
+  }
+
+  async function completedWorkerReversalFixture(leaseSeconds = 300) {
+    const f = await workerReversalFixture(leaseSeconds);
+    const prepared = await f.prepare();
+    const requested = await f.requested(prepared.prepared_command);
+    const binding = await f.setup.admit(requested.commandId);
+    await f.setup.executeBinding(binding);
+    const worker = clients.get('workerRole')!;
+    const outcome = (
+      await worker.query('SELECT * FROM public.hxos_record_fake_financial_outcome_v13($1,$2,$3)', [
+        binding.admission.job_validation_id,
+        binding.workerId,
+        binding.admission.recovery_lease_id,
+      ])
+    ).rows[0];
+    const reversalEvent = (
+      await worker.query('SELECT * FROM public.hxos_materialize_fake_financial_event_v13($1,$2)', [
+        binding.admission.job_validation_id,
+        outcome.outcome_fact.outcome_fact_id,
+      ])
+    ).rows[0].financial_event;
+    return { ...f, reversalEvent };
   }
 
   it.each(['PREPARED', 'REQUESTED'] as const)(
@@ -4108,6 +4153,639 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
     }
   }, 60_000);
 
+  function recordChangeOrderTerminal(
+    kind: 'materialized' | 'compensated' | 'no_effect',
+    lease: pg.QueryResultRow,
+    evidence: [string | null, string | null],
+    client = clients.get('workerRole')!,
+    overrides?: unknown[]
+  ) {
+    return client.query(
+      `SELECT * FROM public.hxos_record_fake_financial_change_order_${kind}_v13($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      overrides ?? [
+        lease.target_authority_id,
+        new URL(fixture.databaseUrl).pathname.slice(1),
+        'local',
+        lease.release_manifest_digest,
+        lease.proposal_id,
+        lease.recovery_lease_id,
+        lease.lease_owner_id,
+        lease.witness_request_sha256,
+        lease.work_order_id,
+        ...evidence,
+      ]
+    );
+  }
+
+  async function preparedAdjustmentRequestFixture() {
+    const setup = await adjustmentWitnessFixture();
+    let captured: { sql: string; params: unknown[] } | undefined;
+    const journalDatabase: Pick<Database, 'transaction'> = {
+      transaction: async (work) =>
+        work(async (sql, params) => {
+          if (!sql.includes('hxos_request_fake_financial_command_v13') || !params)
+            throw new Error('UNEXPECTED_JOURNAL_QUERY');
+          captured = { sql, params };
+          throw new Error('REQUEST_CAPTURED_BEFORE_EXECUTION');
+        }),
+    };
+    const service = new requestApplication.UniversalV1FinancialRequestService(
+      new PostgresUniversalV1PreparedFinancialCommandAuthority(setup.apiDatabase),
+      new PostgresFinancialProviderCommandJournal(journalDatabase),
+      () => setup.release,
+      new PostgresUniversalV1FinancialRequestProgressReader(setup.apiDatabase),
+      new PostgresUniversalV1FinancialPredecessorReader(setup.apiDatabase)
+    );
+    // The real service commits authenticated preparation; intercept only the
+    // later request call so tests can control its outer database transaction.
+    await expect(
+      service.requestFinancialEvent(
+        setup.adjustmentInput(),
+        await preparationAttestation(setup.lane.posterUserId)
+      )
+    ).rejects.toThrow('REQUEST_CAPTURED_BEFORE_EXECUTION');
+    if (!captured) throw new Error('REQUEST_NOT_CAPTURED');
+    const request = captured;
+    return {
+      ...setup,
+      request: (client = clients.get('apiRole')!) => client.query(request.sql, request.params),
+    };
+  }
+
+  async function waitForDatabaseLock(pid: number) {
+    let waiting = false;
+    for (let i = 0; i < 60 && !waiting; i++) {
+      waiting = (
+        await fixture.pool.query(
+          'SELECT EXISTS(SELECT 1 FROM pg_locks WHERE pid=$1 AND NOT granted) AS waiting',
+          [pid]
+        )
+      ).rows[0].waiting;
+      if (!waiting) await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(waiting).toBe(true);
+  }
+
+  it('worker change order terminal fences a concurrent new request after cancellation commits', async () => {
+    const setup = await preparedAdjustmentRequestFixture();
+    const lease = await recoveryObservationLease(setup);
+    await fixture.pool.query('UPDATE public.users SET is_banned=TRUE WHERE id=$1', [
+      setup.lane.posterUserId,
+    ]);
+    const worker = clients.get('workerRole')!;
+    const api = clients.get('apiRole')!;
+    const apiPid = (await api.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+    let pending: Promise<{ error?: unknown; value?: pg.QueryResult }> | undefined;
+    try {
+      await worker.query('BEGIN');
+      await recordChangeOrderTerminal(
+        'no_effect',
+        lease,
+        [null, 'CUSTOMER_ACTOR_AUTHORITY_REVOKED'],
+        worker
+      );
+      pending = setup.request(api).then(
+        (value) => ({ value }),
+        (error) => ({ error })
+      );
+      await waitForDatabaseLock(apiPid);
+      await worker.query('COMMIT');
+      expect((await pending).error).toMatchObject({
+        message: expect.stringContaining('HXUV1-CHANGE-RECOVERY-18:'),
+      });
+      expect(
+        (
+          await fixture.pool.query(
+            `SELECT
+          (SELECT count(*)::int FROM public.financial_provider_command_journal WHERE operation_id=$1) AS requests,
+          (SELECT count(*)::int FROM hx_authority.fake_financial_command_outbox_requests_v13 WHERE operation_id=$1) AS outbox,
+          (SELECT count(*)::int FROM public.hxos_fake_financial_operation_events_v1 WHERE operation_id=$1) AS effects`,
+            [setup.changePhase.context.adjustmentOperationId]
+          )
+        ).rows[0]
+      ).toEqual({ requests: 0, outbox: 0, effects: 0 });
+    } finally {
+      await worker.query('ROLLBACK');
+      if (pending) await pending;
+    }
+  }, 60_000);
+
+  it.each(['REPEATABLE READ', 'SERIALIZABLE'] as const)(
+    'worker change order terminal prevents a new ADJUST from a stale %s snapshot',
+    async (isolation) => {
+      const setup = await preparedAdjustmentRequestFixture();
+      const lease = await recoveryObservationLease(setup);
+      const api = clients.get('apiRole')!;
+      try {
+        await api.query(`BEGIN ISOLATION LEVEL ${isolation}`);
+        await api.query('SELECT transaction_timestamp()');
+        await fixture.pool.query('UPDATE public.users SET is_banned=TRUE WHERE id=$1', [
+          setup.lane.posterUserId,
+        ]);
+        await recordChangeOrderTerminal('no_effect', lease, [
+          null,
+          'CUSTOMER_ACTOR_AUTHORITY_REVOKED',
+        ]);
+        await expect(setup.request(api)).rejects.toThrow(/READ_COMMITTED_REQUIRED|serialize/u);
+      } finally {
+        await api.query('ROLLBACK');
+      }
+      expect(
+        (
+          await fixture.pool.query(
+            'SELECT count(*)::int AS n FROM public.financial_provider_command_journal WHERE operation_id=$1',
+            [setup.changePhase.context.adjustmentOperationId]
+          )
+        ).rows[0].n
+      ).toBe(0);
+    },
+    60_000
+  );
+
+  it.each(['terminal_first', 'admission_first'] as const)(
+    'worker change order terminal serializes first admission: %s',
+    async (order) => {
+      const setup = await preparedAdjustmentRequestFixture();
+      const requested = (await setup.request()).rows[0];
+      const worker = clients.get('workerRole')!;
+      const claim = (
+        await worker.query('SELECT * FROM public.hxos_claim_fake_financial_outbox_v13($1,300)', [
+          randomUUID(),
+        ])
+      ).rows[0];
+      expect(claim.command_id).toBe(requested.command_id);
+      await worker.query(
+        "SELECT public.hxos_record_fake_financial_publish_outcome_v13($1,'BULLMQ_CONFIRMED',$2,$3,NULL,NULL)",
+        [claim.publish_claim_id, claim.bullmq_job_id, claim.job_authority_sha256]
+      );
+      const workerUrl = new URL(fixture.databaseUrl);
+      workerUrl.username = roles.workerRole;
+      workerUrl.password = password;
+      const consumer = new pg.Client({ connectionString: workerUrl.toString() });
+      await consumer.connect();
+      const consumerPid = (await consumer.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+      const admission = () =>
+        consumer.query(
+          'SELECT * FROM hx_authority.record_fake_financial_job_dispatch_evidence_v13($1,$2,$3,$4,0,30,2)',
+          [claim.outbox_request_id, claim.bullmq_job_id, claim.job_authority_sha256, randomUUID()]
+        );
+      const lease = await recoveryObservationLease(setup);
+      await fixture.pool.query('UPDATE public.users SET is_banned=TRUE WHERE id=$1', [
+        setup.lane.posterUserId,
+      ]);
+      let pending: Promise<{ error?: unknown; value?: pg.QueryResult }> | undefined;
+      try {
+        if (order === 'terminal_first') {
+          await worker.query('BEGIN');
+          await recordChangeOrderTerminal(
+            'no_effect',
+            lease,
+            [null, 'CUSTOMER_ACTOR_AUTHORITY_REVOKED'],
+            worker
+          );
+          pending = admission().then(
+            (value) => ({ value }),
+            (error) => ({ error })
+          );
+          await waitForDatabaseLock(consumerPid);
+          await worker.query('COMMIT');
+          expect((await pending).error).toMatchObject({
+            message: expect.stringContaining('HXUV1-CHANGE-RECOVERY-18:'),
+          });
+          const replay = (await setup.request()).rows[0];
+          expect(replay.command_id).toBe(requested.command_id);
+          expect(replay.idempotency_replayed).toBe(true);
+        } else {
+          await admission();
+          await expect(
+            recordChangeOrderTerminal('no_effect', lease, [
+              null,
+              'CUSTOMER_ACTOR_AUTHORITY_REVOKED',
+            ])
+          ).rejects.toThrow('NO_DISPATCH_REVOCATION_REQUIRED');
+        }
+        expect(
+          (
+            await fixture.pool.query(
+              `SELECT
+            (SELECT count(*)::int FROM public.universal_v1_change_order_recovery_terminal_facts WHERE proposal_id=$1) AS terminals,
+            (SELECT count(*)::int FROM hx_authority.fake_financial_dispatch_admissions_v13 WHERE command_id=$2) AS admissions,
+            (SELECT count(*)::int FROM public.hxos_fake_financial_operation_events_v1 WHERE operation_id=$3) AS effects`,
+              [
+                lease.proposal_id,
+                requested.command_id,
+                setup.changePhase.context.adjustmentOperationId,
+              ]
+            )
+          ).rows[0]
+        ).toEqual({
+          terminals: order === 'terminal_first' ? 1 : 0,
+          admissions: order === 'terminal_first' ? 0 : 1,
+          effects: 0,
+        });
+      } finally {
+        await worker.query('ROLLBACK');
+        if (pending) await pending;
+        await consumer.end();
+      }
+    },
+    60_000
+  );
+
+  it.each(['confirmed_decline', 'unknown'] as const)(
+    'worker change order terminal requires an admitted nonretryable no-effect outcome: %s',
+    async (kind) => {
+      const setup = await adjustmentWitnessFixture();
+      const requested = await setup.requestAdjustment(
+        kind === 'confirmed_decline' ? 'DECLINE' : 'SUCCESS'
+      );
+      const binding = await setup.admit(requested.commandId);
+      if (kind === 'confirmed_decline') await setup.executeBinding(binding);
+      const worker = clients.get('workerRole')!;
+      const outcome = (
+        await worker.query(
+          'SELECT * FROM public.hxos_record_fake_financial_outcome_v13($1,$2,$3)',
+          [
+            binding.admission.job_validation_id,
+            binding.workerId,
+            binding.admission.recovery_lease_id,
+          ]
+        )
+      ).rows[0];
+      const lease = await recoveryObservationLease(setup);
+      if (kind === 'unknown') {
+        expect(outcome.outcome_fact.effect_certainty).toBe('UNKNOWN');
+        await expect(
+          recordChangeOrderTerminal('no_effect', lease, [
+            outcome.outcome_fact.outcome_fact_id,
+            null,
+          ])
+        ).rejects.toThrow('ADMITTED_NO_EFFECT_REQUIRED');
+        expect(
+          (
+            await fixture.pool.query(
+              'SELECT count(*)::int AS n FROM public.universal_v1_change_order_recovery_terminal_facts WHERE proposal_id=$1',
+              [lease.proposal_id]
+            )
+          ).rows[0].n
+        ).toBe(0);
+      } else {
+        expect(outcome.outcome_fact).toMatchObject({
+          effect_certainty: 'CONFIRMED_NO_EFFECT',
+          retryable: false,
+        });
+        const result = (
+          await recordChangeOrderTerminal('no_effect', lease, [
+            outcome.outcome_fact.outcome_fact_id,
+            null,
+          ])
+        ).rows[0];
+        expect(result.terminal_fact).toMatchObject({
+          outcome_state: 'CANCELLED',
+          resolution_evidence_kind: 'NO_EFFECT',
+          no_effect_outcome_fact_id: outcome.outcome_fact.outcome_fact_id,
+          authority_revocation_reason: null,
+          adjustment_event_id: null,
+          execution_resume_authorized: false,
+          capture_resume_authorized: false,
+        });
+        expect(
+          (
+            await recordChangeOrderTerminal('no_effect', lease, [
+              outcome.outcome_fact.outcome_fact_id,
+              null,
+            ])
+          ).rows[0].terminal_fact
+        ).toEqual(result.terminal_fact);
+      }
+    },
+    60_000
+  );
+
+  it('worker change order terminal rejects wrong bindings and busy domain and financial locks', async () => {
+    const setup = await adjustmentWitnessFixture();
+    const lease = await recoveryObservationLease(setup);
+    const args = [
+      lease.target_authority_id,
+      new URL(fixture.databaseUrl).pathname.slice(1),
+      'local',
+      lease.release_manifest_digest,
+      lease.proposal_id,
+      lease.recovery_lease_id,
+      lease.lease_owner_id,
+      lease.witness_request_sha256,
+      lease.work_order_id,
+      null,
+      'CUSTOMER_ACTOR_AUTHORITY_REVOKED',
+    ];
+    await fixture.pool.query('UPDATE public.users SET is_banned=TRUE WHERE id=$1', [
+      setup.lane.posterUserId,
+    ]);
+    for (const [index, value] of [
+      [0, randomUUID()],
+      [1, 'wrong_db'],
+      [2, 'staging'],
+      [3, 'sha256:' + 'e'.repeat(64)],
+      [4, randomUUID()],
+      [5, randomUUID()],
+      [6, randomUUID()],
+      [7, 'f'.repeat(64)],
+      [8, randomUUID()],
+      [10, 'FINANCIAL_CHAIN_CHANGED'],
+    ] as const) {
+      const altered = [...args];
+      altered[index] = value;
+      await expect(
+        recordChangeOrderTerminal(
+          'no_effect',
+          lease,
+          [null, args[10]],
+          clients.get('workerRole')!,
+          altered
+        )
+      ).rejects.toThrow();
+    }
+    const holder = await fixture.pool.connect();
+    try {
+      for (const [family, key] of [
+        ['domain', 'universal-v1-change-order-proposal:' + lease.proposal_id],
+        ['domain', 'fulfillment:' + lease.work_order_id],
+        [
+          'financial-provider-command-journal-v1',
+          'idempotency:' + setup.changePhase.idempotencyKey + ':adjust',
+        ],
+        [
+          'financial-provider-command-journal-v1',
+          'operation-version:FAKE:ADJUST:' + setup.changePhase.context.adjustmentOperationId + ':0',
+        ],
+        ['fake-financial-operation', setup.changePhase.context.adjustmentOperationId],
+      ]) {
+        await holder.query('BEGIN');
+        await holder.query(
+          family === 'domain'
+            ? 'SELECT pg_advisory_xact_lock(hashtextextended($1,0))'
+            : 'SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))',
+          family === 'domain' ? [key] : [family, key]
+        );
+        await expect(
+          recordChangeOrderTerminal('no_effect', lease, [null, 'CUSTOMER_ACTOR_AUTHORITY_REVOKED'])
+        ).rejects.toThrow('LOCK_BUSY');
+        await holder.query('ROLLBACK');
+      }
+      await holder.query('BEGIN');
+      await holder.query('UPDATE public.users SET is_banned=is_banned WHERE id=$1', [
+        setup.lane.posterUserId,
+      ]);
+      await expect(
+        recordChangeOrderTerminal('no_effect', lease, [null, 'CUSTOMER_ACTOR_AUTHORITY_REVOKED'])
+      ).rejects.toThrow('LOCK_BUSY');
+      await holder.query('ROLLBACK');
+      expect(
+        (
+          await recordChangeOrderTerminal('no_effect', lease, [
+            null,
+            'CUSTOMER_ACTOR_AUTHORITY_REVOKED',
+          ])
+        ).rows[0].idempotency_replayed
+      ).toBe(false);
+    } finally {
+      await holder.query('ROLLBACK');
+      holder.release();
+    }
+  }, 60_000);
+
+  it.each(['target', 'persistence'] as const)(
+    'worker change order terminal rolls back when the lease expires during a %s wait',
+    async (lock) => {
+      const setup = await adjustmentWitnessFixture();
+      const lease = await recoveryObservationLease(setup, 5);
+      await fixture.pool.query('UPDATE public.users SET is_banned=TRUE WHERE id=$1', [
+        setup.lane.posterUserId,
+      ]);
+      const worker = clients.get('workerRole')!;
+      const pid = (await worker.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+      const holder = await fixture.pool.connect();
+      let pending: Promise<{ error?: unknown; value?: pg.QueryResult }> | undefined;
+      try {
+        await holder.query('BEGIN');
+        await holder.query(
+          lock === 'target'
+            ? "SELECT pg_advisory_xact_lock(hashtextextended('hxuv1-work-order-target-authority-v1',0))"
+            : 'LOCK TABLE public.universal_v1_change_order_recovery_terminal_facts IN SHARE MODE'
+        );
+        pending = recordChangeOrderTerminal('no_effect', lease, [
+          null,
+          'CUSTOMER_ACTOR_AUTHORITY_REVOKED',
+        ]).then(
+          (value) => ({ value }),
+          (error) => ({ error })
+        );
+        await waitForDatabaseLock(pid);
+        await holder.query(
+          'SELECT pg_sleep(GREATEST(0,EXTRACT(EPOCH FROM ($1::timestamptz-clock_timestamp()))+0.05))',
+          [lease.expires_at]
+        );
+        await holder.query('COMMIT');
+        expect((await pending).error).toMatchObject({
+          message: expect.stringMatching(
+            /LEASE_EXPIRED|exact immutable Phase-A witness and lease/u
+          ),
+        });
+        expect(
+          (
+            await fixture.pool.query(
+              'SELECT count(*)::int AS n FROM public.universal_v1_change_order_recovery_terminal_facts WHERE proposal_id=$1',
+              [lease.proposal_id]
+            )
+          ).rows[0].n
+        ).toBe(0);
+      } finally {
+        await holder.query('ROLLBACK');
+        if (pending) await pending;
+        holder.release();
+      }
+    },
+    60_000
+  );
+
+  it.each(['materialized', 'compensated', 'no_effect'] as const)(
+    'worker change order terminal records %s once and replays after lease expiry',
+    async (kind) => {
+      let lease: pg.QueryResultRow;
+      let evidence: [string | null, string | null];
+      let actorId: string;
+      let adjustmentEventId: string | null = null;
+      if (kind === 'materialized') {
+        const f = await compensationWinnerFixture(5);
+        const completed = await f.setup.changeOrders.finalizePriceAndScopeMaterialization(
+          f.setup.changePhase,
+          f.event.id,
+          f.setup.lane.posterUserId
+        );
+        lease = f.lease;
+        evidence = [completed.amendment_id, f.event.id];
+        adjustmentEventId = f.event.id;
+        actorId = f.setup.lane.posterUserId;
+      } else if (kind === 'compensated') {
+        const f = await workerReversalFixture(5);
+        const prepared = await f.prepare();
+        const requested = await f.requested(prepared.prepared_command);
+        const binding = await f.setup.admit(requested.commandId);
+        await f.setup.executeBinding(binding);
+        const worker = clients.get('workerRole')!;
+        const outcome = (
+          await worker.query(
+            'SELECT * FROM public.hxos_record_fake_financial_outcome_v13($1,$2,$3)',
+            [
+              binding.admission.job_validation_id,
+              binding.workerId,
+              binding.admission.recovery_lease_id,
+            ]
+          )
+        ).rows[0];
+        const event = (
+          await worker.query(
+            'SELECT * FROM public.hxos_materialize_fake_financial_event_v13($1,$2)',
+            [binding.admission.job_validation_id, outcome.outcome_fact.outcome_fact_id]
+          )
+        ).rows[0].financial_event;
+        lease = f.lease;
+        evidence = [f.winner.compensation_command_id, event.id];
+        adjustmentEventId = f.event.id;
+        actorId = f.setup.lane.posterUserId;
+      } else {
+        const setup = await adjustmentWitnessFixture();
+        actorId = setup.lane.posterUserId;
+        await fixture.pool.query('UPDATE public.users SET is_banned=TRUE WHERE id=$1', [actorId]);
+        await fixture.pool.query(
+          'SELECT pg_sleep(GREATEST(0,5.05-EXTRACT(EPOCH FROM (clock_timestamp()-prepared_at)))) FROM public.universal_v1_change_order_materialization_commands WHERE proposal_id=$1',
+          [setup.changePhase.context.proposalId]
+        );
+        lease = (
+          await claimChangeOrderRecovery(clients.get('workerRole')!, undefined, [], 5)
+        ).rows.find((row) => row.proposal_id === setup.changePhase.context.proposalId)!;
+        expect(lease).toBeDefined();
+        evidence = [null, 'CUSTOMER_ACTOR_AUTHORITY_REVOKED'];
+      }
+      // Immutable historical attribution remains valid after participant revocation.
+      await fixture.pool.query('UPDATE public.users SET is_banned=TRUE WHERE id=$1', [actorId]);
+      for (const role of ['apiRole', 'attesterRole'] as const) {
+        await expect(
+          recordChangeOrderTerminal(kind, lease, evidence, clients.get(role)!)
+        ).rejects.toThrow(/permission denied/u);
+      }
+      const typedLease = {
+        proposal_id: lease.proposal_id,
+        recovery_lease_id: lease.recovery_lease_id,
+        lease_owner_id: lease.lease_owner_id,
+        witness_request_sha256: lease.witness_request_sha256,
+        work_order_id: lease.work_order_id,
+        acquired_at: lease.acquired_at.toISOString(),
+        expires_at: lease.expires_at.toISOString(),
+        target_authority_id: lease.target_authority_id,
+        release_manifest_digest: lease.release_manifest_digest,
+      };
+      const input: ChangeOrderTerminalCommand =
+        kind === 'materialized'
+          ? {
+              kind: 'MATERIALIZED',
+              lease: typedLease,
+              actorUserId: actorId,
+              amendmentId: evidence[0]!,
+              adjustmentEventId: adjustmentEventId!,
+            }
+          : kind === 'compensated'
+            ? {
+                kind: 'COMPENSATED',
+                lease: typedLease,
+                actorUserId: actorId,
+                compensationCommandId: evidence[0]!,
+                compensationEventId: evidence[1]!,
+                adjustmentEventId: adjustmentEventId!,
+              }
+            : {
+                kind: 'NO_EFFECT',
+                lease: typedLease,
+                actorUserId: actorId,
+                adjustmentEventId: null,
+                noEffectOutcomeFactId: null,
+                authorityRevocationReason: 'CUSTOMER_ACTOR_AUTHORITY_REVOKED',
+              };
+      const authorize = () => ({
+        databaseName: new URL(fixture.databaseUrl).pathname.slice(1),
+        serviceLogin: roles.workerRole,
+        environment: 'local' as const,
+        manifestDigest: lease.release_manifest_digest,
+        targetDigest: 'sha256:' + 'd'.repeat(64),
+      });
+      const database = preparationDatabase(clients.get('workerRole')!);
+      const lost = new PostgresUniversalV1ChangeOrderRecoveryTerminals(
+        {
+          transaction: async (work) => {
+            await database.transaction(work);
+            throw new Error('TERMINAL_COMMIT_ACKNOWLEDGEMENT_LOST');
+          },
+        },
+        authorize
+      );
+      // Inject loss only after the actual outer COMMIT on the restricted login.
+      await expect(lost.record(input)).rejects.toThrow('TERMINAL_COMMIT_ACKNOWLEDGEMENT_LOST');
+      const result = await recordChangeOrderTerminal(kind, lease, evidence);
+      expect(result.rows).toHaveLength(1);
+      const original = result.rows[0];
+      expect(original).toMatchObject({
+        idempotency_replayed: true,
+        target_authority_id: lease.target_authority_id,
+        release_manifest_digest: lease.release_manifest_digest,
+        terminal_fact: {
+          proposal_id: lease.proposal_id,
+          witness_request_sha256: lease.witness_request_sha256,
+          recovery_lease_id: lease.recovery_lease_id,
+          lease_owner_id: lease.lease_owner_id,
+          recorded_by: actorId,
+          outcome_state: kind === 'materialized' ? 'MATERIALIZED' : 'CANCELLED',
+          recovery_state: kind === 'materialized' ? 'NOT_REQUIRED' : 'RECOVERY_REQUIRED',
+          resolution_evidence_kind:
+            kind === 'materialized'
+              ? 'AMENDMENT'
+              : kind === 'compensated'
+                ? 'REVERSAL'
+                : 'NO_EFFECT',
+          execution_resume_authorized: kind === 'materialized',
+          prior_secured_state_restored: false,
+          capture_resume_authorized: false,
+          payment_creation_performed: false,
+          hard_assignment_created: false,
+        },
+      });
+      await fixture.pool.query(
+        'SELECT pg_sleep(GREATEST(0,EXTRACT(EPOCH FROM ($1::timestamptz-clock_timestamp()))+0.05))',
+        [lease.expires_at]
+      );
+      // Restoring a user cannot change an already committed no-effect decision.
+      await fixture.pool.query('UPDATE public.users SET is_banned=FALSE WHERE id=$1', [actorId]);
+      const replay = await new PostgresUniversalV1ChangeOrderRecoveryTerminals(
+        database,
+        authorize
+      ).record(input);
+      expect(replay.terminalFact).toEqual(original.terminal_fact);
+      expect(replay.idempotencyReplayed).toBe(true);
+      await expect(
+        recordChangeOrderTerminal(kind, lease, [randomUUID(), evidence[1]])
+      ).rejects.toThrow(/CONFLICT|INPUT_INVALID/u);
+      expect(
+        (
+          await fixture.pool.query(
+            'SELECT count(*)::int AS n FROM public.universal_v1_change_order_recovery_terminal_facts WHERE proposal_id=$1',
+            [lease.proposal_id]
+          )
+        ).rows[0].n
+      ).toBe(1);
+      expect((await observeChangeOrderRecovery(lease)).rows).toHaveLength(0);
+    },
+    60_000
+  );
+
   it('worker change order compensation preserves an amendment winner and suppresses terminal lease observation', async () => {
     const { setup, event, lease } = await compensationWinnerFixture();
     const completed = await setup.changeOrders.finalizePriceAndScopeMaterialization(
@@ -4123,7 +4801,7 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
       amendmentId: completed.amendment_id,
       adjustmentEventId: event.id,
     });
-    // Historical terminal setup uses the frozen owner function; the new terminal writer remains pending.
+    // Historical setup intentionally exercises the retained owner-only terminal writer.
     await fixture.pool.query(
       'SELECT * FROM public.record_universal_v1_change_order_materialized_recovery_v1($1,$2,$3,$4,$5)',
       [
@@ -7304,6 +7982,22 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
       resolved.outcome_fact.outcome_fact_id,
     ]);
     // First let the existing rollover fixture lease older queued-only requests.
+    const completedReversal = await completedWorkerReversalFixture();
+    const declinedAdjustment = await adjustmentWitnessFixture();
+    const declineRequest = await declinedAdjustment.requestAdjustment('DECLINE');
+    const declineBinding = await declinedAdjustment.admit(declineRequest.commandId);
+    await declinedAdjustment.executeBinding(declineBinding);
+    const declineOutcome = (
+      await f.worker.query(
+        'SELECT * FROM public.hxos_record_fake_financial_outcome_v13($1,$2,$3)',
+        [
+          declineBinding.admission.job_validation_id,
+          declineBinding.workerId,
+          declineBinding.admission.recovery_lease_id,
+        ]
+      )
+    ).rows[0];
+    const declineLease = await recoveryObservationLease(declinedAdjustment);
     const unpreparedReversal = await workerReversalFixture(),
       preparedReversal = await workerReversalFixture();
     const beforeReversal = await preparedReversal.prepare();
@@ -7338,6 +8032,28 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
         ]
       )
     ).rows[0];
+    const compensated = (
+      await recordChangeOrderTerminal(
+        'compensated',
+        {
+          ...completedReversal.lease,
+          target_authority_id: next.target_authority_id,
+          release_manifest_digest: newRelease,
+        },
+        [completedReversal.winner.compensation_command_id, completedReversal.reversalEvent.id]
+      )
+    ).rows[0];
+    expect(compensated).toMatchObject({
+      target_authority_id: next.target_authority_id,
+      release_manifest_digest: newRelease,
+      terminal_fact: {
+        compensation_command_id: completedReversal.winner.compensation_command_id,
+        compensation_event_id: completedReversal.reversalEvent.id,
+        resolution_evidence_kind: 'REVERSAL',
+        prior_secured_state_restored: false,
+        capture_resume_authorized: false,
+      },
+    });
     // A committed compensation origin survives target succession. A PREPARED record cannot retarget.
     const freshReversalArgs = [...unpreparedReversal.prepareArgs];
     freshReversalArgs[0] = next.target_authority_id;
@@ -7412,5 +8128,50 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
     await expect(reader.read(payload, f.ownerActorId, handle, f.release)).rejects.toThrow(
       'RECEIPT_BINDING_MISMATCH'
     );
-  }, 30_000);
+    // Historical admitted outcomes cannot authorize a different environment.
+    const previewRelease = 'sha256:' + '9'.repeat(64);
+    const preview = (
+      await fixture.pool.query(
+        `INSERT INTO hx_authority.universal_v1_work_order_target_authority_facts
+        (authority_version,target_database_name,environment,release_manifest_sha256,activation_request_sha256,supersedes_target_authority_id)
+       SELECT authority_version+1,current_database(),'preview',$2,$3,target_authority_id
+         FROM hx_authority.universal_v1_work_order_target_authority_facts WHERE target_authority_id=$1
+       RETURNING target_authority_id`,
+        [
+          next.target_authority_id,
+          previewRelease,
+          createHash('sha256').update(randomUUID()).digest('hex'),
+        ]
+      )
+    ).rows[0];
+    await expect(
+      recordChangeOrderTerminal(
+        'no_effect',
+        declineLease,
+        [declineOutcome.outcome_fact.outcome_fact_id, null],
+        f.worker,
+        [
+          preview.target_authority_id,
+          new URL(fixture.databaseUrl).pathname.slice(1),
+          'preview',
+          previewRelease,
+          declineLease.proposal_id,
+          declineLease.recovery_lease_id,
+          declineLease.lease_owner_id,
+          declineLease.witness_request_sha256,
+          declineLease.work_order_id,
+          declineOutcome.outcome_fact.outcome_fact_id,
+          null,
+        ]
+      )
+    ).rejects.toThrow('HISTORICAL_TARGET_MISMATCH');
+    expect(
+      (
+        await fixture.pool.query(
+          'SELECT count(*)::int AS n FROM public.universal_v1_change_order_recovery_terminal_facts WHERE proposal_id=$1',
+          [declineLease.proposal_id]
+        )
+      ).rows[0].n
+    ).toBe(0);
+  }, 60_000);
 });

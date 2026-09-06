@@ -13962,3 +13962,635 @@ DO $worker_reversal_acl$ DECLARE r RECORD; grantee TEXT; BEGIN
     EXECUTE 'REVOKE ALL ON FUNCTION '||r.identity||' FROM '||grantee||' CASCADE';
   END LOOP;
 END $worker_reversal_acl$;
+
+
+-- Exact worker terminal commands retain the immutable recovery relation and its
+-- v7 guard. Replay precedes lease expiry; creation serializes domain and finance.
+CREATE OR REPLACE FUNCTION hx_authority.record_fake_financial_change_order_terminal_v13(
+  p_target_authority_id UUID,p_target_database_name TEXT,
+  p_release_environment TEXT,p_release_manifest_digest TEXT,
+  p_proposal_id UUID,p_recovery_lease_id UUID,p_lease_owner_id UUID,
+  p_witness_request_sha256 TEXT,p_work_order_id UUID,p_kind TEXT,
+  p_amendment_id UUID,p_adjustment_event_id UUID,p_compensation_command_id UUID,
+  p_compensation_event_id UUID,p_no_effect_outcome_fact_id UUID,p_revocation_reason TEXT
+) RETURNS TABLE(terminal_fact JSONB,idempotency_replayed BOOLEAN,observed_at TIMESTAMPTZ,
+  target_authority_id UUID,release_manifest_digest TEXT)
+LANGUAGE plpgsql SECURITY DEFINER VOLATILE PARALLEL UNSAFE SET search_path=pg_catalog AS $$
+DECLARE
+  witness public.universal_v1_change_order_materialization_commands%ROWTYPE;
+  stored public.universal_v1_change_order_recovery_terminal_facts%ROWTYPE;
+  claim public.universal_v1_change_order_compensation_commands%ROWTYPE;
+  origin hx_authority.fake_financial_change_order_compensation_origins_v13%ROWTYPE;
+  provenance hx_authority.fake_financial_change_order_reversal_preparations_v13%ROWTYPE;
+  prepared public.universal_v1_prepared_financial_commands%ROWTYPE;
+  journal public.financial_provider_command_journal%ROWTYPE;
+  no_effect public.financial_provider_command_outcome_facts%ROWTYPE;
+  lease_expires_at TIMESTAMPTZ; adjustment_id UUID; witness_sha TEXT; amendment_sha TEXT;
+  financial RECORD; bridge RECORD; amendment RECORD; execution RECORD;
+  predecessor_execution RECORD; predecessor_amendment RECORD; original_target RECORD;
+  historical_target RECORD; request RECORD; admitted RECORD; effect RECORD; progress JSONB;
+  context RECORD; context_before JSONB; actor_ids UUID[]; pass INTEGER; lock_name TEXT; reason TEXT;
+BEGIN
+  IF pg_catalog.current_setting('transaction_isolation') <> 'read committed' THEN
+    RAISE EXCEPTION 'HXUV1-COTERMINAL-13-READ_COMMITTED_REQUIRED'; END IF;
+  IF p_target_authority_id IS NULL OR p_proposal_id IS NULL OR p_recovery_lease_id IS NULL
+    OR p_lease_owner_id IS NULL OR p_work_order_id IS NULL OR p_witness_request_sha256 IS NULL
+    OR p_witness_request_sha256 !~ '^[0-9a-f]{64}$'
+    OR p_kind IS NULL OR p_kind NOT IN('MATERIALIZED','COMPENSATED','NO_EFFECT')
+    OR (p_kind='MATERIALIZED' AND (p_amendment_id IS NULL OR p_adjustment_event_id IS NULL
+      OR p_compensation_command_id IS NOT NULL OR p_compensation_event_id IS NOT NULL
+      OR p_no_effect_outcome_fact_id IS NOT NULL OR p_revocation_reason IS NOT NULL))
+    OR (p_kind='COMPENSATED' AND (p_compensation_command_id IS NULL OR p_compensation_event_id IS NULL
+      OR p_amendment_id IS NOT NULL OR p_adjustment_event_id IS NOT NULL
+      OR p_no_effect_outcome_fact_id IS NOT NULL OR p_revocation_reason IS NOT NULL))
+    OR (p_kind='NO_EFFECT' AND (p_amendment_id IS NOT NULL OR p_adjustment_event_id IS NOT NULL
+      OR p_compensation_command_id IS NOT NULL OR p_compensation_event_id IS NOT NULL
+      OR ((p_no_effect_outcome_fact_id IS NULL)=(p_revocation_reason IS NULL)))) THEN
+    RAISE EXCEPTION 'HXUV1-COTERMINAL-13-INPUT_INVALID'; END IF;
+  PERFORM hx_authority.assert_fake_financial_outbox_target_v13(
+    p_target_authority_id,p_target_database_name,p_release_environment,p_release_manifest_digest);
+  IF NOT pg_catalog.pg_try_advisory_xact_lock(
+    pg_catalog.hashtextextended('universal-v1-change-order-proposal:'||p_proposal_id::TEXT,0)) THEN
+    RAISE EXCEPTION 'HXUV1-COTERMINAL-13-LOCK_BUSY'; END IF;
+  SELECT * INTO witness FROM public.universal_v1_change_order_materialization_commands c
+    WHERE c.proposal_id=p_proposal_id FOR SHARE NOWAIT;
+  IF witness.proposal_id IS NULL OR witness.work_order_id IS DISTINCT FROM p_work_order_id
+    OR witness.request_sha256 IS DISTINCT FROM p_witness_request_sha256 THEN
+    RAISE EXCEPTION 'HXUV1-COTERMINAL-13-WITNESS_MISMATCH'; END IF;
+  witness_sha:=public.universal_v1_change_order_materialization_request_sha256(
+    witness.proposal_id,witness.idempotency_key,witness.actor_user_id,witness.work_order_id,
+    witness.task_id,witness.task_draft_id,witness.eligibility_decision_id,
+    witness.base_scope_version_id,witness.replacement_scope_version_id,
+    witness.expected_proposal_version,witness.expected_scope_version,witness.expected_amendment_version,
+    witness.expected_execution_version,witness.expected_financial_version,witness.predecessor_event_id,
+    witness.predecessor_operation_id,witness.adjustment_operation_id);
+  IF witness_sha IS DISTINCT FROM p_witness_request_sha256 THEN
+    RAISE EXCEPTION 'HXUV1-COTERMINAL-13-WITNESS_MISMATCH'; END IF;
+  SELECT l.expires_at INTO lease_expires_at FROM public.universal_v1_change_order_recovery_leases l
+    WHERE l.proposal_id=p_proposal_id AND l.recovery_lease_id=p_recovery_lease_id
+      AND l.lease_owner_id=p_lease_owner_id FOR SHARE NOWAIT;
+  IF lease_expires_at IS NULL THEN RAISE EXCEPTION 'HXUV1-COTERMINAL-13-LEASE_MISMATCH'; END IF;
+  IF NOT pg_catalog.pg_try_advisory_xact_lock(
+    pg_catalog.hashtextextended('fulfillment:'||p_work_order_id::TEXT,0)) THEN
+    RAISE EXCEPTION 'HXUV1-COTERMINAL-13-LOCK_BUSY'; END IF;
+  SELECT * INTO stored FROM public.universal_v1_change_order_recovery_terminal_facts t
+    WHERE t.proposal_id=p_proposal_id;
+  IF stored.terminal_fact_id IS NOT NULL THEN
+    IF stored.terminal_fact_id IS DISTINCT FROM public.universal_v1_change_order_recovery_uuid_v1(witness.idempotency_key,'terminal-fact')
+      OR stored.witness_request_sha256 IS DISTINCT FROM p_witness_request_sha256
+      OR stored.recovery_lease_id IS DISTINCT FROM p_recovery_lease_id OR stored.lease_owner_id IS DISTINCT FROM p_lease_owner_id
+      OR stored.recorded_by IS DISTINCT FROM witness.actor_user_id
+      OR stored.prior_secured_state_restored IS DISTINCT FROM FALSE
+      OR stored.capture_resume_authorized IS DISTINCT FROM FALSE
+      OR stored.payment_creation_performed IS DISTINCT FROM FALSE OR stored.hard_assignment_created IS DISTINCT FROM FALSE
+      OR stored.amendment_id IS DISTINCT FROM p_amendment_id
+      OR stored.compensation_command_id IS DISTINCT FROM p_compensation_command_id
+      OR stored.compensation_event_id IS DISTINCT FROM p_compensation_event_id
+      OR stored.no_effect_outcome_fact_id IS DISTINCT FROM p_no_effect_outcome_fact_id
+      OR stored.authority_revocation_reason IS DISTINCT FROM p_revocation_reason
+      OR stored.outcome_state IS DISTINCT FROM (CASE WHEN p_kind='MATERIALIZED' THEN 'MATERIALIZED' ELSE 'CANCELLED' END)
+      OR stored.recovery_state IS DISTINCT FROM (CASE WHEN p_kind='MATERIALIZED' THEN 'NOT_REQUIRED' ELSE 'RECOVERY_REQUIRED' END)
+      OR stored.resolution_evidence_kind IS DISTINCT FROM (CASE p_kind WHEN 'MATERIALIZED' THEN 'AMENDMENT' WHEN 'COMPENSATED' THEN 'REVERSAL' ELSE 'NO_EFFECT' END)
+      OR stored.hold_clearance_kind IS DISTINCT FROM (CASE WHEN p_kind='MATERIALIZED' THEN 'EXACT_AMENDMENT' ELSE 'BOUNDED_CANCELLATION_RECOVERY' END)
+      OR stored.execution_resume_authorized IS DISTINCT FROM (p_kind='MATERIALIZED')
+      OR (p_kind='MATERIALIZED' AND stored.adjustment_event_id IS DISTINCT FROM p_adjustment_event_id) THEN
+      RAISE EXCEPTION 'HXUV1-COTERMINAL-13-IDEMPOTENCY_CONFLICT'; END IF;
+    RETURN QUERY SELECT pg_catalog.to_jsonb(stored),TRUE,pg_catalog.clock_timestamp(),p_target_authority_id,p_release_manifest_digest;
+    RETURN;
+  END IF;
+  IF lease_expires_at<=pg_catalog.clock_timestamp() THEN RAISE EXCEPTION 'HXUV1-COTERMINAL-13-LEASE_EXPIRED'; END IF;
+  -- Lock the historical FK actor without reauthorizing that participant.
+  PERFORM 1 FROM public.users WHERE id=witness.actor_user_id FOR KEY SHARE NOWAIT;
+  -- The current REQUESTED writer takes these keys before target acquisition.
+  -- Try-locking avoids inversion and excludes its uncommitted journal rows.
+  FOR lock_name IN SELECT value FROM pg_catalog.unnest(ARRAY[
+    'idempotency:'||witness.idempotency_key||':adjust',
+    'operation-version:FAKE:ADJUST:'||witness.adjustment_operation_id::TEXT||':0'
+  ]) locks(value) ORDER BY value COLLATE "C" LOOP
+    IF NOT pg_catalog.pg_try_advisory_xact_lock(pg_catalog.hashtext('financial-provider-command-journal-v1'),pg_catalog.hashtext(lock_name)) THEN
+      RAISE EXCEPTION 'HXUV1-COTERMINAL-13-LOCK_BUSY'; END IF;
+  END LOOP;
+  SELECT * INTO journal FROM public.financial_provider_command_journal c
+    WHERE c.operation_kind='ADJUST' AND c.operation_id=witness.adjustment_operation_id AND c.provider_kind='FAKE'
+      AND c.provider_expected_version=0 FOR SHARE NOWAIT;
+  IF NOT pg_catalog.pg_try_advisory_xact_lock(pg_catalog.hashtext('fake-financial-operation'),pg_catalog.hashtext(witness.adjustment_operation_id::TEXT))
+    OR (journal.command_id IS NOT NULL AND NOT pg_catalog.pg_try_advisory_xact_lock(
+      pg_catalog.hashtext('financial-provider-command-recovery-v1'),pg_catalog.hashtext(journal.command_id::TEXT))) THEN
+    RAISE EXCEPTION 'HXUV1-COTERMINAL-13-LOCK_BUSY'; END IF;
+  IF p_kind='COMPENSATED' THEN
+    SELECT * INTO claim FROM public.universal_v1_change_order_compensation_commands c
+      WHERE c.compensation_command_id=p_compensation_command_id FOR SHARE NOWAIT;
+    adjustment_id:=claim.adjustment_event_id;
+  ELSE adjustment_id:=p_adjustment_event_id;
+  END IF;
+  IF p_kind IN('MATERIALIZED','COMPENSATED') THEN
+    SELECT * INTO financial FROM public.task_financial_security_events f WHERE f.id=adjustment_id FOR SHARE NOWAIT;
+    SELECT * INTO bridge FROM public.universal_v1_fake_financial_lifecycle_bridges b WHERE b.task_financial_security_event_id=adjustment_id;
+    IF financial.id IS NULL OR bridge.bridge_id IS NULL OR bridge.command_id IS NULL
+     OR financial.operation_id IS DISTINCT FROM witness.adjustment_operation_id::TEXT
+     OR financial.idempotency_key IS DISTINCT FROM witness.idempotency_key||':adjust'
+     OR financial.event_kind IS DISTINCT FROM 'ADJUSTMENT_AUTHORIZED' OR financial.status IS DISTINCT FROM 'SUCCEEDED'
+     OR financial.provider_kind IS DISTINCT FROM 'FAKE' OR financial.recorded_by IS DISTINCT FROM witness.actor_user_id
+     OR financial.task_draft_id IS DISTINCT FROM witness.task_draft_id OR financial.task_id IS DISTINCT FROM witness.task_id
+     OR financial.eligibility_decision_id IS DISTINCT FROM witness.eligibility_decision_id
+     OR financial.scope_version_id IS DISTINCT FROM witness.replacement_scope_version_id
+     OR financial.change_order_id IS DISTINCT FROM witness.proposal_id
+     OR financial.predecessor_event_id IS DISTINCT FROM witness.predecessor_event_id
+     OR financial.expected_version::BIGINT IS DISTINCT FROM witness.expected_financial_version::BIGINT+1
+     OR financial.amount_cents IS DISTINCT FROM witness.customer_total_cents OR financial.currency IS DISTINCT FROM witness.currency
+     OR bridge.fake_operation_id IS DISTINCT FROM witness.adjustment_operation_id
+     OR bridge.fake_operation_kind IS DISTINCT FROM 'ADJUST'
+     OR bridge.lifecycle_event_kind IS DISTINCT FROM 'ADJUSTMENT_AUTHORIZED' OR bridge.lifecycle_status IS DISTINCT FROM 'SUCCEEDED' THEN
+    RAISE EXCEPTION 'HXUV1-COTERMINAL-13-ADJUSTMENT_MISMATCH'; END IF;
+  END IF;
+  IF p_kind='MATERIALIZED' THEN
+    SELECT a.id,a.work_order_id,a.amendment_version,a.supersedes_amendment_id,a.change_order_id,a.scope_version_id,
+      a.adjustment_event_id,a.expected_financial_version,a.idempotency_key,a.request_sha256,a.materialized_by
+      INTO amendment FROM public.task_work_order_amendments a WHERE a.id=p_amendment_id FOR SHARE NOWAIT;
+    IF amendment.id IS NULL OR EXISTS(SELECT 1 FROM public.universal_v1_change_order_compensation_commands c WHERE c.proposal_id=p_proposal_id) THEN
+      RAISE EXCEPTION 'HXUV1-COTERMINAL-13-AMENDMENT_MISMATCH'; END IF;
+    SELECT e.id,e.work_order_id,e.task_id,e.scope_version_id,e.execution_version,e.supersedes_fact_id,e.state,
+      e.transition_kind,e.completion_fact_id,e.work_order_amendment_id,e.actor_role,e.actor_user_id,e.reason,
+      e.idempotency_key,e.request_sha256,e.client_occurred_at,e.policy_version
+      INTO execution FROM public.task_work_order_execution_facts e
+      WHERE e.work_order_amendment_id=amendment.id AND e.transition_kind='APPLY_AMENDMENT';
+    SELECT e.id,e.work_order_id,e.task_id,e.scope_version_id,e.execution_version,e.state
+      INTO predecessor_execution FROM public.task_work_order_execution_facts e WHERE e.id=execution.supersedes_fact_id;
+    SELECT a.id,a.work_order_id,a.amendment_version,a.scope_version_id
+      INTO predecessor_amendment FROM public.task_work_order_amendments a WHERE a.id=amendment.supersedes_amendment_id;
+    amendment_sha:=public.universal_v1_change_amendment_request_sha256(
+      witness.work_order_id,witness.expected_amendment_version+1,amendment.supersedes_amendment_id,
+      witness.proposal_id,witness.replacement_scope_version_id,adjustment_id,witness.expected_financial_version,
+      witness.actor_user_id,witness.idempotency_key);
+    IF amendment.work_order_id IS DISTINCT FROM witness.work_order_id OR amendment.change_order_id IS DISTINCT FROM witness.proposal_id
+       OR amendment.amendment_version::BIGINT IS DISTINCT FROM witness.expected_amendment_version::BIGINT+1
+       OR amendment.scope_version_id IS DISTINCT FROM witness.replacement_scope_version_id
+       OR amendment.adjustment_event_id IS DISTINCT FROM adjustment_id
+       OR amendment.expected_financial_version IS DISTINCT FROM witness.expected_financial_version
+       OR amendment.idempotency_key IS DISTINCT FROM witness.idempotency_key OR amendment.materialized_by IS DISTINCT FROM witness.actor_user_id
+       OR amendment.request_sha256 IS DISTINCT FROM amendment_sha
+       OR (witness.expected_amendment_version=0 AND amendment.supersedes_amendment_id IS NOT NULL)
+       OR (witness.expected_amendment_version>0 AND (predecessor_amendment.id IS NULL
+         OR predecessor_amendment.work_order_id IS DISTINCT FROM witness.work_order_id
+         OR predecessor_amendment.amendment_version IS DISTINCT FROM witness.expected_amendment_version
+         OR predecessor_amendment.scope_version_id IS DISTINCT FROM witness.base_scope_version_id))
+       OR execution.id IS NULL OR execution.work_order_id IS DISTINCT FROM witness.work_order_id
+       OR execution.task_id IS DISTINCT FROM witness.task_id OR execution.scope_version_id IS DISTINCT FROM witness.replacement_scope_version_id
+       OR execution.execution_version::BIGINT IS DISTINCT FROM witness.expected_execution_version::BIGINT+1
+       OR execution.actor_user_id IS DISTINCT FROM witness.actor_user_id OR execution.actor_role IS DISTINCT FROM 'CUSTOMER'
+       OR execution.idempotency_key IS DISTINCT FROM witness.idempotency_key||':execution'
+       OR execution.completion_fact_id IS NOT NULL OR execution.reason IS NOT NULL
+       OR execution.policy_version IS DISTINCT FROM 'universal-v1-work-order-execution-1.0.0'
+       OR predecessor_execution.id IS NULL OR predecessor_execution.work_order_id IS DISTINCT FROM witness.work_order_id
+       OR predecessor_execution.task_id IS DISTINCT FROM witness.task_id
+       OR predecessor_execution.scope_version_id IS DISTINCT FROM witness.base_scope_version_id
+       OR predecessor_execution.execution_version IS DISTINCT FROM witness.expected_execution_version
+       OR execution.state IS DISTINCT FROM predecessor_execution.state
+       OR predecessor_execution.state NOT IN ('MATERIALIZED','ACKNOWLEDGED','EN_ROUTE','ARRIVED','PAUSED')
+       OR execution.request_sha256 IS DISTINCT FROM public.universal_v1_execution_internal_request_sha256(
+         witness.actor_user_id,witness.work_order_id,'APPLY_AMENDMENT',execution.state,witness.expected_execution_version,
+         witness.replacement_scope_version_id,NULL,amendment.id,witness.idempotency_key||':execution',
+         execution.client_occurred_at,NULL) THEN
+      RAISE EXCEPTION 'HXUV1-COTERMINAL-13-AMENDMENT_MISMATCH';
+    END IF;
+  ELSIF p_kind='COMPENSATED' THEN
+    SELECT * INTO origin FROM hx_authority.fake_financial_change_order_compensation_origins_v13 WHERE compensation_command_id=p_compensation_command_id;
+    SELECT * INTO original_target FROM hx_authority.universal_v1_work_order_target_authority_facts t WHERE t.target_authority_id=origin.target_authority_id;
+    SELECT * INTO prepared FROM public.universal_v1_prepared_financial_commands c
+      WHERE c.operation_kind='REVERSAL' AND c.operation_id=claim.reversal_operation_id AND c.provider_kind='FAKE'
+        AND c.provider_expected_version=0 FOR SHARE NOWAIT;
+    SELECT * INTO provenance FROM hx_authority.fake_financial_change_order_reversal_preparations_v13 WHERE prepared_command_id=prepared.prepared_command_id;
+    SELECT * INTO request FROM hx_authority.fake_financial_command_outbox_requests_v13 r WHERE r.prepared_command_id=prepared.prepared_command_id;
+    SELECT * INTO historical_target FROM hx_authority.universal_v1_work_order_target_authority_facts t WHERE t.target_authority_id=request.target_authority_id;
+    IF claim.compensation_command_id IS NULL OR origin.compensation_command_id IS NULL OR witness.proposal_id IS NULL
+    OR claim.proposal_id IS DISTINCT FROM witness.proposal_id
+    OR origin.proposal_id IS DISTINCT FROM claim.proposal_id OR origin.recovery_lease_id IS DISTINCT FROM claim.recovery_lease_id
+    OR origin.lease_owner_id IS DISTINCT FROM claim.lease_owner_id OR origin.witness_request_sha256 IS DISTINCT FROM claim.witness_request_sha256
+    OR origin.adjustment_event_id IS DISTINCT FROM claim.adjustment_event_id OR origin.revocation_reason IS DISTINCT FROM claim.authority_revocation_reason
+    OR original_target.target_database_name IS DISTINCT FROM pg_catalog.current_database()
+    OR original_target.environment IS DISTINCT FROM p_release_environment OR origin.release_environment IS DISTINCT FROM p_release_environment
+    OR origin.release_manifest_digest IS DISTINCT FROM original_target.release_manifest_sha256
+    OR NOT EXISTS(WITH RECURSIVE ancestry AS (
+      SELECT t.target_authority_id,t.supersedes_target_authority_id FROM hx_authority.universal_v1_work_order_target_authority_facts t WHERE t.target_authority_id=p_target_authority_id
+      UNION SELECT t.target_authority_id,t.supersedes_target_authority_id FROM hx_authority.universal_v1_work_order_target_authority_facts t JOIN ancestry a ON t.target_authority_id=a.supersedes_target_authority_id
+    ) SELECT 1 FROM ancestry a WHERE a.target_authority_id=origin.target_authority_id)
+    OR claim.compensation_command_id IS DISTINCT FROM public.universal_v1_change_order_recovery_uuid_v1(witness.idempotency_key,'compensation-command')
+    OR claim.reversal_operation_id IS DISTINCT FROM public.universal_v1_change_order_recovery_uuid_v1(witness.idempotency_key,'compensating-reversal')
+    OR claim.reversal_idempotency_key IS DISTINCT FROM witness.idempotency_key||':recovery:reversal'
+    OR claim.witness_request_sha256 IS DISTINCT FROM pg_catalog.btrim(witness.request_sha256)
+    OR claim.task_draft_id IS DISTINCT FROM witness.task_draft_id OR claim.task_id IS DISTINCT FROM witness.task_id
+    OR claim.work_order_id IS DISTINCT FROM witness.work_order_id OR claim.eligibility_decision_id IS DISTINCT FROM witness.eligibility_decision_id
+    OR claim.base_scope_version_id IS DISTINCT FROM witness.base_scope_version_id OR claim.adjustment_operation_id IS DISTINCT FROM witness.adjustment_operation_id
+    OR claim.lifecycle_expected_version::BIGINT IS DISTINCT FROM witness.expected_financial_version::BIGINT+2
+    OR claim.amount_cents IS DISTINCT FROM witness.customer_total_cents OR claim.currency IS DISTINCT FROM witness.currency
+    OR claim.requested_by IS DISTINCT FROM witness.actor_user_id OR claim.reason_code IS DISTINCT FROM 'FINALIZATION_AUTHORITY_REVOKED'
+    OR claim.semantic_limitation IS DISTINCT FROM 'PRIOR_SECURED_STATE_NOT_RESTORED' THEN
+    RAISE EXCEPTION 'HXUV1-COTERMINAL-13-ORIGIN_IDENTITY_INVALID'; END IF;
+    IF provenance.prepared_command_id IS NULL OR prepared.prepared_command_id IS NULL
+      OR provenance.compensation_command_id IS DISTINCT FROM claim.compensation_command_id
+      OR provenance.target_authority_id IS DISTINCT FROM request.target_authority_id OR provenance.release_manifest_sha256 IS DISTINCT FROM request.release_manifest_digest
+      OR prepared.command_state IS DISTINCT FROM 'PREPARED' OR prepared.provider_kind IS DISTINCT FROM 'FAKE'
+      OR prepared.operation_kind IS DISTINCT FROM 'REVERSAL' OR prepared.operation_id IS DISTINCT FROM claim.reversal_operation_id
+      OR prepared.idempotency_key IS DISTINCT FROM claim.reversal_idempotency_key OR prepared.provider_expected_version IS DISTINCT FROM 0::BIGINT
+      OR prepared.task_draft_id IS DISTINCT FROM claim.task_draft_id OR prepared.task_id IS DISTINCT FROM claim.task_id
+      OR prepared.work_order_id IS DISTINCT FROM claim.work_order_id OR prepared.eligibility_decision_id IS DISTINCT FROM claim.eligibility_decision_id
+      OR prepared.scope_version_id IS DISTINCT FROM claim.base_scope_version_id OR prepared.change_order_id IS NOT NULL OR prepared.completion_fact_id IS NOT NULL
+      OR prepared.predecessor_event_id IS DISTINCT FROM claim.adjustment_event_id OR prepared.related_operation_id IS DISTINCT FROM claim.adjustment_operation_id
+      OR prepared.lifecycle_expected_version IS DISTINCT FROM claim.lifecycle_expected_version
+      OR prepared.amount_cents IS DISTINCT FROM claim.amount_cents OR prepared.currency IS DISTINCT FROM claim.currency
+      OR prepared.recorded_by IS DISTINCT FROM claim.requested_by
+      OR provenance.provider_request_sha256 IS DISTINCT FROM pg_catalog.btrim(prepared.provider_request_sha256)
+      OR provenance.prepared_authority_sha256 IS DISTINCT FROM pg_catalog.btrim(prepared.authority_context_sha256) THEN
+      RAISE EXCEPTION 'HXUV1-COTERMINAL-13-PREPARATION_IDENTITY_INVALID'; END IF;
+    IF request.outbox_request_id IS NULL OR historical_target.target_database_name IS DISTINCT FROM p_target_database_name
+      OR historical_target.environment IS DISTINCT FROM p_release_environment
+      OR NOT EXISTS(WITH RECURSIVE ancestry AS (
+        SELECT t.target_authority_id,t.supersedes_target_authority_id FROM hx_authority.universal_v1_work_order_target_authority_facts t WHERE t.target_authority_id=request.target_authority_id
+        UNION SELECT t.target_authority_id,t.supersedes_target_authority_id FROM hx_authority.universal_v1_work_order_target_authority_facts t JOIN ancestry a ON t.target_authority_id=a.supersedes_target_authority_id
+      ) SELECT 1 FROM ancestry a WHERE a.target_authority_id=origin.target_authority_id)
+      OR EXISTS(SELECT 1 FROM public.task_work_order_amendments a WHERE a.change_order_id=p_proposal_id) THEN
+      RAISE EXCEPTION 'HXUV1-COTERMINAL-13-COMPENSATION_MISMATCH'; END IF;
+    PERFORM 1 FROM public.task_financial_security_events f WHERE f.id=p_compensation_event_id FOR SHARE NOWAIT;
+  ELSE
+    IF EXISTS(SELECT 1 FROM public.task_work_order_amendments a WHERE a.change_order_id=p_proposal_id)
+      OR EXISTS(SELECT 1 FROM public.universal_v1_change_order_compensation_commands c WHERE c.proposal_id=p_proposal_id) THEN
+      RAISE EXCEPTION 'HXUV1-COTERMINAL-13-NO_EFFECT_WINNER_CONFLICT'; END IF;
+    IF p_no_effect_outcome_fact_id IS NOT NULL THEN
+      SELECT * INTO no_effect FROM public.financial_provider_command_outcome_facts o
+        WHERE o.outcome_fact_id=p_no_effect_outcome_fact_id FOR SHARE NOWAIT;
+      SELECT * INTO prepared FROM public.universal_v1_prepared_financial_commands c
+        WHERE c.prepared_command_id=journal.prepared_financial_command_id FOR SHARE NOWAIT;
+      SELECT * INTO request FROM hx_authority.fake_financial_command_outbox_requests_v13 r WHERE r.command_id=journal.command_id;
+      IF no_effect.outcome_fact_id IS NULL OR journal.command_id IS NULL OR prepared.prepared_command_id IS NULL
+        OR no_effect.command_id IS DISTINCT FROM journal.command_id OR request.outbox_request_id IS NULL
+        OR no_effect.effect_certainty IS DISTINCT FROM 'CONFIRMED_NO_EFFECT' OR no_effect.retryable IS DISTINCT FROM FALSE
+        OR NOT(no_effect.outcome_kind='FAILED' OR (no_effect.outcome_kind='OUTCOME_OBSERVED' AND no_effect.provider_state IN('DECLINED','FAILED'))) THEN
+        RAISE EXCEPTION 'HXUV1-COTERMINAL-13-ADMITTED_NO_EFFECT_REQUIRED'; END IF;
+      IF request.target_database_name IS DISTINCT FROM p_target_database_name OR request.release_environment IS DISTINCT FROM p_release_environment
+        OR NOT EXISTS(WITH RECURSIVE ancestry AS (
+          SELECT t.target_authority_id,t.supersedes_target_authority_id FROM hx_authority.universal_v1_work_order_target_authority_facts t WHERE t.target_authority_id=p_target_authority_id
+          UNION SELECT t.target_authority_id,t.supersedes_target_authority_id FROM hx_authority.universal_v1_work_order_target_authority_facts t JOIN ancestry a ON t.target_authority_id=a.supersedes_target_authority_id
+        ) SELECT 1 FROM ancestry a WHERE a.target_authority_id=request.target_authority_id) THEN
+        RAISE EXCEPTION 'HXUV1-COTERMINAL-13-HISTORICAL_TARGET_MISMATCH'; END IF;
+      SELECT * INTO admitted FROM public.hxos_read_fake_financial_progress_v13(request.outbox_request_id,request.bullmq_job_id,request.job_authority_sha256);
+      IF admitted.recorded_outcome#>>'{outcome_fact,outcome_fact_id}' IS DISTINCT FROM p_no_effect_outcome_fact_id::TEXT
+        OR admitted.recovery_evidence->'admission_evidence' IS NULL
+        OR admitted.recovery_evidence#>>'{request_evidence,command_id}' IS DISTINCT FROM journal.command_id::TEXT THEN
+        RAISE EXCEPTION 'HXUV1-COTERMINAL-13-ADMITTED_NO_EFFECT_REQUIRED'; END IF;
+    ELSE
+      FOR pass IN 0..1 LOOP
+        SELECT t.poster_id,t.business_organization_id AS customer_organization_id,
+          w.provider_user_id,w.provider_organization_id,e.trade_credential_id,
+          ca.actor_id AS customer_approval_actor_id,pa.actor_id AS provider_approval_actor_id INTO context
+        FROM public.tasks t
+        JOIN public.task_drafts d ON d.id=witness.task_draft_id AND d.task_id=t.id
+        JOIN public.task_work_orders w ON w.id=witness.work_order_id AND w.task_id=t.id
+          AND w.task_draft_id=d.id AND w.eligibility_decision_id=witness.eligibility_decision_id
+        JOIN public.task_provider_eligibility_decisions e ON e.id=witness.eligibility_decision_id
+        LEFT JOIN public.task_scope_change_approvals ca ON ca.proposal_id=p_proposal_id AND ca.approver_role='CUSTOMER'
+        LEFT JOIN public.task_scope_change_approvals pa ON pa.proposal_id=p_proposal_id AND pa.approver_role='PROVIDER'
+        WHERE t.id=witness.task_id AND t.work_order_id=w.id AND t.active_scope_version_id=witness.base_scope_version_id
+          AND t.universal_contract_version=1 AND t.automation_classification='CONTROLLED_TEST'
+          AND t.universal_payment_posture='PAYMENT_CREATION_FROZEN' AND t.worker_id IS NULL
+          AND d.poster_user_id=t.poster_id AND d.claimed_at IS NOT NULL
+          AND d.universal_contract_version=1 AND d.ingress_origin='BACKEND_POSTGRESQL';
+        IF NOT FOUND THEN RAISE EXCEPTION 'HXUV1-COTERMINAL-13-CONTEXT_MISMATCH'; END IF;
+        IF pass=1 THEN
+          IF pg_catalog.to_jsonb(context) IS DISTINCT FROM context_before THEN
+            RAISE EXCEPTION 'HXUV1-COTERMINAL-13-DEPENDENCY_CHANGED'; END IF;
+          EXIT;
+        END IF;
+        context_before:=pg_catalog.to_jsonb(context);
+        PERFORM 1 FROM public.task_work_orders WHERE id=witness.work_order_id FOR UPDATE NOWAIT;
+        PERFORM 1 FROM public.tasks WHERE id=witness.task_id FOR UPDATE NOWAIT;
+        PERFORM 1 FROM public.task_drafts WHERE id=witness.task_draft_id FOR SHARE NOWAIT;
+        PERFORM 1 FROM public.task_scope_change_proposals WHERE id=p_proposal_id FOR UPDATE NOWAIT;
+        PERFORM 1 FROM public.task_provider_eligibility_decisions WHERE id=witness.eligibility_decision_id FOR SHARE NOWAIT;
+        PERFORM 1 FROM public.task_scope_versions WHERE id IN(witness.base_scope_version_id,witness.replacement_scope_version_id)
+          ORDER BY id FOR SHARE NOWAIT;
+        PERFORM 1 FROM public.task_scope_change_approvals WHERE proposal_id=p_proposal_id ORDER BY id FOR SHARE NOWAIT;
+        SELECT pg_catalog.array_agg(id ORDER BY id) INTO actor_ids FROM (
+          SELECT witness.actor_user_id AS id UNION SELECT context.poster_id UNION SELECT context.provider_user_id
+          UNION SELECT context.customer_approval_actor_id UNION SELECT context.provider_approval_actor_id
+        ) actors WHERE id IS NOT NULL;
+        -- UPDATE blocks users FK KEY SHARE for newly inserted memberships.
+        PERFORM 1 FROM public.users WHERE id=ANY(actor_ids) ORDER BY id FOR UPDATE NOWAIT;
+        PERFORM 1 FROM public.business_organizations WHERE id IN(context.customer_organization_id,context.provider_organization_id)
+          ORDER BY id FOR SHARE NOWAIT;
+        PERFORM 1 FROM public.business_memberships
+          WHERE organization_id IN(context.customer_organization_id,context.provider_organization_id) AND user_id=ANY(actor_ids)
+          ORDER BY organization_id,user_id,id FOR SHARE NOWAIT;
+        PERFORM 1 FROM public.capability_profiles WHERE user_id=context.provider_user_id ORDER BY user_id FOR SHARE NOWAIT;
+        PERFORM 1 FROM public.business_credentials WHERE id=context.trade_credential_id FOR SHARE NOWAIT;
+        PERFORM 1 FROM public.verified_trades WHERE user_id=context.provider_user_id
+          AND provider_organization_id IS NOT DISTINCT FROM context.provider_organization_id
+          AND business_credential_id IS NOT DISTINCT FROM context.trade_credential_id ORDER BY user_id,trade FOR SHARE NOWAIT;
+      END LOOP;
+      reason:=public.universal_v1_change_order_recovery_revocation_reason_v1(p_proposal_id);
+      IF reason IS NULL OR reason IS DISTINCT FROM p_revocation_reason
+        OR reason IN('AMENDMENT_CHAIN_CHANGED','FINANCIAL_CHAIN_CHANGED','WORK_ORDER_TERMINALIZED')
+        OR EXISTS(SELECT 1 FROM public.financial_provider_command_dispatch_attempts a WHERE a.command_id=journal.command_id)
+        OR EXISTS(SELECT 1 FROM public.task_financial_security_events f WHERE f.operation_id=witness.adjustment_operation_id::TEXT OR f.idempotency_key=witness.idempotency_key||':adjust')
+        OR EXISTS(SELECT 1 FROM public.hxos_fake_financial_operations_v1 f WHERE f.operation_id=witness.adjustment_operation_id)
+        OR EXISTS(SELECT 1 FROM public.hxos_fake_financial_operation_events_v1 f WHERE f.operation_id=witness.adjustment_operation_id OR f.idempotency_key=witness.idempotency_key||':adjust') THEN
+        RAISE EXCEPTION 'HXUV1-COTERMINAL-13-NO_DISPATCH_REVOCATION_REQUIRED'; END IF;
+    END IF;
+  END IF;
+  -- Public progress authenticates committed request/admission/outcome and exact
+  -- bridge bytes. Historical execution targets must precede this current writer.
+  FOR effect IN
+    SELECT journal.command_id AS command_id,witness.adjustment_operation_id AS operation_id,
+      'ADJUST'::TEXT AS operation_kind,adjustment_id AS event_id,'ADJUSTMENT_AUTHORIZED'::TEXT AS event_kind
+      WHERE p_kind IN('MATERIALIZED','COMPENSATED')
+    UNION ALL SELECT r.command_id,claim.reversal_operation_id,'REVERSAL',p_compensation_event_id,'REVERSED'
+      FROM hx_authority.fake_financial_command_outbox_requests_v13 r
+      WHERE p_kind='COMPENSATED' AND r.prepared_command_id=prepared.prepared_command_id
+  LOOP
+    IF effect.command_id IS NULL THEN RAISE EXCEPTION 'HXUV1-COTERMINAL-13-ADMITTED_EFFECT_REQUIRED'; END IF;
+    IF NOT pg_catalog.pg_try_advisory_xact_lock(pg_catalog.hashtext('financial-provider-command-recovery-v1'),pg_catalog.hashtext(effect.command_id::TEXT))
+      OR NOT pg_catalog.pg_try_advisory_xact_lock(pg_catalog.hashtext('fake-financial-operation'),pg_catalog.hashtext(effect.operation_id::TEXT)) THEN
+      RAISE EXCEPTION 'HXUV1-COTERMINAL-13-LOCK_BUSY'; END IF;
+    SELECT * INTO request FROM hx_authority.fake_financial_command_outbox_requests_v13 r WHERE r.command_id=effect.command_id;
+    IF request.target_database_name IS DISTINCT FROM p_target_database_name OR request.release_environment IS DISTINCT FROM p_release_environment
+      OR NOT EXISTS(WITH RECURSIVE ancestry AS (
+        SELECT t.target_authority_id,t.supersedes_target_authority_id FROM hx_authority.universal_v1_work_order_target_authority_facts t WHERE t.target_authority_id=p_target_authority_id
+        UNION SELECT t.target_authority_id,t.supersedes_target_authority_id FROM hx_authority.universal_v1_work_order_target_authority_facts t JOIN ancestry a ON t.target_authority_id=a.supersedes_target_authority_id
+      ) SELECT 1 FROM ancestry a WHERE a.target_authority_id=request.target_authority_id) THEN
+      RAISE EXCEPTION 'HXUV1-COTERMINAL-13-HISTORICAL_TARGET_MISMATCH'; END IF;
+    progress:=hx_authority.read_fake_financial_public_progress_v13(effect.command_id);
+    IF progress IS NULL OR progress->>'commandId' IS DISTINCT FROM effect.command_id::TEXT
+      OR progress->>'operationId' IS DISTINCT FROM effect.operation_id::TEXT OR progress->>'operationKind' IS DISTINCT FROM effect.operation_kind
+      OR progress->>'ownerActorId' IS DISTINCT FROM witness.actor_user_id::TEXT OR progress->>'environment' IS DISTINCT FROM p_release_environment
+      OR progress->>'taskDraftId' IS DISTINCT FROM witness.task_draft_id::TEXT OR progress->>'taskId' IS DISTINCT FROM witness.task_id::TEXT
+      OR progress->>'progressState' IS DISTINCT FROM 'MATERIALIZED'
+      OR progress->'financialEvent' IS DISTINCT FROM pg_catalog.jsonb_build_object('id',effect.event_id,'eventKind',effect.event_kind,'status','SUCCEEDED') THEN
+      RAISE EXCEPTION 'HXUV1-COTERMINAL-13-ADMITTED_EFFECT_REQUIRED'; END IF;
+  END LOOP;
+  INSERT INTO public.universal_v1_change_order_recovery_terminal_facts(
+    proposal_id,witness_request_sha256,recovery_lease_id,lease_owner_id,outcome_state,recovery_state,
+    amendment_id,adjustment_event_id,compensation_command_id,compensation_event_id,no_effect_outcome_fact_id,
+    authority_revocation_reason,hold_clearance_kind,execution_resume_authorized,recorded_by
+  ) VALUES(p_proposal_id,p_witness_request_sha256,p_recovery_lease_id,p_lease_owner_id,
+    CASE WHEN p_kind='MATERIALIZED' THEN 'MATERIALIZED' ELSE 'CANCELLED' END,
+    CASE WHEN p_kind='MATERIALIZED' THEN 'NOT_REQUIRED' ELSE 'RECOVERY_REQUIRED' END,
+    p_amendment_id,adjustment_id,p_compensation_command_id,p_compensation_event_id,p_no_effect_outcome_fact_id,
+    p_revocation_reason,CASE WHEN p_kind='MATERIALIZED' THEN 'EXACT_AMENDMENT' ELSE 'BOUNDED_CANCELLATION_RECOVERY' END,
+    p_kind='MATERIALIZED',witness.actor_user_id) RETURNING * INTO stored;
+  IF lease_expires_at<=pg_catalog.clock_timestamp() THEN RAISE EXCEPTION 'HXUV1-COTERMINAL-13-LEASE_EXPIRED'; END IF;
+  RETURN QUERY SELECT pg_catalog.to_jsonb(stored),FALSE,pg_catalog.clock_timestamp(),p_target_authority_id,p_release_manifest_digest;
+EXCEPTION WHEN lock_not_available THEN
+  RAISE EXCEPTION 'HXUV1-COTERMINAL-13-LOCK_BUSY';
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.hxos_record_fake_financial_change_order_materialized_v13(
+  p_target_authority_id UUID,p_target_database_name TEXT,p_release_environment TEXT,p_release_manifest_digest TEXT,
+  p_proposal_id UUID,p_recovery_lease_id UUID,p_lease_owner_id UUID,p_witness_request_sha256 TEXT,p_work_order_id UUID,
+  p_amendment_id UUID,p_adjustment_event_id UUID
+) RETURNS TABLE(terminal_fact JSONB,idempotency_replayed BOOLEAN,observed_at TIMESTAMPTZ,
+  target_authority_id UUID,release_manifest_digest TEXT)
+LANGUAGE plpgsql SECURITY DEFINER VOLATILE PARALLEL UNSAFE SET search_path=pg_catalog AS $$
+BEGIN
+  RETURN QUERY SELECT * FROM hx_authority.record_fake_financial_change_order_terminal_v13(
+    p_target_authority_id,p_target_database_name,p_release_environment,p_release_manifest_digest,
+    p_proposal_id,p_recovery_lease_id,p_lease_owner_id,p_witness_request_sha256,p_work_order_id,'MATERIALIZED',
+    p_amendment_id,p_adjustment_event_id,NULL,NULL,NULL,NULL);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.hxos_record_fake_financial_change_order_compensated_v13(
+  p_target_authority_id UUID,p_target_database_name TEXT,p_release_environment TEXT,p_release_manifest_digest TEXT,
+  p_proposal_id UUID,p_recovery_lease_id UUID,p_lease_owner_id UUID,p_witness_request_sha256 TEXT,p_work_order_id UUID,
+  p_compensation_command_id UUID,p_compensation_event_id UUID
+) RETURNS TABLE(terminal_fact JSONB,idempotency_replayed BOOLEAN,observed_at TIMESTAMPTZ,
+  target_authority_id UUID,release_manifest_digest TEXT)
+LANGUAGE plpgsql SECURITY DEFINER VOLATILE PARALLEL UNSAFE SET search_path=pg_catalog AS $$
+BEGIN
+  RETURN QUERY SELECT * FROM hx_authority.record_fake_financial_change_order_terminal_v13(
+    p_target_authority_id,p_target_database_name,p_release_environment,p_release_manifest_digest,
+    p_proposal_id,p_recovery_lease_id,p_lease_owner_id,p_witness_request_sha256,p_work_order_id,'COMPENSATED',
+    NULL,NULL,p_compensation_command_id,p_compensation_event_id,NULL,NULL);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.hxos_record_fake_financial_change_order_no_effect_v13(
+  p_target_authority_id UUID,p_target_database_name TEXT,p_release_environment TEXT,p_release_manifest_digest TEXT,
+  p_proposal_id UUID,p_recovery_lease_id UUID,p_lease_owner_id UUID,p_witness_request_sha256 TEXT,p_work_order_id UUID,
+  p_no_effect_outcome_fact_id UUID,p_revocation_reason TEXT
+) RETURNS TABLE(terminal_fact JSONB,idempotency_replayed BOOLEAN,observed_at TIMESTAMPTZ,
+  target_authority_id UUID,release_manifest_digest TEXT)
+LANGUAGE plpgsql SECURITY DEFINER VOLATILE PARALLEL UNSAFE SET search_path=pg_catalog AS $$
+BEGIN
+  RETURN QUERY SELECT * FROM hx_authority.record_fake_financial_change_order_terminal_v13(
+    p_target_authority_id,p_target_database_name,p_release_environment,p_release_manifest_digest,
+    p_proposal_id,p_recovery_lease_id,p_lease_owner_id,p_witness_request_sha256,p_work_order_id,'NO_EFFECT',
+    NULL,NULL,NULL,NULL,p_no_effect_outcome_fact_id,p_revocation_reason);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION hx_authority.validate_fake_financial_outbox_request_v13()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+VOLATILE
+PARALLEL UNSAFE
+SET search_path = pg_catalog
+AS $$
+DECLARE
+  command_record RECORD;
+  prepared_record RECORD;
+  target_record RECORD;
+  expected_job_authority_sha256 CHAR(64);
+  expected_bullmq_job_id TEXT;
+BEGIN
+  SELECT command.command_state,
+         command.operation_kind,
+         command.operation_id,
+         command.provider_kind,
+         command.idempotency_key,
+         command.provider_expected_version,
+         command.request_sha256,
+         command.command_identity_sha256,
+         command.prepared_financial_command_id,
+         command.prepared_authority_sha256,
+         command.release_manifest_digest,
+         command.release_id,
+         command.release_revision,
+         command.release_environment,
+         command.release_authentication_status
+    INTO command_record
+    FROM public.financial_provider_command_journal command
+   WHERE command.command_id = NEW.command_id
+   FOR SHARE;
+
+  SELECT prepared.command_state,
+         prepared.operation_kind,
+         prepared.operation_id,
+         prepared.provider_kind,
+         prepared.idempotency_key,
+         prepared.provider_expected_version,
+         prepared.provider_request_sha256,
+         prepared.authority_context_sha256
+    INTO prepared_record
+    FROM public.universal_v1_prepared_financial_commands prepared
+   WHERE prepared.prepared_command_id = NEW.prepared_command_id
+   FOR SHARE;
+
+  SELECT target.authority_version,
+         target.target_database_name,
+         target.environment,
+         target.release_manifest_sha256
+    INTO target_record
+    FROM hx_authority.universal_v1_work_order_target_authority_facts target
+   WHERE target.target_authority_id = NEW.target_authority_id
+   FOR SHARE;
+
+  PERFORM hx_authority.assert_fake_financial_outbox_target_v13(
+    NEW.target_authority_id,
+    NEW.target_database_name,
+    NEW.release_environment,
+    NEW.release_manifest_digest
+  );
+
+  -- ADJUST creation must observe a terminal committed while target acquisition
+  -- was waiting. Exact existing REQUESTED replay does not enter this trigger.
+  IF prepared_record.operation_kind='ADJUST' THEN
+    IF pg_catalog.current_setting('transaction_isolation')<>'read committed' THEN
+      RAISE EXCEPTION 'HXUV1-COTERMINAL-13-ADJUST_REQUEST_READ_COMMITTED_REQUIRED'; END IF;
+    IF EXISTS(SELECT 1 FROM public.universal_v1_prepared_financial_commands p
+      JOIN public.universal_v1_change_order_materialization_commands w ON w.work_order_id=p.work_order_id
+      JOIN public.universal_v1_change_order_recovery_terminal_facts t ON t.proposal_id=w.proposal_id
+      WHERE p.prepared_command_id=NEW.prepared_command_id AND w.work_order_id=p.work_order_id
+        AND t.outcome_state='CANCELLED') THEN
+      RAISE EXCEPTION 'HXUV1-COTERMINAL-13-ADJUST_REQUEST_CANCELLED'; END IF;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM hx_authority.fake_financial_preparation_authority_v13 provenance
+    JOIN public.universal_v1_prepared_financial_commands prepared
+      ON prepared.prepared_command_id = provenance.prepared_command_id
+    JOIN public.financial_provider_command_journal command
+      ON command.command_id = NEW.command_id
+    WHERE provenance.prepared_command_id = NEW.prepared_command_id
+      AND provenance.actor_user_id = prepared.recorded_by
+      AND provenance.actor_user_id = command.recorded_actor_id
+      AND command.recorded_actor_kind = 'PARTICIPANT'
+      AND provenance.target_authority_id = NEW.target_authority_id
+      AND provenance.release_manifest_sha256 = NEW.release_manifest_digest
+      AND NOT EXISTS(SELECT 1 FROM public.universal_v1_change_order_compensation_commands c
+        JOIN hx_authority.fake_financial_change_order_compensation_origins_v13 o USING(compensation_command_id)
+        WHERE c.reversal_operation_id=prepared.operation_id AND prepared.operation_kind='REVERSAL')
+  ) AND NOT EXISTS (
+    SELECT 1 FROM hx_authority.fake_financial_change_order_reversal_preparations_v13 provenance
+    JOIN public.universal_v1_prepared_financial_commands prepared ON prepared.prepared_command_id=provenance.prepared_command_id
+    JOIN public.financial_provider_command_journal command ON command.command_id=NEW.command_id
+    JOIN public.universal_v1_change_order_compensation_commands compensation ON compensation.compensation_command_id=provenance.compensation_command_id
+    WHERE provenance.prepared_command_id=NEW.prepared_command_id AND provenance.service_database_role=SESSION_USER
+      AND provenance.target_authority_id=NEW.target_authority_id AND provenance.release_manifest_sha256=NEW.release_manifest_digest
+      AND provenance.provider_request_sha256=command.request_sha256 AND provenance.prepared_authority_sha256=command.prepared_authority_sha256
+      AND prepared.recorded_by=compensation.requested_by AND command.recorded_actor_id=compensation.requested_by
+      AND command.recorded_actor_kind='PARTICIPANT' AND prepared.operation_kind='REVERSAL'
+      AND prepared.operation_id=compensation.reversal_operation_id
+  ) THEN RAISE EXCEPTION 'HXUV1-FINREQ-13-AUTHENTICATED_PREPARATION_REQUIRED'; END IF;
+
+  IF command_record.command_state IS DISTINCT FROM 'REQUESTED'
+     OR command_record.provider_kind IS DISTINCT FROM 'FAKE'
+     OR command_record.release_authentication_status IS DISTINCT FROM 'VERIFIED'
+     OR command_record.release_environment NOT IN ('local', 'preview', 'staging')
+     OR prepared_record.command_state IS DISTINCT FROM 'PREPARED'
+     OR prepared_record.provider_kind IS DISTINCT FROM 'FAKE'
+     OR command_record.prepared_financial_command_id IS DISTINCT FROM
+          NEW.prepared_command_id
+     OR command_record.prepared_authority_sha256 IS DISTINCT FROM
+          prepared_record.authority_context_sha256
+     OR command_record.request_sha256 IS DISTINCT FROM
+          prepared_record.provider_request_sha256
+     OR command_record.operation_kind IS DISTINCT FROM prepared_record.operation_kind
+     OR command_record.operation_id IS DISTINCT FROM prepared_record.operation_id
+     OR command_record.idempotency_key IS DISTINCT FROM prepared_record.idempotency_key
+     OR command_record.provider_expected_version IS DISTINCT FROM
+          prepared_record.provider_expected_version
+     OR NEW.prepared_state IS DISTINCT FROM prepared_record.command_state
+     OR NEW.command_state IS DISTINCT FROM command_record.command_state
+     OR NEW.provider_kind IS DISTINCT FROM command_record.provider_kind
+     OR NEW.operation_kind IS DISTINCT FROM command_record.operation_kind
+     OR NEW.operation_id IS DISTINCT FROM command_record.operation_id
+     OR NEW.idempotency_key IS DISTINCT FROM command_record.idempotency_key
+     OR NEW.provider_expected_version IS DISTINCT FROM
+          command_record.provider_expected_version
+     OR NEW.provider_request_sha256 IS DISTINCT FROM command_record.request_sha256
+     OR NEW.command_identity_sha256 IS DISTINCT FROM
+          command_record.command_identity_sha256
+     OR NEW.prepared_authority_sha256 IS DISTINCT FROM
+          prepared_record.authority_context_sha256
+     OR NEW.release_manifest_digest IS DISTINCT FROM
+          command_record.release_manifest_digest
+     OR NEW.release_id IS DISTINCT FROM command_record.release_id
+     OR NEW.release_revision IS DISTINCT FROM command_record.release_revision
+     OR NEW.release_environment IS DISTINCT FROM command_record.release_environment
+     OR NEW.target_authority_version IS DISTINCT FROM target_record.authority_version
+     OR NEW.target_database_name IS DISTINCT FROM target_record.target_database_name
+     OR NEW.release_environment IS DISTINCT FROM target_record.environment
+     OR NEW.release_manifest_digest IS DISTINCT FROM
+          target_record.release_manifest_sha256 THEN
+    RAISE EXCEPTION
+      'HXUV1-FINOUT-13-8: outbox request lacks exact PREPARED/REQUESTED/target authority'
+      USING ERRCODE = 'P0001';
+  END IF;
+
+  expected_job_authority_sha256 := hx_authority.fake_financial_job_digest_v13(
+    ARRAY[
+      'HXUV1_FAKE_FINANCIAL_BULLMQ_JOB_V13',
+      NEW.outbox_request_id::TEXT,
+      NEW.command_id::TEXT,
+      NEW.prepared_command_id::TEXT,
+      NEW.target_authority_id::TEXT,
+      NEW.target_authority_version::TEXT,
+      NEW.target_database_name,
+      NEW.release_environment,
+      NEW.release_manifest_digest,
+      NEW.release_id,
+      pg_catalog.btrim(NEW.release_revision),
+      NEW.operation_kind,
+      NEW.operation_id::TEXT,
+      NEW.idempotency_key,
+      NEW.provider_expected_version::TEXT,
+      pg_catalog.btrim(NEW.provider_request_sha256),
+      pg_catalog.btrim(NEW.command_identity_sha256),
+      pg_catalog.btrim(NEW.prepared_authority_sha256),
+      NEW.queue_name,
+      NEW.job_name,
+      NEW.payload_contract_version::TEXT
+    ]::TEXT[]
+  );
+  expected_bullmq_job_id := 'hx-fake-fin-'
+    || pg_catalog.replace(NEW.command_id::TEXT, '-', '')
+    || '-' || pg_catalog.btrim(expected_job_authority_sha256);
+  IF NEW.job_authority_sha256 IS DISTINCT FROM expected_job_authority_sha256
+     OR NEW.bullmq_job_id IS DISTINCT FROM expected_bullmq_job_id THEN
+    RAISE EXCEPTION
+      'HXUV1-FINOUT-13-9: deterministic BullMQ job identity mismatch'
+      USING ERRCODE = 'P0001';
+  END IF;
+
+  NEW.requested_at := pg_catalog.clock_timestamp();
+  RETURN NEW;
+END;
+$$;
+
+DO $change_order_terminal_acl$
+DECLARE signature TEXT; entry RECORD;
+BEGIN
+  FOREACH signature IN ARRAY ARRAY['hx_authority.record_fake_financial_change_order_terminal_v13(uuid,text,text,text,uuid,uuid,uuid,text,uuid,text,uuid,uuid,uuid,uuid,uuid,text)',
+    'public.hxos_record_fake_financial_change_order_materialized_v13(uuid,text,text,text,uuid,uuid,uuid,text,uuid,uuid,uuid)',
+    'public.hxos_record_fake_financial_change_order_compensated_v13(uuid,text,text,text,uuid,uuid,uuid,text,uuid,uuid,uuid)',
+    'public.hxos_record_fake_financial_change_order_no_effect_v13(uuid,text,text,text,uuid,uuid,uuid,text,uuid,uuid,text)'] LOOP
+    EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',signature);
+    FOR entry IN SELECT DISTINCT acl.grantee FROM pg_catalog.pg_proc p
+      CROSS JOIN LATERAL pg_catalog.aclexplode(COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))) acl
+      WHERE p.oid=signature::regprocedure AND acl.grantee<>0 AND acl.grantee<>p.proowner LOOP
+      EXECUTE pg_catalog.format('REVOKE ALL ON FUNCTION %s FROM %I',signature,pg_catalog.pg_get_userbyid(entry.grantee));
+    END LOOP;
+  END LOOP;
+END;
+$change_order_terminal_acl$;

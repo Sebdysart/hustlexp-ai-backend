@@ -1,5 +1,11 @@
 import { CHANGE_ORDER_REVERSAL_EXECUTION_FUNCTION } from './change-order-reversal-role-plans.js';
 import {
+  CHANGE_ORDER_TERMINAL_INSERT_COLUMNS,
+  CHANGE_ORDER_TERMINAL_LOCK_COLUMNS,
+  CHANGE_ORDER_TERMINAL_READ_COLUMNS,
+  CHANGE_ORDER_TERMINAL_DEPENDENCIES,
+} from './change-order-terminal-role-plans.js';
+import {
   CHANGE_ORDER_RECOVERY_COMPENSATION_INSERT_COLUMNS,
   CHANGE_ORDER_RECOVERY_COMPENSATION_LOCK_COLUMNS,
   CHANGE_ORDER_RECOVERY_COMPENSATION_READ_COLUMNS,
@@ -375,13 +381,13 @@ export const WORK_ORDER_TRIGGER_CATALOG_COUNT = 348;
 // query below.  A migration changing even one edge must deliberately recapture
 // this value and its focused PostgreSQL proof.
 export const WORK_ORDER_TRIGGER_CATALOG_SHA256 =
-  '93778ce6221d6403acff17c8afef32cd6a15f66dccb47de4719b799cb07f05fd';
+  'b69acb532dc9cf68d76972f8324e7f1da2e2fad2027cd0a383c139ac4ade899f';
 
 // Re-captured from the exact PG16 ordinal-146 + v13 function family. Flags, owners,
 // paths, and ACLs are checked independently; this digest closes source-body
 // drift that could otherwise preserve superficial protocol fragments.
 export const WORK_ORDER_AUTHORITY_FUNCTION_CATALOG_SHA256 =
-  '7df21a11505d8269845bd85949b0e86836124fa11106021c2724895fddbf86be';
+  'b4030432b893610fddbedbc78a200f28ae0c081df05846bd65e22d362459ef6e';
 
 export const WORK_ORDER_ORDINAL146_SQL_SHA256 =
   '3920ac8d3208b9f573dc331cab60c373d0349611700c6e14a6e4c1dd8c53aac4';
@@ -390,7 +396,7 @@ export const WORK_ORDER_FAKE_FINANCIAL_V12_SQL_SHA256 =
 export const WORK_ORDER_BOOTSTRAP_SEAL_SQL_SHA256 =
   'c69825589193885d0f6a3b93930880998e95e1c5cd44bb9b5999cb457192b2bd';
 export const FAKE_FINANCIAL_OUTBOX_V13_SQL_SHA256 =
-  '2449f38909588940089f50fa34de4c01b08bf8f449f1840579836fd37e083ff0';
+  '275f00b59916f26627ca401512828c76195f2cc3ad45489aaadc3d40d3cafd68';
 
 export interface WorkOrderCommandRoleNames {
   migrationRole: string;
@@ -625,7 +631,9 @@ const FUNCTION_PLANS: readonly FunctionPlan[] = [
           ? ['migrationRole', 'commandOwnerRole', 'financeOwnerRole']
           : CHANGE_ORDER_MATERIALIZATION_PUBLIC_FUNCTIONS.some((value) => value === identity)
             ? ['commandOwnerRole', 'apiRole']
-            : ['commandOwnerRole']
+            : CHANGE_ORDER_TERMINAL_DEPENDENCIES.some((value) => value === identity)
+              ? ['commandOwnerRole', 'financeOwnerRole']
+              : ['commandOwnerRole']
       ),
       sourceKind:
         hash || deferred
@@ -993,7 +1001,7 @@ const FUNCTION_PLANS: readonly FunctionPlan[] = [
           ? ['migrationRole', 'commandOwnerRole', 'financeOwnerRole', 'telemetryOwnerRole']
           : isLock || isSealedTriggerDependency
             ? ['commandOwnerRole']
-            : isEffectiveExpiry || isFinancialCurrent || isCurrentAuthority
+            : isEffectiveExpiry || isFinancialCurrent || isCurrentAuthority || isExecutionDigest
               ? ['migrationRole', 'commandOwnerRole', 'financeOwnerRole']
               : ['migrationRole', 'commandOwnerRole']
       ),
@@ -1601,6 +1609,14 @@ const RELATION_PLANS: readonly RelationPlan[] = BASE_RELATION_PLANS.map((plan) =
     ...plan,
     permittedColumnUpdates: [
       ...(plan.permittedColumnUpdates ?? []),
+      ...(CHANGE_ORDER_TERMINAL_LOCK_COLUMNS[plan.relation]
+        ? [
+            {
+              role: 'financeOwnerRole' as const,
+              columns: CHANGE_ORDER_TERMINAL_LOCK_COLUMNS[plan.relation]!,
+            },
+          ]
+        : []),
       ...(CHANGE_ORDER_RECOVERY_COMPENSATION_LOCK_COLUMNS[plan.relation]
         ? [
             {
@@ -1633,6 +1649,14 @@ const RELATION_PLANS: readonly RelationPlan[] = BASE_RELATION_PLANS.map((plan) =
     ],
     permittedColumnSelects: [
       ...plan.permittedColumnSelects,
+      ...(CHANGE_ORDER_TERMINAL_READ_COLUMNS[plan.relation]
+        ? [
+            {
+              role: 'financeOwnerRole' as const,
+              columns: CHANGE_ORDER_TERMINAL_READ_COLUMNS[plan.relation]!,
+            },
+          ]
+        : []),
       ...(CHANGE_ORDER_RECOVERY_COMPENSATION_READ_COLUMNS[plan.relation]
         ? [
             {
@@ -1669,6 +1693,14 @@ const RELATION_PLANS: readonly RelationPlan[] = BASE_RELATION_PLANS.map((plan) =
     ],
     permittedColumnInserts: [
       ...(plan.permittedColumnInserts ?? []),
+      ...(CHANGE_ORDER_TERMINAL_INSERT_COLUMNS[plan.relation]
+        ? [
+            {
+              role: 'financeOwnerRole' as const,
+              columns: CHANGE_ORDER_TERMINAL_INSERT_COLUMNS[plan.relation]!,
+            },
+          ]
+        : []),
       ...(CHANGE_ORDER_RECOVERY_COMPENSATION_INSERT_COLUMNS[plan.relation]
         ? [
             {

@@ -1,0 +1,327 @@
+
+ RUN  v4.1.10 C:/Users/Manfish/Documents/Codex/2026-08-25/files-mentioned-by-the-user-hustlexp/work/repos/backend-security-expiry-wip
+
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > pins runtime authority to the exact packaged v13 SQL bytes 4ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > is an append-only successor foundation with hostile-search-path and predecessor holds 13ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > captures one exact PREPARED plus REQUESTED fake command in the journal transaction 5ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > derives a PII-free deterministic BullMQ identity from immutable command and target authority 1ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > uses append-only publisher leases and outcomes for retry and queue-add acknowledgement recovery 1ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > retires stale target requests append-only and only claims the exact locked current tip 1ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > rejects forged Redis identity before recording fake-only dispatch crash-boundary evidence 2ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > forward-replaces the legacy NULL-outcome redispatch hole with a null-safe zero-write denial 1ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > keeps authenticated fake webhooks on a distinct append-only inert evidence rail 1ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > preserves digest-only unauthenticated fake webhook rejection evidence with zero authority 1ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > keeps transport ports invoker-only, seals the worker admission port, and closes new authority objects 4ms
+ ✓ backend/tests/unit/universal-v1-fake-financial-command-outbox-authority-migration.test.ts > Universal V1 fake-financial command outbox authority v13 migration > confines canonical event insertion to the sealed fake materializer and excludes live effects 34ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command role configuration > requires eight explicit, valid, pairwise-distinct role identities 7ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > refuses materialization guard privilege drift: missing policy row lock 20ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > refuses materialization guard privilege drift: extra policy state write 10ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > refuses materialization guard privilege drift: extra question content read 9ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > refuses materialization guard privilege drift: whole policy table read 10ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > requires exact ChangeOrder INSERT columns and denies whole-table or runtime write grants 21ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > denies runtime access to v13 internals and direct ledger writes 96ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > requires exactly the three recovery-terminal reads for the finance owner 55ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > requires exactly the finance owner lock columns and rejects missing or extra grants 54ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > blocks v13 runtime evidence drift: null 5ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > blocks v13 runtime evidence drift: 0000000000000000000000000000000000000000000000000000000000000000 5ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > blocks v13 runtime evidence drift: ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff 4ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > routes repository finalization through the sealed port and covers its direct-write surface 2ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > reports READY only for the exact eight-role, function, ACL, source, and DML topology 6ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > blocks absent, duplicate, or digest-drifted immutable v12 bootstrap evidence 42ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > reports missing not-yet-implemented functions as BLOCKED 5ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > recognizes the ordinal-145 kernel source while future command functions remain blocked 6ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > derives actor-binding proof from issuer, consumer, and human-command source 9ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > accepts each exact runtime LOGIN role only when explicitly selected as verifier 48ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > blocks invalid role shape, inherited authority, schema creation, TEMP, and wrong session 5ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > blocks wrong function owner, flags, search path, and exact role ACLs 5ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > permits only the exact implicit current database-owner membership 13ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > requires positive catalog custody evidence for each observed retained function 9ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > blocks a rogue function owned by either NOLOGIN authority owner 5ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > fails closed on missing relations, rogue owners, excess DML, and missing owner DML 6ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > blocks rogue LOGIN reachability, inbound membership, schema CREATE, and trigger drift 5ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > binds the exact trigger count independently from the trigger digest 5ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > blocks every protected function that still reaches the legacy digest oracle 5ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > blocks absent, invalid or ambiguous independently read HMAC implementation identity: {"webhookVerifier":[]} 5ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > blocks absent, invalid or ambiguous independently read HMAC implementation identity: {"webhookVerifier":[{"webhook_verifier_valid":false}]} 4ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > blocks absent, invalid or ambiguous independently read HMAC implementation identity: {"webhookVerifier":[{"webhook_verifier_valid":true},{"webhook_verifier_valid":true}]} 4ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > blocks every unplanned function or relation ACL grantee 5ms
+ ✓ backend/tests/unit/work-order-command-role-authority.test.ts > Work Order database command authority evaluation > performs parameterized catalog/source readback only and never emits authority DDL 22ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > reports production fake finance disabled without touching its database 9ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > attests one exact manifest/bootstrap record and every current SQL checksum 20ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed on unsupported PostgreSQL 15 before reading PG16 catalogs 8ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed on unsupported PostgreSQL 17 before reading PG16 catalogs 5ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed on unsupported a malformed version before reading PG16 catalogs 4ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when PostgreSQL version identity returns 0 rows 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when PostgreSQL version identity returns 2 rows 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when PostgreSQL version identity reports rowCount 0 for one row 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when PostgreSQL version identity reports rowCount 2 for one row 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when PostgreSQL version identity has noncanonical type/value 160015 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when PostgreSQL version identity has noncanonical type/value true 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when PostgreSQL version identity has noncanonical type/value null 2ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when PostgreSQL version identity has noncanonical type/value "160015 " 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when PostgreSQL version identity has noncanonical type/value "16e4" 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the exact database server encoding differs 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the exact database database encoding differs 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the exact database locale provider differs 2ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the exact database collation differs 2ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the exact database ctype differs 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the exact database ICU locale differs 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the exact database ICU rules differs 4ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the exact database recorded collation version differs 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the exact database actual collation version differs 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the exact database template flag differs 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the exact database connection flag differs 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when database identity returns 0 rows 2ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when database identity returns 2 rows 2ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when database identity reports rowCount 0 for one row 2ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when database identity reports rowCount 2 for one row 2ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed on database identity text type drift 2ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed on database identity nullable text type drift 2ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed on database identity boolean type drift 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > collapses database-identity query failures without reading later evidence 5ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > derives every critical applied checksum from exact registered SQL bytes 27ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed before querying schema when exact bootstrap completion is absent 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when append-only schema and applied checksums do not agree 4ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when exact v13 append-only schema evidence is absent 4ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when any critical migration applied evidence is missing, extra, or drifted 12ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > rejects malformed metadata receipts instead of treating the reader port as an approval: {"duplicateFinancialEvidence":true} 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > rejects malformed metadata receipts instead of treating the reader port as an approval: {"nullFinancialEvidence":true} 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed without exposing database details when the sealed authority reader rejects drift 5ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the v12 aggregate row is absent 4ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the v12 evidence table is empty 4ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the v12 evidence table is non-unique 4ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the v12 checksum is absent 4ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the v12 checksum is wrong 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the ordinal146 checksum is absent 4ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the ordinal146 checksum is wrong 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the seal evidence table is empty 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the seal evidence table is non-unique 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the seal checksum is absent 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the seal checksum is wrong 4ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the sealed ordinal146 checksum is absent 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the sealed ordinal146 checksum is wrong 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the sealed v12 checksum is absent 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the sealed v12 checksum is wrong 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the relations catalog identity detects a dropped or malformed required relation 4ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the constraints catalog identity detects a changed critical unique or check constraint 5ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the indexes catalog identity detects a changed partial unique or claim index 4ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the functions catalog identity detects a changed append-only reject function 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the triggers catalog identity detects a missing or disabled append-only trigger 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the rewrite_rules catalog identity detects changed view or table rewrite semantics 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the constraint_triggers catalog identity detects changed internal constraint-trigger identity 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the policies catalog identity detects changed row-security policy identity 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the extensions catalog identity detects changed required extension identity 4ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when a required critical schema identity row is absent 4ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when an unexpected critical schema identity row is returned 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > rejects sealed runtime binding drift in target_authority_id 4ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > rejects sealed runtime binding drift in target_authority_id 6ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > rejects sealed runtime binding drift in target_authority_id 4ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > rejects sealed runtime binding drift in authority_version 4ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > rejects sealed runtime binding drift in authority_version 4ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > rejects sealed runtime binding drift in authority_version 4ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > rejects sealed runtime binding drift in session_database_role 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > rejects sealed runtime binding drift in target_database_name 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > rejects sealed runtime binding drift in observed_database_name 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > rejects sealed runtime binding drift in environment 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > rejects sealed runtime binding drift in release_manifest_sha256 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > rejects sealed runtime binding drift in v13_sql_sha256 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > rejects sealed runtime binding drift in fake_financial_operations_relation 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > rejects sealed runtime binding drift in fake_financial_operation_events_relation 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > binds worker readiness to the worker login and existing immutable release 4ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > rejects an API login used as worker readiness 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > rejects missing expected database identity before reporting readiness 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > collapses catalog-attestation failures without disclosing database detail 4ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed when the current eight-role verifier refuses the bound snapshot 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed on any explicit database authority-policy violation 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed on sealed-definer dependency violation RETAINED_FUNCTION_MISSING_OR_CUSTODY_DRIFT 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed on sealed-definer dependency violation RETAINED_FUNCTION_EXECUTE_GRANT 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed on sealed-definer dependency violation RETAINED_FUNCTION_DEPENDENCY_EXECUTE_MISSING 6ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed on sealed-definer dependency violation LEGACY_DIGEST_IDENTITY_OR_GRANT_DRIFT 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed on sealed-definer dependency violation LEGACY_DIGEST_MISSING 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed on sealed-definer dependency violation DEFERRED_GUARD_MODE_DRIFT 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed on sealed-definer dependency violation RETAINED_COLUMN_GRANT 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed on sealed-definer dependency violation DATABASE_UNSAFE_GRANT 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > fails closed on sealed-definer dependency violation SCHEMA_CUSTODY_OR_GRANT_DRIFT 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > rejects contradictory production metadata before opening a transaction 1ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > does not query or disclose details when fake-finance authority is absent 3ms
+ ✓ backend/tests/unit/nonproduction-financial-bootstrap-readiness.test.ts > nonproduction fake-finance bootstrap readiness > collapses database failures to a non-sensitive unavailable status 3ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > derives exact canonical bytes, commits PREPARED before REQUESTED, and preserves historical attribution 18ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rejects legacy winner before opening a transaction 4ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rejects amendment winner before opening a transaction 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rejects caller fields before opening a transaction 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rejects unbound origin before opening a transaction 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted PREPARED operation_kind 3ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted PREPARED event_kind 2ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted PREPARED provider_kind 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted PREPARED operation_id 2ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted PREPARED provider_expected_version 2ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted PREPARED lifecycle_expected_version 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted PREPARED provider_request_sha256 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted PREPARED task_draft_id 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted PREPARED task_id 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted PREPARED eligibility_decision_id 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted PREPARED scope_version_id 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted PREPARED scope_hash 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted PREPARED work_order_id 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted PREPARED work_order_execution_contract_version 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted PREPARED change_order_id 3ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted PREPARED predecessor_event_id 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted PREPARED predecessor_operation_id 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted PREPARED predecessor_status 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted PREPARED predecessor_lifecycle_version 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted PREPARED completion_fact_id 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted PREPARED related_operation_id 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted PREPARED amount_cents 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted PREPARED currency 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted PREPARED recorded_by 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted PREPARED authority_context_sha256 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted PREPARED unexpected 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted worker preparation provenance prepared_command_id 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted worker preparation provenance compensation_command_id 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted worker preparation provenance target_authority_id 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted worker preparation provenance release_manifest_sha256 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted worker preparation provenance service_database_role 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted worker preparation provenance provider_request_sha256 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted worker preparation provenance prepared_authority_sha256 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted worker preparation provenance preparation_transaction_id 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back substituted worker preparation provenance unexpected 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rejects incorrect preparation cardinality variant 0 before commit 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rejects incorrect preparation cardinality variant 1 before commit 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rejects incorrect preparation cardinality variant 2 before commit 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rejects mismatched runtime session_database_role before PREPARED 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rejects mismatched runtime target_database_name before PREPARED 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rejects mismatched runtime environment before PREPARED 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rejects mismatched runtime release_manifest_sha256 before PREPARED 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > refuses a database target rollover between the two commits 2ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back PREPARED when installed authority changes during SQL 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back REQUESTED when installed authority changes during SQL 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > validates REQUESTED operation_kind before its commit 4ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > validates REQUESTED operation_id before its commit 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > validates REQUESTED provider_kind before its commit 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > validates REQUESTED idempotency_key before its commit 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > validates REQUESTED provider_expected_version before its commit 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > validates REQUESTED prepared_financial_command_id before its commit 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > validates REQUESTED prepared_authority_sha256 before its commit 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > validates REQUESTED command_id before its commit 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > validates REQUESTED idempotency_replayed before its commit 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > validates REQUESTED provider_expected_version before its commit 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > validates REQUESTED provider_expected_version before its commit 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > validates REQUESTED provider_expected_version before its commit 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > validates REQUESTED recorded_at before its commit 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > validates REQUESTED recorded_at before its commit 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > validates REQUESTED unexpected before its commit 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > rolls back a REQUESTED cardinality mismatch before the journal maps its row 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > retains preparation and request replay flags independently 2ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > committed worker-origin reversal requests > leaves committed PREPARED resumable when REQUESTED fails without inventing a financial effect 2ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > installed worker reversal request authority > validates valid installed release before any database work 2ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > installed worker reversal request authority > validates unsigned installed release before any database work 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > installed worker reversal request authority > validates different digest installed release before any database work 1ms
+ ✓ backend/tests/unit/change-order-reversal-request.test.ts > installed worker reversal request authority > validates different environment installed release before any database work 1ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > binds the exact worker lease and preserves participant and microsecond identities 13ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > retains an amendment winner without inventing compensation 2ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > does not invent worker provenance for a legacy winner 3ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > keeps original winner lease and origin after a later release and recovery lease 2ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > returns no winner for an expired or terminal lease and still rechecks authority 2ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > rejects substituted target metadata: session_database_role 4ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > rejects substituted target metadata: target_database_name 1ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > rejects substituted target metadata: environment 1ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > rejects substituted target metadata: release_manifest_sha256 2ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > rejects substituted target metadata: target_authority_id 1ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > rolls back a substituted winner identity: proposal_id 2ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > rolls back a substituted winner identity: work_order_id 1ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > rolls back a substituted winner identity: witness_request_sha256 1ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > rolls back a substituted winner identity: adjustment_event_id 2ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > refuses mismatched immutable origin: compensation_command_id 1ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > refuses mismatched immutable origin: proposal_id 1ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > refuses mismatched immutable origin: recovery_lease_id 1ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > refuses mismatched immutable origin: lease_owner_id 1ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > refuses mismatched immutable origin: adjustment_event_id 1ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > refuses mismatched immutable origin: witness_request_sha256 1ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > refuses mismatched immutable origin: revocation_reason 1ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > requires exact current origin for new creation: target_authority_id 1ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > requires exact current origin for new creation: release_environment 1ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > requires exact current origin for new creation: release_manifest_digest 1ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > requires exact current origin for new creation: service_database_role 1ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > requires exact current origin for new creation: missing_origin 1ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > rejects malformed or incomplete receipt: unsafe_amount 2ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > rejects malformed or incomplete receipt: unknown_field 1ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > rejects malformed or incomplete receipt: expired_receipt 1ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > rejects malformed or incomplete receipt: future_origin 1ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > rejects malformed or incomplete receipt: duplicate_receipt 1ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > rejects malformed or incomplete receipt: false_cardinality 1ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > rejects malformed or incomplete receipt: bad_amendment 1ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > rechecks installed release before empty commit 1ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > rechecks installed release before present commit 1ms
+ ✓ backend/tests/unit/change-order-recovery-compensation.test.ts > restricted worker compensation winner > rejects malformed input before opening a transaction 1ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > binds the exact lease and drops unrelated revocation evidence when an admitted effect is unresolved 12ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > preserves the selected durable observation: ADJUST_READY 2ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > preserves the selected durable observation: ADJUST_REPLAYABLE 1ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > preserves the selected durable observation: ADJUST_TERMINAL_NO_EFFECT 1ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > preserves the selected durable observation: ADJUST_NO_EFFECT_AUTHORITY_REVOKED 1ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > preserves the selected durable observation: ADJUSTMENT_SUCCEEDED 1ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > preserves the selected durable observation: COMPENSATION_READY 1ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > preserves the selected durable observation: COMPENSATION_REPLAYABLE 1ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > preserves the selected durable observation: COMPENSATION_RECONCILE_ONLY 2ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > preserves the selected durable observation: COMPENSATION_TERMINAL_NO_EFFECT 1ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > preserves the selected durable observation: COMPENSATION_SUCCEEDED 1ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > preserves the selected durable observation: AMENDMENT_MATERIALIZED 1ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > preserves the selected durable observation: WAITING 1ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > rolls back a substituted witness or lease: proposal_id 3ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > rolls back a substituted witness or lease: recovery_lease_id 1ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > rolls back a substituted witness or lease: lease_owner_id 1ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > rolls back a substituted witness or lease: work_order_id 1ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > rolls back a substituted witness or lease: request_sha256 1ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > rejects stale or wrong installed target metadata: session_database_role 1ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > rejects stale or wrong installed target metadata: target_database_name 1ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > rejects stale or wrong installed target metadata: environment 1ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > rejects stale or wrong installed target metadata: release_manifest_sha256 1ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > rejects stale or wrong installed target metadata: target_authority_id 1ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > rechecks installed authority before committing a empty observation 1ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > rechecks installed authority before committing a present observation 1ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > returns no work when the database says the exact lease expired or terminalized 1ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > rejects incomplete or malformed recovery evidence: missing_outcome 4ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > rejects incomplete or malformed recovery evidence: missing_compensation 4ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > rejects incomplete or malformed recovery evidence: partial_compensation 3ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > rejects incomplete or malformed recovery evidence: unknown_field 3ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > rejects incomplete or malformed recovery evidence: unsafe_amount 1ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > rejects incomplete or malformed recovery evidence: expired_observation 1ms
+ ✓ backend/tests/unit/change-order-recovery-observation.test.ts > restricted worker recovery observation > rejects incomplete or malformed recovery evidence: duplicate_receipt 1ms
+ ✓ backend/tests/unit/change-order-recovery-claims.test.ts > worker change order recovery claim decoder > binds the installed worker and validates immutable lease receipts before commit 15ms
+ ✓ backend/tests/unit/change-order-recovery-claims.test.ts > worker change order recovery claim decoder > accepts an empty due set without inventing work 1ms
+ ✓ backend/tests/unit/change-order-recovery-claims.test.ts > worker change order recovery claim decoder > rolls back a malformed owner receipt 5ms
+ ✓ backend/tests/unit/change-order-recovery-claims.test.ts > worker change order recovery claim decoder > rolls back a malformed target receipt 2ms
+ ✓ backend/tests/unit/change-order-recovery-claims.test.ts > worker change order recovery claim decoder > rolls back a malformed release receipt 1ms
+ ✓ backend/tests/unit/change-order-recovery-claims.test.ts > worker change order recovery claim decoder > rolls back a malformed duration receipt 1ms
+ ✓ backend/tests/unit/change-order-recovery-claims.test.ts > worker change order recovery claim decoder > rolls back a malformed duplicate receipt 1ms
+ ✓ backend/tests/unit/change-order-recovery-claims.test.ts > worker change order recovery claim decoder > rolls back a malformed cardinality receipt 1ms
+ ✓ backend/tests/unit/change-order-recovery-claims.test.ts > worker change order recovery claim decoder > rolls back a malformed extra receipt 3ms
+ ✓ backend/tests/unit/change-order-recovery-claims.test.ts > worker change order recovery claim decoder > rejects wrong login metadata before acquiring a lease 1ms
+ ✓ backend/tests/unit/change-order-recovery-claims.test.ts > worker change order recovery claim decoder > rejects wrong database metadata before acquiring a lease 1ms
+ ✓ backend/tests/unit/change-order-recovery-claims.test.ts > worker change order recovery claim decoder > rejects wrong environment metadata before acquiring a lease 1ms
+ ✓ backend/tests/unit/change-order-recovery-claims.test.ts > worker change order recovery claim decoder > rejects wrong manifest metadata before acquiring a lease 1ms
+ ✓ backend/tests/unit/change-order-recovery-claims.test.ts > worker change order recovery claim decoder > rejects wrong cardinality metadata before acquiring a lease 1ms
+ ✓ backend/tests/unit/change-order-recovery-claims.test.ts > worker change order recovery claim decoder > rolls back when installed manifestDigest changes during the transaction 1ms
+ ✓ backend/tests/unit/change-order-recovery-claims.test.ts > worker change order recovery claim decoder > rolls back when installed targetDigest changes during the transaction 1ms
+ ✓ backend/tests/unit/change-order-recovery-claims.test.ts > worker change order recovery claim decoder > rejects invalid input before database work: {"limit":0} 1ms
+ ✓ backend/tests/unit/change-order-recovery-claims.test.ts > worker change order recovery claim decoder > rejects invalid input before database work: {"limit":101} 1ms
+ ✓ backend/tests/unit/change-order-recovery-claims.test.ts > worker change order recovery claim decoder > rejects invalid input before database work: {"leaseDurationSeconds":4} 1ms
+ ✓ backend/tests/unit/change-order-recovery-claims.test.ts > worker change order recovery claim decoder > rejects invalid input before database work: {"leaseDurationSeconds":901} 1ms
+ ✓ backend/tests/unit/change-order-recovery-claims.test.ts > worker change order recovery claim decoder > rejects invalid input before database work: {"minimumAgeSeconds":4} 0ms
+ ✓ backend/tests/unit/change-order-recovery-claims.test.ts > worker change order recovery claim decoder > rejects invalid input before database work: {"minimumAgeSeconds":3601} 1ms
+ ✓ backend/tests/unit/change-order-recovery-claims.test.ts > worker change order recovery claim decoder > rejects invalid input before database work: {"leaseOwnerId":"invalid"} 1ms
+ ✓ backend/tests/unit/change-order-recovery-claims.test.ts > worker change order recovery claim decoder > rejects invalid input before database work: {"actorAssertion":"forged"} 1ms
+ ✓ backend/tests/unit/universal-v1-change-order-recovery.test.ts > Universal V1 change-order recovery > issues the witness-exact fake ADJUST and records the exact amendment 11ms
+ ✓ backend/tests/unit/universal-v1-change-order-recovery.test.ts > Universal V1 change-order recovery > never blindly redispatches an UNKNOWN adjustment or compensation 2ms
+ ✓ backend/tests/unit/universal-v1-change-order-recovery.test.ts > Universal V1 change-order recovery > uses one exact fake REVERSAL after permanent Phase-C revocation and never claims restore 3ms
+ ✓ backend/tests/unit/universal-v1-change-order-recovery.test.ts > Universal V1 change-order recovery > records ADJUST_TERMINAL_NO_EFFECT as terminal NO_EFFECT without provider value I/O 1ms
+ ✓ backend/tests/unit/universal-v1-change-order-recovery.test.ts > Universal V1 change-order recovery > records ADJUST_NO_EFFECT_AUTHORITY_REVOKED as terminal NO_EFFECT without provider value I/O 1ms
+ ✓ backend/tests/unit/universal-v1-change-order-recovery.test.ts > Universal V1 change-order recovery > fails closed when a purported REVERSAL drifts from its immutable command 2ms
+ ✓ backend/tests/unit/universal-v1-change-order-recovery.test.ts > Universal V1 change-order recovery > gates before lease acquisition and reports deterministic worker outcomes 1ms
+ ✓ backend/tests/unit/universal-v1-change-order-recovery.test.ts > Universal V1 change-order recovery > refuses unauthorized poller startup and drains an exact in-flight batch 6ms
+ ✓ backend/tests/unit/universal-v1-change-order-recovery.test.ts > Universal V1 change-order recovery > seals mutation paths and both financial-slot race directions in migration 133 8ms
+
+ Test Files  8 passed (8)
+      Tests  318 passed (318)
+   Start at  21:59:56
+   Duration  8.62s (transform 1.35s, setup 257ms, import 4.82s, tests 1.30s, environment 2ms)
+

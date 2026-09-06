@@ -411,7 +411,7 @@ const CRITICAL_SCHEMA_EVIDENCE = Object.freeze([
   },
   {
     identityName: 'functions',
-    sha256: '0299eb25dbb946cbfbc3a77a48ad6c301939df3a66ca101b8800a174826b2088',
+    sha256: 'bed41418e53a82d010c8d570a98230dbfccaf74f71d592ff8655b513e5dfb3ad',
   },
   {
     identityName: 'triggers',
