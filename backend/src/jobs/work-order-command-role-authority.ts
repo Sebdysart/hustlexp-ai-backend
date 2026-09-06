@@ -1,3 +1,4 @@
+import { CHANGE_ORDER_REVERSAL_EXECUTION_FUNCTION } from './change-order-reversal-role-plans.js';
 import {
   CHANGE_ORDER_RECOVERY_COMPENSATION_INSERT_COLUMNS,
   CHANGE_ORDER_RECOVERY_COMPENSATION_LOCK_COLUMNS,
@@ -367,20 +368,20 @@ export const WORK_ORDER_COMMAND_WRITE_RELATIONS = [
 // a sealed command. Relations without triggers contribute no catalog rows.
 export const WORK_ORDER_TRIGGER_RELATIONS = WORK_ORDER_COMMAND_WRITE_RELATIONS;
 
-export const WORK_ORDER_TRIGGER_CATALOG_COUNT = 345;
+export const WORK_ORDER_TRIGGER_CATALOG_COUNT = 348;
 
 // Re-captured from a clean PG16 ordinal-146 + sealed v13 catalog after every trigger edge,
 // owner class, SECURITY mode, and fixed path is canonicalized by the readback
 // query below.  A migration changing even one edge must deliberately recapture
 // this value and its focused PostgreSQL proof.
 export const WORK_ORDER_TRIGGER_CATALOG_SHA256 =
-  'ae6a3003d3c0b6f3a00780142e750bca7a3749c9002f131e95e96baa742c0a23';
+  '93778ce6221d6403acff17c8afef32cd6a15f66dccb47de4719b799cb07f05fd';
 
 // Re-captured from the exact PG16 ordinal-146 + v13 function family. Flags, owners,
 // paths, and ACLs are checked independently; this digest closes source-body
 // drift that could otherwise preserve superficial protocol fragments.
 export const WORK_ORDER_AUTHORITY_FUNCTION_CATALOG_SHA256 =
-  '0b8c8f301119ddd8480ee5de22886f7ff440be1a1d79e0df3d030ca9aa681105';
+  '7df21a11505d8269845bd85949b0e86836124fa11106021c2724895fddbf86be';
 
 export const WORK_ORDER_ORDINAL146_SQL_SHA256 =
   '3920ac8d3208b9f573dc331cab60c373d0349611700c6e14a6e4c1dd8c53aac4';
@@ -389,7 +390,7 @@ export const WORK_ORDER_FAKE_FINANCIAL_V12_SQL_SHA256 =
 export const WORK_ORDER_BOOTSTRAP_SEAL_SQL_SHA256 =
   'c69825589193885d0f6a3b93930880998e95e1c5cd44bb9b5999cb457192b2bd';
 export const FAKE_FINANCIAL_OUTBOX_V13_SQL_SHA256 =
-  'd4c8fd24abed5adf887e40601ea97a2e395022e58e524975d9f9ac3f09b83ac2';
+  '2449f38909588940089f50fa34de4c01b08bf8f449f1840579836fd37e083ff0';
 
 export interface WorkOrderCommandRoleNames {
   migrationRole: string;
@@ -735,7 +736,9 @@ const FUNCTION_PLANS: readonly FunctionPlan[] = [
         identity === FAKE_FINANCIAL_PREPARATION_COMMAND ||
           identity === FAKE_FINANCIAL_PREPARATION_BUILDER
           ? ['commandOwnerRole', 'apiRole']
-          : ['commandOwnerRole']
+          : identity === FAKE_FINANCIAL_PREPARATION_INSERT
+            ? ['commandOwnerRole', 'financeOwnerRole']
+            : ['commandOwnerRole']
       ),
       sourceKind: identity === FAKE_FINANCIAL_PREPARATION_COMMAND ? 'human' : 'internal',
       ...SEALED_VOLATILE,
@@ -877,7 +880,11 @@ const FUNCTION_PLANS: readonly FunctionPlan[] = [
     (identity): FunctionPlan => ({
       identity,
       owner: 'financeOwnerRole',
-      permittedExecute: new Set<RoleKey>(['financeOwnerRole']),
+      permittedExecute: new Set<RoleKey>(
+        identity === CHANGE_ORDER_REVERSAL_EXECUTION_FUNCTION
+          ? ['financeOwnerRole', 'commandOwnerRole']
+          : ['financeOwnerRole']
+      ),
       sourceKind: 'internal',
       ...SEALED_VOLATILE,
       volatility:

@@ -20,7 +20,10 @@ import { db as runtimeDb } from '../../src/db.js';
 import { Queue, QueueEvents, Worker } from 'bullmq';
 import * as requestApplication from '../../src/services/payment/UniversalV1FinancialRequestService.js';
 import { PostgresUniversalV1FinancialRequestProgressReader } from '../../src/services/payment/UniversalV1FinancialRequestProgress.js';
-import { PostgresFinancialProviderCommandJournal } from '../../src/services/payment/FinancialProviderCommandJournal.js';
+import {
+  prepareFinancialProviderCommand,
+  PostgresFinancialProviderCommandJournal,
+} from '../../src/services/payment/FinancialProviderCommandJournal.js';
 import * as financialAuthorization from '../../src/services/payment/NonproductionFinancialAuthorization.js';
 import * as manifestAuthority from '../../src/releaseManifest.js';
 import * as databaseStartup from '../../src/jobs/runtime-database-startup-config.js';
@@ -2997,6 +3000,8 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
     return {
       lane,
       changeOrders,
+      admit,
+      executeBinding: execute,
       changePhase,
       requested,
       binding,
@@ -3232,6 +3237,363 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
           ]
     );
   }
+
+  it('worker change order reversal prepares without participant reauthorization', async () => {
+    const { setup, event, lease } = await compensationWinnerFixture();
+    await fixture.pool.query('UPDATE public.users SET is_banned=TRUE WHERE id=$1', [
+      setup.lane.posterUserId,
+    ]);
+    const winner = (await claimCompensationWinner(lease, event.id)).rows[0].resolution.command;
+    const request = {
+      amountCents: Number(winner.amount_cents),
+      currency: winner.currency.toLowerCase(),
+      expectedVersion: 0,
+      idempotencyKey: winner.reversal_idempotency_key,
+      operationId: winner.reversal_operation_id,
+      relatedOperationId: winner.adjustment_operation_id,
+      scenario: 'REVERSAL',
+    };
+    const canonical = JSON.stringify(request);
+    const args = [
+      lease.target_authority_id,
+      new URL(fixture.databaseUrl).pathname.slice(1),
+      'local',
+      lease.release_manifest_digest,
+      winner.compensation_command_id,
+      canonical,
+    ];
+    const sql =
+      'SELECT * FROM public.hxos_prepare_change_order_compensation_reversal_v13($1,$2,$3,$4,$5,$6)';
+    const result = await clients.get('workerRole')!.query(sql, args);
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({
+      idempotency_replayed: false,
+      prepared_command: {
+        operation_kind: 'REVERSAL',
+        operation_id: winner.reversal_operation_id,
+        recorded_by: setup.lane.posterUserId,
+        scope_version_id: winner.base_scope_version_id,
+        change_order_id: null,
+        completion_fact_id: null,
+        predecessor_event_id: event.id,
+        related_operation_id: winner.adjustment_operation_id,
+        lifecycle_expected_version: winner.lifecycle_expected_version,
+      },
+      worker_provenance: {
+        compensation_command_id: winner.compensation_command_id,
+        service_database_role: roles.workerRole,
+        target_authority_id: lease.target_authority_id,
+      },
+    });
+    const replay = await clients.get('workerRole')!.query(sql, args);
+    expect(replay.rows[0]).toEqual({ ...result.rows[0], idempotency_replayed: true });
+    expect(
+      (
+        await fixture.pool.query(
+          'SELECT count(*)::int AS n FROM public.financial_provider_command_journal WHERE operation_id=$1',
+          [winner.reversal_operation_id]
+        )
+      ).rows[0].n
+    ).toBe(0);
+  }, 60_000);
+
+  async function workerReversalFixture(leaseSeconds = 300) {
+    const f = await compensationWinnerFixture(leaseSeconds);
+    await fixture.pool.query('UPDATE public.users SET is_banned=TRUE WHERE id=$1', [
+      f.setup.lane.posterUserId,
+    ]);
+    const winner = (await claimCompensationWinner(f.lease, f.event.id)).rows[0].resolution.command;
+    const request = {
+      amountCents: Number(winner.amount_cents),
+      currency: winner.currency.toLowerCase(),
+      expectedVersion: 0,
+      idempotencyKey: winner.reversal_idempotency_key,
+      operationId: winner.reversal_operation_id,
+      relatedOperationId: winner.adjustment_operation_id,
+      scenario: 'REVERSAL',
+    };
+    const prepareArgs = [
+      f.lease.target_authority_id,
+      new URL(fixture.databaseUrl).pathname.slice(1),
+      'local',
+      f.lease.release_manifest_digest,
+      winner.compensation_command_id,
+      JSON.stringify(request),
+    ];
+    const prepare = async (client = clients.get('workerRole')!, args = prepareArgs) =>
+      (
+        await client.query(
+          'SELECT * FROM public.hxos_prepare_change_order_compensation_reversal_v13($1,$2,$3,$4,$5,$6)',
+          args
+        )
+      ).rows[0];
+    const journalInput = (p: pg.QueryResultRow) => ({
+      operationKind: 'REVERSAL' as const,
+      operationId: winner.reversal_operation_id,
+      providerKind: 'FAKE' as const,
+      idempotencyKey: winner.reversal_idempotency_key,
+      providerExpectedVersion: 0,
+      exactRequest: request,
+      evidence: {
+        preparedFinancialCommandId: p.prepared_command_id,
+        preparedAuthoritySha256: p.authority_context_sha256,
+        taskDraftId: winner.task_draft_id,
+        taskId: winner.task_id,
+        workOrderId: winner.work_order_id,
+        relatedOperationId: winner.adjustment_operation_id,
+        amountCents: Number(winner.amount_cents),
+        currency: winner.currency,
+      },
+      actor: { actorId: winner.requested_by, actorKind: 'PARTICIPANT' as const },
+      release: {
+        manifestDigest: f.lease.release_manifest_digest,
+        releaseId: 'synthetic.worker.reversal',
+        revision: 'd'.repeat(40),
+        environment: 'local' as const,
+        authenticationStatus: 'VERIFIED' as const,
+      },
+    });
+    const requested = async (p: pg.QueryResultRow, client = clients.get('workerRole')!) =>
+      new PostgresFinancialProviderCommandJournal(preparationDatabase(client)).recordRequested(
+        journalInput(p)
+      );
+    const counts = async () =>
+      (
+        await fixture.pool.query(
+          `SELECT
+      (SELECT count(*)::int FROM public.universal_v1_prepared_financial_commands WHERE operation_id=$1) AS preparations,
+      (SELECT count(*)::int FROM hx_authority.fake_financial_change_order_reversal_preparations_v13 WHERE compensation_command_id=$2) AS origins,
+      (SELECT count(*)::int FROM public.financial_provider_command_journal WHERE operation_id=$1) AS requests,
+      (SELECT count(*)::int FROM public.hxos_fake_financial_operation_events_v1 WHERE operation_id=$1) AS events`,
+          [winner.reversal_operation_id, winner.compensation_command_id]
+        )
+      ).rows[0];
+    return { ...f, winner, request, prepareArgs, prepare, journalInput, requested, counts };
+  }
+
+  it('worker change order reversal commits request and admitted effect after origin lease expiry', async () => {
+    const f = await workerReversalFixture(5),
+      worker = clients.get('workerRole')!;
+    await fixture.pool.query(
+      'SELECT pg_sleep(GREATEST(0,EXTRACT(EPOCH FROM ($1::timestamptz-clock_timestamp()))+0.05))',
+      [f.lease.expires_at]
+    );
+    expect((await observeChangeOrderRecovery(f.lease)).rows).toHaveLength(0);
+    const p = await f.prepare(),
+      requested = await f.requested(p.prepared_command),
+      binding = await f.setup.admit(requested.commandId);
+    const raw = await f.setup.executeBinding(binding);
+    expect(raw).toMatchObject({
+      operation_kind: 'REVERSAL',
+      state: 'REVERSED',
+      idempotency_replayed: false,
+    });
+    const outcome = (
+      await worker.query('SELECT * FROM public.hxos_record_fake_financial_outcome_v13($1,$2,$3)', [
+        binding.admission.job_validation_id,
+        binding.workerId,
+        binding.admission.recovery_lease_id,
+      ])
+    ).rows[0];
+    const materialized = (
+      await worker.query('SELECT * FROM public.hxos_materialize_fake_financial_event_v13($1,$2)', [
+        binding.admission.job_validation_id,
+        outcome.outcome_fact.outcome_fact_id,
+      ])
+    ).rows[0];
+    expect(materialized.financial_event).toMatchObject({
+      event_kind: 'REVERSED',
+      status: 'SUCCEEDED',
+      expected_version: Number(f.winner.lifecycle_expected_version),
+      scope_version_id: f.winner.base_scope_version_id,
+    });
+    expect(await f.prepare()).toEqual({ ...p, idempotency_replayed: true });
+    expect(await f.requested(p.prepared_command)).toEqual({
+      ...requested,
+      idempotencyReplayed: true,
+    });
+    await expect(f.setup.executeBinding(binding)).rejects.toThrow('DISPATCH_NOT_OPEN');
+    expect(await f.counts()).toEqual({ preparations: 1, origins: 1, requests: 1, events: 1 });
+    expect(
+      (
+        await fixture.pool.query(
+          'SELECT worker_id,universal_payment_posture FROM public.tasks WHERE id=$1',
+          [f.winner.task_id]
+        )
+      ).rows[0]
+    ).toEqual({ worker_id: null, universal_payment_posture: 'PAYMENT_CREATION_FROZEN' });
+  }, 60_000);
+
+  it('worker change order reversal denies API preparation and request including replay', async () => {
+    const f = await workerReversalFixture();
+    for (const role of ['apiRole', 'attesterRole'] as const)
+      await expect(f.prepare(clients.get(role)!)).rejects.toThrow(/permission denied/u);
+    const p = await f.prepare();
+    await expect(f.requested(p.prepared_command, clients.get('apiRole')!)).rejects.toThrow(
+      'WORKER_REQUEST_REQUIRED'
+    );
+    const r = await f.requested(p.prepared_command);
+    await f.setup.admit(r.commandId);
+    await expect(f.requested(p.prepared_command, clients.get('apiRole')!)).rejects.toThrow(
+      'WORKER_REQUEST_REQUIRED'
+    );
+    expect(await f.requested(p.prepared_command)).toEqual({ ...r, idempotencyReplayed: true });
+    expect(await f.counts()).toEqual({ preparations: 1, origins: 1, requests: 1, events: 0 });
+  }, 60_000);
+
+  it('worker change order reversal rejects substituted request and exact preparation conflicts', async () => {
+    const f = await workerReversalFixture();
+    for (const patch of [
+      { amountCents: f.request.amountCents + 1 },
+      { currency: 'eur' },
+      { operationId: randomUUID() },
+      { relatedOperationId: randomUUID() },
+      { idempotencyKey: 'substituted:reversal:' + randomUUID() },
+      { expectedVersion: 1 },
+    ]) {
+      const args = [...f.prepareArgs];
+      args[5] = JSON.stringify({ ...f.request, ...patch });
+      await expect(f.prepare(clients.get('workerRole')!, args)).rejects.toThrow(
+        /REQUEST_IDENTITY_INVALID|REQUEST_INVALID/u
+      );
+    }
+    const p = await f.prepare(),
+      args = [...f.prepareArgs];
+    args[5] = JSON.stringify({ ...f.request, scenario: 'DECLINE' });
+    await expect(f.prepare(clients.get('workerRole')!, args)).rejects.toThrow(
+      'IDEMPOTENCY_CONFLICT'
+    );
+    expect(await f.prepare()).toEqual({ ...p, idempotency_replayed: true });
+    expect(await f.counts()).toEqual({ preparations: 1, origins: 1, requests: 0, events: 0 });
+  }, 60_000);
+
+  it('worker change order reversal rolls back preparation and refuses participant adoption after restoration', async () => {
+    const f = await workerReversalFixture(),
+      worker = clients.get('workerRole')!;
+    await worker.query('BEGIN');
+    try {
+      await f.prepare();
+    } finally {
+      await worker.query('ROLLBACK');
+    }
+    expect(await f.counts()).toEqual({ preparations: 0, origins: 0, requests: 0, events: 0 });
+    await fixture.pool.query('UPDATE public.users SET is_banned=FALSE WHERE id=$1', [
+      f.winner.requested_by,
+    ]);
+    const authority = new PostgresUniversalV1PreparedFinancialCommandAuthority(
+      preparationDatabase(clients.get('apiRole')!)
+    );
+    await expect(
+      authority.prepare(
+        {
+          operationKind: 'REVERSAL',
+          operationId: f.winner.reversal_operation_id,
+          providerKind: 'FAKE',
+          idempotencyKey: f.winner.reversal_idempotency_key,
+          providerExpectedVersion: 0,
+          lifecycleExpectedVersion: Number(f.winner.lifecycle_expected_version),
+          providerRequestSha256: createHash('sha256')
+            .update(JSON.stringify(f.request))
+            .digest('hex'),
+          taskDraftId: f.winner.task_draft_id,
+          taskId: f.winner.task_id,
+          eligibilityDecisionId: f.winner.eligibility_decision_id,
+          scopeVersionId: f.winner.base_scope_version_id,
+          changeOrderId: null,
+          predecessorEventId: f.winner.adjustment_event_id,
+          completionFactId: null,
+          relatedOperationId: f.winner.adjustment_operation_id,
+          amountCents: Number(f.winner.amount_cents),
+          currency: f.winner.currency,
+          recordedBy: f.winner.requested_by,
+        },
+        await preparationAttestation(f.winner.requested_by)
+      )
+    ).rejects.toThrow('WORKER_PREPARATION_REQUIRED');
+    expect(await f.counts()).toEqual({ preparations: 0, origins: 0, requests: 0, events: 0 });
+    await f.prepare();
+    expect(await f.counts()).toEqual({ preparations: 1, origins: 1, requests: 0, events: 0 });
+  }, 60_000);
+
+  it('worker change order reversal refuses privileged domain corruption at request and first execution', async () => {
+    const f = await workerReversalFixture(),
+      p = await f.prepare();
+    // Owner-only fault injection: the ordinary task writer correctly refuses this immutable change.
+    // Test the independent worker boundary against already-corrupt domain state.
+    const classify = async (value: string) => {
+      const owner = await fixture.pool.connect();
+      try {
+        await owner.query('BEGIN');
+        await owner.query("SET LOCAL session_replication_role='replica'");
+        await owner.query('UPDATE public.tasks SET automation_classification=$1 WHERE id=$2', [
+          value,
+          f.winner.task_id,
+        ]);
+        await owner.query('COMMIT');
+      } finally {
+        await owner.query('ROLLBACK');
+        owner.release();
+      }
+    };
+    await classify('UNCLASSIFIED');
+    await expect(f.requested(p.prepared_command)).rejects.toThrow('DOMAIN_AUTHORITY_CHANGED');
+    expect(await f.counts()).toEqual({ preparations: 1, origins: 1, requests: 0, events: 0 });
+    await classify('CONTROLLED_TEST');
+    const r = await f.requested(p.prepared_command),
+      binding = await f.setup.admit(r.commandId);
+    await classify('UNCLASSIFIED');
+    expect(await f.requested(p.prepared_command)).toEqual({ ...r, idempotencyReplayed: true });
+    await expect(f.setup.executeBinding(binding)).rejects.toThrow('DOMAIN_AUTHORITY_CHANGED');
+    expect(await f.counts()).toEqual({ preparations: 1, origins: 1, requests: 1, events: 0 });
+    await classify('CONTROLLED_TEST');
+    const raw = await f.setup.executeBinding(binding);
+    await classify('UNCLASSIFIED');
+    expect(await f.setup.executeBinding(binding)).toMatchObject({
+      event_id: raw.event_id,
+      idempotency_replayed: true,
+    });
+  }, 60_000);
+
+  it('worker change order reversal refuses preparation and request lock inversion', async () => {
+    const f = await workerReversalFixture(),
+      holder = await fixture.pool.connect();
+    try {
+      for (const [family, key] of [
+        ['domain', 'universal-v1-change-order-proposal:' + f.winner.proposal_id],
+        ['domain', 'fulfillment:' + f.winner.work_order_id],
+        ['financial-provider-command-recovery-v1', f.setup.requested.commandId],
+        ['fake-financial-operation', f.winner.adjustment_operation_id],
+        [
+          'universal-v1-prepared-financial-command-v1',
+          'idempotency:' + f.winner.reversal_idempotency_key,
+        ],
+      ]) {
+        await holder.query('BEGIN');
+        await holder.query(
+          family === 'domain'
+            ? 'SELECT pg_advisory_xact_lock(hashtextextended($1,0))'
+            : 'SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))',
+          family === 'domain' ? [key] : [family, key]
+        );
+        await expect(f.prepare()).rejects.toThrow('LOCK_BUSY');
+        await holder.query('ROLLBACK');
+      }
+      const p = await f.prepare();
+      await holder.query('BEGIN');
+      await holder.query(
+        "SELECT pg_advisory_xact_lock(hashtext('financial-provider-command-journal-v1'),hashtext($1))",
+        ['idempotency:' + f.winner.reversal_idempotency_key]
+      );
+      await expect(f.requested(p.prepared_command)).rejects.toThrow('REQUEST_LOCK_BUSY');
+      await holder.query('ROLLBACK');
+      const r = await f.requested(p.prepared_command);
+      await f.setup.admit(r.commandId);
+      expect(await f.counts()).toEqual({ preparations: 1, origins: 1, requests: 1, events: 0 });
+    } finally {
+      await holder.query('ROLLBACK');
+      holder.release();
+    }
+  }, 60_000);
 
   it('worker change order compensation creates one immutable winner after customer revocation', async () => {
     const { setup, event, lease } = await compensationWinnerFixture();
@@ -6640,6 +7002,10 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
       f.admission.job_validation_id,
       resolved.outcome_fact.outcome_fact_id,
     ]);
+    // First let the existing rollover fixture lease older queued-only requests.
+    const unpreparedReversal = await workerReversalFixture(),
+      preparedReversal = await workerReversalFixture();
+    const beforeReversal = await preparedReversal.prepare();
     const before = await f.readPredecessor();
     expect(before?.predecessor).not.toBeNull();
     const fact = before!.predecessor!;
@@ -6671,6 +7037,29 @@ describePg('v13 complete eight-role PostgreSQL authority catalog', () => {
         ]
       )
     ).rows[0];
+    // A committed compensation origin survives target succession. A PREPARED record cannot retarget.
+    const freshReversalArgs = [...unpreparedReversal.prepareArgs];
+    freshReversalArgs[0] = next.target_authority_id;
+    freshReversalArgs[3] = newRelease;
+    const successorPrepared = await unpreparedReversal.prepare(f.worker, freshReversalArgs);
+    expect(successorPrepared.worker_provenance).toMatchObject({
+      target_authority_id: next.target_authority_id,
+      release_manifest_sha256: newRelease,
+    });
+    await expect(preparedReversal.prepare()).rejects.toThrow();
+    const retargetedArgs = [...preparedReversal.prepareArgs];
+    retargetedArgs[0] = next.target_authority_id;
+    retargetedArgs[3] = newRelease;
+    await expect(preparedReversal.prepare(f.worker, retargetedArgs)).rejects.toThrow(
+      'PREPARATION_IDENTITY_INVALID'
+    );
+    await expect(preparedReversal.requested(beforeReversal.prepared_command)).rejects.toThrow();
+    expect(await preparedReversal.counts()).toEqual({
+      preparations: 1,
+      origins: 1,
+      requests: 0,
+      events: 0,
+    });
     const api = clients.get('apiRole')!;
     await expect(
       api.query(

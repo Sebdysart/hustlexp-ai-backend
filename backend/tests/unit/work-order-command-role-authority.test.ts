@@ -1,3 +1,4 @@
+import { CHANGE_ORDER_REVERSAL_EXECUTION_FUNCTION } from '../../src/jobs/change-order-reversal-role-plans.js';
 import {
   CHANGE_ORDER_RECOVERY_COMPENSATION_INSERT_COLUMNS,
   CHANGE_ORDER_RECOVERY_COMPENSATION_LOCK_COLUMNS,
@@ -1082,6 +1083,18 @@ function functionRowBeforeRecoveryObservation(
 
 function functionRow(identity: (typeof WORK_ORDER_AUTHORITY_FUNCTIONS)[number]) {
   const row = functionRowBeforeRecoveryObservation(identity);
+  if (identity === CHANGE_ORDER_REVERSAL_EXECUTION_FUNCTION)
+    return {
+      ...row,
+      command_owner_execute: true,
+      execute_grantees: [...new Set([...row.execute_grantees!, names.commandOwnerRole])],
+    };
+  if (identity === FAKE_FINANCIAL_PREPARATION_INSERT)
+    return {
+      ...row,
+      finance_owner_execute: true,
+      execute_grantees: [...new Set([...row.execute_grantees!, names.financeOwnerRole])],
+    };
   if (
     ![
       ...CHANGE_ORDER_RECOVERY_OBSERVATION_DEPENDENCIES,

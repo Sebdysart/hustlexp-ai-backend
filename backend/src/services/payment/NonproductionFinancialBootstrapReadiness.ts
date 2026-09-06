@@ -399,23 +399,23 @@ const CRITICAL_SCHEMA_IDENTITY_NAMES = Object.freeze([
 const CRITICAL_SCHEMA_EVIDENCE = Object.freeze([
   {
     identityName: 'relations',
-    sha256: 'd7ecec5ae7c04077d62fb668486f9726e89d8231f46106a84c797117779ab2ca',
+    sha256: 'c9d5555c56490a83a8fd1160af5970c8935c79ace953ae3244e2756b01ae3914',
   },
   {
     identityName: 'constraints',
-    sha256: '84c8b54a03bd4c2ac2340b977adb5c9d1ee59e22b4d5e949d39ab0ca58a203b3',
+    sha256: '934fa6d11212c4c3f3c8bb6731991db86e8104738b8b93b5f43ddb2a17a1931a',
   },
   {
     identityName: 'indexes',
-    sha256: '9f37130df486b14ea943e255ab81ba4df1acf347bb26232b0e46ce11e4b9784f',
+    sha256: 'fddb513f50a43c25d2d0c941ae9b49ccde9e13da619930add0861f374781b8a0',
   },
   {
     identityName: 'functions',
-    sha256: 'afca9d4e36d964306a051e5d831176ae764406fccfd702cbf85d6a5f3aacfa69',
+    sha256: '0299eb25dbb946cbfbc3a77a48ad6c301939df3a66ca101b8800a174826b2088',
   },
   {
     identityName: 'triggers',
-    sha256: 'fc06d8677aafd69d1fd496d75f43bac0f41e5216c74787b097addfdc7b1cbbb1',
+    sha256: 'aa63ba245b71f8295438eb43ce74d07cca28a21ee8e358a7c876a4261aff9bcf',
   },
   {
     identityName: 'rewrite_rules',
@@ -423,7 +423,7 @@ const CRITICAL_SCHEMA_EVIDENCE = Object.freeze([
   },
   {
     identityName: 'constraint_triggers',
-    sha256: 'd7d9a944695d458e29b98dfb896c0e0578b2fc6604dca036cd57d36d96ff354f',
+    sha256: '68fa9e2d7fd8179edfbe23fa2154d77a221f9e8b1a7e04268bdd2b8df86fa6fb',
   },
   {
     identityName: 'policies',
@@ -672,6 +672,7 @@ async function readCriticalSchemaIdentityEvidence(
      ), target_relations(relation_name,schema_name) AS (
        SELECT relation_name,'public' FROM (VALUES ${sqlTextValues(CRITICAL_RELATION_NAMES)}) configured(relation_name)
        UNION ALL SELECT 'fake_financial_change_order_compensation_origins_v13','hx_authority'
+       UNION ALL SELECT 'fake_financial_change_order_reversal_preparations_v13','hx_authority'
      ), target_functions(function_name) AS (
        VALUES
          ${sqlTextValues(CRITICAL_FUNCTION_NAMES)}
@@ -1173,6 +1174,7 @@ async function readInternalConstraintViolations(
     await query<DatabaseAuthorityViolationRow>(`WITH target_relations(relation_name,schema_name) AS (
        SELECT relation_name,'public' FROM (VALUES ${sqlTextValues(CRITICAL_RELATION_NAMES)}) configured(relation_name)
        UNION ALL SELECT 'fake_financial_change_order_compensation_origins_v13','hx_authority'
+       UNION ALL SELECT 'fake_financial_change_order_reversal_preparations_v13','hx_authority'
   ), target_foreign_keys AS (
        SELECT constraint_record.oid
          FROM pg_catalog.pg_constraint constraint_record

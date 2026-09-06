@@ -470,6 +470,10 @@ export async function provisionUniversalV1SyntheticRoles(
     'public.universal_v1_financial_security_is_current_v1(timestamptz,timestamptz)',
   ])
     await client.query(`GRANT EXECUTE ON FUNCTION ${identity} TO ${quote(roles.financeOwnerRole)}`);
+  await client.query(
+    'GRANT EXECUTE ON FUNCTION hx_authority.assert_worker_change_order_reversal_execution_v13(uuid) TO ' +
+      quote(roles.commandOwnerRole)
+  );
   for (const identity of FAKE_FINANCIAL_OUTBOX_WORKER_FUNCTIONS)
     await client.query(`GRANT EXECUTE ON FUNCTION ${identity} TO ${quote(roles.workerRole)}`);
   for (const identity of FAKE_FINANCIAL_OUTBOX_SUBMISSION_FUNCTIONS)
@@ -714,6 +718,10 @@ async function provisionAuthenticatedFinancialPreparationDependencies(
     )
       await client.query('GRANT EXECUTE ON FUNCTION ' + identity + ' TO ' + quote(roles.apiRole));
   }
+  await client.query(
+    'GRANT EXECUTE ON FUNCTION public.hxos_prepare_universal_v1_financial_command_v1(uuid,text,uuid,text,text,bigint,bigint,text,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,bigint,text,uuid) TO ' +
+      quote(roles.financeOwnerRole)
+  );
   for (const identity of FAKE_FINANCIAL_PUBLIC_PROGRESS_FUNCTIONS) {
     const internal = identity === FAKE_FINANCIAL_PUBLIC_PROGRESS_READER;
     await client.query(

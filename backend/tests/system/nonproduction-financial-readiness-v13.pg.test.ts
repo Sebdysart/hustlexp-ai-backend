@@ -414,6 +414,69 @@ describePg('v13 actual financial bootstrap readiness', () => {
     30_000
   );
 
+  it.each([
+    'missing target FK',
+    'disabled private FK trigger',
+    'changed origin timestamp default',
+  ] as const)(
+    'fails closed on reversal preparation provenance %s',
+    async (mode) => {
+      const table = 'hx_authority.fake_financial_change_order_reversal_preparations_v13';
+      const constraint = (
+        await fixture.pool.query(
+          `SELECT conname,pg_get_constraintdef(oid) AS definition FROM pg_constraint
+        WHERE conrelid=$1::regclass AND confrelid='hx_authority.universal_v1_work_order_target_authority_facts'::regclass AND contype='f'`,
+          [table]
+        )
+      ).rows[0];
+      expect(constraint).toBeDefined();
+      if (!/^[a-z_]+$/u.test(constraint.conname)) throw Error('INVALID_CONSTRAINT_NAME');
+      const trigger = (
+        await fixture.pool.query(
+          `SELECT t.tgname FROM pg_trigger t JOIN pg_constraint c ON c.oid=t.tgconstraint
+        WHERE c.conrelid=$1::regclass AND c.conname=$2 AND t.tgrelid=c.conrelid AND t.tgisinternal ORDER BY tgname LIMIT 1`,
+          [table, constraint.conname]
+        )
+      ).rows[0];
+      if (!/^RI_ConstraintTrigger_c_[0-9]+$/u.test(trigger.tgname))
+        throw Error('INVALID_PRIVATE_FK_TRIGGER');
+      const change =
+        mode === 'missing target FK'
+          ? 'ALTER TABLE ' + table + ' DROP CONSTRAINT "' + constraint.conname + '"'
+          : mode === 'disabled private FK trigger'
+            ? 'ALTER TABLE ' + table + ' DISABLE TRIGGER "' + trigger.tgname + '"'
+            : 'ALTER TABLE ' +
+              table +
+              ' ALTER COLUMN recorded_at SET DEFAULT transaction_timestamp()';
+      const restore =
+        mode === 'missing target FK'
+          ? 'ALTER TABLE ' +
+            table +
+            ' ADD CONSTRAINT "' +
+            constraint.conname +
+            '" ' +
+            constraint.definition
+          : mode === 'disabled private FK trigger'
+            ? 'ALTER TABLE ' + table + ' ENABLE TRIGGER "' + trigger.tgname + '"'
+            : 'ALTER TABLE ' + table + ' ALTER COLUMN recorded_at SET DEFAULT clock_timestamp()';
+      await fixture.pool.query(change);
+      try {
+        const result = await readAs('worker', 'workerRole');
+        expect(result.sqlErrors).toEqual([]);
+        expect(result.report).toMatchObject({ ready: false });
+        if (mode === 'disabled private FK trigger')
+          expect(result.violations).toContain('FOREIGN_KEY_TRIGGER_ENFORCEMENT_INVALID');
+      } finally {
+        await fixture.pool.query(restore);
+      }
+      expect((await readAs('worker', 'workerRole')).report).toMatchObject({
+        ready: true,
+        status: 'ready',
+      });
+    },
+    30_000
+  );
+
   it('fails closed on a disabled incoming FK constraint trigger', async () => {
     // Isolated probe relation is outside the protected-relation list and references escrows.
     await fixture.pool.query(

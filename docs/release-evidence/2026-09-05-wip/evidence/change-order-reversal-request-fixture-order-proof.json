@@ -1,0 +1,8 @@
+{
+  "recordedAt": "2026-09-06T03:18:10.187Z",
+  "path": "backend/tests/system/universal-v1-v13-role-catalog.pg.test.ts",
+  "beforeSha256": "4a918636d88def89f25db0a4979f93794139b9366d435d8b0ba67be1fed7c004",
+  "afterSha256": "20435fab527de7f55ac7e78dbde3d6c8b1a80abbcf6c561769059308611061dc",
+  "inverseByteProof": true,
+  "scope": "Move only final-case reversal fixture creation after the existing queued-request isolation and committed predecessor outcome. Application, other126cases and other3cohorts unchanged."
+}

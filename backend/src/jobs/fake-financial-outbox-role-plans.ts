@@ -1,4 +1,9 @@
 import {
+  CHANGE_ORDER_REVERSAL_PREPARATION_FUNCTION,
+  CHANGE_ORDER_REVERSAL_INTERNAL_FUNCTIONS,
+  CHANGE_ORDER_REVERSAL_PREPARATIONS,
+} from './change-order-reversal-role-plans.js';
+import {
   CHANGE_ORDER_RECOVERY_COMPENSATION_FUNCTION,
   CHANGE_ORDER_RECOVERY_COMPENSATION_ORIGINS,
   CHANGE_ORDER_RECOVERY_CLAIM_FUNCTION,
@@ -53,6 +58,7 @@ export const FAKE_FINANCIAL_RECOVERY_ADMISSION_FUNCTION =
   'hx_authority.read_fake_financial_admission_evidence_v13(uuid,uuid)';
 
 export const FAKE_FINANCIAL_OUTBOX_WORKER_FUNCTIONS = [
+  CHANGE_ORDER_REVERSAL_PREPARATION_FUNCTION,
   CHANGE_ORDER_RECOVERY_COMPENSATION_FUNCTION,
   CHANGE_ORDER_RECOVERY_CLAIM_FUNCTION,
   CHANGE_ORDER_RECOVERY_OBSERVATION_FUNCTION,
@@ -85,6 +91,7 @@ export const FAKE_FINANCIAL_OUTCOME_ADMISSION_FUNCTION =
   'hx_authority.read_fake_financial_outcome_admission_v13(uuid)';
 
 export const FAKE_FINANCIAL_OUTBOX_DEFINER_FUNCTIONS = [
+  ...CHANGE_ORDER_REVERSAL_INTERNAL_FUNCTIONS,
   'hx_authority.read_fake_financial_terminal_observation_v13(uuid,uuid,uuid)',
   'hx_authority.read_fake_financial_materialization_evidence_v13(uuid,uuid)',
   FAKE_FINANCIAL_OUTCOME_ADMISSION_FUNCTION,
@@ -126,6 +133,7 @@ export const FAKE_FINANCIAL_OUTBOX_FUNCTIONS = [
 ] as const;
 
 export const FAKE_FINANCIAL_OUTBOX_RELATIONS = [
+  CHANGE_ORDER_REVERSAL_PREPARATIONS,
   CHANGE_ORDER_RECOVERY_COMPENSATION_ORIGINS,
   'hx_authority.fake_financial_exact_requests_v13',
   'hx_authority.fake_financial_command_outbox_requests_v13',
