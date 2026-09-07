@@ -184,11 +184,15 @@ async function handlePostTask({
             );
 
             if (!regionEvaluation.allowed) {
-              console.warn('[webPostTask.start] region policy denied', {
-                regionCode,
-                category: input.task.category,
-                reasons: regionEvaluation.reasons,
-              });
+              console.warn(
+                '[webPostTask] region policy rejected task',
+                {
+                  regionCode,
+                  category: input.task.category,
+                  validatedRiskLevel,
+                  reasons: regionEvaluation.reasons,
+                },
+              );
               throw new TRPCError({
                 code: 'BAD_REQUEST',
                 message:
