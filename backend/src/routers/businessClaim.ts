@@ -140,7 +140,12 @@ listClaimedDrafts: protectedProcedure
       organizationId: z.string().uuid(),
     }).strict(),
   )
-  .query(async ({ input }) => {
+  .query(async ({ ctx, input }) => {
+    await db.query(
+      `SELECT business_require_action($1, $2, 'READ_WORKSPACE')`,
+      [input.organizationId, ctx.user.id],
+    );
+
     const result = await db.query<{
       task_draft_id: string;
       title: string | null;
