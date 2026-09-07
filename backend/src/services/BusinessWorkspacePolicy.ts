@@ -27,6 +27,28 @@ export const BUSINESS_ACTIONS = [
 
 export type BusinessAction = (typeof BUSINESS_ACTIONS)[number];
 
+export interface BusinessOperationalState {
+  status: string;
+  verificationStatus: string;
+  providerEnabled: boolean;
+}
+
+export function assertBusinessOperational(business: BusinessOperationalState): void {
+  if (business.status !== 'ACTIVE') {
+    throw new Error('Business organization is not active.');
+  }
+}
+
+export function assertVerifiedProvider(business: BusinessOperationalState): void {
+  assertBusinessOperational(business);
+  if (!business.providerEnabled) {
+    throw new Error('Business provider capability is not enabled.');
+  }
+  if (business.verificationStatus !== 'VERIFIED') {
+    throw new Error('Business must be verified before participating in marketplace work.');
+  }
+}
+
 const ROLE_ACTIONS: Readonly<Record<BusinessRole, ReadonlySet<BusinessAction>>> = {
   OWNER: new Set(BUSINESS_ACTIONS),
   ADMIN: new Set(BUSINESS_ACTIONS),

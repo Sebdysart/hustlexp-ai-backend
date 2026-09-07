@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { db } from '../db.js';
 import type { ServiceResult } from '../types.js';
+import { assertVerifiedProvider } from './BusinessWorkspacePolicy.js';
 
 interface ClaimInput {
   token: string;
@@ -160,11 +161,20 @@ export async function claimBusinessTask(
 
       const org = orgResult.rows[0];
 
-      if (
-        !org ||
-        org.status !== 'ACTIVE' ||
-        org.provider_enabled !== true
-      ) {
+      if (!org) {
+        return failure(
+          'BUSINESS_NOT_READY',
+          'The business organization is not currently eligible to claim work.',
+        );
+      }
+
+      try {
+        assertVerifiedProvider({
+          status: org.status,
+          verificationStatus: org.verification_status,
+          providerEnabled: org.provider_enabled,
+        });
+      } catch {
         return failure(
           'BUSINESS_NOT_READY',
           'The business organization is not currently eligible to claim work.',

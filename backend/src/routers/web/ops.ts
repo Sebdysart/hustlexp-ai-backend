@@ -726,6 +726,36 @@ export const webOpsRouter = router({
         };
       }),
 
+  setBusinessStatus:
+    operationsAdminProcedure
+      .input(
+        z.object({
+          organization_id: z.string().uuid(),
+          status: z.enum(['ACTIVE', 'SUSPENDED', 'CLOSED']),
+        }).strict(),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const result = await db.query<{ id: string; status: string }>(
+          `UPDATE business_organizations
+           SET status = $2, updated_at = NOW()
+           WHERE id = $1
+           RETURNING id, status`,
+          [input.organization_id, input.status],
+        );
+        const business = result.rows[0];
+        if (!business) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Business not found' });
+        }
+        await recordOpsAudit({
+          actorUserId: ctx.user.id,
+          action: 'business_status_changed',
+          targetType: 'business_organization',
+          targetId: input.organization_id,
+          meta: { status: input.status },
+        });
+        return { ok: true, organization_id: business.id, status: business.status };
+      }),
+
   listPosters: operationsAdminProcedure
     .input(
       z.object({
