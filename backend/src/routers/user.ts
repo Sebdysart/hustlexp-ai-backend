@@ -252,6 +252,7 @@ export const userRouter = router({
       phone: z.string().max(20).optional(),
     }))
     .mutation(async ({ input }) => {
+      try {
       // --------------------------------------------------------------------------
       // FIREBASE TOKEN OWNERSHIP VERIFICATION (SEC FIX)
       // The caller must prove they own the Firebase UID by supplying a valid
@@ -563,6 +564,17 @@ export const userRouter = router({
       }
 
       return await toMobileUser(result.rows[0]);
+      } catch (error) {
+        log.error(
+          {
+            err: error,
+            firebaseUid: input.firebaseUid,
+            email: input.email,
+          },
+          'user.register failed',
+        );
+        throw error;
+      }
     }),
   
   // --------------------------------------------------------------------------
