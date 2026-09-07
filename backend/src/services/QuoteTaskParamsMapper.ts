@@ -164,6 +164,10 @@ export function mapQuoteToCreateTaskParams(
     // existing location policy.
     roughArea: asString(draft.zip),
     regionCode: draft.region_code,
+    regionPolicyId: draft.region_policy_id ?? undefined,
+    regionPolicyVersion: draft.region_policy_version ?? undefined,
+    regionPolicyHash: draft.region_policy_hash ?? undefined,
+    regionPolicySnapshot: draft.region_policy_snapshot ?? undefined,
 
     price,
     hustlerPayoutCents: payout,

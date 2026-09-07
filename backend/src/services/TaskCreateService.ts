@@ -358,55 +358,43 @@ async function resolveTaskRegionPolicy(
   return evaluation.snapshot;
 }
 
-async function resolveQuotedTaskRegionPolicy(
+function resolveQuotedTaskRegionPolicy(
   params: CreateTaskParams,
-): Promise<RegionPolicyTaskSnapshot> {
-  const binding = taskRegionBinding(params);
-
-  const policy =
-    await resolveRegionPolicy(
-      binding.regionCode,
-    );
-
-  if (!policy) {
+): RegionPolicyTaskSnapshot {
+  if (
+    !params.regionCode ||
+    !params.regionPolicyId ||
+    !params.regionPolicyVersion ||
+    !params.regionPolicyHash ||
+    !params.regionPolicySnapshot
+  ) {
     fail(
       'REGION_POLICY_UNAVAILABLE',
-      'No effective region policy is available for this task.',
-      {
-        regionCode:
-          binding.regionCode,
-      },
+      'The task is missing authoritative region policy validation.',
     );
   }
 
-  const evaluation =
-    evaluateTaskAgainstRegionPolicy(
-      policy,
-      taskRegionPolicyInput(
-        params,
-        params.price,
-        binding,
-      ),
-    );
-
-  if (!evaluation.allowed) {
+  const snapshot = params.regionPolicySnapshot;
+  if (
+    typeof snapshot !== 'object' ||
+    snapshot === null ||
+    typeof (snapshot as Record<string, unknown>).policyId !== 'string' ||
+    typeof (snapshot as Record<string, unknown>).policyVersion !== 'string' ||
+    typeof (snapshot as Record<string, unknown>).policyHash !== 'string' ||
+    typeof (snapshot as Record<string, unknown>).regionCode !== 'string'
+  ) {
     fail(
-      'REGION_POLICY_DENIED',
-      'The task does not meet the effective region policy.',
-      {
-        regionCode:
-          binding.regionCode,
-
-        policyVersion:
-          policy.version,
-
-        reasons:
-          evaluation.reasons,
-      },
+      'REGION_POLICY_UNAVAILABLE',
+      'The task is missing authoritative region policy validation.',
     );
   }
 
-  return evaluation.snapshot;
+  return {
+    ...(snapshot as unknown as RegionPolicyTaskSnapshot),
+    policyId: params.regionPolicyId,
+    policyVersion: params.regionPolicyVersion,
+    policyHash: params.regionPolicyHash,
+  };
 }
 
 function materializeOutcome(
@@ -592,10 +580,9 @@ async function materializeQuotedTaskInTransaction(
      * but it is intentionally independent from the legacy
      * template/plan/scoper stack.
      */
-    const regionPolicy =
-      await resolveQuotedTaskRegionPolicy(
-        params,
-      );
+    const regionPolicy = resolveQuotedTaskRegionPolicy(
+      params,
+    );
 
     await query(
       'SAVEPOINT hustlexp_quoted_task_create',

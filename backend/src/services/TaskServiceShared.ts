@@ -15,6 +15,10 @@ export interface CreateTaskParams {
   location?: string;
   regionCode?: string;
   category?: string;
+  regionPolicyId?: string;
+  regionPolicyVersion?: string;
+  regionPolicyHash?: string;
+  regionPolicySnapshot?: Record<string, unknown>;
   deadline?: Date;
   scheduledServiceDate?: string;
   dispatchExpiresAt?: Date;
