@@ -6,6 +6,11 @@ import { paymentCreationErrorCause } from '../services/NewPaymentCreationGuard.j
 import { StripeQuotePaymentProvider } from '../services/payment/StripeQuotePaymentProvider.js';
 import { finalizePaidQuote } from '../services/QuotePaymentFinalizationService.js';
 import { StripeService } from "../services/StripeService.js"
+import {
+  evaluateTaskAgainstRegionPolicy,
+  resolveRegionPolicy,
+} from '../services/RegionPolicyService.js';
+import { buildManualTaskPolicyInput } from '../services/ManualTaskPolicy.js';
 
 export const quotePaymentRouter = router({
   createPaymentIntent: posterProcedure
@@ -36,6 +41,12 @@ export const quotePaymentRouter = router({
         arrival_start_date: string | null;
         arrival_end_date: string | null;
         category: string;
+        region_code: string | null;
+        region_policy_id: string | null;
+        region_policy_version: string | null;
+        region_policy_hash: string | null;
+        region_policy_snapshot: Record<string, unknown> | null;
+        validated_risk_level: 'LOW' | 'MEDIUM' | 'HIGH' | 'IN_HOME' | null;
         region: string | null;
         expires_at: Date;
       }>(
@@ -53,6 +64,12 @@ export const quotePaymentRouter = router({
           q.provider_service_profile_id,
           d.scheduled_service_date::text AS scheduled_service_date,
           d.category,
+          d.region_code,
+          d.region_policy_id,
+          d.region_policy_version,
+          d.region_policy_hash,
+          d.region_policy_snapshot,
+          d.validated_risk_level,
           d.region,
           qv.total_cents,
           qv.hustler_payout_cents,
@@ -133,6 +150,57 @@ export const quotePaymentRouter = router({
       }
       if (!Number.isSafeInteger(marginCents) || marginCents < 0) {
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This quote has invalid payment economics.' });
+      }
+      if (
+        !quote.region_code ||
+        !quote.region_policy_id ||
+        !quote.region_policy_version ||
+        !quote.region_policy_hash ||
+        !quote.region_policy_snapshot ||
+        !quote.validated_risk_level
+      ) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'This task is missing authoritative policy validation and cannot be paid yet.',
+        });
+      }
+
+      const regionPolicy = await resolveRegionPolicy(quote.region_code);
+
+      if (!regionPolicy) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Payment is temporarily unavailable because the service-region policy is unavailable.',
+        });
+      }
+
+      const regionEvaluation = evaluateTaskAgainstRegionPolicy(
+        regionPolicy,
+        buildManualTaskPolicyInput({
+          regionCode: quote.region_code,
+          category: quote.category,
+          riskLevel: quote.validated_risk_level,
+          customerTotalCents: totalCents,
+          payoutCents,
+          platformMarginCents: marginCents,
+        }),
+      );
+
+      if (!regionEvaluation.allowed) {
+        console.warn(
+          '[quotePayment] region policy rejected payment',
+          {
+            quoteId: input.quoteId,
+            quoteVersionId: input.quoteVersionId,
+            reasons: regionEvaluation.reasons,
+          },
+        );
+
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message:
+            'This quote cannot currently be paid under HustleXP service policy.',
+        });
       }
 
       if (!quote.scheduled_service_date) {

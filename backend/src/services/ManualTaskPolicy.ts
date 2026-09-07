@@ -6,6 +6,9 @@ export interface ManualTaskPolicyInput {
   regionCode: string;
   category: string;
   riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' | 'IN_HOME';
+  customerTotalCents?: number;
+  payoutCents?: number;
+  platformMarginCents?: number;
 }
 
 export function buildManualTaskPolicyInput(
@@ -17,5 +20,8 @@ export function buildManualTaskPolicyInput(
     category: input.category,
     riskLevel: input.riskLevel,
     requiresProof: true,
+    customerTotalCents: input.customerTotalCents,
+    payoutCents: input.payoutCents,
+    marginCents: input.platformMarginCents,
   };
 }
