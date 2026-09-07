@@ -1,7 +1,7 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { db } from '../db.js';
-import { posterProcedure, router } from '../trpc.js';
+import { protectedProcedure, router } from '../trpc.js';
 
 const DraftIdSchema = z.object({
   taskDraftId: z.string().uuid(),
@@ -23,7 +23,7 @@ const AcceptQuoteDecisionSchema =
   });
 
 export const quoteDecisionRouter = router({
-  listForDraft: posterProcedure
+  listForDraft: protectedProcedure
     .input(DraftIdSchema)
     .query(async ({ ctx, input }) => {
       const draft = await db.query<{ id: string }>(
@@ -100,7 +100,7 @@ export const quoteDecisionRouter = router({
       }));
     }),
 
-  accept: posterProcedure
+  accept: protectedProcedure
     .input(AcceptQuoteDecisionSchema)
     .mutation(async ({ ctx, input }) => {
       return db.transaction(async (query) => {
@@ -326,7 +326,7 @@ export const quoteDecisionRouter = router({
       });
     }),
 
-  reject: posterProcedure
+  reject: protectedProcedure
     .input(QuoteDecisionSchema)
     .mutation(async ({ ctx, input }) => {
       return db.transaction(async (query) => {

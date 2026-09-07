@@ -2,7 +2,7 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import crypto from 'node:crypto';
 import { config } from '../../config.js';
-import { router, posterProcedure } from '../../trpc.js';
+import { protectedProcedure, router } from '../../trpc.js';
 import { db } from '../../db.js';
 import { ComplianceGuardianService } from '../../services/ComplianceGuardianService.js';
 import { deriveManualTaskRisk } from '../../services/ManualTaskRisk.js';
@@ -304,7 +304,7 @@ async function handlePostTask({
 }
 
 export const webPostTaskRouter = router({
-  start: posterProcedure
+  start: protectedProcedure
     .input(PostTaskSchema)
     .mutation(handlePostTask),
 });

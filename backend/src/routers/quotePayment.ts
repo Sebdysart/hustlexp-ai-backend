@@ -1,7 +1,7 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { db } from '../db.js';
-import { posterProcedure, router } from '../trpc.js';
+import { protectedProcedure, router } from '../trpc.js';
 import { paymentCreationErrorCause } from '../services/NewPaymentCreationGuard.js';
 import { StripeQuotePaymentProvider } from '../services/payment/StripeQuotePaymentProvider.js';
 import { finalizePaidQuote } from '../services/QuotePaymentFinalizationService.js';
@@ -13,7 +13,7 @@ import {
 import { buildManualTaskPolicyInput } from '../services/ManualTaskPolicy.js';
 
 export const quotePaymentRouter = router({
-  createPaymentIntent: posterProcedure
+  createPaymentIntent: protectedProcedure
     .input(
       z.object({
         quoteId: z.string().uuid(),
@@ -330,7 +330,7 @@ export const quotePaymentRouter = router({
       };
     }),
 
-  finalize: posterProcedure
+  finalize: protectedProcedure
     .input(
       z.object({
         quoteId: z.string().uuid(),
@@ -360,7 +360,7 @@ export const quotePaymentRouter = router({
 
       return result.data;
     }),
-  confirmTestPayment: posterProcedure
+  confirmTestPayment: protectedProcedure
   .input(
     z.object({
       paymentIntentId: z.string().min(10).max(255),
