@@ -61,6 +61,18 @@ interface DraftRow {
     Record<string, unknown> | null;
   zip: string | null;
   region: string | null;
+  validated_risk_level:
+    | 'LOW'
+    | 'MEDIUM'
+    | 'HIGH'
+    | 'IN_HOME'
+    | null;
+  compliance_result: Record<string, unknown> | null;
+  region_code: string | null;
+  region_policy_id: string | null;
+  region_policy_version: string | null;
+  region_policy_hash: string | null;
+  region_policy_snapshot: Record<string, unknown> | null;
 
   scheduled_service_date:
     string | null;
@@ -322,8 +334,15 @@ export async function finalizePaidQuote(
           scope_summary,
           structured,
           zip,
+          validated_risk_level,
+          compliance_result,
           scheduled_service_date::text AS scheduled_service_date,
-          region
+          region,
+          region_code,
+          region_policy_id,
+          region_policy_version,
+          region_policy_hash,
+          region_policy_snapshot
         FROM task_drafts
         WHERE id = $1
         FOR UPDATE
