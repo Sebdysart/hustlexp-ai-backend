@@ -76,9 +76,13 @@ export interface RegionPolicyTaskInput {
   category: string;
   riskLevel: z.infer<typeof RiskLevelSchema>;
   requiresProof: boolean;
-  customerTotalCents: number;
-  payoutCents: number | null;
-  marginCents: number | null;
+  customerTotalCents?: number;
+  payoutCents?: number | null;
+  marginCents?: number | null;
+}
+
+export interface RegionPolicyEvaluationOptions {
+  evaluateEconomics?: boolean;
 }
 
 export interface RegionPolicyTaskSnapshot {
@@ -130,13 +134,25 @@ function financialPolicyReasons(
   task: RegionPolicyTaskInput,
 ): string[] {
   const reasons: string[] = [];
-  if (!Number.isInteger(task.customerTotalCents) || task.customerTotalCents < financial.minimumCustomerCents) {
+  if (
+    typeof task.customerTotalCents !== 'number' ||
+    !Number.isInteger(task.customerTotalCents) ||
+    task.customerTotalCents < financial.minimumCustomerCents
+  ) {
     reasons.push('customer_total_below_region_floor');
   }
-  if (!Number.isInteger(task.payoutCents) || (task.payoutCents ?? 0) < financial.minimumPayoutCents) {
+  if (
+    task.payoutCents === undefined ||
+    !Number.isInteger(task.payoutCents) ||
+    (task.payoutCents ?? 0) < financial.minimumPayoutCents
+  ) {
     reasons.push('payout_below_region_floor');
   }
-  if (!Number.isInteger(task.marginCents) || (task.marginCents ?? -1) < financial.minimumMarginCents) {
+  if (
+    task.marginCents === undefined ||
+    !Number.isInteger(task.marginCents) ||
+    (task.marginCents ?? -1) < financial.minimumMarginCents
+  ) {
     reasons.push('margin_below_region_floor');
   }
   return reasons;
@@ -148,6 +164,7 @@ function taskPolicyReasons(
   task: RegionPolicyTaskInput,
   state: string | null,
   now: Date,
+  evaluateEconomics: boolean,
 ): string[] {
   const reasons: string[] = [];
   if (task.automationClassification === 'PRODUCTION' && !row.production_enabled) {
@@ -170,6 +187,9 @@ function taskPolicyReasons(
   const category = document.categories[task.category];
   if (category && !category.allowedRiskLevels.includes(task.riskLevel)) reasons.push('risk_level_not_allowed');
   if (category?.evidence.proofRequired && !task.requiresProof) reasons.push('proof_required');
+  if (!evaluateEconomics) {
+    return reasons;
+  }
   return [...reasons, ...financialPolicyReasons(document.financial, task)];
 }
 
@@ -286,6 +306,7 @@ function taskPolicySnapshot(
 export function evaluateTaskAgainstRegionPolicy(
   row: RegionPolicyRow,
   task: RegionPolicyTaskInput,
+  options: RegionPolicyEvaluationOptions = {},
   now: Date = new Date(),
 ): RegionPolicyEvaluation {
   const identity = PolicyIdentitySchema.safeParse({
@@ -300,7 +321,8 @@ export function evaluateTaskAgainstRegionPolicy(
     return { allowed: false, reasons: ['region_policy_invalid'], snapshot: null };
   }
   const state = locationState(row.region_code);
-  const reasons = taskPolicyReasons(row, document.data, task, state, now);
+  const evaluateEconomics = options.evaluateEconomics ?? true;
+  const reasons = taskPolicyReasons(row, document.data, task, state, now, evaluateEconomics);
   if (reasons.length > 0 || !state) {
     return { allowed: false, reasons: [...new Set(reasons)], snapshot: null };
   }
