@@ -1,0 +1,38 @@
+name: Canonical Alignment
+
+on:
+  push:
+    branches:
+      - alignment/canonical-v1-3-0
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  align-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply deterministic alignment
+        run: python scripts/canonical_auto_align.py || true
+      - name: Commit deterministic changes on alignment branch
+        if: github.event_name == 'push' && github.ref_name == 'alignment/canonical-v1-3-0'
+        run: |
+          if ! git diff --quiet || ! git diff --cached --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
+            git config user.name "hustlexp-canonical-bot"
+            git config user.email "support@hustlexp.app"
+            git add -A
+            git commit -m "chore(canonical): apply deterministic backend alignment"
+            git push
+          fi
+      - name: Verify canonical alignment
+        run: python scripts/canonical_auto_align.py

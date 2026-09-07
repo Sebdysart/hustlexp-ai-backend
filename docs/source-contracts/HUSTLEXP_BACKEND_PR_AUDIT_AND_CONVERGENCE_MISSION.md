@@ -1,3 +1,9 @@
+# HISTORICAL SOURCE RECORD — NOT CURRENT AUTHORITY
+
+Status: HISTORICAL / NOT CURRENT AUTHORITY
+Current authority: Charter v1.3.0, Underwriting v3.4, Learning Rail v1.0, Frontend and WorkLink v1.1, Activation/Copy v2.0, Context v1.3.0, and /OPS v1.1.
+Production effect: NONE
+
 # HustleXP Backend PR Audit, Architecture Convergence, and Processor-Readiness Mission
 
 ## ROLE

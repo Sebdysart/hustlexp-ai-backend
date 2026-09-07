@@ -1,3 +1,9 @@
+# STALE CURRENT-STATE INVENTORY — REVERIFY BEFORE USE
+
+Status: STALE_CURRENT_STATE_INVENTORY / SOURCE_DATED / NOT_PRODUCTION_AUTHORITY
+Stale as of: 2026-09-03 because the recorded source, deployment, configuration, migration, and evidence identities predate the current repository state.
+Treatment: every unrefreshed current-state claim is UNKNOWN. This file grants no merge, deployment, provider, payment, or production authority.
+
 # HustleXP current backend checkpoint
 
 Status: `CURRENT_IMPLEMENTATION_INVENTORY / SOURCE_DATED / NOT_PRODUCTION_AUTHORITY`
