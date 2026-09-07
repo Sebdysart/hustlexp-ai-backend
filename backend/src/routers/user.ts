@@ -248,7 +248,7 @@ export const userRouter = router({
       firebaseUid: z.string().max(128),
       email: z.string().email().max(254),
       fullName: z.string().trim().min(1).max(255),
-      // Accept "hustler", "worker", or "poster" from frontend
+      // Preferred dashboard mode only; not an authorization role.
       defaultMode: z.string().max(20).default('worker'),
       // COPPA compliance: date of birth for age verification (AUDIT FIX)
       dateOfBirth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date of birth must be YYYY-MM-DD format'),
@@ -620,8 +620,6 @@ export const userRouter = router({
         updates.push(`phone = $${paramIndex++}`);
         values.push(input.phone);
       }
-      const isRoleSwitch = input.defaultMode !== undefined && normalizeRole(input.defaultMode) !== ctx.user.default_mode;
-
       if (input.defaultMode !== undefined) {
         const newMode = normalizeRole(input.defaultMode);
         updates.push(`default_mode = $${paramIndex++}`);
@@ -636,41 +634,15 @@ export const userRouter = router({
       updates.push(`updated_at = NOW()`);
       values.push(ctx.user.id);
 
-      // T53-2 FIX: When switching roles, wrap the open-task COUNT check and
-      // the user UPDATE in a single SERIALIZABLE transaction so that no new task
-      // assignment can sneak in between the check and the write (TOCTOU race).
-      // Non-role-switch updates use a plain query — no locking needed.
-      let updatedUser: User;
-      if (isRoleSwitch) {
-        updatedUser = await db.serializableTransaction(async (txQuery) => {
-          // REG-11 FIX: EXPIRED is terminal — include it so expired tasks don't
-          // block role switching. Terminal TaskStates: COMPLETED, CANCELLED, EXPIRED.
-          const countResult = await txQuery<{ count: string }>(
-            `SELECT COUNT(*) FROM tasks
-             WHERE (poster_id = $1 OR worker_id = $1)
-             AND state NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED')`,
-            [ctx.user.id]
-          );
-          const openTasksCount = parseInt(countResult.rows[0].count, 10);
-          if (openTasksCount > 0) {
-            throw new TRPCError({
-              code: 'PRECONDITION_FAILED',
-              message: 'Cannot switch role while you have active tasks. Complete or cancel all tasks first.',
-            });
-          }
-          const result = await txQuery<User>(
-            `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
-            values
-          );
-          return result.rows[0];
-        });
-      } else {
-        const result = await db.query<User>(
-          `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
-          values
-        );
-        updatedUser = result.rows[0];
-      }
+      const result = await db.query<User>(
+        `UPDATE users
+         SET ${updates.join(', ')}
+         WHERE id = $${paramIndex}
+         RETURNING *`,
+        values,
+      );
+
+      const updatedUser = result.rows[0];
 
       await invalidateUser(ctx.user.id);
       // SEC-FIX: Evict the in-process auth token cache so the new default_mode
