@@ -259,6 +259,7 @@ listDraftsByPoster: posterProcedure
          quote_id
        FROM task_drafts
        WHERE poster_user_id = $1
+         AND task_id IS NULL
        ORDER BY created_at DESC
        LIMIT $2`,
       [

@@ -152,7 +152,9 @@ export const webOpsRouter = router({
       limit: z.number().min(1).max(100).default(50),
     }))
     .query(async ({ input }) => {
-      const conditions: string[] = [];
+      const conditions: string[] = [
+        'task_id IS NULL',
+      ];
       const params: unknown[] = [];
       if (input.status) conditions.push(`status = $${params.push(input.status)}`);
       if (input.category) conditions.push(`category = $${params.push(input.category)}`);
