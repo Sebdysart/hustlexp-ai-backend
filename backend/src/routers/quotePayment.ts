@@ -186,7 +186,7 @@ export const quotePaymentRouter = router({
         }),
         {
           evaluateEconomics: true,
-          evaluateProductionGates: true,
+          evaluateProductionGates: false,
         },
       );
 
