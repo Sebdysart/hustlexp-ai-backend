@@ -236,8 +236,8 @@ async function handlePostTask({
                 VALUES (
                     $1, $2, $3, $4, $5, $6, $7::jsonb,
                     $8, $9, $10, $11, $12,
-                    $13, $14::jsonb, $15, $16, $17, $18, $19, 'draft',
-                    $20, $21::jsonb, $22, $23, $24::jsonb
+                    $13, $14::jsonb, $15, $16, $17, $18, $19::jsonb, 'draft',
+                    $20, $21::jsonb, $22, $23, $24
                 )
                 RETURNING id, quote_id`,
                 [
