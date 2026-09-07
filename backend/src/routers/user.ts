@@ -7,7 +7,7 @@
  */
 
 import { TRPCError } from '@trpc/server';
-import { router, publicProcedure, protectedProcedure, hustlerProcedure, Schemas } from '../trpc.js';
+import { canManageOperations, router, publicProcedure, protectedProcedure, hustlerProcedure, Schemas } from '../trpc.js';
 import { db } from '../db.js';
 import { logger } from '../logger.js';
 import { XPService } from '../services/XPService.js';
@@ -99,7 +99,11 @@ export const userRouter = router({
   me: protectedProcedure
     .input(z.void())
     .query(async ({ ctx }) => {
-      return await toMobileUser(ctx.user!);
+      const profile = await toMobileUser(ctx.user!);
+      return {
+        ...profile,
+        canAccessOps: await canManageOperations(ctx.user.id),
+      };
     }),
 
   /**
