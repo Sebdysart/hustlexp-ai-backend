@@ -5,7 +5,7 @@ import { posterProcedure, router } from '../trpc.js';
 import { paymentCreationErrorCause } from '../services/NewPaymentCreationGuard.js';
 import { StripeQuotePaymentProvider } from '../services/payment/StripeQuotePaymentProvider.js';
 import { finalizePaidQuote } from '../services/QuotePaymentFinalizationService.js';
-import { StripeService } from "../services/StripeService.js"
+import { StripeService } from '../services/StripeService.js';
 import {
   evaluateTaskAgainstRegionPolicy,
   resolveRegionPolicy,
@@ -184,6 +184,10 @@ export const quotePaymentRouter = router({
           payoutCents,
           platformMarginCents: marginCents,
         }),
+        {
+          evaluateEconomics: true,
+          evaluateProductionGates: true,
+        },
       );
 
       if (!regionEvaluation.allowed) {
