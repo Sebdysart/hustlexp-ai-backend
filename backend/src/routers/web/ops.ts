@@ -552,6 +552,8 @@ export const webOpsRouter = router({
             display_name,
             provider_enabled,
             client_enabled,
+            washington_ubi,
+            federal_ein,
             verification_status,
             payout_status,
             status,
@@ -663,7 +665,10 @@ export const webOpsRouter = router({
           verification_status:
             z.enum([
               'UNVERIFIED',
+              'PENDING',
               'VERIFIED',
+              'REJECTED',
+              'SUSPENDED',
             ]),
         }).strict(),
       )

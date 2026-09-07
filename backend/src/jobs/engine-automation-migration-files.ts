@@ -119,4 +119,5 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260906_region_policy_contract_v2', fileName: '20260906_region_policy_contract_v2.sql' },
   { name: '20260907_task_draft_validation_v2', fileName: '20260907_task_draft_validation_v2.sql' },
   { name: '20260907_task_draft_region_validation', fileName: '20260907_task_draft_region_validation.sql' },
+  { name: '20260908_business_identifiers', fileName: '20260908_business_identifiers.sql' },
 ] as const;
