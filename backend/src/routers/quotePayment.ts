@@ -277,12 +277,14 @@ export const quotePaymentRouter = router({
         }
       }
 
-      const payment = await StripeQuotePaymentProvider.createPaymentIntent({
-        quoteId: input.quoteId,
-        quoteVersionId: input.quoteVersionId,
-        posterId: ctx.user.id,
-        amountCents: totalCents,
-      });
+      const payment =
+        await StripeQuotePaymentProvider.createPaymentIntent({
+          quoteId: input.quoteId,
+          quoteVersionId: input.quoteVersionId,
+          posterId: ctx.user.id,
+          amountCents: totalCents,
+          platformFeeCents: marginCents,
+        });
 
       if (!payment.success) {
         const cause = paymentCreationErrorCause(payment.error.code);
