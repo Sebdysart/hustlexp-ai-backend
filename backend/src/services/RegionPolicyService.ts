@@ -83,6 +83,7 @@ export interface RegionPolicyTaskInput {
 
 export interface RegionPolicyEvaluationOptions {
   evaluateEconomics?: boolean;
+  evaluateProductionGates?: boolean;
 }
 
 export interface RegionPolicyTaskSnapshot {
@@ -165,12 +166,13 @@ function taskPolicyReasons(
   state: string | null,
   now: Date,
   evaluateEconomics: boolean,
+  evaluateProductionGates: boolean,
 ): string[] {
   const reasons: string[] = [];
-  if (task.automationClassification === 'PRODUCTION' && !row.production_enabled) {
+  if (evaluateProductionGates && task.automationClassification === 'PRODUCTION' && !row.production_enabled) {
     reasons.push('production_policy_not_approved');
   }
-  if (task.automationClassification === 'PRODUCTION' && row.production_enabled) {
+  if (evaluateProductionGates && task.automationClassification === 'PRODUCTION' && row.production_enabled) {
     const effectiveAt = new Date(row.legal_approval_effective_at ?? Number.NaN);
     const reviewAt = new Date(row.legal_approval_review_at ?? Number.NaN);
     if (
@@ -322,7 +324,16 @@ export function evaluateTaskAgainstRegionPolicy(
   }
   const state = locationState(row.region_code);
   const evaluateEconomics = options.evaluateEconomics ?? true;
-  const reasons = taskPolicyReasons(row, document.data, task, state, now, evaluateEconomics);
+  const evaluateProductionGates = options.evaluateProductionGates ?? true;
+  const reasons = taskPolicyReasons(
+    row,
+    document.data,
+    task,
+    state,
+    now,
+    evaluateEconomics,
+    evaluateProductionGates,
+  );
   if (reasons.length > 0 || !state) {
     return { allowed: false, reasons: [...new Set(reasons)], snapshot: null };
   }

@@ -180,6 +180,7 @@ async function handlePostTask({
               }),
               {
                 evaluateEconomics: false,
+                evaluateProductionGates: false,
               },
             );
 
