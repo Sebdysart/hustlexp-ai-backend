@@ -373,6 +373,47 @@ export const webOpsRouter = router({
       SELECT
         t.*,
 
+        poster.full_name AS poster_name,
+        poster.email AS poster_email,
+
+        d.id AS originating_draft_id,
+        d.status AS originating_draft_status,
+        d.title AS originating_draft_title,
+        d.raw_input AS originating_draft_raw_input,
+        d.scope_summary AS originating_draft_scope_summary,
+        d.created_at AS originating_draft_created_at,
+        d.quote_send_ready_at AS quote_accepted_at,
+
+        q.id AS accepted_quote_id,
+        q.status AS accepted_quote_status,
+        q.business_organization_id AS quoting_business_organization_id,
+        q.created_at AS accepted_quote_created_at,
+
+        qv.id AS accepted_quote_version_id,
+        qv.version_number AS accepted_quote_version_number,
+        qv.total_cents AS accepted_quote_total_cents,
+        qv.hustler_payout_cents AS accepted_quote_provider_payout_cents,
+        (
+          qv.total_cents - qv.hustler_payout_cents
+        ) AS accepted_quote_platform_margin_cents,
+        qv.arrival_window_start AS accepted_quote_arrival_window_start,
+        qv.arrival_window_end AS accepted_quote_arrival_window_end,
+        qv.expires_at AS accepted_quote_expires_at,
+
+        quoting_org.legal_name AS quoting_business_legal_name,
+        quoting_org.display_name AS quoting_business_display_name,
+        quoting_org.status AS quoting_business_status,
+        quoting_org.verification_status AS quoting_business_verification_status,
+
+        fulfiller_org.legal_name AS fulfilling_business_legal_name,
+        fulfiller_org.display_name AS fulfilling_business_display_name,
+        fulfiller_org.status AS fulfilling_business_status,
+        fulfiller_org.verification_status AS fulfilling_business_verification_status,
+
+        qp.status AS quote_payment_status,
+        qp.provider_payment_id AS quote_payment_intent_id,
+        qp.updated_at AS quote_payment_updated_at,
+
         e.state AS escrow_state,
         e.amount AS escrow_amount_cents,
         e.platform_fee_cents,
@@ -393,11 +434,30 @@ export const webOpsRouter = router({
 
       FROM tasks t
 
+      LEFT JOIN users poster
+        ON poster.id = t.poster_id
+
+      LEFT JOIN task_drafts d
+        ON d.task_id = t.id
+
+      LEFT JOIN quotes q
+        ON q.id = d.quote_id
+
+      LEFT JOIN quote_versions qv
+        ON qv.id = q.active_version_id
+
+      LEFT JOIN business_organizations quoting_org
+        ON quoting_org.id = q.business_organization_id
+
+      LEFT JOIN business_organizations fulfiller_org
+        ON fulfiller_org.id = t.business_fulfiller_organization_id
+
+      LEFT JOIN quote_payments qp
+        ON qp.task_id = t.id
+        AND qp.quote_id = q.id
+
       LEFT JOIN escrows e
         ON e.task_id = t.id
-
-      LEFT JOIN users u
-        ON u.id = t.poster_id
 
       WHERE t.id = $1
       LIMIT 1
