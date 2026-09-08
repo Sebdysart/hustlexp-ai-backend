@@ -15,7 +15,15 @@ import { db } from '../../db.js';
 import { logger } from '../../logger.js';
 import { TRPCError } from '@trpc/server';
 import crypto from 'crypto';
+import { config } from '../../config.js';
 import { AutomationLifecycleService } from '../../services/AutomationLifecycleService.js';
+import { ComplianceGuardianService } from '../../services/ComplianceGuardianService.js';
+import { deriveManualTaskRisk } from '../../services/ManualTaskRisk.js';
+import {
+  evaluateTaskAgainstRegionPolicy,
+  resolveRegionPolicy,
+} from '../../services/RegionPolicyService.js';
+import { buildManualTaskPolicyInput } from '../../services/ManualTaskPolicy.js';
 import { getOpsLiquidityPayload } from '../../services/OpsLiquidityService.js';
 import { assertEngineOpsServiceKey, OpsAuthError } from './opsServiceKey.js';
 
@@ -1344,7 +1352,239 @@ export const webOpsRouter = router({
       });
       return { ok: true };
     }),
-    createBusinessClaimLink: operationsAdminProcedure
+  revalidateTaskDraft: operationsAdminProcedure
+    .input(z.object({
+      task_draft_id: z.string().uuid(),
+    }).strict())
+    .mutation(async ({ ctx, input }) => {
+      const draftResult = await db.query<{
+        id: string;
+        poster_user_id: string | null;
+        title: string | null;
+        raw_input: string | null;
+        scope_summary: string | null;
+        category: string;
+        status: string;
+      }>(
+        `
+        SELECT id, poster_user_id, title, raw_input, scope_summary, category, status
+        FROM task_drafts
+        WHERE id = $1
+        LIMIT 1
+        `,
+        [input.task_draft_id],
+      );
+
+      const draft = draftResult.rows[0];
+      if (!draft) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task draft not found.' });
+      }
+      if (draft.status === 'abandoned') {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Abandoned task drafts cannot be revalidated.',
+        });
+      }
+      if (!draft.poster_user_id) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'This task draft has no poster identity and cannot be safely revalidated.',
+        });
+      }
+
+      const taskText =
+        draft.raw_input?.trim()
+        || draft.scope_summary?.trim()
+        || draft.title?.trim();
+      if (!taskText) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'This task draft does not contain enough task text to revalidate.',
+        });
+      }
+
+      const validatedRiskLevel = deriveManualTaskRisk(taskText);
+      const complianceResult = await ComplianceGuardianService.evaluate({
+        description: taskText,
+        userId: draft.poster_user_id,
+        templateSlug: 'standard_physical',
+      });
+
+      if (complianceResult.tier === 'hard_block') {
+        await recordOpsAudit({
+          actorUserId: ctx.user.id,
+          action: 'task_draft_revalidation_rejected',
+          targetType: 'task_draft',
+          targetId: draft.id,
+          meta: {
+            compliance_tier: complianceResult.tier,
+            compliance_score: complianceResult.score,
+            validated_risk_level: validatedRiskLevel,
+          },
+        });
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'This task cannot be approved under HustleXP safety policy.',
+        });
+      }
+
+      const regionCode = config.launchRegionCode;
+      const regionPolicy = await resolveRegionPolicy(regionCode);
+      if (!regionPolicy) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Task validation is temporarily unavailable because the service-region policy is unavailable.',
+        });
+      }
+
+      const regionEvaluation = evaluateTaskAgainstRegionPolicy(
+        regionPolicy,
+        buildManualTaskPolicyInput({
+          regionCode,
+          category: draft.category,
+          riskLevel: validatedRiskLevel,
+        }),
+        {
+          evaluateEconomics: false,
+          evaluateProductionGates: false,
+        },
+      );
+
+      if (!regionEvaluation.allowed) {
+        log.warn(
+          {
+            taskDraftId: draft.id,
+            regionCode,
+            category: draft.category,
+            validatedRiskLevel,
+            reasons: regionEvaluation.reasons,
+          },
+          'Task draft revalidation rejected by region policy',
+        );
+        await recordOpsAudit({
+          actorUserId: ctx.user.id,
+          action: 'task_draft_revalidation_rejected',
+          targetType: 'task_draft',
+          targetId: draft.id,
+          meta: {
+            region_code: regionCode,
+            validated_risk_level: validatedRiskLevel,
+            policy_reasons: regionEvaluation.reasons,
+          },
+        });
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'This task cannot currently be approved under HustleXP service policy.',
+        });
+      }
+
+      const snapshot = regionEvaluation.snapshot;
+      if (!snapshot?.policyId || !snapshot.policyVersion || !snapshot.policyHash) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Region policy validation did not produce authoritative policy evidence.',
+        });
+      }
+
+      const updated = await db.transaction(async (tx) => {
+        const lockedResult = await tx<{
+          id: string;
+          status: string;
+          poster_user_id: string | null;
+        }>(
+          `SELECT id, status, poster_user_id FROM task_drafts WHERE id = $1 FOR UPDATE`,
+          [draft.id],
+        );
+        const locked = lockedResult.rows[0];
+        if (!locked) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Task draft no longer exists.' });
+        }
+        if (locked.status === 'abandoned') {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Task draft became unavailable during validation.',
+          });
+        }
+        if (locked.poster_user_id !== draft.poster_user_id) {
+          throw new TRPCError({
+            code: 'CONFLICT',
+            message: 'Task draft ownership changed during validation.',
+          });
+        }
+
+        const result = await tx<{
+          id: string;
+          region_code: string;
+          region_policy_id: string;
+          region_policy_version: string;
+          region_policy_hash: string;
+          validated_risk_level: string;
+        }>(
+          `
+          UPDATE task_drafts
+          SET
+            validated_risk_level = $2,
+            compliance_result = $3::jsonb,
+            region_code = $4,
+            region_policy_id = $5,
+            region_policy_version = $6,
+            region_policy_hash = $7,
+            region_policy_snapshot = $8::jsonb,
+            updated_at = NOW()
+          WHERE id = $1
+          RETURNING id, region_code, region_policy_id, region_policy_version,
+                    region_policy_hash, validated_risk_level
+          `,
+          [
+            draft.id,
+            validatedRiskLevel,
+            JSON.stringify(complianceResult),
+            regionCode,
+            snapshot.policyId,
+            snapshot.policyVersion,
+            snapshot.policyHash,
+            JSON.stringify(snapshot),
+          ],
+        );
+        return result.rows[0];
+      });
+
+      if (!updated) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Task draft validation could not be persisted.',
+        });
+      }
+
+      await recordOpsAudit({
+        actorUserId: ctx.user.id,
+        action: 'task_draft_revalidated',
+        targetType: 'task_draft',
+        targetId: draft.id,
+        meta: {
+          region_code: updated.region_code,
+          region_policy_id: updated.region_policy_id,
+          region_policy_version: updated.region_policy_version,
+          region_policy_hash: updated.region_policy_hash,
+          validated_risk_level: updated.validated_risk_level,
+          compliance_tier: complianceResult.tier,
+          compliance_score: complianceResult.score,
+        },
+      });
+
+      return {
+        ok: true,
+        task_draft_id: updated.id,
+        validated_risk_level: updated.validated_risk_level,
+        compliance_tier: complianceResult.tier,
+        region_code: updated.region_code,
+        region_policy_id: updated.region_policy_id,
+        region_policy_version: updated.region_policy_version,
+        region_policy_hash: updated.region_policy_hash,
+      };
+    }),
+
+  createBusinessClaimLink: operationsAdminProcedure
   .input(
     z.object({
       task_draft_id: z.string().uuid(),
