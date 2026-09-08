@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { db } from '../db.js';
 import { protectedProcedure, router } from '../trpc.js';
 import { paymentCreationErrorCause } from '../services/NewPaymentCreationGuard.js';
-import { StripeQuotePaymentProvider } from '../services/payment/StripeQuotePaymentProvider.js';
 import { finalizePaidQuote } from '../services/QuotePaymentFinalizationService.js';
 import { StripeService } from '../services/StripeService.js';
 import {
@@ -11,6 +10,7 @@ import {
   resolveRegionPolicy,
 } from '../services/RegionPolicyService.js';
 import { buildManualTaskPolicyInput } from '../services/ManualTaskPolicy.js';
+import { StaxQuotePaymentProvider } from '../services/payment/StaxQuotePaymentProvider.js';
 
 export const quotePaymentRouter = router({
   createPaymentIntent: protectedProcedure
@@ -18,6 +18,7 @@ export const quotePaymentRouter = router({
       z.object({
         quoteId: z.string().uuid(),
         quoteVersionId: z.string().uuid(),
+        paymentMethodId: z.string().min(1),
       }).strict(),
     )
     .mutation(async ({ ctx, input }) => {
@@ -278,12 +279,12 @@ export const quotePaymentRouter = router({
       }
 
       const payment =
-        await StripeQuotePaymentProvider.createPaymentIntent({
+        await StaxQuotePaymentProvider.charge({
           quoteId: input.quoteId,
           quoteVersionId: input.quoteVersionId,
           posterId: ctx.user.id,
+          paymentMethodId: input.paymentMethodId,
           amountCents: totalCents,
-          platformFeeCents: marginCents,
         });
 
       if (!payment.success) {
@@ -306,18 +307,19 @@ export const quotePaymentRouter = router({
           amount_cents,
           status
         )
-        VALUES ($1, $2, 'stripe', $3, $4, 'PENDING')
+        VALUES ($1, $2, 'stax', $3, $4, 'SUCCEEDED')
         ON CONFLICT (quote_id, quote_version_id)
         DO UPDATE SET
+          provider = 'stax',
           provider_payment_id = EXCLUDED.provider_payment_id,
           amount_cents = EXCLUDED.amount_cents,
-          status = 'PENDING',
+          status = 'SUCCEEDED',
           updated_at = NOW()
         `,
         [
           input.quoteId,
           input.quoteVersionId,
-          payment.data.paymentIntentId,
+          payment.data.transactionId,
           payment.data.amountCents,
         ],
       );
@@ -325,8 +327,8 @@ export const quotePaymentRouter = router({
       return {
         quoteId: input.quoteId,
         quoteVersionId: input.quoteVersionId,
-        paymentIntentId: payment.data.paymentIntentId,
-        clientSecret: payment.data.clientSecret,
+        paymentIntentId: payment.data.transactionId,
+        clientSecret: null,
         amountCents: payment.data.amountCents,
         replayed: false,
       };

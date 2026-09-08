@@ -6,7 +6,7 @@ import {
   mapQuoteToCreateTaskParams,
   type MapQuoteToTaskParamsInput,
 } from './QuoteTaskParamsMapper.js';
-import { StripeQuotePaymentProvider } from './payment/StripeQuotePaymentProvider.js';
+import { StaxQuotePaymentProvider } from './payment/StaxQuotePaymentProvider.js';
 
 interface FinalizePaidQuoteInput {
   quoteId: string;
@@ -158,8 +158,8 @@ export async function finalizePaidQuote(
      * Verify that the payment actually belongs to this quote.
      */
     const verified =
-      await StripeQuotePaymentProvider.verifySucceededPayment({
-        paymentIntentId: input.paymentIntentId,
+      await StaxQuotePaymentProvider.verifySucceededPayment({
+        transactionId: input.paymentIntentId,
         quoteId: input.quoteId,
         quoteVersionId: input.quoteVersionId,
         posterId: input.posterId,
