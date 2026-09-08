@@ -184,41 +184,22 @@ export const webOpsRouter = router({
       }),
     )
     .query(async ({ input }) => {
-      const result = await db.query(
+      const draftResult = await db.query(
         `
         SELECT
           ${TASK_DRAFT_SAFE_COLS
             .split(',')
-            .map(
-              (c) =>
-                `d.${c.trim()}`,
-            )
+            .map((c) => `d.${c.trim()}`)
             .join(', ')},
-
-          q.id AS quote_id_linked,
-
-          qv.status AS quote_status,
-          qv.total_cents,
-          qv.subtotal_cents,
-          qv.service_fee_cents,
-          qv.materials_cents,
-          qv.discount_cents,
-          qv.customer_description,
-          qv.version_number AS quote_version,
 
           claim.id AS claim_link_id,
           claim.status AS claim_status,
           claim.expires_at AS claim_expires_at,
           claim.claimed_at,
-          claim.claimed_by_organization_id
+          claim.claimed_by_organization_id,
+          claim.created_at AS claim_created_at
 
         FROM task_drafts d
-
-        LEFT JOIN quotes q
-          ON q.task_draft_id = d.id
-
-        LEFT JOIN quote_versions qv
-          ON qv.id = q.active_version_id
 
         LEFT JOIN LATERAL (
           SELECT
@@ -226,7 +207,8 @@ export const webOpsRouter = router({
             link.status,
             link.expires_at,
             link.claimed_at,
-            link.claimed_by_organization_id
+            link.claimed_by_organization_id,
+            link.created_at
           FROM ops_business_claim_links link
           WHERE link.task_draft_id = d.id
           ORDER BY link.created_at DESC
@@ -234,18 +216,109 @@ export const webOpsRouter = router({
         ) claim ON TRUE
 
         WHERE d.id = $1
+        LIMIT 1
         `,
         [input.id],
       );
 
-      if (result.rows.length === 0) {
+      if (draftResult.rows.length === 0) {
         throw new TRPCError({
           code: 'NOT_FOUND',
         });
       }
 
+      const quotesResult = await db.query(
+        `
+        SELECT
+          q.id AS quote_id,
+          q.status AS quote_status,
+          q.business_organization_id,
+          q.created_at AS quote_created_at,
+
+          qv.id AS quote_version_id,
+          qv.version_number AS quote_version,
+          qv.status AS quote_version_status,
+          qv.total_cents,
+          qv.subtotal_cents,
+          qv.service_fee_cents,
+          qv.materials_cents,
+          qv.discount_cents,
+          qv.customer_description,
+          qv.arrival_window_start,
+          qv.arrival_window_end,
+          qv.expires_at AS quote_expires_at,
+
+          qv.hustler_payout_cents AS provider_payout_cents,
+
+          CASE
+            WHEN qv.total_cents IS NOT NULL
+              AND qv.hustler_payout_cents IS NOT NULL
+            THEN qv.total_cents - qv.hustler_payout_cents
+            ELSE NULL
+          END AS platform_margin_cents,
+
+          org.legal_name AS business_legal_name,
+          org.display_name AS business_display_name,
+          org.status AS business_status,
+          org.verification_status AS business_verification_status,
+
+          claim.id AS claim_link_id,
+          claim.status AS claim_status,
+          claim.claimed_at,
+          claim.expires_at AS claim_expires_at,
+
+          CASE
+            WHEN d.quote_id = q.id
+            THEN TRUE
+            ELSE FALSE
+          END AS selected
+
+        FROM quotes q
+
+        JOIN task_drafts d
+          ON d.id = q.task_draft_id
+
+        LEFT JOIN quote_versions qv
+          ON qv.id = q.active_version_id
+
+        LEFT JOIN business_organizations org
+          ON org.id = q.business_organization_id
+
+        LEFT JOIN LATERAL (
+          SELECT
+            link.id,
+            link.status,
+            link.claimed_at,
+            link.expires_at
+          FROM ops_business_claim_links link
+          WHERE link.task_draft_id = q.task_draft_id
+            AND (
+              link.quote_id = q.id
+              OR (
+                link.quote_id IS NULL
+                AND link.claimed_by_organization_id =
+                  q.business_organization_id
+              )
+            )
+          ORDER BY link.created_at DESC
+          LIMIT 1
+        ) claim ON TRUE
+
+        WHERE q.task_draft_id = $1
+
+        ORDER BY
+          CASE
+            WHEN d.quote_id = q.id
+            THEN 0
+            ELSE 1
+          END,
+          q.created_at DESC
+        `,
+        [input.id],
+      );
+
       const draft =
-        result.rows[0] as Record<
+        draftResult.rows[0] as Record<
           string,
           unknown
         >;
@@ -263,9 +336,9 @@ export const webOpsRouter = router({
       return {
         ok: true,
         draft,
+        quotes: quotesResult.rows,
       };
     }),
-
   listTasks: operationsAdminProcedure
     .input(
       z.object({
@@ -1791,3 +1864,4 @@ export const webOpsRouter = router({
     }
   }),
 });
+
