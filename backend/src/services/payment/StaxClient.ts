@@ -42,13 +42,34 @@ export interface StaxChargeInput {
 
 export interface StaxTransaction {
   id: string;
-  success?: boolean;
-  total?: number | string;
-  status?: string;
   type?: string;
+  success?: boolean;
+  status?: string;
+
+  total?: number | string;
+  currency?: string;
+
   payment_method_id?: string;
   customer_id?: string;
+
+  pre_auth?: boolean;
+  is_voided?: boolean;
+  total_refunded?: number | string;
+
+  idempotency_id?: string | null;
+
   meta?: Record<string, unknown>;
+
+  response?: {
+    succeeded?: boolean;
+    state?: string;
+    amount?: number;
+    currency_code?: string;
+    on_test_gateway?: boolean;
+    [key: string]: unknown;
+  };
+
+  [key: string]: unknown;
 }
 
 export async function chargeStaxPaymentMethod(
@@ -74,4 +95,19 @@ export async function chargeStaxPaymentMethod(
       meta: input.meta ?? {},
     }),
   });
+}
+
+export async function getStaxTransaction(
+  transactionId: string,
+): Promise<StaxTransaction> {
+  if (!transactionId.trim()) {
+    throw new Error('Stax transaction ID is required.');
+  }
+
+  return staxRequest<StaxTransaction>(
+    `/transaction/${encodeURIComponent(transactionId)}`,
+    {
+      method: 'GET',
+    },
+  );
 }
