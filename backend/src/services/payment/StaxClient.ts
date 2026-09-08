@@ -111,3 +111,44 @@ export async function getStaxTransaction(
     },
   );
 }
+
+export interface StaxCreditInput {
+  paymentMethodId: string;
+  amountCents: number;
+  idempotencyId?: string;
+  meta?: Record<string, unknown>;
+}
+
+export async function creditStaxPaymentMethod(
+  input: StaxCreditInput,
+): Promise<StaxTransaction> {
+  if (!input.paymentMethodId.trim()) {
+    throw new Error(
+      'Stax credit requires a payment method ID.',
+    );
+  }
+
+  if (
+    !Number.isInteger(input.amountCents)
+    || input.amountCents <= 0
+  ) {
+    throw new Error(
+      'Stax credit amount must be a positive integer number of cents.',
+    );
+  }
+
+  return staxRequest<StaxTransaction>(
+    '/credit',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        payment_method_id: input.paymentMethodId,
+        total: input.amountCents / 100,
+        idempotency_id:
+          input.idempotencyId
+          ?? crypto.randomUUID(),
+        meta: input.meta ?? {},
+      }),
+    },
+  );
+}
