@@ -192,6 +192,9 @@ export const webOpsRouter = router({
             .map((c) => `d.${c.trim()}`)
             .join(', ')},
 
+          poster.full_name AS poster_name,
+          poster.email AS poster_email,
+
           claim.id AS claim_link_id,
           claim.status AS claim_status,
           claim.expires_at AS claim_expires_at,
@@ -200,6 +203,9 @@ export const webOpsRouter = router({
           claim.created_at AS claim_created_at
 
         FROM task_drafts d
+
+        LEFT JOIN users poster
+          ON poster.id = d.poster_user_id
 
         LEFT JOIN LATERAL (
           SELECT
