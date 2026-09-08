@@ -1,3 +1,5 @@
+import crypto from 'node:crypto';
+
 const STAX_BASE_URL = 'https://apiprod.fattlabs.com';
 
 export async function staxRequest<T>(
@@ -32,7 +34,8 @@ export async function listStaxCustomers() {
 
 export interface StaxChargeInput {
   paymentMethodId: string;
-  total: number;
+  amountCents: number;
+  idempotencyId?: string;
   preAuth?: boolean;
   meta?: Record<string, unknown>;
 }
@@ -42,6 +45,7 @@ export interface StaxTransaction {
   success?: boolean;
   total?: number | string;
   status?: string;
+  type?: string;
   payment_method_id?: string;
   customer_id?: string;
   meta?: Record<string, unknown>;
@@ -50,12 +54,23 @@ export interface StaxTransaction {
 export async function chargeStaxPaymentMethod(
   input: StaxChargeInput,
 ): Promise<StaxTransaction> {
+  if (
+    !Number.isInteger(input.amountCents) ||
+    input.amountCents <= 0
+  ) {
+    throw new Error(
+      'Stax charge amount must be a positive integer number of cents.',
+    );
+  }
+
   return staxRequest<StaxTransaction>('/charge', {
     method: 'POST',
     body: JSON.stringify({
       payment_method_id: input.paymentMethodId,
-      total: input.total,
+      total: input.amountCents / 100,
       pre_auth: input.preAuth ?? false,
+      idempotency_id:
+        input.idempotencyId ?? crypto.randomUUID(),
       meta: input.meta ?? {},
     }),
   });
