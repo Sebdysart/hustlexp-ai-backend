@@ -53,7 +53,19 @@ export const userProfileSchema = z.object({
 export const taskCreateSchema = z.object({
   title: taskTitle,
   description: taskDescription,
-  category: z.enum(['cleaning', 'delivery', 'moving', 'assembly', 'errands', 'other']),
+  category: z.enum([
+    'yard',
+    'cleaning',
+    'moving',
+    'assembly',
+    'delivery',
+    'handyman',
+    'home_services',
+    'auto',
+    'events',
+    'pet_care',
+    'other',
+  ]),
   budgetMin: monetaryAmountSchema,
   budgetMax: monetaryAmountSchema,
   location: z.object({

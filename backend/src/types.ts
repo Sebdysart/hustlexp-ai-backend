@@ -117,6 +117,7 @@ export interface Task {
   instant_mode: boolean;
   surge_level?: number;
   deadline?: Date;
+  scheduled_service_date?: Date;
   matched_at?: Date;
   accepted_at?: Date;
   proof_submitted_at?: Date;

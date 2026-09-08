@@ -74,8 +74,13 @@ export async function createBusinessWorkspace(input: {
   providerEnabled: boolean;
   clientEnabled: boolean;
   idempotencyKey: string;
+  washingtonUbi: string;
+  federalEin: string;
 }): Promise<ServiceResult<{ id: string; role: 'OWNER' }>> {
   try {
+    const washingtonUbi = input.washingtonUbi.replace(/\D/g, '');
+    const federalEin = input.federalEin.replace(/\D/g, '');
+
     const result = await db.query<{
       organization_id: string;
       actor_role: 'OWNER';
@@ -85,7 +90,7 @@ export async function createBusinessWorkspace(input: {
         organization_id,
         actor_role
       FROM create_business_organization(
-        $1,$2,$3,$4,$5,$6
+        $1,$2,$3,$4,$5,$6,$7,$8
       )
       `,
       [
@@ -95,6 +100,8 @@ export async function createBusinessWorkspace(input: {
         input.providerEnabled,
         input.clientEnabled,
         input.idempotencyKey,
+        washingtonUbi,
+        federalEin,
       ],
     );
 

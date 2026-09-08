@@ -57,9 +57,25 @@ interface DraftRow {
   category: string;
   title: string | null;
   scope_summary: string | null;
-  structured: Record<string, unknown> | null;
+  structured:
+    Record<string, unknown> | null;
   zip: string | null;
   region: string | null;
+  validated_risk_level:
+    | 'LOW'
+    | 'MEDIUM'
+    | 'HIGH'
+    | 'IN_HOME'
+    | null;
+  compliance_result: Record<string, unknown> | null;
+  region_code: string | null;
+  region_policy_id: string | null;
+  region_policy_version: string | null;
+  region_policy_hash: string | null;
+  region_policy_snapshot: Record<string, unknown> | null;
+
+  scheduled_service_date:
+    string | null;
 }
 
 interface LeadRow {
@@ -96,36 +112,31 @@ export async function finalizePaidQuote(
      *
      * We do not want an external Stripe call while holding DB locks.
      */
-    const quoteContext = await db.query<{
-      quote_id: string;
-      quote_version_id: string;
-      poster_email: string;
-      lead_email: string;
-      total_cents: number;
-    }>(
-      `
-      SELECT
-        q.id AS quote_id,
-        qv.id AS quote_version_id,
-        u.email AS poster_email,
-        l.email AS lead_email,
-        qv.total_cents
-      FROM quotes q
-      JOIN quote_versions qv
-        ON qv.id = q.active_version_id
-       AND qv.quote_id = q.id
-      JOIN task_drafts d
-        ON d.id = q.task_draft_id
-      JOIN leads l
-        ON l.id = d.lead_id
-      JOIN users u
-        ON u.id = $3
-      WHERE q.id = $1
-        AND qv.id = $2
-      LIMIT 1
-      `,
-      [input.quoteId, input.quoteVersionId, input.posterId],
-    );
+      const quoteContext = await db.query<{
+        quote_id: string;
+        quote_version_id: string;
+        selected_quote_id: string | null;
+        total_cents: number;
+      }>(
+        `
+        SELECT
+          q.id AS quote_id,
+          qv.id AS quote_version_id,
+          d.quote_id AS selected_quote_id,
+          qv.total_cents
+        FROM quotes q
+        JOIN quote_versions qv
+          ON qv.id = q.active_version_id
+        AND qv.quote_id = q.id
+        JOIN task_drafts d
+          ON d.id = q.task_draft_id
+        WHERE q.id = $1
+          AND qv.id = $2
+          AND d.poster_user_id = $3
+        LIMIT 1
+        `,
+        [input.quoteId, input.quoteVersionId, input.posterId],
+      );
 
     const context = quoteContext.rows[0];
 
@@ -136,13 +147,10 @@ export async function finalizePaidQuote(
       );
     }
 
-    if (
-      context.poster_email.trim().toLowerCase()
-      !== context.lead_email.trim().toLowerCase()
-    ) {
+    if (context.selected_quote_id !== input.quoteId) {
       return fail(
-        'QUOTE_POSTER_MISMATCH',
-        'This quote does not belong to the authenticated poster.',
+        'QUOTE_NOT_ACCEPTED',
+        'This quote has not been accepted by the poster.',
       );
     }
 
@@ -170,25 +178,30 @@ export async function finalizePaidQuote(
      * Lock the quote and create/materialize the canonical task.
      */
     const materialized = await db.transaction(async (query) => {
-      const quoteResult = await query<QuoteRow>(
-        `
-        SELECT
-  	id,
-  	task_draft_id,
-  	active_version_id,
-  	status,
-  	environment,
-  	is_test,
-  	business_organization_id,
-  	business_location_id,
-  	provider_service_profile_id,
-  	claimed_by_user_id
-	FROM quotes
-	WHERE id = $1
-	FOR UPDATE
-        `,
-        [input.quoteId],
-      );
+    const quoteResult = await query<
+      QuoteRow & { selected_quote_id: string | null }
+    >(
+      `
+      SELECT
+        q.id,
+        q.task_draft_id,
+        q.active_version_id,
+        q.status,
+        q.environment,
+        q.is_test,
+        q.business_organization_id,
+        q.business_location_id,
+        q.provider_service_profile_id,
+        q.claimed_by_user_id,
+        d.quote_id AS selected_quote_id
+      FROM quotes q
+      JOIN task_drafts d
+        ON d.id = q.task_draft_id
+      WHERE q.id = $1
+      FOR UPDATE OF q, d
+      `,
+      [input.quoteId],
+    );
 
 	const quote = quoteResult.rows[0];
 
@@ -196,6 +209,17 @@ export async function finalizePaidQuote(
 	  throw new Error('QUOTE_NOT_FOUND');
 	}
 
+  if (quote.selected_quote_id !== input.quoteId) {
+    throw new Error('QUOTE_NOT_ACCEPTED');
+  }
+
+  if (
+    quote.status !== 'quote_send_ready' &&
+    quote.status !== 'quote_ready'
+  ) {
+    throw new Error('QUOTE_NOT_PAYABLE');
+  }
+  
 	const hasBusinessClaim = Boolean(quote.business_organization_id);
 
 	if (hasBusinessClaim) {
@@ -310,7 +334,15 @@ export async function finalizePaidQuote(
           scope_summary,
           structured,
           zip,
-          region
+          validated_risk_level,
+          compliance_result,
+          scheduled_service_date::text AS scheduled_service_date,
+          region,
+          region_code,
+          region_policy_id,
+          region_policy_version,
+          region_policy_hash,
+          region_policy_snapshot
         FROM task_drafts
         WHERE id = $1
         FOR UPDATE
@@ -416,7 +448,7 @@ export async function finalizePaidQuote(
         mapQuoteToCreateTaskParams(taskParamsInput);
 
       const taskResult =
-        await TaskCreateService.createInTransaction(
+        await TaskCreateService.materializeQuotedTaskInTransaction(
           query,
           taskParams,
         );

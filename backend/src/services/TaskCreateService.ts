@@ -5,7 +5,6 @@ import { writeToOutbox } from '../lib/outbox-helpers.js';
 import { taskLogger } from '../logger.js';
 import type { ServiceError, ServiceResult, Task } from '../types.js';
 import { ErrorCodes } from '../types.js';
-import { PlanService } from './PlanService.js';
 import {
   evaluateTaskAgainstRegionPolicy,
   resolveRegionPolicy,
@@ -162,17 +161,6 @@ function validatePriceFloor(mode: 'STANDARD' | 'LIVE', price: number, policyMini
     const code = mode === 'LIVE' ? ErrorCodes.LIVE_2_VIOLATION : 'PRICE_TOO_LOW';
     const formatted = (minimum / 100).toFixed(2);
     fail(code, `This task requires a minimum price of $${formatted} (${minimum} cents)`);
-  }
-}
-
-async function assertPlan(params: CreateTaskParams): Promise<void> {
-  const riskLevel = params.riskLevel || 'LOW';
-  const result = await PlanService.canCreateTaskWithRisk(params.posterId, riskLevel);
-  if (!result.allowed) {
-    fail('PLAN_REQUIRED', result.reason || 'Premium plan required for this risk level', {
-      requiredPlan: result.requiredPlan,
-      riskLevel,
-    });
   }
 }
 
@@ -370,6 +358,45 @@ async function resolveTaskRegionPolicy(
   return evaluation.snapshot;
 }
 
+function resolveQuotedTaskRegionPolicy(
+  params: CreateTaskParams,
+): RegionPolicyTaskSnapshot {
+  if (
+    !params.regionCode ||
+    !params.regionPolicyId ||
+    !params.regionPolicyVersion ||
+    !params.regionPolicyHash ||
+    !params.regionPolicySnapshot
+  ) {
+    fail(
+      'REGION_POLICY_UNAVAILABLE',
+      'The task is missing authoritative region policy validation.',
+    );
+  }
+
+  const snapshot = params.regionPolicySnapshot;
+  if (
+    typeof snapshot !== 'object' ||
+    snapshot === null ||
+    typeof (snapshot as Record<string, unknown>).policyId !== 'string' ||
+    typeof (snapshot as Record<string, unknown>).policyVersion !== 'string' ||
+    typeof (snapshot as Record<string, unknown>).policyHash !== 'string' ||
+    typeof (snapshot as Record<string, unknown>).regionCode !== 'string'
+  ) {
+    fail(
+      'REGION_POLICY_UNAVAILABLE',
+      'The task is missing authoritative region policy validation.',
+    );
+  }
+
+  return {
+    ...(snapshot as unknown as RegionPolicyTaskSnapshot),
+    policyId: params.regionPolicyId,
+    policyVersion: params.regionPolicyVersion,
+    policyHash: params.regionPolicyHash,
+  };
+}
+
 function materializeOutcome(
   outcome: Exclude<CreateOutcome, { kind: 'created' }>,
   posterId: string,
@@ -434,7 +461,6 @@ async function create(params: CreateTaskParams): Promise<ServiceResult<Task>> {
     const money = await resolvePrice(prepared.params, prepared.policy);
     await assertPosterTrustHold(prepared.params);
     const regionPolicy = await resolveTaskRegionPolicy(prepared.params, money.price, prepared.policy);
-    await assertPlan(prepared.params);
     const instantMode = await instantModeAllowed(prepared.params);
     const outcome = await persistTask(prepared.params, money, instantMode, regionPolicy);
     if (outcome.kind !== 'created') return materializeOutcome(outcome, prepared.params.posterId);
@@ -462,7 +488,6 @@ async function createInTransaction(
     const money = await resolvePrice(prepared.params, prepared.policy);
     await assertPosterTrustHold(prepared.params, query);
     const regionPolicy = await resolveTaskRegionPolicy(prepared.params, money.price, prepared.policy);
-    await assertPlan(prepared.params);
     await query('SAVEPOINT hustlexp_task_create');
     savepointOpen = true;
     const requestHash = prepared.params.clientIdempotencyKey ? buildTaskCreateRequestHash(prepared.params) : null;
@@ -501,4 +526,180 @@ async function createInTransaction(
     return errorResult(error);
   }
 }
-export const TaskCreateService = { create, createInTransaction };
+
+async function materializeQuotedTaskInTransaction(
+  query: TaskCreateQuery,
+  params: CreateTaskParams,
+): Promise<
+  ServiceResult<Task> & {
+    replayed?: boolean;
+  }
+> {
+  let savepointOpen = false;
+
+  try {
+    /*
+     * The accepted quote is authoritative for money.
+     *
+     * Do NOT run:
+     * - Scoper AI
+     * - template-derived pricing
+     * - minimum-price inference
+     * - plan gating
+     * - Instant eligibility
+     *
+     * Those belong to older task-creation flows.
+     */
+    if (
+      !Number.isInteger(params.price) ||
+      params.price <= 0
+    ) {
+      fail(
+        ErrorCodes.INVALID_STATE,
+        'Quoted task price must be a positive integer (cents)',
+      );
+    }
+
+    /*
+     * This is a financial invariant, not pricing policy.
+     */
+    validateQuoteEconomics(params);
+
+    const money = {
+      price: params.price,
+      xp: xpForPriceCents(
+        params.price,
+      ),
+    };
+
+    /*
+     * Persistence currently requires an authoritative
+     * region-policy snapshot.
+     *
+     * This should eventually be preflighted before payment,
+     * but it is intentionally independent from the legacy
+     * template/plan/scoper stack.
+     */
+    const regionPolicy = resolveQuotedTaskRegionPolicy(
+      params,
+    );
+
+    await query(
+      'SAVEPOINT hustlexp_quoted_task_create',
+    );
+
+    savepointOpen = true;
+
+    const requestHash =
+      params.clientIdempotencyKey
+        ? buildTaskCreateRequestHash(
+            params,
+          )
+        : null;
+
+    const prior =
+      await existingOutcome(
+        query,
+        params,
+        requestHash,
+      );
+
+    if (prior) {
+      await query(
+        'RELEASE SAVEPOINT hustlexp_quoted_task_create',
+      );
+
+      savepointOpen = false;
+
+      const result =
+        materializeOutcome(
+          prior,
+          params.posterId,
+        );
+
+      return result.success
+        ? {
+            ...result,
+            replayed:
+              prior.kind === 'replay',
+          }
+        : result;
+    }
+
+    /*
+     * Use the already-confirmed quote/task data directly.
+     * No template policy rematerialization occurs here.
+     */
+    const scope =
+      initialScope(
+        params,
+        money.price,
+      );
+
+    const task =
+      await insertCanonicalTask(
+        query,
+        {
+          params,
+          money,
+          instantMode: false,
+          scope,
+          regionPolicy,
+        },
+      );
+
+    await insertTaskDependents(
+      query,
+      {
+        params,
+        requestHash,
+        task,
+        price: money.price,
+        scope,
+      },
+    );
+
+    await query(
+      'RELEASE SAVEPOINT hustlexp_quoted_task_create',
+    );
+
+    savepointOpen = false;
+
+    return {
+      success: true,
+      data: task,
+      replayed: false,
+    };
+  } catch (error) {
+    if (savepointOpen) {
+      try {
+        await query(
+          'ROLLBACK TO SAVEPOINT hustlexp_quoted_task_create',
+        );
+
+        await query(
+          'RELEASE SAVEPOINT hustlexp_quoted_task_create',
+        );
+      } catch (
+        rollbackError
+      ) {
+        log.error(
+          {
+            err:
+              rollbackError instanceof
+              Error
+                ? rollbackError.message
+                : String(
+                    rollbackError,
+                  ),
+          },
+          'quoted task materialization savepoint rollback failed',
+        );
+      }
+    }
+
+    return errorResult(error);
+  }
+}
+
+export const TaskCreateService = { create, createInTransaction, materializeQuotedTaskInTransaction };
