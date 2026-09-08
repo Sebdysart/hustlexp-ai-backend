@@ -4,6 +4,9 @@ import { logger } from '../logger.js';
 import type { ServiceResult } from '../types.js';
 import { encryptTaskLocation } from './TaskLocationCrypto.js';
 import type { BusinessRole } from './BusinessWorkspacePolicy.js';
+import {
+  ensureBusinessTestPayoutDestination,
+} from './BusinessTestPayoutDestinationService.js';
 
 const log = logger.child({ service: 'BusinessWorkspaceService' });
 
@@ -71,21 +74,67 @@ export async function createBusinessWorkspace(input: {
   providerEnabled: boolean;
   clientEnabled: boolean;
   idempotencyKey: string;
+  washingtonUbi: string;
+  federalEin: string;
 }): Promise<ServiceResult<{ id: string; role: 'OWNER' }>> {
   try {
-    const result = await db.query<{ organization_id: string; actor_role: 'OWNER' }>(
-      `SELECT organization_id,actor_role
-       FROM create_business_organization($1,$2,$3,$4,$5,$6)`,
+    const washingtonUbi = input.washingtonUbi.replace(/\D/g, '');
+    const federalEin = input.federalEin.replace(/\D/g, '');
+
+    const result = await db.query<{
+      organization_id: string;
+      actor_role: 'OWNER';
+    }>(
+      `
+      SELECT
+        organization_id,
+        actor_role
+      FROM create_business_organization(
+        $1,$2,$3,$4,$5,$6,$7,$8
+      )
+      `,
       [
-        input.actorId, input.legalName, input.displayName,
-        input.providerEnabled, input.clientEnabled, input.idempotencyKey,
+        input.actorId,
+        input.legalName,
+        input.displayName,
+        input.providerEnabled,
+        input.clientEnabled,
+        input.idempotencyKey,
+        washingtonUbi,
+        federalEin,
       ],
     );
+
     const row = result.rows[0];
-    if (!row) return failure(null, 'BUSINESS_CREATE_FAILED', 'The business workspace was not created.');
-    return { success: true, data: { id: row.organization_id, role: row.actor_role } };
+
+    if (!row) {
+      return failure(
+        null,
+        'BUSINESS_CREATE_FAILED',
+        'The business workspace was not created.',
+      );
+    }
+
+    if (input.providerEnabled) {
+      await ensureBusinessTestPayoutDestination({
+        organizationId: row.organization_id,
+        payoutRecipientUserId: input.actorId,
+      });
+    }
+
+    return {
+      success: true,
+      data: {
+        id: row.organization_id,
+        role: row.actor_role,
+      },
+    };
   } catch (error) {
-    return failure(error, 'BUSINESS_CREATE_FAILED', 'The business workspace was not created.');
+    return failure(
+      error,
+      'BUSINESS_CREATE_FAILED',
+      'The business workspace was not created.',
+    );
   }
 }
 

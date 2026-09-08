@@ -6,7 +6,7 @@ import { notifyProofRejected, notifyTaskCompleted } from '../lib/task-lifecycle-
 import { ProofService } from '../services/ProofService.js';
 import { TaskService } from '../services/TaskService.js';
 import { VerifiedPosterCompletionService } from '../services/VerifiedPosterCompletionService.js';
-import { posterProcedure, Schemas, type AuthedContext } from '../trpc.js';
+import { protectedProcedure, Schemas, type AuthedContext } from '../trpc.js';
 import { ErrorCodes } from '../types.js';
 
 const reviewProofInput = z.object({
@@ -166,13 +166,13 @@ async function cancelTask(ctx: AuthedContext, taskId: string) {
 }
 
 export const TaskReviewProcedures = {
-  reviewProof: posterProcedure
+  reviewProof: protectedProcedure
     .input(reviewProofInput)
     .mutation(async ({ ctx, input }) => reviewProof(ctx, input)),
-  complete: posterProcedure
+  complete: protectedProcedure
     .input(z.object({ taskId: Schemas.uuid }))
     .mutation(async ({ ctx, input }) => completeTask(ctx, input.taskId)),
-  cancel: posterProcedure
+  cancel: protectedProcedure
     .input(z.object({ taskId: Schemas.uuid, reason: z.string().trim().max(1000).optional() }))
     .mutation(async ({ ctx, input }) => cancelTask(ctx, input.taskId)),
 };

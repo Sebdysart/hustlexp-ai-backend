@@ -1,9 +1,17 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import crypto from 'node:crypto';
-import { router, posterProcedure } from '../../trpc.js';
+import { config } from '../../config.js';
+import { protectedProcedure, router } from '../../trpc.js';
 import { db } from '../../db.js';
 import { notifyProviderOsProvidersOfNewDraft } from '../../lib/provider-os-notifications.js';
+import { ComplianceGuardianService } from '../../services/ComplianceGuardianService.js';
+import { deriveManualTaskRisk } from '../../services/ManualTaskRisk.js';
+import {
+  evaluateTaskAgainstRegionPolicy,
+  resolveRegionPolicy,
+} from '../../services/RegionPolicyService.js';
+import { buildManualTaskPolicyInput } from '../../services/ManualTaskPolicy.js';
 
 const PostTaskSchema = z.object({
   lead: z.object({
@@ -134,6 +142,66 @@ async function handlePostTask({
             }
 
             // 3. Create task draft linked to lead.
+            const taskText =
+              input.task.raw_input?.trim()
+              || input.task.scope_summary?.trim()
+              || input.task.title.trim();
+
+            const validatedRiskLevel = deriveManualTaskRisk(taskText);
+            const complianceResult =
+              await ComplianceGuardianService.evaluate({
+                description: taskText,
+                userId: ctx.user.id,
+                templateSlug: 'standard_physical',
+              });
+
+            if (complianceResult.tier === 'hard_block') {
+              throw new TRPCError({
+                code: 'BAD_REQUEST',
+                message:
+                  'This task cannot be posted under HustleXP safety policy.',
+              });
+            }
+            const regionCode = config.launchRegionCode;
+            const regionPolicy = await resolveRegionPolicy(regionCode);
+
+            if (!regionPolicy) {
+              throw new TRPCError({
+                code: 'PRECONDITION_FAILED',
+                message:
+                  'Task posting is temporarily unavailable in this service region.',
+              });
+            }
+            const regionEvaluation = evaluateTaskAgainstRegionPolicy(
+              regionPolicy,
+              buildManualTaskPolicyInput({
+                regionCode,
+                category: input.task.category,
+                riskLevel: validatedRiskLevel,
+              }),
+              {
+                evaluateEconomics: false,
+                evaluateProductionGates: false,
+              },
+            );
+
+            if (!regionEvaluation.allowed) {
+              console.warn(
+                '[webPostTask] region policy rejected task',
+                {
+                  regionCode,
+                  category: input.task.category,
+                  validatedRiskLevel,
+                  reasons: regionEvaluation.reasons,
+                },
+              );
+              throw new TRPCError({
+                code: 'BAD_REQUEST',
+                message:
+                  'This task cannot currently be posted under HustleXP service policy.',
+              });
+            }
+
             const { raw: cardToken, hash: cardTokenHash } = generateCardToken();
             const draft = await query<{
                 id: string;
@@ -152,6 +220,13 @@ async function handlePostTask({
                     photo_count,
                     zip,
                     region,
+                    validated_risk_level,
+                    compliance_result,
+                    region_code,
+                    region_policy_id,
+                    region_policy_version,
+                    region_policy_hash,
+                    region_policy_snapshot,
                     status,
                     source,
                     utm,
@@ -162,7 +237,8 @@ async function handlePostTask({
                 VALUES (
                     $1, $2, $3, $4, $5, $6, $7::jsonb,
                     $8, $9, $10, $11, $12,
-                    'draft', $13, $14::jsonb, $15, $16, $17
+                    $13, $14::jsonb, $15, $16, $17, $18, $19::jsonb, 'draft',
+                    $20, $21::jsonb, $22, $23, $24
                 )
                 RETURNING id, quote_id`,
                 [
@@ -178,6 +254,13 @@ async function handlePostTask({
                     input.task.photo_count,
                     input.task.zip ?? null,
                     input.task.region ?? null,
+                    validatedRiskLevel,
+                    JSON.stringify(complianceResult),
+                    regionCode,
+                    regionEvaluation.snapshot?.policyId,
+                    regionEvaluation.snapshot?.policyVersion,
+                    regionEvaluation.snapshot?.policyHash,
+                    JSON.stringify(regionEvaluation.snapshot),
                     input.task.source,
                     JSON.stringify(input.task.utm),
                     input.task.ip_hash ?? null,
@@ -230,7 +313,7 @@ async function handlePostTask({
 }
 
 export const webPostTaskRouter = router({
-  start: posterProcedure
+  start: protectedProcedure
     .input(PostTaskSchema)
     .mutation(handlePostTask),
 });

@@ -55,6 +55,8 @@ const idempotencyKey = z.string().trim().min(8).max(128).regex(/^[A-Za-z0-9:_-]+
 const workspaceCreateInput = z.object({
   legalName: z.string().trim().min(2).max(200),
   displayName: z.string().trim().min(2).max(120),
+  washingtonUbi: z.string().trim().regex(/^\d{3}-?\d{3}-?\d{3}$/, 'Washington UBI must contain 9 digits.'),
+  federalEin: z.string().trim().regex(/^\d{2}-?\d{7}$/, 'EIN must contain 9 digits.'),
   providerEnabled: z.boolean(),
   clientEnabled: z.boolean(),
   idempotencyKey,

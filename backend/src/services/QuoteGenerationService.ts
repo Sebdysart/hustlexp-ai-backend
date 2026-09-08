@@ -1,5 +1,8 @@
 import crypto from 'node:crypto';
 import { db , type QueryFn} from '../db.js';
+import {
+  computePreferredArrivalWindow,
+} from './QuoteTiming.js';
 
 type JsonObject = Record<string, unknown>;
 
@@ -2047,45 +2050,42 @@ function computeQuoteTiming(
 } {
   const now = Date.now();
 
-  const windows: Record<string, [number, number]> = {
-    today_or_tomorrow: [12, 36],
-    this_week: [96, 168],
-    next_week: [192, 336],
-    flexible: [96, 336],
-  };
-
-  const [startHours, endHours] =
-    windows[preferredWindow] ?? windows.flexible;
-
-  const arrivalStart = new Date(
-    now + startHours * 60 * 60 * 1000,
-  );
-
-  const arrivalEnd = new Date(
-    now + endHours * 60 * 60 * 1000,
+  const {
+    arrivalStart,
+    arrivalEnd,
+  } = computePreferredArrivalWindow(
+    preferredWindow,
   );
 
   const dispatchExpires = new Date(
-    arrivalStart.getTime()
-    - dispatchExpiresHoursBeforeWindow * 60 * 60 * 1000,
+    arrivalStart.getTime() -
+      dispatchExpiresHoursBeforeWindow *
+        60 *
+        60 *
+        1000,
   );
 
   const requestedQuoteExpiry = new Date(
-    now + quoteExpiresHours * 60 * 60 * 1000,
+    now +
+      quoteExpiresHours *
+        60 *
+        60 *
+        1000,
   );
 
   const quoteExpires = new Date(
     Math.min(
       requestedQuoteExpiry.getTime(),
-      dispatchExpires.getTime() - 60 * 60 * 1000,
+      dispatchExpires.getTime() -
+        60 * 60 * 1000,
     ),
   );
 
   if (
-    quoteExpires.getTime() <= now
-    || dispatchExpires <= quoteExpires
-    || arrivalStart <= dispatchExpires
-    || arrivalEnd <= arrivalStart
+    quoteExpires.getTime() <= now ||
+    dispatchExpires <= quoteExpires ||
+    arrivalStart <= dispatchExpires ||
+    arrivalEnd <= arrivalStart
   ) {
     throw new QuoteGenerationError(
       'BLOCKED_QUOTE_TIMING',

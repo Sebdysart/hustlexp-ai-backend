@@ -117,6 +117,7 @@ export interface Task {
   instant_mode: boolean;
   surge_level?: number;
   deadline?: Date;
+  scheduled_service_date?: Date;
   matched_at?: Date;
   accepted_at?: Date;
   proof_submitted_at?: Date;
@@ -146,6 +147,11 @@ export interface Task {
   proof_instructions?: string;
   created_at: Date;
   updated_at: Date;
+  business_organization_id?: string | null;
+  business_location_id?: string | null;
+  provider_organization_id?: string | null;
+  provider_service_profile_id?: string | null;
+  business_fulfiller_organization_id?: string | null;
 }
 
 export interface Escrow {
