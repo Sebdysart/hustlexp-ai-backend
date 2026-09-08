@@ -151,12 +151,18 @@ listClaimedDrafts: protectedProcedure
       title: string | null;
       category: string;
       scope_summary: string | null;
+      raw_input: string | null;
+      customer_name: string | null;
       zip: string | null;
       region: string | null;
 
       quote_id: string | null;
       quote_version_id: string | null;
       quote_status: string | null;
+      customer_description: string | null;
+      arrival_window_start: Date | null;
+      arrival_window_end: Date | null;
+      quote_expires_at: Date | null;
 
       customer_total_cents: number | null;
       payout_cents: number | null;
@@ -176,12 +182,18 @@ listClaimedDrafts: protectedProcedure
         draft.title,
         draft.category,
         draft.scope_summary,
+        draft.raw_input,
+        poster.full_name AS customer_name,
         draft.zip,
         draft.region,
 
         link.quote_id,
         quote.active_version_id AS quote_version_id,
         quote.status AS quote_status,
+        quote_version.customer_description,
+        quote_version.arrival_window_start,
+        quote_version.arrival_window_end,
+        quote_version.expires_at AS quote_expires_at,
 
         link.proposed_customer_total_cents AS customer_total_cents,
         link.proposed_payout_cents AS payout_cents,
@@ -194,7 +206,10 @@ listClaimedDrafts: protectedProcedure
 
         draft.task_id,
 
-        task.scheduled_service_date::text AS scheduled_service_date
+        COALESCE(
+          task.scheduled_service_date,
+          draft.scheduled_service_date
+        )::text AS scheduled_service_date
 
       FROM ops_business_claim_links link
 
@@ -203,6 +218,12 @@ listClaimedDrafts: protectedProcedure
 
       LEFT JOIN quotes quote
         ON quote.id = link.quote_id
+
+      LEFT JOIN quote_versions quote_version
+        ON quote_version.id = quote.active_version_id
+
+      LEFT JOIN users poster
+        ON poster.id = draft.poster_user_id
 
       LEFT JOIN tasks task
         ON task.id = draft.task_id
@@ -223,6 +244,12 @@ listClaimedDrafts: protectedProcedure
       title: row.title,
       category: row.category,
       scopeSummary: row.scope_summary,
+      rawInput: row.raw_input,
+      customerName: row.customer_name,
+      customerDescription: row.customer_description,
+      arrivalWindowStart: row.arrival_window_start?.toISOString() ?? null,
+      arrivalWindowEnd: row.arrival_window_end?.toISOString() ?? null,
+      quoteExpiresAt: row.quote_expires_at?.toISOString() ?? null,
 
       zip: row.zip,
       region: row.region,

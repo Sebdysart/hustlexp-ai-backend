@@ -108,11 +108,71 @@ getById: protectedProcedure
         };
       }
 
+      const participantDetailResult = await db.query<{
+        originating_draft_id: string | null;
+        request_scope_summary: string | null;
+        request_raw_input: string | null;
+        request_zip: string | null;
+        request_region: string | null;
+        accepted_quote_id: string | null;
+        accepted_quote_status: string | null;
+        accepted_quote_total_cents: number | null;
+        accepted_quote_provider_payout_cents: number | null;
+        accepted_quote_description: string | null;
+        accepted_quote_arrival_window_start: Date | null;
+        accepted_quote_arrival_window_end: Date | null;
+        accepted_business_name: string | null;
+        poster_name: string | null;
+      }>(
+        `SELECT
+          draft.id AS originating_draft_id,
+          draft.scope_summary AS request_scope_summary,
+          draft.raw_input AS request_raw_input,
+          draft.zip AS request_zip,
+          draft.region AS request_region,
+          quote.id AS accepted_quote_id,
+          quote.status AS accepted_quote_status,
+          quote_version.total_cents AS accepted_quote_total_cents,
+          quote_version.hustler_payout_cents AS accepted_quote_provider_payout_cents,
+          quote_version.customer_description AS accepted_quote_description,
+          quote_version.arrival_window_start AS accepted_quote_arrival_window_start,
+          quote_version.arrival_window_end AS accepted_quote_arrival_window_end,
+          business.display_name AS accepted_business_name,
+          poster.full_name AS poster_name
+        FROM tasks task
+        LEFT JOIN task_drafts draft ON draft.task_id = task.id
+        LEFT JOIN quotes quote ON quote.id = draft.quote_id
+        LEFT JOIN quote_versions quote_version
+          ON quote_version.id = quote.active_version_id
+        LEFT JOIN business_organizations business
+          ON business.id = quote.business_organization_id
+        LEFT JOIN users poster ON poster.id = task.poster_id
+        WHERE task.id = $1
+        LIMIT 1`,
+        [input.taskId],
+      );
+
+      const participantDetail = participantDetailResult.rows[0] ?? null;
+
       return {
         ...task,
         viewer_role: viewerRole,
         quote_chat_role: quoteChatRole,
         quote_shortlisted_worker_id: quoteChatRole ? quoteWorkerId : null,
+        originating_draft_id: participantDetail?.originating_draft_id ?? null,
+        request_scope_summary: participantDetail?.request_scope_summary ?? null,
+        request_raw_input: participantDetail?.request_raw_input ?? null,
+        request_zip: participantDetail?.request_zip ?? null,
+        request_region: participantDetail?.request_region ?? null,
+        accepted_quote_id: participantDetail?.accepted_quote_id ?? null,
+        accepted_quote_status: participantDetail?.accepted_quote_status ?? null,
+        accepted_quote_total_cents: participantDetail?.accepted_quote_total_cents ?? null,
+        accepted_quote_description: participantDetail?.accepted_quote_description ?? null,
+        accepted_quote_arrival_window_start: participantDetail?.accepted_quote_arrival_window_start ?? null,
+        accepted_quote_arrival_window_end: participantDetail?.accepted_quote_arrival_window_end ?? null,
+        accepted_business_name: participantDetail?.accepted_business_name ?? null,
+        poster_name: viewerRole === 'business' || viewerRole === 'hustler' ? participantDetail?.poster_name ?? null : undefined,
+        accepted_quote_provider_payout_cents: viewerRole === 'business' || viewerRole === 'hustler' ? participantDetail?.accepted_quote_provider_payout_cents ?? null : undefined,
       };
     }),
 getDraftById: posterProcedure
