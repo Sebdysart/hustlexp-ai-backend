@@ -428,9 +428,8 @@ export const webOpsRouter = router({
         e.provider_transfer_id,
         e.stripe_payment_intent_id,
         e.stripe_transfer_id,
-        e.stripe_refund_id,
+        e.stripe_refund_id
 
-        u.email AS poster_email
 
       FROM tasks t
 
