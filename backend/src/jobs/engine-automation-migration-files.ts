@@ -121,4 +121,6 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260907_task_draft_region_validation', fileName: '20260907_task_draft_region_validation.sql' },
   { name: '20260908_business_identifiers', fileName: '20260908_business_identifiers.sql' },
   { name: '20260909_business_assessment_requests', fileName: '20260909_business_assessment_requests.sql' },
+  { name: '20260909_business_stax_merchant_accounts', fileName: '20260909_business_stax_merchant_accounts.sql' },
+  { name: '20260909_quote_payment_stax_merchant_binding', fileName: '20260909_quote_payment_stax_merchant_binding.sql' },
 ] as const;
