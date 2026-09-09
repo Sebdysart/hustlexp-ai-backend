@@ -459,11 +459,10 @@ export async function quoteAfterAssessment(input: {
         claim_link_id: string;
         status: string;
         assessment_credit_cents: number | null;
-        assessment_platform_fee_cents: number | null;
       }>(
         `SELECT assessment.id, assessment.task_draft_id, assessment.business_organization_id, assessment.claim_link_id, assessment.status,
                 payment.amount_cents AS assessment_credit_cents,
-                payment.platform_fee_cents AS assessment_platform_fee_cents
+                
          FROM business_assessment_requests assessment
          LEFT JOIN assessment_payments payment ON payment.assessment_request_id = assessment.id AND payment.status = 'SUCCEEDED'
          WHERE assessment.id = $1 FOR UPDATE`,
@@ -477,10 +476,7 @@ export async function quoteAfterAssessment(input: {
         return failure('ASSESSMENT_WRONG_BUSINESS', 'This assessment belongs to another business.');
       }
       const assessmentCreditCents = assessment.assessment_credit_cents ?? 0;
-      const assessmentPlatformFeeCents = assessment.assessment_platform_fee_cents ?? 0;
-      const finalMarginCents = input.proposedCustomerTotalCents - input.proposedPayoutCents;
       if (assessmentCreditCents > 0 && input.proposedCustomerTotalCents <= assessmentCreditCents) return failure('QUOTE_TOTAL_NOT_ABOVE_ASSESSMENT_CREDIT', 'The final quote total must exceed the assessment credit.');
-      if (finalMarginCents < assessmentPlatformFeeCents) return failure('QUOTE_MARGIN_BELOW_COLLECTED_ASSESSMENT_FEE', 'The final quote economics are incompatible with the assessment payment already collected.');
 
       await query(`SELECT business_require_action($1, $2, 'ASSIGN_CREW')`, [input.organizationId, input.actorId]);
       const orgResult = await query<{ status: string; provider_enabled: boolean; verification_status: string }>(

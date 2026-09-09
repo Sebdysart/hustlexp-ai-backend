@@ -127,7 +127,6 @@ export async function finalizePaidQuote(
         provider_merchant_id: string | null;
         payment_platform_fee_cents: number | null;
         assessment_credit_cents: number | null;
-        assessment_platform_fee_cents: number | null;
       }>(
         `
         SELECT
@@ -142,7 +141,7 @@ export async function finalizePaidQuote(
           payment.provider_merchant_id,
           payment.platform_fee_cents AS payment_platform_fee_cents,
           assessment_payment.amount_cents AS assessment_credit_cents,
-          assessment_payment.platform_fee_cents AS assessment_platform_fee_cents
+          
         FROM quotes q
         JOIN quote_versions qv
           ON qv.id = q.active_version_id
@@ -191,14 +190,12 @@ export async function finalizePaidQuote(
       return fail('QUOTE_PAYMENT_ID_MISMATCH', 'The supplied payment does not match the stored quote payment.');
     }
     const assessmentCreditCents = Number(context.assessment_credit_cents ?? 0);
-    const assessmentPlatformFeeCents = Number(context.assessment_platform_fee_cents ?? 0);
     const quotePaymentAmountCents = Number(context.payment_amount_cents);
     const quotePaymentPlatformFeeCents = Number(context.payment_platform_fee_cents);
     const totalCents = Number(context.total_cents);
     const payoutCents = Number(context.hustler_payout_cents);
     if (!Number.isInteger(payoutCents) || payoutCents < 0) return fail('QUOTE_PAYOUT_INVALID', 'Quote payout is invalid.');
     if (assessmentCreditCents + quotePaymentAmountCents !== totalCents) return fail('QUOTE_PAYMENT_TOTAL_MISMATCH', 'Assessment credit and final payment do not equal the quote total.');
-    if (assessmentPlatformFeeCents + quotePaymentPlatformFeeCents !== totalCents - payoutCents) return fail('QUOTE_PLATFORM_FEE_MISMATCH', 'Assessment and final platform fees do not equal the quote margin.');
 
     /*
      * Verify that the payment actually belongs to this quote.

@@ -378,21 +378,18 @@ export const webOpsRouter = router({
       assessmentRequestId: z.string().uuid(),
       customerMessage: z.string().trim().min(1).max(4000),
       assessmentFeeCents: z.number().int().positive().nullable().optional(),
-      assessmentPlatformFeeCents: z.number().int().nonnegative().nullable().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const assessmentFeeCents = input.assessmentFeeCents ?? null;
-      const assessmentPlatformFeeCents = input.assessmentPlatformFeeCents ?? null;
-      if ((assessmentFeeCents === null) !== (assessmentPlatformFeeCents === null) || (assessmentPlatformFeeCents !== null && assessmentPlatformFeeCents > assessmentFeeCents!)) throw new TRPCError({ code:'BAD_REQUEST', message:'Assessment fee economics are invalid.' });
       const result = await db.query<{ id: string }>(
         `
         UPDATE business_assessment_requests
         SET status = 'AWAITING_CUSTOMER', customer_message = $2,
-            reviewed_by_user_id = $3, reviewed_at = NOW(), assessment_fee_cents = $4, assessment_platform_fee_cents = $5, updated_at = NOW()
+            reviewed_by_user_id = $3, reviewed_at = NOW(), assessment_fee_cents = $4, updated_at = NOW()
         WHERE id = $1 AND status = 'PENDING_ADMIN'
         RETURNING id
         `,
-        [input.assessmentRequestId, input.customerMessage, ctx.user.id, assessmentFeeCents, assessmentPlatformFeeCents],
+        [input.assessmentRequestId, input.customerMessage, ctx.user.id, assessmentFeeCents],
       );
       if (!result.rows[0]) {
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This assessment request is no longer pending review.' });
@@ -407,7 +404,7 @@ export const webOpsRouter = router({
         `
         UPDATE business_assessment_requests
         SET status = 'ADMIN_REJECTED', reviewed_by_user_id = $2,
-            reviewed_at = NOW(), assessment_fee_cents = $4, assessment_platform_fee_cents = $5, updated_at = NOW()
+            reviewed_at = NOW(), updated_at = NOW()
         WHERE id = $1 AND status = 'PENDING_ADMIN'
         RETURNING id
         `,

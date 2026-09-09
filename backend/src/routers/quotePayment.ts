@@ -160,8 +160,8 @@ export const quotePaymentRouter = router({
       if (!Number.isSafeInteger(marginCents) || marginCents < 0) {
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This quote has invalid payment economics.' });
       }
-      const assessmentCreditResult = await db.query<{ amount_cents: number; platform_fee_cents: number }>(
-        `SELECT payment.amount_cents, payment.platform_fee_cents
+      const assessmentCreditResult = await db.query<{ amount_cents: number }>(
+        `SELECT payment.amount_cents
          FROM business_assessment_requests assessment
          JOIN assessment_payments payment ON payment.assessment_request_id = assessment.id
          JOIN ops_business_claim_links claim ON claim.id = assessment.claim_link_id
@@ -170,10 +170,9 @@ export const quotePaymentRouter = router({
         [input.quoteId, quote.business_organization_id],
       );
       const assessmentCreditCents = assessmentCreditResult.rows[0]?.amount_cents ?? 0;
-      const assessmentPlatformFeeCents = assessmentCreditResult.rows[0]?.platform_fee_cents ?? 0;
       const remainingChargeCents = totalCents - assessmentCreditCents;
-      const remainingPlatformFeeCents = marginCents - assessmentPlatformFeeCents;
-      if (remainingChargeCents <= 0 || remainingPlatformFeeCents < 0) throw new TRPCError({ code:'PRECONDITION_FAILED', message:'The remaining quote balance is invalid.' });
+      const marketplaceFeeCents = marginCents;
+      if (remainingChargeCents <= 0) throw new TRPCError({ code:'PRECONDITION_FAILED', message:'The remaining quote balance is invalid.' });
       if (
         !quote.region_code ||
         !quote.region_policy_id ||
@@ -310,7 +309,7 @@ export const quotePaymentRouter = router({
           businessOrganizationId: quote.business_organization_id,
           paymentMethodId: input.paymentMethodId,
           amountCents: remainingChargeCents,
-          platformFeeCents: remainingPlatformFeeCents,
+          platformFeeCents: marketplaceFeeCents,
         });
 
       if (!payment.success) {
