@@ -98,7 +98,7 @@ export async function chargeStaxPaymentMethod(
       idempotency_id:
         input.idempotencyId ?? crypto.randomUUID(),
       meta: input.meta ?? {},
-    }),
+    },
     { apiKey: input.apiKey },
   });
 }
@@ -162,3 +162,6 @@ export async function creditStaxPaymentMethod(
     { apiKey: input.apiKey },
   );
 }
+
+
+

@@ -8,25 +8,39 @@ import { StaxMerchantAccountService } from './StaxMerchantAccountService.js';
 export interface CreateStaxQuotePaymentInput {
   quoteId: string;
   quoteVersionId: string;
-  posterId: string;`r`n  businessOrganizationId: string;`r`n  paymentMethodId: string;
-  amountCents: number;`r`n  businessOrganizationId: string;`r`n  merchantId: string;`r`n}
+  posterId: string;
+  businessOrganizationId: string;
+  paymentMethodId: string;
+  amountCents: number;
+  businessOrganizationId: string;
+  merchantId: string;
+}
 
 export interface CreateStaxQuotePaymentResult {
   transactionId: string;
-  amountCents: number;`r`n  businessOrganizationId: string;`r`n  merchantId: string;`r`n}
+  amountCents: number;
+  businessOrganizationId: string;
+  merchantId: string;
+}
 
 export interface VerifyStaxQuotePaymentInput {
   transactionId: string;
   quoteId: string;
   quoteVersionId: string;
   posterId: string;
-  amountCents: number;`r`n  businessOrganizationId: string;`r`n  merchantId: string;`r`n}
+  amountCents: number;
+  businessOrganizationId: string;
+  merchantId: string;
+}
 
 export const StaxQuotePaymentProvider = {
   async charge(
     input: CreateStaxQuotePaymentInput,
   ): Promise<ServiceResult<CreateStaxQuotePaymentResult>> {
-    try {`r`n      const merchant = await StaxMerchantAccountService.resolveActiveForOrganization(input.businessOrganizationId);`r`n      if (!merchant) return { success: false, error: { code: 'BUSINESS_PAYMENT_ACCOUNT_NOT_READY', message: 'The selected Business is not ready to receive Stax payments.' } };`r`n      const idempotencyId =
+    try {
+      const merchant = await StaxMerchantAccountService.resolveActiveForOrganization(input.businessOrganizationId);
+      if (!merchant) return { success: false, error: { code: 'BUSINESS_PAYMENT_ACCOUNT_NOT_READY', message: 'The selected Business is not ready to receive Stax payments.' } };
+      const idempotencyId =
         `quote:${input.quoteId}:${input.quoteVersionId}`;
 
       const transaction = await chargeStaxPaymentMethod({
@@ -37,8 +51,12 @@ export const StaxQuotePaymentProvider = {
         meta: {
           quote_id: input.quoteId,
           quote_version_id: input.quoteVersionId,
-          poster_id: input.posterId,`r`n          business_organization_id: input.businessOrganizationId,`r`n          stax_merchant_id: merchant.merchantId,
-          apiKey: merchant.apiKey,`r`n        },`r`n      });
+          poster_id: input.posterId,
+          business_organization_id: input.businessOrganizationId,
+          stax_merchant_id: merchant.merchantId,
+          apiKey: merchant.apiKey,
+        },
+      });
 
       if (
         transaction.success !== true ||
@@ -57,7 +75,10 @@ export const StaxQuotePaymentProvider = {
         success: true,
         data: {
           transactionId: transaction.id,
-          amountCents: input.amountCents,`r`n          merchantId: merchant.merchantId,`r`n          businessOrganizationId: input.businessOrganizationId,`r`n        },
+          amountCents: input.amountCents,
+          merchantId: merchant.merchantId,
+          businessOrganizationId: input.businessOrganizationId,
+        },
       };
     } catch {
       return {
@@ -73,7 +94,10 @@ export const StaxQuotePaymentProvider = {
   async verifySucceededPayment(
     input: VerifyStaxQuotePaymentInput,
   ): Promise<ServiceResult<void>> {
-    try {`r`n      const merchant = await StaxMerchantAccountService.resolveActiveForOrganization(input.businessOrganizationId);`r`n      if (!merchant || merchant.merchantId !== input.merchantId) return { success:false, error:{ code:'PAYMENT_MERCHANT_MISMATCH', message:'Stored Stax merchant does not match this payment.' } };`r`n      const transaction =
+    try {
+      const merchant = await StaxMerchantAccountService.resolveActiveForOrganization(input.businessOrganizationId);
+      if (!merchant || merchant.merchantId !== input.merchantId) return { success:false, error:{ code:'PAYMENT_MERCHANT_MISMATCH', message:'Stored Stax merchant does not match this payment.' } };
+      const transaction =
         await getStaxTransaction(input.transactionId, { apiKey: merchant.apiKey });
 
       if (
@@ -186,4 +210,5 @@ export const StaxQuotePaymentProvider = {
     }
   },
 };
+
 

@@ -292,8 +292,12 @@ export const quotePaymentRouter = router({
         await StaxQuotePaymentProvider.charge({
           quoteId: input.quoteId,
           quoteVersionId: input.quoteVersionId,
-          posterId: ctx.user.id,`r`n          businessOrganizationId: quote.business_organization_id,`r`n          paymentMethodId: input.paymentMethodId,
-          amountCents: totalCents,`r`n          platformFeeCents: marginCents,`r`n        });
+          posterId: ctx.user.id,
+          businessOrganizationId: quote.business_organization_id,
+          paymentMethodId: input.paymentMethodId,
+          amountCents: totalCents,
+          platformFeeCents: marginCents,
+        });
 
       if (!payment.success) {
         const cause = paymentCreationErrorCause(payment.error.code);
@@ -313,19 +317,32 @@ export const quotePaymentRouter = router({
           provider,
           provider_payment_id,
           amount_cents,
-          status,`r`n          business_organization_id,`r`n          provider_merchant_id,`r`n          platform_fee_cents`r`n        )`r`n        VALUES ($1, $2, 'stax', $3, $4, 'SUCCEEDED', $5, $6, $7)
+          status,
+          business_organization_id,
+          provider_merchant_id,
+          platform_fee_cents
+        )
+        VALUES ($1, $2, 'stax', $3, $4, 'SUCCEEDED', $5, $6, $7)
         ON CONFLICT (quote_id, quote_version_id)
         DO UPDATE SET
           provider = 'stax',
           provider_payment_id = EXCLUDED.provider_payment_id,
           amount_cents = EXCLUDED.amount_cents,
-          status = 'SUCCEEDED',`r`n          business_organization_id = EXCLUDED.business_organization_id,`r`n          provider_merchant_id = EXCLUDED.provider_merchant_id,`r`n          platform_fee_cents = EXCLUDED.platform_fee_cents,`r`n          updated_at = NOW()
+          status = 'SUCCEEDED',
+          business_organization_id = EXCLUDED.business_organization_id,
+          provider_merchant_id = EXCLUDED.provider_merchant_id,
+          platform_fee_cents = EXCLUDED.platform_fee_cents,
+          updated_at = NOW()
         `,
         [
           input.quoteId,
           input.quoteVersionId,
           payment.data.transactionId,
-          payment.data.amountCents,`r`n          payment.data.businessOrganizationId,`r`n          payment.data.merchantId,`r`n          payment.data.platformFeeCents,`r`n        ],
+          payment.data.amountCents,
+          payment.data.businessOrganizationId,
+          payment.data.merchantId,
+          payment.data.platformFeeCents,
+        ],
       );
 
       return {
@@ -391,5 +408,6 @@ export const quotePaymentRouter = router({
 });
 
 export type QuotePaymentRouter = typeof quotePaymentRouter;
+
 
 
