@@ -179,7 +179,7 @@ export async function finalizePaidQuote(
       );
     }
 
-    if (!context.business_organization_id || !context.provider_payment_id || context.payment_amount_cents === null) {
+    if (!context.provider_payment_id || context.payment_amount_cents === null || context.payment_platform_fee_cents === null) {
       return fail('QUOTE_PAYMENT_CONTEXT_MISSING', 'Quote payment binding is incomplete.');
     }
     if (context.provider_payment_id !== input.paymentIntentId) {
