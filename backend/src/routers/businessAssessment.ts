@@ -23,7 +23,7 @@ export const businessAssessmentRouter = router({
       if(a.assessment_fee_cents===null||a.assessment_fee_cents<=0) throw new TRPCError({code:'PRECONDITION_FAILED',message:'This assessment does not require payment.'});
       const existing=await db.query<any>('SELECT status FROM assessment_payments WHERE assessment_request_id=$1 LIMIT 1',[a.id]); if(existing.rows[0]?.status==='SUCCEEDED') throw new TRPCError({code:'PRECONDITION_FAILED',message:'This assessment fee has already been paid.'});
       const payment=await StaxAssessmentPaymentProvider.charge({assessmentRequestId:a.id,taskDraftId:a.task_draft_id,posterId:ctx.user.id,businessOrganizationId:a.business_organization_id,paymentMethodId:input.paymentMethodId,amountCents:a.assessment_fee_cents}); if(!payment.success) throw new TRPCError({code:'PRECONDITION_FAILED',message:payment.error.message});
-      await db.query(`INSERT INTO assessment_payments (assessment_request_id,task_draft_id,business_organization_id,poster_user_id,provider,provider_payment_id,provider_merchant_id,amount_cents,status) VALUES ($1,$2,$3,$4,'stax',$5,$6,$7,'SUCCEEDED') ON CONFLICT (assessment_request_id) DO UPDATE SET provider_payment_id=EXCLUDED.provider_payment_id,status='SUCCEEDED',updated_at=NOW()`,[a.id,a.task_draft_id,a.business_organization_id,ctx.user.id,payment.data.transactionId,payment.data.merchantId,payment.data.amountCents]);
+      await db.query(`INSERT INTO assessment_payments (assessment_request_id,task_draft_id,business_organization_id,poster_user_id,provider,provider_payment_id,amount_cents,status) VALUES ($1,$2,$3,$4,'stax',$5,$6,'SUCCEEDED') ON CONFLICT (assessment_request_id) DO UPDATE SET provider_payment_id=EXCLUDED.provider_payment_id,status='SUCCEEDED',updated_at=NOW()`,[a.id,a.task_draft_id,a.business_organization_id,ctx.user.id,payment.data.transactionId,payment.data.amountCents]);
       return {paymentIntentId:payment.data.transactionId,amountCents:payment.data.amountCents,status:'SUCCEEDED' as const};
     }),
   listForPosterDraft: protectedProcedure
@@ -111,5 +111,6 @@ export const businessAssessmentRouter = router({
       return { ok: true };
     }),
 });
+
 
 

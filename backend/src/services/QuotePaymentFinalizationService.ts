@@ -135,11 +135,8 @@ export async function finalizePaidQuote(
           d.quote_id AS selected_quote_id,
           qv.total_cents,
           qv.hustler_payout_cents,
-          q.business_organization_id,
           payment.provider_payment_id,
           payment.amount_cents AS payment_amount_cents,
-          payment.provider_merchant_id,
-          payment.platform_fee_cents AS payment_platform_fee_cents,
           assessment_payment.amount_cents AS assessment_credit_cents,
           
         FROM quotes q
@@ -183,7 +180,7 @@ export async function finalizePaidQuote(
       );
     }
 
-    if (!context.business_organization_id || !context.provider_payment_id || !context.provider_merchant_id || context.payment_amount_cents === null || context.payment_platform_fee_cents === null) {
+    if (!context.business_organization_id || !context.provider_payment_id || context.payment_amount_cents === null) {
       return fail('QUOTE_PAYMENT_CONTEXT_MISSING', 'Quote payment binding is incomplete.');
     }
     if (context.provider_payment_id !== input.paymentIntentId) {
@@ -191,8 +188,7 @@ export async function finalizePaidQuote(
     }
     const assessmentCreditCents = Number(context.assessment_credit_cents ?? 0);
     const quotePaymentAmountCents = Number(context.payment_amount_cents);
-    const quotePaymentPlatformFeeCents = Number(context.payment_platform_fee_cents);
-    const totalCents = Number(context.total_cents);
+        const totalCents = Number(context.total_cents);
     const payoutCents = Number(context.hustler_payout_cents);
     if (!Number.isInteger(payoutCents) || payoutCents < 0) return fail('QUOTE_PAYOUT_INVALID', 'Quote payout is invalid.');
     if (assessmentCreditCents + quotePaymentAmountCents !== totalCents) return fail('QUOTE_PAYMENT_TOTAL_MISMATCH', 'Assessment credit and final payment do not equal the quote total.');
@@ -207,8 +203,6 @@ export async function finalizePaidQuote(
         quoteVersionId: input.quoteVersionId,
         posterId: input.posterId,
         amountCents: quotePaymentAmountCents,
-        businessOrganizationId: context.business_organization_id,
-        merchantId: context.provider_merchant_id,
       });
 
     if (!verified.success) {
@@ -451,9 +445,7 @@ export async function finalizePaidQuote(
       if (existingPayment.provider !== 'stax') throw new Error('QUOTE_PAYMENT_PROVIDER_INVALID');
       if (existingPayment.provider_payment_id !== input.paymentIntentId) throw new Error('QUOTE_PAYMENT_IDEMPOTENCY_CONFLICT');
       if (existingPayment.amount_cents !== quotePaymentAmountCents) throw new Error('QUOTE_PAYMENT_AMOUNT_MISMATCH');
-      if (existingPayment.business_organization_id !== context.business_organization_id) throw new Error('QUOTE_PAYMENT_BUSINESS_MISMATCH');
-      if (existingPayment.provider_merchant_id !== context.provider_merchant_id) throw new Error('QUOTE_PAYMENT_MERCHANT_MISMATCH');
-
+            
       const taskParamsInput: MapQuoteToTaskParamsInput = {
         posterId: input.posterId,
         draft,
@@ -813,4 +805,5 @@ export async function finalizePaidQuote(
     );
   }
 }
+
 

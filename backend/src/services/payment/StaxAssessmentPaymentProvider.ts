@@ -1,11 +1,197 @@
 import type { ServiceResult } from '../../types.js';
-import { chargeStaxPaymentMethod, getStaxTransaction } from './StaxClient.js';
-import { StaxMerchantAccountService } from './StaxMerchantAccountService.js';
+import {
+  chargeStaxPaymentMethod,
+  getStaxTransaction,
+} from './StaxClient.js';
 
-export interface CreateStaxAssessmentPaymentInput { assessmentRequestId:string; taskDraftId:string; posterId:string; businessOrganizationId:string; paymentMethodId:string; amountCents:number; }
-export interface CreateStaxAssessmentPaymentResult { transactionId:string; amountCents:number; businessOrganizationId:string; merchantId:string; }
-export interface VerifyStaxAssessmentPaymentInput { transactionId:string; assessmentRequestId:string; taskDraftId:string; posterId:string; amountCents:number; businessOrganizationId:string; merchantId:string; }
+export interface CreateStaxAssessmentPaymentInput {
+  assessmentRequestId: string;
+  taskDraftId: string;
+  posterId: string;
+  businessOrganizationId: string;
+  paymentMethodId: string;
+  amountCents: number;
+}
+
+export interface CreateStaxAssessmentPaymentResult {
+  transactionId: string;
+  amountCents: number;
+}
+
+export interface VerifyStaxAssessmentPaymentInput {
+  transactionId: string;
+  assessmentRequestId: string;
+  taskDraftId: string;
+  posterId: string;
+  amountCents: number;
+}
+
 export const StaxAssessmentPaymentProvider = {
- async charge(input:CreateStaxAssessmentPaymentInput):Promise<ServiceResult<CreateStaxAssessmentPaymentResult>> { try { const m=await StaxMerchantAccountService.resolveActiveForOrganization(input.businessOrganizationId); if(!m)return {success:false,error:{code:'BUSINESS_PAYMENT_ACCOUNT_NOT_READY',message:'The selected Business is not ready to receive Stax payments.'}}; const tx=await chargeStaxPaymentMethod({apiKey:m.apiKey,paymentMethodId:input.paymentMethodId,amountCents:input.amountCents,idempotencyId:`assessment:${input.assessmentRequestId}`,preAuth:false,meta:{assessment_request_id:input.assessmentRequestId,task_draft_id:input.taskDraftId,poster_id:input.posterId,business_organization_id:input.businessOrganizationId,stax_merchant_id:m.merchantId}}); if(tx.success!==true||tx.status!=='SUCCESS')return {success:false,error:{code:'PAYMENT_NOT_SUCCEEDED',message:`Stax assessment payment did not succeed (status: ${tx.status??'unknown'}).`}}; return {success:true,data:{transactionId:tx.id,amountCents:input.amountCents,businessOrganizationId:input.businessOrganizationId,merchantId:m.merchantId}}; } catch { return {success:false,error:{code:'PAYMENT_CREATION_FAILED',message:'Stax assessment payment could not be created.'}}; } },
- async verifySucceededPayment(input:VerifyStaxAssessmentPaymentInput):Promise<ServiceResult<void>> { try { const m=await StaxMerchantAccountService.resolveActiveForOrganization(input.businessOrganizationId); if(!m||m.merchantId!==input.merchantId)return {success:false,error:{code:'PAYMENT_MERCHANT_MISMATCH',message:'Stored Stax merchant does not match this assessment payment.'}}; const tx=await getStaxTransaction(input.transactionId,{apiKey:m.apiKey}); const meta=tx.meta; if(tx.success!==true||tx.status!=='SUCCESS')return {success:false,error:{code:'PAYMENT_NOT_SUCCEEDED',message:'Stax assessment payment has not succeeded.'}}; if(tx.currency!=='USD'||Math.round(Number(tx.total)*100)!==input.amountCents)return {success:false,error:{code:'PAYMENT_AMOUNT_MISMATCH',message:'Stax transaction amount does not match assessment amount.'}}; if(meta?.assessment_request_id!==input.assessmentRequestId||meta?.task_draft_id!==input.taskDraftId||meta?.poster_id!==input.posterId||meta?.business_organization_id!==input.businessOrganizationId||meta?.stax_merchant_id!==input.merchantId)return {success:false,error:{code:'PAYMENT_ASSESSMENT_MISMATCH',message:'Stax assessment transaction binding does not match.'}}; if(tx.is_voided===true||Number(tx.total_refunded??0)>0)return {success:false,error:{code:'PAYMENT_VOIDED',message:'Stax assessment payment is no longer valid.'}}; return {success:true,data:undefined}; } catch { return {success:false,error:{code:'PAYMENT_VERIFICATION_FAILED',message:'Stax assessment payment could not be verified.'}}; } },
+  async charge(
+    input: CreateStaxAssessmentPaymentInput,
+  ): Promise<ServiceResult<CreateStaxAssessmentPaymentResult>> {
+    try {
+      const idempotencyId =
+        `ASSESSMENT:${input.assessmentRequestId}:${input.taskDraftId}`;
+
+      const transaction = await chargeStaxPaymentMethod({
+        paymentMethodId: input.paymentMethodId,
+        amountCents: input.amountCents,
+        idempotencyId,
+        preAuth: false,
+        meta: {
+          assessment_request_id: input.assessmentRequestId,
+          task_draft_id: input.taskDraftId,
+          poster_id: input.posterId,
+          business_organization_id: input.businessOrganizationId,
+        },
+      });
+
+      if (
+        transaction.success !== true ||
+        transaction.status !== 'SUCCESS'
+      ) {
+        return {
+          success: false,
+          error: {
+            code: 'PAYMENT_NOT_SUCCEEDED',
+            message: `Stax payment did not succeed (status: ${transaction.status ?? 'unknown'}).`,
+          },
+        };
+      }
+
+      return {
+        success: true,
+        data: {
+          transactionId: transaction.id,
+          amountCents: input.amountCents,
+        },
+      };
+    } catch {
+      return {
+        success: false,
+        error: {
+          code: 'PAYMENT_CREATION_FAILED',
+          message: 'Stax payment could not be created.',
+        },
+      };
+    }
+  },
+
+  async verifySucceededPayment(
+    input: VerifyStaxAssessmentPaymentInput,
+  ): Promise<ServiceResult<void>> {
+    try {
+      const transaction =
+        await getStaxTransaction(input.transactionId);
+
+      if (
+        transaction.success !== true ||
+        transaction.status !== 'SUCCESS'
+      ) {
+        return {
+          success: false,
+          error: {
+            code: 'PAYMENT_NOT_SUCCEEDED',
+            message: `Stax transaction has not succeeded (status: ${transaction.status ?? 'unknown'}).`,
+          },
+        };
+      }
+
+      if (transaction.currency !== 'USD') {
+        return {
+          success: false,
+          error: {
+            code: 'PAYMENT_CURRENCY_MISMATCH',
+            message: 'Stax transaction currency is not USD.',
+          },
+        };
+      }
+
+      const transactionAmountCents =
+        Math.round(Number(transaction.total) * 100);
+
+      if (transactionAmountCents !== input.amountCents) {
+        return {
+          success: false,
+          error: {
+            code: 'PAYMENT_AMOUNT_MISMATCH',
+            message: 'Stax transaction amount does not match ASSESSMENT amount.',
+          },
+        };
+      }
+
+      if (
+        transaction.meta?.assessment_request_id !== input.assessmentRequestId
+      ) {
+        return {
+          success: false,
+          error: {
+            code: 'PAYMENT_ASSESSMENT_MISMATCH',
+            message: 'Stax transaction was not created for this ASSESSMENT.',
+          },
+        };
+      }
+
+      if (
+        transaction.meta?.task_draft_id !==
+        input.taskDraftId
+      ) {
+        return {
+          success: false,
+          error: {
+            code: 'PAYMENT_ASSESSMENT_VERSION_MISMATCH',
+            message: 'Stax transaction was not created for this ASSESSMENT version.',
+          },
+        };
+      }
+
+      if (
+        transaction.meta?.poster_id !== input.posterId
+      ) {
+        return {
+          success: false,
+          error: {
+            code: 'PAYMENT_POSTER_MISMATCH',
+            message: 'Stax transaction was not created for this poster.',
+          },
+        };
+      }
+
+      if (transaction.is_voided === true) {
+        return {
+          success: false,
+          error: {
+            code: 'PAYMENT_VOIDED',
+            message: 'Stax transaction has been voided.',
+          },
+        };
+      }
+
+      if (Number(transaction.total_refunded ?? 0) > 0) {
+        return {
+          success: false,
+          error: {
+            code: 'PAYMENT_ALREADY_REFUNDED',
+            message: 'Stax transaction has already been refunded.',
+          },
+        };
+      }
+
+      return {
+        success: true,
+        data: undefined,
+      };
+    } catch {
+      return {
+        success: false,
+        error: {
+          code: 'PAYMENT_VERIFICATION_FAILED',
+          message: 'Stax transaction could not be verified.',
+        },
+      };
+    }
+  },
 };
+
+

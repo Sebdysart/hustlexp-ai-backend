@@ -11,16 +11,8 @@ import {
 } from '../services/RegionPolicyService.js';
 import { buildManualTaskPolicyInput } from '../services/ManualTaskPolicy.js';
 import { StaxQuotePaymentProvider } from '../services/payment/StaxQuotePaymentProvider.js';
-import { StaxMerchantAccountService } from '../services/payment/StaxMerchantAccountService.js';
 
 export const quotePaymentRouter = router({
-  getPaymentConfiguration: protectedProcedure.input(z.object({ quoteId: z.string().uuid() }).strict()).query(async ({ ctx, input }) => {
-    const r = await db.query<{ business_organization_id:string|null; selected_quote_id:string|null; display_name:string|null }>(`SELECT q.business_organization_id,d.quote_id AS selected_quote_id,bo.display_name FROM quotes q JOIN task_drafts d ON d.id=q.task_draft_id LEFT JOIN business_organizations bo ON bo.id=q.business_organization_id WHERE q.id=$1 AND d.poster_user_id=$2 LIMIT 1`,[input.quoteId,ctx.user.id]);
-    const row=r.rows[0]; if(!row) throw new TRPCError({code:'NOT_FOUND',message:'Quote not found.'});
-    if(row.selected_quote_id!==input.quoteId || !row.business_organization_id) throw new TRPCError({code:'PRECONDITION_FAILED',message:'This quote is not available for payment.'});
-    const merchant=await StaxMerchantAccountService.resolveActiveForOrganization(row.business_organization_id); if(!merchant) throw new TRPCError({code:'PRECONDITION_FAILED',message:'This Business is not yet enabled to receive payments.'});
-    return { provider:'stax' as const, webPaymentsToken:merchant.hostedPaymentsToken, businessOrganizationId:row.business_organization_id, businessDisplayName:row.display_name };
-  }),
   createPaymentIntent: protectedProcedure
     .input(
       z.object({
@@ -306,7 +298,6 @@ export const quotePaymentRouter = router({
           quoteId: input.quoteId,
           quoteVersionId: input.quoteVersionId,
           posterId: ctx.user.id,
-          businessOrganizationId: quote.business_organization_id,
           paymentMethodId: input.paymentMethodId,
           amountCents: remainingChargeCents,
           platformFeeCents: marketplaceFeeCents,
@@ -331,19 +322,15 @@ export const quotePaymentRouter = router({
           provider_payment_id,
           amount_cents,
           status,
-          business_organization_id,
-          provider_merchant_id,
           platform_fee_cents
         )
-        VALUES ($1, $2, 'stax', $3, $4, 'SUCCEEDED', $5, $6, $7)
+        VALUES ($1, $2, 'stax', $3, $4, 'SUCCEEDED', $5)
         ON CONFLICT (quote_id, quote_version_id)
         DO UPDATE SET
           provider = 'stax',
           provider_payment_id = EXCLUDED.provider_payment_id,
           amount_cents = EXCLUDED.amount_cents,
           status = 'SUCCEEDED',
-          business_organization_id = EXCLUDED.business_organization_id,
-          provider_merchant_id = EXCLUDED.provider_merchant_id,
           platform_fee_cents = EXCLUDED.platform_fee_cents,
           updated_at = NOW()
         `,
@@ -352,8 +339,6 @@ export const quotePaymentRouter = router({
           input.quoteVersionId,
           payment.data.transactionId,
           payment.data.amountCents,
-          payment.data.businessOrganizationId,
-          payment.data.merchantId,
           payment.data.platformFeeCents,
         ],
       );
@@ -421,6 +406,7 @@ export const quotePaymentRouter = router({
 });
 
 export type QuotePaymentRouter = typeof quotePaymentRouter;
+
 
 
 
