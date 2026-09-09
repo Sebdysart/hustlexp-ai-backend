@@ -3,6 +3,7 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { protectedProcedure, router, publicProcedure } from '../trpc.js';
 import { claimBusinessTask } from '../services/BusinessClaimService.js';
+import { requestBusinessAssessment } from '../services/BusinessAssessmentService.js';
 import { createHash } from 'node:crypto';
 import { db } from '../db.js';
 import {
@@ -132,6 +133,32 @@ export const businessClaimRouter = router({
         preferredArrivalWindowEnd:
           customerWindow.arrivalEnd.toISOString(),
       };
+    }),
+
+  requestAssessment: protectedProcedure
+    .input(
+      z.object({
+        token: z.string(),
+        organizationId: z.string().uuid(),
+        businessMessage: z.string().trim().min(1).max(4000),
+        proposedWindowStart: z.string(),
+        proposedWindowEnd: z.string(),
+      }).strict(),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const result = await requestBusinessAssessment({
+        ...input,
+        actorId: ctx.user.id,
+      });
+
+      if (!result.success) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: result.error.message,
+        });
+      }
+
+      return result.data;
     }),
 
 listClaimedDrafts: protectedProcedure

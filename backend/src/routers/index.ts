@@ -103,6 +103,7 @@ import { testPayoutRouter } from './testPayout.js';
 import { businessClaimRouter } from './businessClaim.js';
 
 import { quoteDecisionRouter } from './quoteDecision.js';
+import { businessAssessmentRouter } from './businessAssessment.js';
 
 
 // ============================================================================
@@ -188,6 +189,7 @@ export const appRouter = router({
   businessClaim: businessClaimRouter,
 
   quoteDecision: quoteDecisionRouter,
+  businessAssessment: businessAssessmentRouter,
   
   // ── Web Platform Domain ─────────────────────────────────────────────────
   // Replaces Supabase edge functions for the website and ops cockpit.

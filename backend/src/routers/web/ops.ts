@@ -323,6 +323,32 @@ export const webOpsRouter = router({
         [input.id],
       );
 
+      const assessmentsResult = await db.query(
+        `
+        SELECT
+          assessment.id,
+          assessment.status,
+          assessment.business_message,
+          assessment.customer_message,
+          assessment.proposed_window_start,
+          assessment.proposed_window_end,
+          assessment.scheduled_date,
+          assessment.created_at,
+          assessment.reviewed_at,
+          assessment.customer_selected_at,
+          assessment.completed_at,
+          assessment.business_organization_id,
+          org.display_name AS business_display_name,
+          org.legal_name AS business_legal_name
+        FROM business_assessment_requests assessment
+        JOIN business_organizations org
+          ON org.id = assessment.business_organization_id
+        WHERE assessment.task_draft_id = $1
+        ORDER BY assessment.created_at DESC
+        `,
+        [input.id],
+      );
+
       const draft =
         draftResult.rows[0] as Record<
           string,
@@ -343,7 +369,49 @@ export const webOpsRouter = router({
         ok: true,
         draft,
         quotes: quotesResult.rows,
+        assessments: assessmentsResult.rows,
       };
+    }),
+
+  approveAssessmentRequest: operationsAdminProcedure
+    .input(z.object({
+      assessmentRequestId: z.string().uuid(),
+      customerMessage: z.string().trim().min(1).max(4000),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const result = await db.query<{ id: string }>(
+        `
+        UPDATE business_assessment_requests
+        SET status = 'AWAITING_CUSTOMER', customer_message = $2,
+            reviewed_by_user_id = $3, reviewed_at = NOW(), updated_at = NOW()
+        WHERE id = $1 AND status = 'PENDING_ADMIN'
+        RETURNING id
+        `,
+        [input.assessmentRequestId, input.customerMessage, ctx.user.id],
+      );
+      if (!result.rows[0]) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This assessment request is no longer pending review.' });
+      }
+      return { ok: true };
+    }),
+
+  rejectAssessmentRequest: operationsAdminProcedure
+    .input(z.object({ assessmentRequestId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      const result = await db.query<{ id: string }>(
+        `
+        UPDATE business_assessment_requests
+        SET status = 'ADMIN_REJECTED', reviewed_by_user_id = $2,
+            reviewed_at = NOW(), updated_at = NOW()
+        WHERE id = $1 AND status = 'PENDING_ADMIN'
+        RETURNING id
+        `,
+        [input.assessmentRequestId, ctx.user.id],
+      );
+      if (!result.rows[0]) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This assessment request is no longer pending review.' });
+      }
+      return { ok: true };
     }),
   listTasks: operationsAdminProcedure
     .input(
