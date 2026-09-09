@@ -383,11 +383,11 @@ export const webOpsRouter = router({
         `
         UPDATE business_assessment_requests
         SET status = 'AWAITING_CUSTOMER', customer_message = $2,
-            reviewed_by_user_id = $3, reviewed_at = NOW(), updated_at = NOW()
+            reviewed_by_user_id = $3, reviewed_at = NOW(), assessment_fee_cents = , assessment_platform_fee_cents = , updated_at = NOW()
         WHERE id = $1 AND status = 'PENDING_ADMIN'
         RETURNING id
         `,
-        [input.assessmentRequestId, input.customerMessage, ctx.user.id],
+        [input.assessmentRequestId, input.customerMessage, ctx.user.id, assessmentFeeCents, assessmentPlatformFeeCents],
       );
       if (!result.rows[0]) {
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This assessment request is no longer pending review.' });
@@ -402,7 +402,7 @@ export const webOpsRouter = router({
         `
         UPDATE business_assessment_requests
         SET status = 'ADMIN_REJECTED', reviewed_by_user_id = $2,
-            reviewed_at = NOW(), updated_at = NOW()
+            reviewed_at = NOW(), assessment_fee_cents = , assessment_platform_fee_cents = , updated_at = NOW()
         WHERE id = $1 AND status = 'PENDING_ADMIN'
         RETURNING id
         `,
@@ -1938,4 +1938,6 @@ export const webOpsRouter = router({
     }
   }),
 });
+
+
 
