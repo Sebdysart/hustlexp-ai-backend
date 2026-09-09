@@ -101,7 +101,7 @@ export async function chargeStaxPaymentMethod(
     }),
   },
   { apiKey: input.apiKey },
-  });
+  );
 }
 
 export async function getStaxTransaction(
@@ -163,6 +163,7 @@ export async function creditStaxPaymentMethod(
     { apiKey: input.apiKey },
   );
 }
+
 
 
 
