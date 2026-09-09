@@ -2,7 +2,10 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { protectedProcedure, router, publicProcedure } from '../trpc.js';
-import { claimBusinessTask } from '../services/BusinessClaimService.js';
+import {
+  claimBusinessTask,
+  quoteAfterAssessment,
+} from '../services/BusinessClaimService.js';
 import { requestBusinessAssessment } from '../services/BusinessAssessmentService.js';
 import { createHash } from 'node:crypto';
 import { db } from '../db.js';
@@ -147,6 +150,35 @@ export const businessClaimRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       const result = await requestBusinessAssessment({
+        ...input,
+        actorId: ctx.user.id,
+      });
+
+      if (!result.success) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: result.error.message,
+        });
+      }
+
+      return result.data;
+    }),
+
+  quoteAfterAssessment: protectedProcedure
+    .input(
+      z.object({
+        assessmentRequestId: z.string().uuid(),
+        organizationId: z.string().uuid(),
+        serviceProfileId: z.string().uuid(),
+        businessLocationId: z.string().uuid(),
+        proposedCustomerTotalCents: z.number().int(),
+        proposedPayoutCents: z.number().int(),
+        arrivalWindowStart: z.string(),
+        arrivalWindowEnd: z.string(),
+      }).strict(),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const result = await quoteAfterAssessment({
         ...input,
         actorId: ctx.user.id,
       });
