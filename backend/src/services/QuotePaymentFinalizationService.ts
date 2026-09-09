@@ -137,8 +137,7 @@ export async function finalizePaidQuote(
           qv.hustler_payout_cents,
           payment.provider_payment_id,
           payment.amount_cents AS payment_amount_cents,
-          assessment_payment.amount_cents AS assessment_credit_cents,
-          
+          assessment_payment.amount_cents AS assessment_credit_cents
         FROM quotes q
         JOIN quote_versions qv
           ON qv.id = q.active_version_id
