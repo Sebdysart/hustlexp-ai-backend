@@ -39,7 +39,7 @@ export const businessAssessmentRouter = router({
   scheduleForPoster: protectedProcedure
     .input(z.object({ assessmentRequestId: z.string().uuid(), scheduledDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }))
     .mutation(async ({ ctx, input }) => db.transaction(async (query) => {
-      const result = await query<{ id: string; proposed_window_start: Date; proposed_window_end: Date }>(
+      const result = await query<{ id: string; proposed_window_start: Date; proposed_window_end: Date; assessment_fee_cents: number | null; assessment_payment_status: string | null }>(
         `SELECT assessment.id, assessment.proposed_window_start, assessment.proposed_window_end, assessment.assessment_fee_cents, payment.status AS assessment_payment_status
          FROM business_assessment_requests assessment
          JOIN task_drafts draft ON draft.id = assessment.task_draft_id
