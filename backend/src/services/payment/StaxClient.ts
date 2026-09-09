@@ -1,15 +1,19 @@
 import crypto from 'node:crypto';
 
 const STAX_BASE_URL = 'https://apiprod.fattlabs.com';
+export interface StaxRequestOptions { apiKey?: string; }
 
 export async function staxRequest<T>(
   path: string,
   init: RequestInit = {},
+  options: StaxRequestOptions = {},
 ): Promise<T> {
+  const credential = options.apiKey ?? process.env.STAX_JWT;
+  if (!credential?.trim()) throw new Error('Stax API credential is required.');
   const response = await fetch(`${STAX_BASE_URL}${path}`, {
     ...init,
     headers: {
-      Authorization: `Bearer ${process.env.STAX_JWT}`,
+      Authorization: `Bearer ${credential}`,
       'Content-Type': 'application/json',
       ...init.headers,
     },
@@ -38,6 +42,7 @@ export interface StaxChargeInput {
   idempotencyId?: string;
   preAuth?: boolean;
   meta?: Record<string, unknown>;
+  apiKey?: string;
 }
 
 export interface StaxTransaction {
@@ -94,11 +99,13 @@ export async function chargeStaxPaymentMethod(
         input.idempotencyId ?? crypto.randomUUID(),
       meta: input.meta ?? {},
     }),
+    { apiKey: input.apiKey },
   });
 }
 
 export async function getStaxTransaction(
   transactionId: string,
+  options: StaxRequestOptions = {},
 ): Promise<StaxTransaction> {
   if (!transactionId.trim()) {
     throw new Error('Stax transaction ID is required.');
@@ -109,6 +116,7 @@ export async function getStaxTransaction(
     {
       method: 'GET',
     },
+    options,
   );
 }
 
@@ -117,6 +125,7 @@ export interface StaxCreditInput {
   amountCents: number;
   idempotencyId?: string;
   meta?: Record<string, unknown>;
+  apiKey?: string;
 }
 
 export async function creditStaxPaymentMethod(
@@ -150,5 +159,6 @@ export async function creditStaxPaymentMethod(
         meta: input.meta ?? {},
       }),
     },
+    { apiKey: input.apiKey },
   );
 }
