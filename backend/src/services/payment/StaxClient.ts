@@ -100,7 +100,7 @@ export async function chargeStaxPaymentMethod(
       meta: input.meta ?? {},
     },
     { apiKey: input.apiKey },
-  });
+  );
 }
 
 export async function getStaxTransaction(
