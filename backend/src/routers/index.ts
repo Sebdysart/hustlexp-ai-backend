@@ -104,6 +104,7 @@ import { businessClaimRouter } from './businessClaim.js';
 
 import { quoteDecisionRouter } from './quoteDecision.js';
 import { businessAssessmentRouter } from './businessAssessment.js';
+import { businessProposalRouter } from './businessProposal.js';
 import { completionVerificationRouter } from './completionVerification.js';
 
 
@@ -191,6 +192,7 @@ export const appRouter = router({
 
   quoteDecision: quoteDecisionRouter,
   businessAssessment: businessAssessmentRouter,
+  businessProposal: businessProposalRouter,
   completionVerification: completionVerificationRouter,
   
   // ── Web Platform Domain ─────────────────────────────────────────────────

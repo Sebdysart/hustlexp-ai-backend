@@ -1980,6 +1980,43 @@ export const webOpsRouter = router({
       });
     }
   }),
+
+  createBusinessTaskProposal: operationsAdminProcedure
+    .input(z.object({ task_draft_id: z.string().uuid(), business_organization_id: z.string().uuid(), expires_in_hours: z.number().int().min(1).max(168).default(72) }).strict())
+    .mutation(async ({ ctx, input }) => {
+      const created = await db.transaction(async (tx) => {
+        const draft = (await tx<{ id: string; status: string; title: string | null }>('SELECT id, status, title FROM task_drafts WHERE id = $1 FOR UPDATE', [input.task_draft_id])).rows[0];
+        if (!draft) throw new TRPCError({ code: 'NOT_FOUND', message: 'Task draft not found' });
+        if (draft.status === 'abandoned') throw new TRPCError({ code: 'CONFLICT', message: 'Abandoned task drafts cannot receive business proposals.' });
+        const business = (await tx<{ display_name: string | null; legal_name: string | null; provider_enabled: boolean; verification_status: string; status: string }>('SELECT display_name, legal_name, provider_enabled, verification_status, status FROM business_organizations WHERE id = $1 FOR UPDATE', [input.business_organization_id])).rows[0];
+        if (!business) throw new TRPCError({ code: 'NOT_FOUND', message: 'Business organization not found' });
+        if (business.status !== 'ACTIVE' || !business.provider_enabled || business.verification_status !== 'VERIFIED') throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Only active, verified provider businesses can receive task proposals.' });
+        await tx(`UPDATE business_task_proposals SET status='EXPIRED', responded_at=COALESCE(responded_at,NOW()), updated_at=NOW() WHERE task_draft_id=$1 AND business_organization_id=$2 AND status IN ('PENDING','VIEWED') AND expires_at<=NOW()`, [input.task_draft_id, input.business_organization_id]);
+        const active = (await tx<{ id: string }>(`SELECT id FROM business_task_proposals WHERE task_draft_id=$1 AND business_organization_id=$2 AND status IN ('PENDING','VIEWED') FOR UPDATE`, [input.task_draft_id, input.business_organization_id])).rows[0];
+        if (active) throw new TRPCError({ code: 'CONFLICT', message: 'This business already has an active proposal for the task draft.' });
+        const expiresAt = new Date(Date.now() + input.expires_in_hours * 60 * 60 * 1000);
+        const proposal = (await tx<{ id: string }>(`INSERT INTO business_task_proposals (task_draft_id,business_organization_id,created_by_user_id,status,expires_at) VALUES ($1,$2,$3,'PENDING',$4) RETURNING id`, [input.task_draft_id, input.business_organization_id, ctx.user.id, expiresAt])).rows[0];
+        if (!proposal) throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Could not create business proposal.' });
+        await NotificationService.createForBusinessInTransaction(tx, input.business_organization_id, { type: 'TASK_PROPOSAL_RECEIVED', title: 'New task proposal', message: draft.title ? `HustleXP invited your business to review and quote "${draft.title}".` : 'HustleXP invited your business to review and quote a new task.', entityType: 'business_task_proposal', entityId: proposal.id, actionUrl: `/business/proposals/${proposal.id}`, dedupeKey: `task-proposal-created:${proposal.id}` });
+        return { id: proposal.id, expiresAt, title: draft.title, businessName: business.display_name ?? business.legal_name ?? 'Business' };
+      });
+      await recordOpsAudit({ actorUserId: ctx.user.id, action: 'business_task_proposal_created', targetType: 'task_draft', targetId: input.task_draft_id, meta: { proposal_id: created.id, business_organization_id: input.business_organization_id, expires_at: created.expiresAt.toISOString() } });
+      return { ok: true, proposal_id: created.id, task_draft_id: input.task_draft_id, business_organization_id: input.business_organization_id, business_name: created.businessName, title: created.title, expires_at: created.expiresAt.toISOString() };
+    }),
+
+  cancelBusinessTaskProposal: operationsAdminProcedure
+    .input(z.object({ proposal_id: z.string().uuid() }).strict())
+    .mutation(async ({ ctx, input }) => {
+      const proposal = await db.transaction(async (tx) => {
+        const row = (await tx<{ id: string; task_draft_id: string; business_organization_id: string; status: string }>('SELECT id, task_draft_id, business_organization_id, status FROM business_task_proposals WHERE id = $1 FOR UPDATE', [input.proposal_id])).rows[0];
+        if (!row) throw new TRPCError({ code: 'NOT_FOUND', message: 'Business proposal not found' });
+        if (!['PENDING', 'VIEWED'].includes(row.status)) throw new TRPCError({ code: 'CONFLICT', message: `Proposal is already ${row.status.toLowerCase()}.` });
+        await tx(`UPDATE business_task_proposals SET status='CANCELLED', cancelled_at=NOW(), cancelled_by_user_id=$2, responded_at=COALESCE(responded_at,NOW()), updated_at=NOW() WHERE id=$1`, [row.id, ctx.user.id]);
+        return row;
+      });
+      await recordOpsAudit({ actorUserId: ctx.user.id, action: 'business_task_proposal_cancelled', targetType: 'task_draft', targetId: proposal.task_draft_id, meta: { proposal_id: proposal.id, business_organization_id: proposal.business_organization_id } });
+      return { ok: true, proposal_id: proposal.id };
+    }),
 });
 
 
