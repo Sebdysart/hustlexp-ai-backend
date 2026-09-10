@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { db, type QueryFn } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { assertVerifiedProvider } from './BusinessWorkspacePolicy.js';
+import { NotificationService } from './NotificationService.js';
 
 interface ClaimInput {
   token: string;
@@ -41,7 +42,7 @@ function failure(code: string, message: string): ServiceResult<never> {
 }
 
 type CreateBusinessQuoteInput = {
-  draft: { id: string; title: string | null; scope_summary: string | null };
+  draft: { id: string; title: string | null; scope_summary: string | null; poster_user_id: string };
   organizationId: string;
   actorId: string;
   serviceProfileId: string;
@@ -124,6 +125,16 @@ async function createBusinessQuoteInTransaction(
   if (!quoteVersionId) return { success: false as const, error: { code: 'QUOTE_VERSION_CREATE_FAILED', message: 'Unable to create business quote version.' } };
 
   await query(`UPDATE quotes SET active_version_id = $1, updated_at = NOW() WHERE id = $2`, [quoteVersionId, quoteId]);
+  await NotificationService.createInTransaction(query, {
+    userId: input.draft.poster_user_id,
+    type: 'QUOTE_RECEIVED',
+    title: 'New quote received',
+    message: 'A business sent you a quote.',
+    entityType: 'quote',
+    entityId: quoteId,
+    actionUrl: `/dashboard/drafts/${input.draft.id}`,
+    dedupeKey: `quote-created:${quoteId}`,
+  });
   return { success: true as const, data: { quoteId, quoteVersionId, customerTotalCents: input.proposedCustomerTotalCents, payoutCents: input.proposedPayoutCents, platformMarginCents } };
 }
 
@@ -192,11 +203,12 @@ export async function claimBusinessTask(
         category: string;
         title: string | null;
         scope_summary: string | null;
+        poster_user_id: string;
         status: string;
         quote_id: string | null;
       }>(
         `
-        SELECT id, category, title, scope_summary, status, quote_id
+        SELECT id, category, title, scope_summary, status, quote_id, poster_user_id
         FROM task_drafts
         WHERE id = $1
         FOR UPDATE
@@ -491,8 +503,8 @@ export async function quoteAfterAssessment(input: {
         return failure('BUSINESS_NOT_READY', 'The business organization is not currently eligible to quote work.');
       }
 
-      const draftResult = await query<{ id: string; title: string | null; scope_summary: string | null; status: string; task_id: string | null }>(
-        `SELECT id, title, scope_summary, status, task_id FROM task_drafts WHERE id = $1 FOR UPDATE`,
+      const draftResult = await query<{ id: string; title: string | null; scope_summary: string | null; poster_user_id: string; status: string; task_id: string | null }>(
+        `SELECT id, title, scope_summary, poster_user_id, status, task_id FROM task_drafts WHERE id = $1 FOR UPDATE`,
         [assessment.task_draft_id],
       );
       const draft = draftResult.rows[0];

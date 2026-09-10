@@ -7,6 +7,7 @@ import {
   type MapQuoteToTaskParamsInput,
 } from './QuoteTaskParamsMapper.js';
 import { StaxQuotePaymentProvider } from './payment/StaxQuotePaymentProvider.js';
+import { NotificationService } from './NotificationService.js';
 
 interface FinalizePaidQuoteInput {
   quoteId: string;
@@ -127,6 +128,7 @@ export async function finalizePaidQuote(
         provider_merchant_id: string | null;
         payment_platform_fee_cents: number | null;
         assessment_credit_cents: number | null;
+        poster_user_id: string;
       }>(
         `
         SELECT
@@ -135,6 +137,8 @@ export async function finalizePaidQuote(
           d.quote_id AS selected_quote_id,
           qv.total_cents,
           qv.hustler_payout_cents,
+          q.business_organization_id,
+          d.poster_user_id,
           payment.provider_payment_id,
           payment.amount_cents AS payment_amount_cents,
           assessment_payment.amount_cents AS assessment_credit_cents
@@ -695,6 +699,31 @@ export async function finalizePaidQuote(
       `,
       [input.quoteId],
     );
+
+    await db.transaction(async (notificationQuery) => {
+      await NotificationService.createInTransaction(notificationQuery, {
+        userId: context.poster_user_id,
+        type: 'PAYMENT_CONFIRMED',
+        title: 'Payment confirmed',
+        message: 'Your payment was confirmed and the task is ready.',
+        entityType: 'task',
+        entityId: materialized.taskId,
+        actionUrl: `/dashboard/tasks/${materialized.taskId}`,
+        dedupeKey: `quote-paid-poster:${input.quoteId}`,
+      });
+
+      if (context.business_organization_id) {
+        await NotificationService.createForBusinessInTransaction(notificationQuery, context.business_organization_id, {
+          type: 'CUSTOMER_PAYMENT_RECEIVED',
+          title: 'Customer payment confirmed',
+          message: 'The customer completed payment. The task is ready to begin.',
+          entityType: 'task',
+          entityId: materialized.taskId,
+          actionUrl: `/business/tasks/${materialized.taskId}`,
+          dedupeKey: `quote-paid-business:${input.quoteId}`,
+        });
+      }
+    });
 
     return {
       success: true,

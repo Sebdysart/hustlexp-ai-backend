@@ -24,6 +24,7 @@ import {
   resolveRegionPolicy,
 } from '../../services/RegionPolicyService.js';
 import { buildManualTaskPolicyInput } from '../../services/ManualTaskPolicy.js';
+import { NotificationService } from '../../services/NotificationService.js';
 import { getOpsLiquidityPayload } from '../../services/OpsLiquidityService.js';
 import { assertEngineOpsServiceKey, OpsAuthError } from './opsServiceKey.js';
 
@@ -379,9 +380,19 @@ export const webOpsRouter = router({
       customerMessage: z.string().trim().min(1).max(4000),
       assessmentFeeCents: z.number().int().positive().nullable().optional(),
     }))
-    .mutation(async ({ ctx, input }) => {
+    .mutation(async ({ ctx, input }) => db.transaction(async (query) => {
       const assessmentFeeCents = input.assessmentFeeCents ?? null;
-      const result = await db.query<{ id: string }>(
+      const context = await query<{ task_draft_id: string; poster_user_id: string }>(
+        `SELECT assessment.task_draft_id, draft.poster_user_id
+         FROM business_assessment_requests assessment
+         JOIN task_drafts draft ON draft.id = assessment.task_draft_id
+         WHERE assessment.id = $1 AND assessment.status = 'PENDING_ADMIN'
+         FOR UPDATE OF assessment`,
+        [input.assessmentRequestId],
+      );
+      const draftContext = context.rows[0];
+      if (!draftContext) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This assessment request is no longer pending review.' });
+      const result = await query<{ id: string }>(
         `
         UPDATE business_assessment_requests
         SET status = 'AWAITING_CUSTOMER', customer_message = $2,
@@ -394,13 +405,34 @@ export const webOpsRouter = router({
       if (!result.rows[0]) {
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This assessment request is no longer pending review.' });
       }
+      await NotificationService.createInTransaction(query, {
+        userId: draftContext.poster_user_id,
+        type: 'ASSESSMENT_APPROVED',
+        title: 'Assessment ready',
+        message: assessmentFeeCents && assessmentFeeCents > 0
+          ? 'The onsite assessment was approved. Pay the assessment fee to choose a date.'
+          : 'The onsite assessment was approved. Choose a date for the visit.',
+        entityType: 'assessment',
+        entityId: result.rows[0].id,
+        actionUrl: `/dashboard/drafts/${draftContext.task_draft_id}`,
+        dedupeKey: `assessment-approved:${result.rows[0].id}`,
+      });
       return { ok: true };
-    }),
+    })),
 
   rejectAssessmentRequest: operationsAdminProcedure
     .input(z.object({ assessmentRequestId: z.string().uuid() }))
-    .mutation(async ({ ctx, input }) => {
-      const result = await db.query<{ id: string }>(
+    .mutation(async ({ ctx, input }) => db.transaction(async (query) => {
+      const context = await query<{ task_draft_id: string; business_organization_id: string }>(
+        `SELECT assessment.task_draft_id, assessment.business_organization_id
+         FROM business_assessment_requests assessment
+         WHERE assessment.id = $1 AND assessment.status = 'PENDING_ADMIN'
+         FOR UPDATE OF assessment`,
+        [input.assessmentRequestId],
+      );
+      const assessmentContext = context.rows[0];
+      if (!assessmentContext) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This assessment request is no longer pending review.' });
+      const result = await query<{ id: string }>(
         `
         UPDATE business_assessment_requests
         SET status = 'ADMIN_REJECTED', reviewed_by_user_id = $2,
@@ -413,8 +445,17 @@ export const webOpsRouter = router({
       if (!result.rows[0]) {
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This assessment request is no longer pending review.' });
       }
+      await NotificationService.createForBusinessInTransaction(query, assessmentContext.business_organization_id, {
+        type: 'ASSESSMENT_REJECTED',
+        title: 'Assessment request declined',
+        message: 'HustleXP did not approve the onsite assessment request.',
+        entityType: 'assessment',
+        entityId: result.rows[0].id,
+        actionUrl: `/business/claims/${assessmentContext.task_draft_id}`,
+        dedupeKey: `assessment-rejected:${result.rows[0].id}`,
+      });
       return { ok: true };
-    }),
+    })),
   listTasks: operationsAdminProcedure
     .input(
       z.object({

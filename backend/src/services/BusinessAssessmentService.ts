@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { db } from '../db.js';
 import { assertVerifiedProvider } from './BusinessWorkspacePolicy.js';
+import { NotificationService } from './NotificationService.js';
 
 type AssessmentRequestResult =
   | { success: true; data: { assessmentRequestId: string; claimLinkId: string; taskDraftId: string; status: 'PENDING_ADMIN' } }
@@ -57,8 +58,8 @@ export async function requestBusinessAssessment(input: {
       if (draft.status === 'abandoned' || draft.task_id) return failure('TASK_DRAFT_UNAVAILABLE', 'This task is no longer available.');
 
       await query(`SELECT business_require_action($1, $2, 'ASSIGN_CREW')`, [input.organizationId, input.actorId]);
-      const orgResult = await query<{ status: string; provider_enabled: boolean; verification_status: string }>(
-        `SELECT status, provider_enabled, verification_status FROM business_organizations WHERE id = $1 FOR SHARE`,
+      const orgResult = await query<{ status: string; provider_enabled: boolean; verification_status: string; display_name: string | null }>(
+        `SELECT status, provider_enabled, verification_status, display_name FROM business_organizations WHERE id = $1 FOR SHARE`,
         [input.organizationId],
       );
       const org = orgResult.rows[0];
@@ -86,6 +87,16 @@ export async function requestBusinessAssessment(input: {
       );
       const assessmentRequestId = assessmentResult.rows[0]?.id;
       if (!assessmentRequestId) return failure('ASSESSMENT_CREATE_FAILED', 'Unable to create the assessment request.');
+
+      await NotificationService.createForOperationsInTransaction(query, {
+        type: 'ASSESSMENT_REQUESTED',
+        title: 'New assessment request',
+        message: `${org.display_name || 'A business'} requested an onsite assessment.`,
+        entityType: 'assessment',
+        entityId: assessmentRequestId,
+        actionUrl: `/ops/drafts/${draft.id}`,
+        dedupeKey: `assessment-requested:${assessmentRequestId}`,
+      });
 
       const claimed = await query<{ id: string }>(
         `UPDATE ops_business_claim_links SET status = 'CLAIMED', claimed_by_organization_id = $2,

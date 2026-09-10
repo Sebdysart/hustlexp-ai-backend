@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { db } from '../db.js';
 import { protectedProcedure, router } from '../trpc.js';
 import { StaxAssessmentPaymentProvider } from '../services/payment/StaxAssessmentPaymentProvider.js';
+import { NotificationService } from '../services/NotificationService.js';
 
 function pacificDate(value: Date): string {
   return new Intl.DateTimeFormat('en-CA', {
@@ -23,7 +24,18 @@ export const businessAssessmentRouter = router({
       if(a.assessment_fee_cents===null||a.assessment_fee_cents<=0) throw new TRPCError({code:'PRECONDITION_FAILED',message:'This assessment does not require payment.'});
       const existing=await db.query<any>('SELECT status FROM assessment_payments WHERE assessment_request_id=$1 LIMIT 1',[a.id]); if(existing.rows[0]?.status==='SUCCEEDED') throw new TRPCError({code:'PRECONDITION_FAILED',message:'This assessment fee has already been paid.'});
       const payment=await StaxAssessmentPaymentProvider.charge({assessmentRequestId:a.id,taskDraftId:a.task_draft_id,posterId:ctx.user.id,businessOrganizationId:a.business_organization_id,paymentMethodId:input.paymentMethodId,amountCents:a.assessment_fee_cents}); if(!payment.success) throw new TRPCError({code:'PRECONDITION_FAILED',message:payment.error.message});
-      await db.query(`INSERT INTO assessment_payments (assessment_request_id,task_draft_id,business_organization_id,poster_user_id,provider,provider_payment_id,amount_cents,status) VALUES ($1,$2,$3,$4,'stax',$5,$6,'SUCCEEDED') ON CONFLICT (assessment_request_id) DO UPDATE SET provider_payment_id=EXCLUDED.provider_payment_id,status='SUCCEEDED',updated_at=NOW()`,[a.id,a.task_draft_id,a.business_organization_id,ctx.user.id,payment.data.transactionId,payment.data.amountCents]);
+      await db.transaction(async (query) => {
+        await query(`INSERT INTO assessment_payments (assessment_request_id,task_draft_id,business_organization_id,poster_user_id,provider,provider_payment_id,amount_cents,status) VALUES ($1,$2,$3,$4,'stax',$5,$6,'SUCCEEDED') ON CONFLICT (assessment_request_id) DO UPDATE SET provider_payment_id=EXCLUDED.provider_payment_id,status='SUCCEEDED',updated_at=NOW()`,[a.id,a.task_draft_id,a.business_organization_id,ctx.user.id,payment.data.transactionId,payment.data.amountCents]);
+        await NotificationService.createForBusinessInTransaction(query, a.business_organization_id, {
+          type: 'ASSESSMENT_PAID',
+          title: 'Assessment fee paid',
+          message: 'The customer paid the onsite assessment fee.',
+          entityType: 'assessment',
+          entityId: a.id,
+          actionUrl: `/business/claims/${a.task_draft_id}`,
+          dedupeKey: `assessment-paid:${a.id}`,
+        });
+      });
       return {paymentIntentId:payment.data.transactionId,amountCents:payment.data.amountCents,status:'SUCCEEDED' as const};
     }),
   listForPosterDraft: protectedProcedure
@@ -52,8 +64,8 @@ export const businessAssessmentRouter = router({
   scheduleForPoster: protectedProcedure
     .input(z.object({ assessmentRequestId: z.string().uuid(), scheduledDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }))
     .mutation(async ({ ctx, input }) => db.transaction(async (query) => {
-      const result = await query<{ id: string; proposed_window_start: Date; proposed_window_end: Date; assessment_fee_cents: number | null; assessment_payment_status: string | null }>(
-        `SELECT assessment.id, assessment.proposed_window_start, assessment.proposed_window_end, assessment.assessment_fee_cents, payment.status AS assessment_payment_status
+      const result = await query<{ id: string; task_draft_id: string; business_organization_id: string; proposed_window_start: Date; proposed_window_end: Date; assessment_fee_cents: number | null; assessment_payment_status: string | null }>(
+        `SELECT assessment.id, assessment.task_draft_id, assessment.business_organization_id, assessment.proposed_window_start, assessment.proposed_window_end, assessment.assessment_fee_cents, payment.status AS assessment_payment_status
          FROM business_assessment_requests assessment
          JOIN task_drafts draft ON draft.id = assessment.task_draft_id
          LEFT JOIN assessment_payments payment ON payment.assessment_request_id = assessment.id
@@ -72,6 +84,15 @@ export const businessAssessmentRouter = router({
            customer_selected_at = NOW(), updated_at = NOW() WHERE id = $1`,
         [input.assessmentRequestId, input.scheduledDate],
       );
+      await NotificationService.createForBusinessInTransaction(query, assessment.business_organization_id, {
+        type: 'ASSESSMENT_SCHEDULED',
+        title: 'Assessment scheduled',
+        message: 'The customer selected a date for the onsite assessment.',
+        entityType: 'assessment',
+        entityId: assessment.id,
+        actionUrl: `/business/claims/${assessment.task_draft_id}`,
+        dedupeKey: `assessment-scheduled:${assessment.id}`,
+      });
       return { ok: true };
     })),
 
@@ -97,17 +118,27 @@ export const businessAssessmentRouter = router({
   complete: protectedProcedure
     .input(z.object({ assessmentRequestId: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
-      const result = await db.query<{ id: string }>(
+      const result = await db.query<{ id: string; task_draft_id: string; poster_user_id: string }>(
         `UPDATE business_assessment_requests assessment
          SET status = 'COMPLETED', completed_at = NOW(), updated_at = NOW()
          FROM business_memberships membership
          WHERE assessment.id = $1 AND assessment.status = 'SCHEDULED'
            AND membership.organization_id = assessment.business_organization_id
            AND membership.user_id = $2 AND membership.status = 'ACTIVE'
-         RETURNING assessment.id`,
+         RETURNING assessment.id, assessment.task_draft_id, (SELECT poster_user_id FROM task_drafts WHERE id = assessment.task_draft_id) AS poster_user_id`,
         [input.assessmentRequestId, ctx.user.id],
       );
       if (!result.rows[0]) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This assessment cannot be completed.' });
+      await NotificationService.create({
+        userId: result.rows[0].poster_user_id,
+        type: 'ASSESSMENT_COMPLETED',
+        title: 'Assessment completed',
+        message: 'The onsite assessment is complete. The business can now prepare your quote.',
+        entityType: 'assessment',
+        entityId: result.rows[0].id,
+        actionUrl: `/dashboard/drafts/${result.rows[0].task_draft_id}`,
+        dedupeKey: `assessment-completed:${result.rows[0].id}`,
+      });
       return { ok: true };
     }),
 });
