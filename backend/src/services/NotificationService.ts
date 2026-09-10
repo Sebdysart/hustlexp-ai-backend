@@ -374,12 +374,50 @@ async function findMatchingReplay(
 // SERVICE
 // ============================================================================
 
+async function insertNotification(
+  query: QueryFn,
+  input: CreateInAppNotificationInput,
+): Promise<void> {
+  const dedupeKey =
+    input.dedupeKey ??
+    `${input.type}:${input.entityId ?? input.userId}`;
+
+  await query(
+    `
+    INSERT INTO notifications (
+      user_id, type, title, message, entity_type, entity_id,
+      action_url, metadata, category, body, deep_link, priority,
+      notification_class, object_type, object_id, dedupe_key,
+      supersession_key
+    )
+    VALUES (
+      $1, $2, $3, $4, $5, $6, $7, $8::jsonb,
+      $2, $4, COALESCE($7, '/dashboard'), 'MEDIUM', 'status',
+      COALESCE($5, 'notification'), COALESCE($6::text, 'general'),
+      $9, $9
+    )
+    ON CONFLICT DO NOTHING
+    `,
+    [
+      input.userId,
+      input.type,
+      input.title,
+      input.message,
+      input.entityType ?? null,
+      input.entityId ?? null,
+      input.actionUrl ?? null,
+      JSON.stringify(input.metadata ?? {}),
+      dedupeKey,
+    ],
+  );
+}
+
 export const NotificationService = {
   async create(input: CreateInAppNotificationInput): Promise<void> {
-    await db.query(`INSERT INTO notifications (user_id, type, title, message, entity_type, entity_id, action_url, metadata, dedupe_key, category, body, deep_link, priority, notification_class, object_type, object_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$2,$4,COALESCE($7,'/notifications'),'MEDIUM','status',COALESCE($5,'notification'),COALESCE($6::text,'general')) ON CONFLICT DO NOTHING`, [input.userId, input.type, input.title, input.message, input.entityType ?? null, input.entityId ?? null, input.actionUrl ?? null, JSON.stringify(input.metadata ?? {}), input.dedupeKey ?? null]);
+    await insertNotification(db.query.bind(db), input);
   },
   async createInTransaction(query: QueryFn, input: CreateInAppNotificationInput): Promise<void> {
-    await query(`INSERT INTO notifications (user_id, type, title, message, entity_type, entity_id, action_url, metadata, dedupe_key, category, body, deep_link, priority, notification_class, object_type, object_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$2,$4,COALESCE($7,'/notifications'),'MEDIUM','status',COALESCE($5,'notification'),COALESCE($6::text,'general')) ON CONFLICT DO NOTHING`, [input.userId, input.type, input.title, input.message, input.entityType ?? null, input.entityId ?? null, input.actionUrl ?? null, JSON.stringify(input.metadata ?? {}), input.dedupeKey ?? null]);
+    await insertNotification(query, input);
   },
   async createManyInTransaction(query: QueryFn, inputs: CreateInAppNotificationInput[]): Promise<void> {
     for (const input of inputs) await NotificationService.createInTransaction(query, input);
