@@ -407,23 +407,23 @@ async function insertNotification(
       supersession_key
     )
     VALUES (
-      $1,
-      $2,
-      $3,
-      $4,
-      $5,
+      $1::uuid,
+      $2::text,
+      $3::varchar,
+      $4::text,
+      $5::text,
       $6::uuid,
-      $7,
+      $7::text,
       $8::jsonb,
-      $2,
-      $4,
-      COALESCE($7, '/dashboard'),
-      'MEDIUM',
-      'status',
-      COALESCE($5, 'notification'),
-      $10,
-      $9,
-      $9
+      $9::varchar,
+      $10::text,
+      $11::text,
+      $12::varchar,
+      $13::text,
+      $14::text,
+      $15::text,
+      $16::text,
+      $17::text
     )
     ON CONFLICT DO NOTHING
     `,
@@ -436,8 +436,15 @@ async function insertNotification(
       input.entityId ?? null,
       input.actionUrl ?? null,
       JSON.stringify(input.metadata ?? {}),
-      dedupeKey,
+      input.type,
+      input.message,
+      input.actionUrl ?? '/dashboard',
+      'MEDIUM',
+      'status',
+      input.entityType ?? 'notification',
       objectId,
+      dedupeKey,
+      dedupeKey,
     ],
   );
 }
