@@ -11,6 +11,10 @@ import {
   resolveRegionPolicy,
 } from '../../services/RegionPolicyService.js';
 import { buildManualTaskPolicyInput } from '../../services/ManualTaskPolicy.js';
+import { TASK_CATEGORIES } from '../../services/taskIntake/definitions.js';
+import { validateTaskIntake } from '../../services/taskIntake/validateIntake.js';
+import { buildTaskScopeSummary } from '../../services/taskIntake/buildScopeSummary.js';
+import type { IntakeAnswers, TaskCategory } from '../../services/taskIntake/types.js';
 
 const PostTaskSchema = z.object({
   lead: z.object({
@@ -28,7 +32,7 @@ const PostTaskSchema = z.object({
   }),
 
   task: z.object({
-    category: z.string().trim().min(1).max(100),
+    category: z.enum(TASK_CATEGORIES),
     title: z.string().trim().min(1).max(255),
     raw_input: z.string().optional(),
     scope_summary: z.string().optional(),
@@ -93,6 +97,17 @@ async function handlePostTask({
             };
             }
 
+            const category = input.task.category as TaskCategory;
+            const structured = input.task.structured && typeof input.task.structured === 'object' && !Array.isArray(input.task.structured)
+              ? input.task.structured as Record<string, unknown> : {};
+            const rawAnswers = structured.answers;
+            const answers: IntakeAnswers = rawAnswers && typeof rawAnswers === 'object' && !Array.isArray(rawAnswers)
+              ? rawAnswers as IntakeAnswers : {};
+            const intakeValidation = validateTaskIntake(category, answers);
+            if (!intakeValidation.readyForDraft) {
+              throw new TRPCError({ code: 'BAD_REQUEST', message: `Task intake is incomplete. Missing required details: ${intakeValidation.missingRequired.join(', ')}.` });
+            }
+
             // 2. Create lead.
             const lead = await query<{ id: string }>(
             `INSERT INTO leads (
@@ -145,6 +160,17 @@ async function handlePostTask({
               input.task.raw_input?.trim()
               || input.task.scope_summary?.trim()
               || input.task.title.trim();
+            const canonicalScopeSummary = buildTaskScopeSummary(category, taskText, answers);
+            const canonicalStructured = {
+              ...structured,
+              answers: { ...answers, scope_policy_version: 'task_scope_v2' },
+              missing_questions: intakeValidation.missingRequired,
+              recommended_missing: intakeValidation.missingRecommended,
+              scope_quality: intakeValidation.quality,
+              scope_confirmed: true,
+              intake_spec_version: 'intake_questions_2026_09',
+              category_rules_version: 'category_rules_v1',
+            };
 
             const validatedRiskLevel = deriveManualTaskRisk(taskText);
             const complianceResult =
@@ -246,8 +272,8 @@ async function handlePostTask({
                     input.task.category,
                     input.task.title,
                     input.task.raw_input ?? null,
-                    input.task.scope_summary ?? null,
-                    JSON.stringify(input.task.structured),
+                    canonicalScopeSummary,
+                    JSON.stringify(canonicalStructured),
                     input.task.est_price_min_cents ?? null,
                     input.task.est_price_max_cents ?? null,
                     input.task.photo_count,

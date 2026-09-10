@@ -1,0 +1,7 @@
+import { getQuestionsForCategory } from './definitions.js';
+import type { IntakeAnswer, IntakeAnswers, IntakeQuestion, QuestionCondition, TaskCategory, IntakeValidationResult } from './types.js';
+const has=(a:IntakeAnswer|undefined)=>a!==undefined&&(typeof a==='string'?a.trim().length>0:typeof a==='number'?Number.isFinite(a)&&a>=0:Array.isArray(a)?a.length>0:true);
+const equal=(a:IntakeAnswer|undefined,b:IntakeAnswer)=>Array.isArray(a)&&Array.isArray(b)?a.length===b.length&&a.every((v,i)=>v===b[i]):a===b;
+function matches(c:QuestionCondition,a:IntakeAnswers){const v=a[c.key]; switch(c.operator){case'equals':return equal(v,c.value);case'not_equals':return !equal(v,c.value);case'includes':return Array.isArray(v)&&v.includes(c.value);case'truthy':return has(v)}}
+function applies(q:IntakeQuestion,a:IntakeAnswers){return !q.conditions?.length||q.conditions.every(c=>matches(c,a))}
+export function validateTaskIntake(category:TaskCategory,answers:IntakeAnswers):IntakeValidationResult{const qs=getQuestionsForCategory(category).filter(q=>applies(q,answers));const req=qs.filter(q=>q.importance==='required'), rec=qs.filter(q=>q.importance==='recommended');const missingRequired=req.filter(q=>!has(answers[q.key])).map(q=>q.key),missingRecommended=rec.filter(q=>!has(answers[q.key])).map(q=>q.key);return {readyForDraft:missingRequired.length===0,missingRequired,missingRecommended,quality:missingRequired.length?'low':missingRecommended.length?'medium':'high'}}
