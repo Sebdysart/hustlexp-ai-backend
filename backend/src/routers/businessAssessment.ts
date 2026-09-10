@@ -58,7 +58,7 @@ export const businessAssessmentRouter = router({
          JOIN task_drafts draft ON draft.id = assessment.task_draft_id
          LEFT JOIN assessment_payments payment ON payment.assessment_request_id = assessment.id
          WHERE assessment.id = $1 AND assessment.status = 'AWAITING_CUSTOMER'
-           AND draft.poster_user_id = $2 FOR UPDATE`,
+           AND draft.poster_user_id = $2 FOR UPDATE OF assessment`,
         [input.assessmentRequestId, ctx.user.id],
       );
       const assessment = result.rows[0];
