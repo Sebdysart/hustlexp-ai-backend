@@ -194,6 +194,45 @@ export interface CreateInAppNotificationInput {
   dedupeKey?: string | null;
 }
 
+async function getBusinessNotificationUserIds(
+  query: QueryFn,
+  organizationId: string,
+): Promise<string[]> {
+  const result = await query<{ user_id: string }>(
+    `
+    SELECT user_id
+    FROM business_memberships
+    WHERE organization_id = $1
+      AND status = 'ACTIVE'
+      AND role IN (
+        'OWNER',
+        'ADMIN',
+        'DISPATCHER',
+        'APPROVER',
+        'REQUESTER'
+      )
+    `,
+    [organizationId],
+  );
+
+  return result.rows.map((row) => row.user_id);
+}
+
+async function getOperationsNotificationUserIds(
+  query: QueryFn,
+): Promise<string[]> {
+  const result = await query<{ user_id: string }>(
+    `
+    SELECT DISTINCT user_id
+    FROM admin_roles
+    WHERE role IN ('admin', 'founder')
+      OR can_manage_operations = TRUE
+    `,
+  );
+
+  return result.rows.map((row) => row.user_id);
+}
+
 // BUG 5 FIX: Categories that bypass the frequency cap entirely.
 // security_alert: an attacker can exhaust the 20/day limit, silencing real alerts.
 // payment_released: already has Infinity limits but guarded explicitly here for safety.
@@ -344,6 +383,33 @@ export const NotificationService = {
   },
   async createManyInTransaction(query: QueryFn, inputs: CreateInAppNotificationInput[]): Promise<void> {
     for (const input of inputs) await NotificationService.createInTransaction(query, input);
+  },
+  async createForBusinessInTransaction(
+    query: QueryFn,
+    organizationId: string,
+    input: Omit<CreateInAppNotificationInput, 'userId'>,
+  ): Promise<void> {
+    const userIds = await getBusinessNotificationUserIds(query, organizationId);
+
+    for (const userId of userIds) {
+      await NotificationService.createInTransaction(query, {
+        ...input,
+        userId,
+      });
+    }
+  },
+  async createForOperationsInTransaction(
+    query: QueryFn,
+    input: Omit<CreateInAppNotificationInput, 'userId'>,
+  ): Promise<void> {
+    const userIds = await getOperationsNotificationUserIds(query);
+
+    for (const userId of userIds) {
+      await NotificationService.createInTransaction(query, {
+        ...input,
+        userId,
+      });
+    }
   },
   // --------------------------------------------------------------------------
   // CREATE OPERATIONS
