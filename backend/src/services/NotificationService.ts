@@ -382,19 +382,48 @@ async function insertNotification(
     input.dedupeKey ??
     `${input.type}:${input.entityId ?? input.userId}`;
 
+  const objectId =
+    input.entityId ?? 'general';
+
   await query(
     `
     INSERT INTO notifications (
-      user_id, type, title, message, entity_type, entity_id,
-      action_url, metadata, category, body, deep_link, priority,
-      notification_class, object_type, object_id, dedupe_key,
+      user_id,
+      type,
+      title,
+      message,
+      entity_type,
+      entity_id,
+      action_url,
+      metadata,
+      category,
+      body,
+      deep_link,
+      priority,
+      notification_class,
+      object_type,
+      object_id,
+      dedupe_key,
       supersession_key
     )
     VALUES (
-      $1, $2, $3, $4, $5, $6, $7, $8::jsonb,
-      $2, $4, COALESCE($7, '/dashboard'), 'MEDIUM', 'status',
-      COALESCE($5, 'notification'), COALESCE($6::text, 'general'),
-      $9, $9
+      $1,
+      $2,
+      $3,
+      $4,
+      $5,
+      $6::uuid,
+      $7,
+      $8::jsonb,
+      $2,
+      $4,
+      COALESCE($7, '/dashboard'),
+      'MEDIUM',
+      'status',
+      COALESCE($5, 'notification'),
+      $10,
+      $9,
+      $9
     )
     ON CONFLICT DO NOTHING
     `,
@@ -408,6 +437,7 @@ async function insertNotification(
       input.actionUrl ?? null,
       JSON.stringify(input.metadata ?? {}),
       dedupeKey,
+      objectId,
     ],
   );
 }
