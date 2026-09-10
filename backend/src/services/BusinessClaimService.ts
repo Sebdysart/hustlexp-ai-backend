@@ -131,16 +131,37 @@ async function createBusinessQuoteInTransaction(
     quoteId,
     organizationId: input.organizationId,
   });
-  await NotificationService.createInTransaction(query, {
-    userId: input.draft.poster_user_id,
-    type: 'QUOTE_RECEIVED',
-    title: 'New quote received',
-    message: 'A business sent you a quote.',
-    entityType: 'quote',
-    entityId: quoteId,
-    actionUrl: `/dashboard/drafts/${input.draft.id}`,
-    dedupeKey: `quote-created:${quoteId}`,
-  });
+  try {
+    await NotificationService.createInTransaction(
+      query,
+      {
+        userId: input.draft.poster_user_id,
+        type: 'QUOTE_RECEIVED',
+        title: 'New quote received',
+        message: 'A business sent you a quote.',
+        entityType: 'quote',
+        entityId: quoteId,
+        actionUrl:
+          `/dashboard/drafts/${input.draft.id}`,
+        dedupeKey:
+          `quote-created:${quoteId}`,
+      },
+    );
+  } catch (error) {
+    console.error(
+      '[QUOTE_NOTIFICATION_FAILED]',
+      {
+        error,
+        posterUserId:
+          input.draft.poster_user_id,
+        draftId:
+          input.draft.id,
+        quoteId,
+      },
+    );
+
+    throw error;
+  }
   return { success: true as const, data: { quoteId, quoteVersionId, customerTotalCents: input.proposedCustomerTotalCents, payoutCents: input.proposedPayoutCents, platformMarginCents } };
 }
 
