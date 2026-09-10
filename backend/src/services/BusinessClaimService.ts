@@ -54,7 +54,51 @@ type CreateBusinessQuoteInput = {
   quoteExpiresAt: Date;
 };
 
-async function createBusinessQuoteInTransaction(
+type ValidateBusinessQuoteContextInput = {
+  organizationId: string;
+  actorId: string;
+  serviceProfileId: string;
+  businessLocationId: string;
+};
+
+type ValidatedBusinessQuoteContext = {
+  organizationId: string;
+  serviceProfileId: string;
+  businessLocationId: string;
+};
+
+export async function validateBusinessQuoteContext(
+  query: QueryFn,
+  input: ValidateBusinessQuoteContextInput,
+): Promise<ServiceResult<ValidatedBusinessQuoteContext>> {
+  await query(`SELECT business_require_action($1, $2, 'ASSIGN_CREW')`, [input.organizationId, input.actorId]);
+  const orgResult = await query<{ id: string; status: string; provider_enabled: boolean; verification_status: string }>(
+    `SELECT id, status, provider_enabled, verification_status FROM business_organizations WHERE id = $1 FOR SHARE`,
+    [input.organizationId],
+  );
+  const org = orgResult.rows[0];
+  if (!org) return failure('BUSINESS_NOT_READY', 'The business organization is not currently eligible to claim work.');
+  try {
+    assertVerifiedProvider({ status: org.status, verificationStatus: org.verification_status, providerEnabled: org.provider_enabled });
+  } catch {
+    return failure('BUSINESS_NOT_READY', 'The business organization is not currently eligible to claim work.');
+  }
+  const profileResult = await query<{ id: string; organization_id: string; service_code: string; status: string }>(
+    `SELECT id, organization_id, service_code, status FROM business_service_profiles WHERE id = $1 AND organization_id = $2 FOR SHARE`,
+    [input.serviceProfileId, input.organizationId],
+  );
+  const profile = profileResult.rows[0];
+  if (!profile || !['DRAFT', 'ACTIVE'].includes(profile.status)) return failure('SERVICE_PROFILE_UNAVAILABLE', 'The selected service profile is not available.');
+  const locationResult = await query<{ id: string; organization_id: string; status: string }>(
+    `SELECT id, organization_id, status FROM business_locations WHERE id = $1 AND organization_id = $2 FOR SHARE`,
+    [input.businessLocationId, input.organizationId],
+  );
+  const location = locationResult.rows[0];
+  if (!location || location.status !== 'ACTIVE') return failure('BUSINESS_LOCATION_INVALID', 'The selected business location is not active.');
+  return { success: true, data: { organizationId: input.organizationId, serviceProfileId: profile.id, businessLocationId: location.id } };
+}
+
+export async function createBusinessQuoteInTransaction(
   query: QueryFn,
   input: CreateBusinessQuoteInput,
 ) {
@@ -257,112 +301,18 @@ export async function claimBusinessTask(
         );
       }
 
-      /*
-       * Business membership / authority.
-       */
-      await query(
-        `
-        SELECT business_require_action($1, $2, 'ASSIGN_CREW')
-        `,
-        [input.organizationId, input.actorId],
+      const businessContext = await validateBusinessQuoteContext(
+        query,
+        {
+          organizationId: input.organizationId,
+          actorId: input.actorId,
+          serviceProfileId: input.serviceProfileId,
+          businessLocationId: input.businessLocationId,
+        },
       );
 
-      /*
-       * Organization must be a verified provider.
-       */
-      const orgResult = await query<{
-        id: string;
-        status: string;
-        provider_enabled: boolean;
-        verification_status: string;
-      }>(
-        `
-        SELECT id, status, provider_enabled, verification_status
-        FROM business_organizations
-        WHERE id = $1
-        FOR SHARE
-        `,
-        [input.organizationId],
-      );
-
-      const org = orgResult.rows[0];
-
-      if (!org) {
-        return failure(
-          'BUSINESS_NOT_READY',
-          'The business organization is not currently eligible to claim work.',
-        );
-      }
-
-      try {
-        assertVerifiedProvider({
-          status: org.status,
-          verificationStatus: org.verification_status,
-          providerEnabled: org.provider_enabled,
-        });
-      } catch {
-        return failure(
-          'BUSINESS_NOT_READY',
-          'The business organization is not currently eligible to claim work.',
-        );
-      }
-
-      /*
-       * Service profile must match the task category.
-       */
-      const profileResult = await query<{
-        id: string;
-        organization_id: string;
-        service_code: string;
-        status: string;
-      }>(
-        `
-        SELECT id, organization_id, service_code, status
-        FROM business_service_profiles
-        WHERE id = $1
-          AND organization_id = $2
-        FOR SHARE
-        `,
-        [input.serviceProfileId, input.organizationId],
-      );
-
-      const profile = profileResult.rows[0];
-
-      if (
-        !profile ||
-        !['DRAFT', 'ACTIVE'].includes(profile.status)
-      ) {
-        return failure(
-          'SERVICE_PROFILE_UNAVAILABLE',
-          'The selected service profile is not available.',
-        );
-      }
-
-      /*
-       * Business location must belong to the same organization.
-       */
-      const locationResult = await query<{
-        id: string;
-        organization_id: string;
-        status: string;
-      }>(
-        `
-        SELECT id, organization_id, status
-        FROM business_locations
-        WHERE id = $1
-          AND organization_id = $2
-        FOR SHARE
-        `,
-        [input.businessLocationId, input.organizationId],
-      );
-
-      const location = locationResult.rows[0];
-
-      if (!location || location.status !== 'ACTIVE') {
-        return failure(
-          'BUSINESS_LOCATION_INVALID',
-          'The selected business location is not active.',
-        );
+      if (!businessContext.success) {
+        return businessContext;
       }
       const quoteCreateResult = await createBusinessQuoteInTransaction(query, {
         draft,

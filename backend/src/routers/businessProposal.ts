@@ -2,6 +2,7 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { db } from '../db.js';
 import { protectedProcedure, router } from '../trpc.js';
+import { createBusinessQuoteInTransaction, validateBusinessQuoteContext } from '../services/BusinessClaimService.js';
 
 const statuses = ['PENDING','VIEWED','QUOTED','REJECTED','CANCELLED','EXPIRED'] as const;
 type Status = typeof statuses[number];
@@ -30,6 +31,69 @@ export const businessProposalRouter = router({
     if (!['PENDING','VIEWED'].includes(proposal.status)) throw new TRPCError({ code: 'CONFLICT', message: `This proposal is already ${proposal.status.toLowerCase()}.` });
     await tx(`UPDATE business_task_proposals SET status='REJECTED', rejection_reason=$2, responded_at=NOW(), updated_at=NOW() WHERE id=$1`, [proposal.id, input.reason ?? null]);
     return { ok: true, proposal_id: proposal.id, status: 'REJECTED' as const };
+  })),
+  quote: protectedProcedure.input(z.object({
+    proposalId: z.string().uuid(),
+    serviceProfileId: z.string().uuid(),
+    businessLocationId: z.string().uuid(),
+    proposedCustomerTotalCents: z.number().int().positive(),
+    proposedPayoutCents: z.number().int().positive(),
+    arrivalWindowStart: z.string().datetime(),
+    arrivalWindowEnd: z.string().datetime(),
+  }).strict()).mutation(async ({ ctx, input }) => db.transaction(async (query) => {
+    const proposalResult = await query<{ id: string; task_draft_id: string; business_organization_id: string; status: string; expires_at: Date; quote_id: string | null }>(
+      `SELECT id, task_draft_id, business_organization_id, status, expires_at, quote_id
+       FROM business_task_proposals WHERE id = $1 FOR UPDATE`,
+      [input.proposalId],
+    );
+    const proposal = proposalResult.rows[0];
+    if (!proposal) throw new TRPCError({ code: 'NOT_FOUND', message: 'Business proposal not found.' });
+
+    const context = await validateBusinessQuoteContext(query, {
+      organizationId: proposal.business_organization_id,
+      actorId: ctx.user.id,
+      serviceProfileId: input.serviceProfileId,
+      businessLocationId: input.businessLocationId,
+    });
+    if (!context.success) {
+      throw new TRPCError({
+        code: context.error.code === 'BUSINESS_NOT_READY' ? 'PRECONDITION_FAILED' : 'FORBIDDEN',
+        message: context.error.message,
+      });
+    }
+
+    if (proposal.expires_at <= new Date() && ['PENDING', 'VIEWED'].includes(proposal.status)) {
+      await query(`UPDATE business_task_proposals SET status = 'EXPIRED', responded_at = COALESCE(responded_at, NOW()), updated_at = NOW() WHERE id = $1`, [proposal.id]);
+      throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This task proposal has expired.' });
+    }
+    if (proposal.status === 'QUOTED' && proposal.quote_id) return { ok: true as const, proposal_id: proposal.id, quote_id: proposal.quote_id, replayed: true as const };
+    if (!['PENDING', 'VIEWED'].includes(proposal.status)) throw new TRPCError({ code: 'CONFLICT', message: `This proposal is already ${proposal.status.toLowerCase()}.` });
+
+    const draftResult = await query<{ id: string; title: string | null; scope_summary: string | null; poster_user_id: string; status: string }>(
+      `SELECT id, title, scope_summary, poster_user_id, status FROM task_drafts WHERE id = $1 FOR UPDATE`,
+      [proposal.task_draft_id],
+    );
+    const draft = draftResult.rows[0];
+    if (!draft) throw new TRPCError({ code: 'NOT_FOUND', message: 'Task draft no longer exists.' });
+    if (draft.status === 'abandoned') throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This task is no longer available.' });
+
+    const quoteResult = await createBusinessQuoteInTransaction(query, {
+      draft,
+      organizationId: proposal.business_organization_id,
+      actorId: ctx.user.id,
+      serviceProfileId: input.serviceProfileId,
+      businessLocationId: input.businessLocationId,
+      proposedCustomerTotalCents: input.proposedCustomerTotalCents,
+      proposedPayoutCents: input.proposedPayoutCents,
+      arrivalWindowStart: input.arrivalWindowStart,
+      arrivalWindowEnd: input.arrivalWindowEnd,
+      quoteExpiresAt: proposal.expires_at,
+    });
+    if (!quoteResult.success) throw new TRPCError({ code: quoteResult.error.code.includes('CONFLICT') ? 'CONFLICT' : 'PRECONDITION_FAILED', message: quoteResult.error.message });
+
+    const quoteId = quoteResult.data.quoteId;
+    await query(`UPDATE business_task_proposals SET status = 'QUOTED', quote_id = $2, responded_at = NOW(), updated_at = NOW() WHERE id = $1`, [proposal.id, quoteId]);
+    return { ok: true as const, proposal_id: proposal.id, quote_id: quoteId, replayed: false as const };
   })),
 });
 export type BusinessProposalRouter = typeof businessProposalRouter;
