@@ -125,6 +125,12 @@ async function createBusinessQuoteInTransaction(
   if (!quoteVersionId) return { success: false as const, error: { code: 'QUOTE_VERSION_CREATE_FAILED', message: 'Unable to create business quote version.' } };
 
   await query(`UPDATE quotes SET active_version_id = $1, updated_at = NOW() WHERE id = $2`, [quoteVersionId, quoteId]);
+  console.log('[QUOTE_NOTIFICATION_DEBUG]', {
+    posterUserId: input.draft.poster_user_id,
+    draftId: input.draft.id,
+    quoteId,
+    organizationId: input.organizationId,
+  });
   await NotificationService.createInTransaction(query, {
     userId: input.draft.poster_user_id,
     type: 'QUOTE_RECEIVED',
