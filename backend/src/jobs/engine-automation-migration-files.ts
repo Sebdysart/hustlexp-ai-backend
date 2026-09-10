@@ -1,4 +1,5 @@
 export const REQUIRED_MIGRATION_FILES = [
+  { name: '20260910_task_completion_verifications', fileName: '20260910_task_completion_verifications.sql' },
   { name: 'add_missing_tables_v2', fileName: 'add_missing_tables_v2.sql' },
   { name: '20260710_engine_automation_contracts', fileName: '20260710_engine_automation_contracts.sql' },
   { name: '20260711_required_proof_alignment', fileName: '011-proof-alignment.sql' },
