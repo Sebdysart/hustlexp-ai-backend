@@ -1,3 +1,18 @@
+export function preferredWindowFromStructured(structured: unknown): string {
+  const answers =
+    structured &&
+    typeof structured === 'object' &&
+    !Array.isArray(structured) &&
+    'answers' in structured &&
+    structured.answers &&
+    typeof structured.answers === 'object' &&
+    !Array.isArray(structured.answers)
+      ? structured.answers as Record<string, unknown>
+      : {};
+
+  return String(answers.preferred_window ?? 'flexible');
+}
+
 export function computePreferredArrivalWindow(
   preferredWindow: string,
 ): {

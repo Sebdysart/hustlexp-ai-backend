@@ -80,6 +80,8 @@ export const providerOsRouter = router({
       businessLocationId: z.string().uuid(),
       proposedCustomerTotalCents: z.number().int().positive(),
       proposedPayoutCents: z.number().int().positive(),
+      arrivalWindowStart: z.string().datetime(),
+      arrivalWindowEnd: z.string().datetime(),
     }).strict())
     .mutation(async ({ ctx, input }) => unwrap(
       await setProviderOsDraftQuote({
@@ -90,6 +92,8 @@ export const providerOsRouter = router({
         businessLocationId: input.businessLocationId,
         proposedCustomerTotalCents: input.proposedCustomerTotalCents,
         proposedPayoutCents: input.proposedPayoutCents,
+        arrivalWindowStart: input.arrivalWindowStart,
+        arrivalWindowEnd: input.arrivalWindowEnd,
       }),
     )),
 

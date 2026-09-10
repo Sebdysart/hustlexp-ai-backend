@@ -5,8 +5,10 @@ import { notifyProviderOsClientOnboarded } from '../lib/provider-os-notification
 import {
   assertBusinessCanQuoteDraft,
   createBusinessDraftQuote,
+  notifyPosterQuoteReceived,
   validateBusinessQuotePricing,
 } from './BusinessClaimService.js';
+import { computePreferredArrivalWindow, preferredWindowFromStructured } from './QuoteTiming.js';
 import {
   isProviderOsEligibleDraft,
   isProviderOsInviteToken,
@@ -42,6 +44,9 @@ export interface ProviderOsDraftSummary {
 export interface ProviderOsDraftDetail extends ProviderOsDraftSummary {
   rawInput: string;
   quoteId: string | null;
+  preferredWindow: string;
+  preferredArrivalWindowStart: string;
+  preferredArrivalWindowEnd: string;
   quoteAction: {
     kind: 'EXISTING_QUOTE_FLOW';
     href: string;
@@ -384,6 +389,13 @@ export async function listProviderOsClients(actorId: string): Promise<ServiceRes
                 AND d.task_id IS NULL
                 AND d.quote_id IS NULL
                 AND d.status = ANY($2::text[])
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM quotes q
+                  WHERE q.task_draft_id = d.id
+                    AND q.claimed_by_user_id = r.provider_user_id
+                    AND q.status NOT IN ('rejected', 'withdrawn', 'expired', 'superseded')
+                )
             )::text AS open_draft_count
        FROM provider_os_relationships r
        JOIN users u ON u.id = r.poster_user_id
@@ -455,6 +467,13 @@ export async function listProviderOsDrafts(input: {
        JOIN users u ON u.id = d.poster_user_id
       WHERE d.poster_user_id IS NOT NULL
         AND ($2::uuid IS NULL OR d.poster_user_id = $2)
+        AND NOT EXISTS (
+          SELECT 1
+          FROM quotes q
+          WHERE q.task_draft_id = d.id
+            AND q.claimed_by_user_id = $1
+            AND q.status NOT IN ('rejected', 'withdrawn', 'expired', 'superseded')
+        )
       ORDER BY d.created_at DESC
       LIMIT 100`,
     [input.actorId, input.posterUserId ?? null],
@@ -511,6 +530,7 @@ export async function getProviderOsDraft(input: {
     claimed_at: Date | null;
     task_id: string | null;
     quote_id: string | null;
+    structured: unknown;
   }>(
     `SELECT d.id,
             d.poster_user_id,
@@ -527,7 +547,8 @@ export async function getProviderOsDraft(input: {
             d.created_at,
             d.claimed_at,
             d.task_id,
-            d.quote_id
+            d.quote_id,
+            d.structured
        FROM task_drafts d
        JOIN provider_os_relationships r
          ON r.poster_user_id = d.poster_user_id
@@ -550,6 +571,24 @@ export async function getProviderOsDraft(input: {
     return failure('INVALID_STATE', 'This request is no longer an unclaimed Provider OS draft.');
   }
 
+  const alreadyQuoted = await db.query<{ id: string }>(
+    `
+    SELECT id
+    FROM quotes
+    WHERE task_draft_id = $1
+      AND claimed_by_user_id = $2
+      AND status NOT IN ('rejected', 'withdrawn', 'expired', 'superseded')
+    LIMIT 1
+    `,
+    [row.id, input.actorId],
+  );
+  if (alreadyQuoted.rows[0]) {
+    return failure('INVALID_STATE', 'This request is no longer an unclaimed Provider OS draft.');
+  }
+
+  const preferredWindow = preferredWindowFromStructured(row.structured);
+  const customerWindow = computePreferredArrivalWindow(preferredWindow);
+
   return {
     success: true,
     data: {
@@ -567,6 +606,9 @@ export async function getProviderOsDraft(input: {
       estPriceMaxCents: row.est_price_max_cents,
       createdAt: row.created_at.toISOString(),
       quoteId: row.quote_id,
+      preferredWindow,
+      preferredArrivalWindowStart: customerWindow.arrivalStart.toISOString(),
+      preferredArrivalWindowEnd: customerWindow.arrivalEnd.toISOString(),
       quoteAction: {
         kind: 'EXISTING_QUOTE_FLOW',
         href: `/provider-os/drafts/${row.id}/quote`,
@@ -597,6 +639,8 @@ export async function setProviderOsDraftQuote(input: {
   businessLocationId: string;
   proposedCustomerTotalCents: number;
   proposedPayoutCents: number;
+  arrivalWindowStart: string;
+  arrivalWindowEnd: string;
 }): Promise<ServiceResult<ProviderOsSetQuoteResult>> {
   const access = await assertProviderOsAccess(input.actorId);
   if (!access.success) return access;
@@ -608,7 +652,7 @@ export async function setProviderOsDraftQuote(input: {
   if (!pricing.success) return pricing;
 
   try {
-    return await db.transaction(async (query) => {
+    const quoted = await db.transaction(async (query) => {
       const draftResult = await query<{
         id: string;
         poster_user_id: string | null;
@@ -672,7 +716,6 @@ export async function setProviderOsDraftQuote(input: {
         serviceProfileId: input.serviceProfileId,
         businessLocationId: input.businessLocationId,
         actorId: input.actorId,
-        draftCategory: draft.category,
       });
       if (!businessReady.success) return businessReady;
 
@@ -680,20 +723,23 @@ export async function setProviderOsDraftQuote(input: {
         Date.now() + PROVIDER_OS_INVITE_TTL_DAYS * 24 * 60 * 60 * 1000,
       );
 
-      const quoted = await createBusinessDraftQuote(query, {
+      const quoteWrite = await createBusinessDraftQuote(query, {
         draftId: draft.id,
         draftTitle: draft.title,
         draftScopeSummary: draft.scope_summary,
+        posterUserId: draft.poster_user_id,
         organizationId: input.organizationId,
         serviceProfileId: input.serviceProfileId,
         businessLocationId: input.businessLocationId,
         actorId: input.actorId,
         proposedCustomerTotalCents: input.proposedCustomerTotalCents,
         proposedPayoutCents: input.proposedPayoutCents,
+        arrivalWindowStart: input.arrivalWindowStart,
+        arrivalWindowEnd: input.arrivalWindowEnd,
         quoteExpiresAt,
         scopeExtras: { claim_entry: 'provider_os', provider_os: true },
       });
-      if (!quoted.success) return quoted;
+      if (!quoteWrite.success) return quoteWrite;
 
       await query(
         `
@@ -712,8 +758,8 @@ export async function setProviderOsDraftQuote(input: {
           input.actorId,
           draft.id,
           JSON.stringify({
-            quoteId: quoted.data.quoteId,
-            quoteVersionId: quoted.data.quoteVersionId,
+            quoteId: quoteWrite.data.quoteId,
+            quoteVersionId: quoteWrite.data.quoteVersionId,
             customerTotalCents: input.proposedCustomerTotalCents,
             payoutCents: input.proposedPayoutCents,
             entry: 'provider_os',
@@ -725,15 +771,39 @@ export async function setProviderOsDraftQuote(input: {
         success: true,
         data: {
           taskDraftId: draft.id,
-          quoteId: quoted.data.quoteId,
-          quoteVersionId: quoted.data.quoteVersionId,
-          customerTotalCents: quoted.data.customerTotalCents,
-          payoutCents: quoted.data.payoutCents,
-          platformMarginCents: quoted.data.platformMarginCents,
-          expiresAt: quoted.data.expiresAt,
+          quoteId: quoteWrite.data.quoteId,
+          quoteVersionId: quoteWrite.data.quoteVersionId,
+          customerTotalCents: quoteWrite.data.customerTotalCents,
+          payoutCents: quoteWrite.data.payoutCents,
+          platformMarginCents: quoteWrite.data.platformMarginCents,
+          expiresAt: quoteWrite.data.expiresAt,
+          posterUserId: draft.poster_user_id,
         },
       };
     });
+
+    if (quoted.success && quoted.data.posterUserId) {
+      await notifyPosterQuoteReceived({
+        posterUserId: quoted.data.posterUserId,
+        draftId: quoted.data.taskDraftId,
+        quoteId: quoted.data.quoteId,
+      });
+    }
+
+    if (!quoted.success) return quoted;
+
+    return {
+      success: true,
+      data: {
+        taskDraftId: quoted.data.taskDraftId,
+        quoteId: quoted.data.quoteId,
+        quoteVersionId: quoted.data.quoteVersionId,
+        customerTotalCents: quoted.data.customerTotalCents,
+        payoutCents: quoted.data.payoutCents,
+        platformMarginCents: quoted.data.platformMarginCents,
+        expiresAt: quoted.data.expiresAt,
+      },
+    };
   } catch {
     return failure('PROVIDER_OS_QUOTE_FAILED', 'Unable to set a quote for this Provider OS task.');
   }
