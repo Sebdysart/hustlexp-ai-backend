@@ -13,6 +13,7 @@
 
 import { randomUUID } from 'crypto';
 import { db, isInvariantViolation, getErrorMessage } from '../db.js';
+import type { QueryFn } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { ErrorCodes } from '../types.js';
 import { logger } from '../logger.js';
@@ -181,6 +182,18 @@ export interface UpdatePreferencesParams {
   categoryPreferences?: Record<string, unknown>;
 }
 
+export interface CreateInAppNotificationInput {
+  userId: string;
+  type: string;
+  title: string;
+  message: string;
+  entityType?: string | null;
+  entityId?: string | null;
+  actionUrl?: string | null;
+  metadata?: Record<string, unknown>;
+  dedupeKey?: string | null;
+}
+
 // BUG 5 FIX: Categories that bypass the frequency cap entirely.
 // security_alert: an attacker can exhaust the 20/day limit, silencing real alerts.
 // payment_released: already has Infinity limits but guarded explicitly here for safety.
@@ -323,6 +336,15 @@ async function findMatchingReplay(
 // ============================================================================
 
 export const NotificationService = {
+  async create(input: CreateInAppNotificationInput): Promise<void> {
+    await db.query(`INSERT INTO notifications (user_id, type, title, message, entity_type, entity_id, action_url, metadata, dedupe_key, category, body, deep_link, priority, notification_class, object_type, object_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$2,$4,COALESCE($7,'/notifications'),'MEDIUM','status',COALESCE($5,'notification'),COALESCE($6::text,'general')) ON CONFLICT DO NOTHING`, [input.userId, input.type, input.title, input.message, input.entityType ?? null, input.entityId ?? null, input.actionUrl ?? null, JSON.stringify(input.metadata ?? {}), input.dedupeKey ?? null]);
+  },
+  async createInTransaction(query: QueryFn, input: CreateInAppNotificationInput): Promise<void> {
+    await query(`INSERT INTO notifications (user_id, type, title, message, entity_type, entity_id, action_url, metadata, dedupe_key, category, body, deep_link, priority, notification_class, object_type, object_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$2,$4,COALESCE($7,'/notifications'),'MEDIUM','status',COALESCE($5,'notification'),COALESCE($6::text,'general')) ON CONFLICT DO NOTHING`, [input.userId, input.type, input.title, input.message, input.entityType ?? null, input.entityId ?? null, input.actionUrl ?? null, JSON.stringify(input.metadata ?? {}), input.dedupeKey ?? null]);
+  },
+  async createManyInTransaction(query: QueryFn, inputs: CreateInAppNotificationInput[]): Promise<void> {
+    for (const input of inputs) await NotificationService.createInTransaction(query, input);
+  },
   // --------------------------------------------------------------------------
   // CREATE OPERATIONS
   // --------------------------------------------------------------------------

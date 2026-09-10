@@ -124,6 +124,7 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260910_assessment_payments', fileName: '20260910_assessment_payments.sql' },
   { name: '20260910_simplify_assessment_credit', fileName: '20260910_simplify_assessment_credit.sql' },
   { name: '20260910_assessment_payment_global_merchant_compat', fileName: '20260910_assessment_payment_global_merchant_compat.sql' },
+  { name: '20260910_in_app_notifications', fileName: '20260910_in_app_notifications.sql' },
   { name: '20260909_business_stax_merchant_accounts', fileName: '20260909_business_stax_merchant_accounts.sql' },
   { name: '20260909_quote_payment_stax_merchant_binding', fileName: '20260909_quote_payment_stax_merchant_binding.sql' },
 ] as const;
