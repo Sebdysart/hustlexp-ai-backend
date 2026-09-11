@@ -7,7 +7,37 @@ const WORDS: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five:
 function escapeRegex(value: string): string { return value.replace(/[.*+?^{}()|[\]\\]/g, '\\$&'); }
 
 function add(items: Candidate[], candidate: Candidate): void { const i = items.findIndex((item) => item.key === candidate.key); if (i < 0) items.push(candidate); else if (candidate.confidence > items[i].confidence) items[i] = candidate; }
-function numberBefore(text: string, nouns: readonly string[]) { const numberPattern = ['\\d+', ...Object.keys(WORDS).map(escapeRegex)].join('|'); const nounPattern = nouns.map(escapeRegex).join('|'); const match = text.match(new RegExp('\\b(' + numberPattern + ')\\s+(?:\\w+\\s+){0,2}(?:' + nounPattern + ')\\b', 'i')); if (!match) return null; const token = match[1].toLowerCase(); const value = /^\\d+$/.test(token) ? Number(token) : WORDS[token]; return Number.isFinite(value) ? { value, evidence: match[0] } : null; }
+function numberBefore(
+  text: string,
+  nouns: readonly string[],
+): {
+  value: number;
+  evidence: string;
+} | null {
+  const nounSet = new Set(
+    nouns.map((noun) => noun.toLowerCase()),
+  );
+  const tokens = text.match(/\d+|[a-z][\w'-]*/gi) ?? [];
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index].toLowerCase();
+    const value = /^\d+$/.test(token) ? Number(token) : WORDS[token];
+
+    if (!Number.isFinite(value)) continue;
+
+    const maxNounIndex = Math.min(index + 3, tokens.length - 1);
+    for (let nounIndex = index + 1; nounIndex <= maxNounIndex; nounIndex += 1) {
+      const possibleNoun = tokens[nounIndex].toLowerCase();
+      if (!nounSet.has(possibleNoun)) continue;
+      return {
+        value,
+        evidence: tokens.slice(index, nounIndex + 1).join(' '),
+      };
+    }
+  }
+
+  return null;
+}
 function cleanObjectPhrase(value: string): string | null { let result = value.trim().replace(/^(?:my|our|the|a|an|some|this|that|these|those)\s+/i, '').replace(/^(?:new|old)\s+/i, '').replace(/^(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\s+/i, '').replace(/\b(?:today|tomorrow|tonight|please|asap)\b.*$/i, '').replace(/\s+/g, ' ').trim(); result = result.replace(/^(?:my|our|the|a|an|some|this|that|these|those)\s+/i, '').replace(/^(?:new|old)\s+/i, '').trim(); return !result || result.length > 100 || /^(?:it|them|this|that|these|those)$/i.test(result) ? null : result; }
 function extractActionObject(text: string, actions: readonly string[]) { const actionPattern = actions.map(escapeRegex).join('|'); const boundary = ['and', 'then', 'bring', 'deliver', 'transport', 'assemble', 'build', 'install', 'mount', 'move', 'carry', 'take', 'from', 'to', 'into', 'onto', 'upstairs', 'downstairs', 'outside', 'inside'].map(escapeRegex).join('|'); const match = text.match(new RegExp('\\b(?:' + actionPattern + ')\\b\\s+(.{1,100}?)(?=\\s+(?:' + boundary + ')\\b|$)', 'i')); if (!match) return null; const object = cleanObjectPhrase(match[1]); if (!object) return null; return { object, evidence: match[0] }; }
 function enumCandidate(text: string, key: string, values: Array<[string, RegExp[]]>): Candidate | null { for (const [value, patterns] of values) for (const pattern of patterns) if (pattern.test(text)) return { key, value, confidence: 0.97, evidence: 'Explicit ' + value + ' reference' }; return null; }
