@@ -53,7 +53,14 @@ async function main(): Promise<void> {
     for (const key of keys) fieldCounts.set(key, (fieldCounts.get(key) ?? 0) + 1);
     const allowed = getAllowedKeys(row.expected);
     invalidKeys += keys.filter((key) => !allowed.has(key)).length;
-    if (keys.length && VAGUE_INPUT_PATTERNS.some((p) => p.test(row.input.trim()))) vaguePrefills += 1;
+    const vague = VAGUE_INPUT_PATTERNS.some((p) => p.test(row.input.trim()));
+    if (vague && keys.length > 0) {
+      vaguePrefills += 1;
+      console.log('\n[VAGUE PREFILL]');
+      console.log(row.input);
+      console.log(`category=${row.expected}`);
+      console.log(JSON.stringify(result, null, 2));
+    }
   }
   console.log(`Tasks checked: ${corpus.length}`);
   console.log(`Tasks with >= 1 prefill: ${tasksWithPrefill}/${corpus.length}`);
