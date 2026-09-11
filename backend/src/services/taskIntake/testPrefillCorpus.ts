@@ -24,7 +24,13 @@ const EXACT_CASES: ExpectedPrefill[] = [
   { input: 'Need someone ASAP.', category: 'other', expectedAnswers: {} },
 ];
 
-const VAGUE_INPUT_PATTERNS = [/^need someone\b/i, /^need help\b/i, /^help me\b/i, /^can someone help\b/i, /^looking for help\b/i];
+function isSuspiciouslyVague(input: string): boolean {
+  const text = input.trim().toLowerCase();
+  const vagueStart = /^(?:need someone|need help|help me|can someone help|looking for help)\b/i.test(text);
+  if (!vagueStart) return false;
+  const concreteFactSignal = /\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|box|boxes|dog|dogs|cat|cats|room|rooms|chair|chairs|table|tables|desk|desks|stairs|flight|flights|apartment|house|office|deliver|move|assemble|clean|walk|feed)\b/i;
+  return !concreteFactSignal.test(text);
+}
 
 function equalAnswer(a: IntakeAnswer | undefined, b: IntakeAnswer): boolean { return Array.isArray(a) && Array.isArray(b) ? a.length === b.length && a.every((v, i) => v === b[i]) : a === b; }
 function getAllowedKeys(category: TaskCategory, secondary: readonly TaskCategory[] = []): Set<string> { return new Set(getQuestionsForIntake(category, secondary).map((q) => q.key)); }
@@ -53,7 +59,7 @@ async function main(): Promise<void> {
     for (const key of keys) fieldCounts.set(key, (fieldCounts.get(key) ?? 0) + 1);
     const allowed = getAllowedKeys(row.expected);
     invalidKeys += keys.filter((key) => !allowed.has(key)).length;
-    const vague = VAGUE_INPUT_PATTERNS.some((p) => p.test(row.input.trim()));
+    const vague = isSuspiciouslyVague(row.input);
     if (vague && keys.length > 0) {
       vaguePrefills += 1;
       console.log('\n[VAGUE PREFILL]');
