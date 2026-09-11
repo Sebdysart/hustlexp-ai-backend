@@ -115,3 +115,11 @@ const durationCase = extractIntakePrefill(
   'pet_care',
 );
 assert.equal(durationCase.answers.pet_count, 2);
+
+const mixedMeasurement = extractIntakePrefill(
+  'Move two couches and six boxes up three flights of stairs.',
+  'moving',
+);
+assert.equal(mixedMeasurement.answers.item_count, 8);
+assert.equal(mixedMeasurement.answers.stair_flights, 3);
+assert.equal(mixedMeasurement.answers.stairs, true);

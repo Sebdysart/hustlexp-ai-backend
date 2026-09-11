@@ -68,14 +68,15 @@ function extractCounts(text: string): Candidate[] {
   return candidates;
 }
 
-function cleanCompoundItem(value: string): string | null { const cleaned = value.replace(/^(?:my|our|the|some|this|that|these|those|new|old)\s+/i, '').replace(/\s+/g, ' ').trim(); return !cleaned || cleaned.length > 80 ? null : cleaned; }
+function cleanCompoundItem(value: string): string | null { const cleaned = value.replace(/^(?:my|our|the|some|this|that|these|those|new|old)\s+/i, '').replace(/\s+(?:up|down|upstairs|downstairs|inside|outside)$/i, '').replace(/\s+/g, ' ').trim(); return !cleaned || cleaned.length > 80 ? null : cleaned; }
 function extractQuantifiedItems(raw: string): QuantifiedItem[] {
   const text = raw.toLowerCase().replace(/[;:]/g, ',').replace(/\s+/g, ' ').trim();
   const quantityTokens = new Set(['a', 'an', ...Object.keys(WORDS)]);
   const tokens = text.match(/\d+|[a-z][\w'-]*|,/gi) ?? [];
   const items: QuantifiedItem[] = [];
   const hardBoundaries = new Set(['then', 'from', 'to', 'into', 'onto', 'upstairs', 'downstairs', 'outside', 'inside', 'deliver', 'transport', 'assemble', 'build', 'move', 'carry', 'install', 'mount']);
-  const ignoredItems = new Set(['time', 'times', 'hour', 'hours', 'minute', 'minutes', 'day', 'days', 'week', 'weeks', 'flight', 'flights', 'room', 'rooms', 'guest', 'guests', 'people']);
+  const nonItemTokens = new Set(['time', 'times', 'hour', 'hours', 'minute', 'minutes', 'day', 'days', 'week', 'weeks', 'flight', 'flights', 'stair', 'stairs', 'staircase', 'floor', 'floors', 'story', 'stories', 'room', 'rooms', 'bedroom', 'bedrooms', 'guest', 'guests', 'person', 'people', 'attendee', 'attendees', 'mile', 'miles', 'foot', 'feet', 'inch', 'inches', 'meter', 'meters']);
+  const isNonItemPhrase = (value: string) => value.toLowerCase().split(/\s+/).filter(Boolean).some((word) => nonItemTokens.has(word));
   const isQuantity = (token: string) => /^\d+$/.test(token) || quantityTokens.has(token);
 
   for (let index = 0; index < tokens.length; index += 1) {
@@ -93,8 +94,7 @@ function extractQuantifiedItems(raw: string): QuantifiedItem[] {
       cursor += 1;
     }
     const item = cleanCompoundItem(itemTokens.join(' '));
-    const finalWord = item?.split(/\s+/).at(-1);
-    if (!item || (finalWord && ignoredItems.has(finalWord))) continue;
+    if (!item || isNonItemPhrase(item)) continue;
     items.push({ quantity, item, evidence: [token, ...itemTokens].join(' ') });
     index = Math.max(index, cursor - 1);
   }
