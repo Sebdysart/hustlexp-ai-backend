@@ -39,8 +39,10 @@ const EXACT_CASES: ExpectedPrefill[] = [
     yard_size:
       'large',
 
-    debris_type:
-      'branches and leaves',
+    debris_type: [
+      'branches',
+      'leaves',
+    ],
   },
 },
 
