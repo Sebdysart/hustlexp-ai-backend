@@ -4,11 +4,12 @@ import type { IntakeAnswer, IntakeAnswers, TaskCategory } from './types.js';
 interface Candidate { key: string; value: IntakeAnswer; confidence: number; evidence: string; }
 export interface IntakePrefillResult { answers: IntakeAnswers; evidence: Array<Candidate>; }
 const WORDS: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20 };
+function escapeRegex(value: string): string { return value.replace(/[.*+?^{}()|[\]\\]/g, '\\$&'); }
 
 function add(items: Candidate[], candidate: Candidate): void { const i = items.findIndex((item) => item.key === candidate.key); if (i < 0) items.push(candidate); else if (candidate.confidence > items[i].confidence) items[i] = candidate; }
-function numberBefore(text: string, nouns: readonly string[]) { const match = text.match(new RegExp('\b(\d+|' + Object.keys(WORDS).join('|') + ')\s+(?:\w+\s+){0,2}(?:' + nouns.join('|') + ')\b', 'i')); if (!match) return null; const value = /^\d+$/.test(match[1]) ? Number(match[1]) : WORDS[match[1].toLowerCase()]; return Number.isFinite(value) ? { value, evidence: match[0] } : null; }
+function numberBefore(text: string, nouns: readonly string[]) { const numberPattern = ['\\d+', ...Object.keys(WORDS).map(escapeRegex)].join('|'); const nounPattern = nouns.map(escapeRegex).join('|'); const match = text.match(new RegExp('\\b(' + numberPattern + ')\\s+(?:\\w+\\s+){0,2}(?:' + nounPattern + ')\\b', 'i')); if (!match) return null; const token = match[1].toLowerCase(); const value = /^\\d+$/.test(token) ? Number(token) : WORDS[token]; return Number.isFinite(value) ? { value, evidence: match[0] } : null; }
 function cleanObjectPhrase(value: string): string | null { let result = value.trim().replace(/^(?:my|our|the|a|an|some|this|that|these|those)\s+/i, '').replace(/^(?:new|old)\s+/i, '').replace(/^(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\s+/i, '').replace(/\b(?:today|tomorrow|tonight|please|asap)\b.*$/i, '').replace(/\s+/g, ' ').trim(); result = result.replace(/^(?:my|our|the|a|an|some|this|that|these|those)\s+/i, '').replace(/^(?:new|old)\s+/i, '').trim(); return !result || result.length > 100 || /^(?:it|them|this|that|these|those)$/i.test(result) ? null : result; }
-function extractActionObject(text: string, actions: readonly string[]) { const boundary = 'and|then|bring|deliver|transport|assemble|build|install|mount|move|carry|take|from|to|into|onto|upstairs|downstairs|outside|inside'; const match = text.match(new RegExp('\b(?:' + actions.join('|') + ')\b\s+(.{1,100}?)(?=\s+(?:' + boundary + ')\b|$)', 'i')); if (!match) return null; const object = cleanObjectPhrase(match[1]); return object ? { object, evidence: match[0] } : null; }
+function extractActionObject(text: string, actions: readonly string[]) { const actionPattern = actions.map(escapeRegex).join('|'); const boundary = ['and', 'then', 'bring', 'deliver', 'transport', 'assemble', 'build', 'install', 'mount', 'move', 'carry', 'take', 'from', 'to', 'into', 'onto', 'upstairs', 'downstairs', 'outside', 'inside'].map(escapeRegex).join('|'); const match = text.match(new RegExp('\\b(?:' + actionPattern + ')\\b\\s+(.{1,100}?)(?=\\s+(?:' + boundary + ')\\b|$)', 'i')); if (!match) return null; const object = cleanObjectPhrase(match[1]); if (!object) return null; return { object, evidence: match[0] }; }
 function enumCandidate(text: string, key: string, values: Array<[string, RegExp[]]>): Candidate | null { for (const [value, patterns] of values) for (const pattern of patterns) if (pattern.test(text)) return { key, value, confidence: 0.97, evidence: 'Explicit ' + value + ' reference' }; return null; }
 function extractAccess(text: string): Candidate | null { if (/\bupstairs\b/i.test(text)) return { key: 'access_restrictions', value: 'The task involves carrying or accessing items upstairs.', confidence: 0.96, evidence: 'upstairs' }; if (/\bdownstairs\b/i.test(text)) return { key: 'access_restrictions', value: 'The task involves carrying or accessing items downstairs.', confidence: 0.96, evidence: 'downstairs' }; const flights = numberBefore(text, ['flight', 'flights']); return flights ? { key: 'access_restrictions', value: flights.value + ' flight' + (flights.value === 1 ? '' : 's') + ' of stairs are involved.', confidence: 0.98, evidence: flights.evidence } : null; }
 function extractCounts(text: string): Candidate[] {
@@ -23,6 +24,14 @@ function extractCounts(text: string): Candidate[] {
       confidence: 0.94,
       evidence: movingItems.evidence,
     });
+  }
+  for (const [key, nouns, confidence] of [
+    ['assembly_count', ['chair', 'chairs', 'desk', 'desks', 'table', 'tables', 'cabinet', 'cabinets', 'shelf', 'shelves', 'bed', 'beds', 'item', 'items'], 0.90],
+    ['room_count', ['room', 'rooms', 'bedroom', 'bedrooms'], 0.95],
+    ['guest_count', ['guest', 'guests', 'person', 'people', 'attendee', 'attendees'], 0.97],
+  ] as const) {
+    const count = numberBefore(text, nouns);
+    if (count) add(candidates, { key, value: count.value, confidence, evidence: count.evidence });
   }
   return candidates;
 }
