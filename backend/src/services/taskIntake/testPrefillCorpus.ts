@@ -19,14 +19,13 @@ const EXACT_CASES: ExpectedPrefill[] = [
   category: 'yard',
 
   expectedAnswers: {
-    cleanup_size:
+    yard_size:
       'small',
 
-    debris_removal:
+    debris_type:
       true,
 
-    debris_type:
-      'leaves',
+    debris_type: ['leaves'],
   },
 },
 
@@ -37,7 +36,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
   category: 'yard',
 
   expectedAnswers: {
-    cleanup_size:
+    yard_size:
       'large',
 
     debris_type:
@@ -52,11 +51,10 @@ const EXACT_CASES: ExpectedPrefill[] = [
   category: 'yard',
 
   expectedAnswers: {
-    debris_removal:
+    debris_type:
       true,
 
-    debris_type:
-      'leaves',
+    debris_type: ['leaves'],
   },
 },
 
@@ -67,10 +65,10 @@ const EXACT_CASES: ExpectedPrefill[] = [
   category: 'yard',
 
   expectedAnswers: {
-    cleanup_size:
+    yard_size:
       'small',
 
-    equipment_available:
+    equipment_provided:
       true,
   },
 },
@@ -82,7 +80,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
   category: 'yard',
 
   expectedAnswers: {
-    equipment_available:
+    equipment_provided:
       false,
   },
 },
@@ -106,7 +104,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
   category: 'yard',
 
   expectedAnswers: {
-    cleanup_size:
+    yard_size:
       'medium',
   },
 },
@@ -118,7 +116,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
   category: 'yard',
 
   expectedAnswers: {
-    debris_removal:
+    debris_type:
       true,
 
     debris_type:
@@ -133,11 +131,10 @@ const EXACT_CASES: ExpectedPrefill[] = [
   category: 'yard',
 
   expectedAnswers: {
-    cleanup_size:
+    yard_size:
       'small',
 
-    debris_type:
-      'leaves',
+    debris_type: ['leaves'],
   },
 },
 
@@ -160,7 +157,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
   category: 'yard',
 
   expectedAnswers: {
-    cleanup_size:
+    yard_size:
       'large',
 
     debris_type:
@@ -175,7 +172,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
   category: 'yard',
 
   expectedAnswers: {
-    debris_removal:
+    debris_type:
       false,
 
     special_constraints:
@@ -214,10 +211,10 @@ const EXACT_CASES: ExpectedPrefill[] = [
   category: 'yard',
 
   expectedAnswers: {
-    cleanup_size:
+    yard_size:
       'large',
 
-    debris_removal:
+    debris_type:
       true,
 
     debris_type:
@@ -232,10 +229,9 @@ const EXACT_CASES: ExpectedPrefill[] = [
   category: 'yard',
 
   expectedAnswers: {
-    debris_type:
-      'leaves',
+    debris_type: ['leaves'],
 
-    equipment_available:
+    equipment_provided:
       true,
   },
 },
@@ -250,7 +246,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     debris_type:
       'branches',
 
-    equipment_available:
+    equipment_provided:
       false,
   },
 },
@@ -342,7 +338,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
 
 {
   input:
-    'Deep clean my studio apartment. I have all the supplies.',
+    'Deep clean my studio apartment. I have all the supplies_provided.',
 
   category:
     'cleaning',
@@ -354,14 +350,14 @@ const EXACT_CASES: ExpectedPrefill[] = [
     cleaning_type:
       'deep cleaning',
 
-    supplies:
+    supplies_provided:
       true,
   },
 },
 
 {
   input:
-    'Clean my apartment but please bring your own cleaning supplies.',
+    'Clean my apartment but please bring your own cleaning supplies_provided.',
 
   category:
     'cleaning',
@@ -370,7 +366,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     property_type:
       'apartment',
 
-    supplies:
+    supplies_provided:
       false,
   },
 },
@@ -457,7 +453,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
 
 {
   input:
-    'Clean my house. Supplies are under the kitchen sink.',
+    'Clean my house. supplies_provided are under the kitchen sink.',
 
   category:
     'cleaning',
@@ -466,7 +462,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     property_type:
       'house',
 
-    supplies:
+    supplies_provided:
       true,
   },
 },
@@ -485,7 +481,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     cleaning_type:
       'deep cleaning',
 
-    supplies:
+    supplies_provided:
       false,
   },
 },
@@ -654,7 +650,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     item_count:
       21,
 
-    heavy_items:
+    large_items:
       true,
   },
 },
@@ -670,7 +666,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     item_count:
       1,
 
-    heavy_items:
+    large_items:
       true,
   },
 },
@@ -686,7 +682,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     item_count:
       10,
 
-    vehicle_needs:
+    vehicle_required:
       false,
   },
 },
@@ -702,7 +698,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     item_count:
       15,
 
-    vehicle_needs:
+    vehicle_required:
       true,
   },
 },
@@ -718,7 +714,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     item_count:
       1,
 
-    heavy_items:
+    large_items:
       true,
 
     stairs:
@@ -759,7 +755,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     item_count:
       30,
 
-    vehicle_needs:
+    vehicle_required:
       false,
   },
 },
@@ -775,7 +771,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     item_count:
       2,
 
-    heavy_items:
+    large_items:
       true,
   },
 },
@@ -810,7 +806,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     item_count:
       40,
 
-    vehicle_needs:
+    vehicle_required:
       true,
   },
 },
@@ -826,7 +822,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     item_count:
       1,
 
-    heavy_items:
+    large_items:
       true,
   },
 },
@@ -858,7 +854,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     item_count:
       2,
 
-    heavy_items:
+    large_items:
       true,
 
     access_restrictions:
@@ -877,7 +873,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     item_count:
       100,
 
-    vehicle_needs:
+    vehicle_required:
       false,
   },
 },
@@ -890,7 +886,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'assembly',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'bed',
 
     item_count:
@@ -906,7 +902,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'assembly',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'dining chairs',
 
     item_count:
@@ -922,7 +918,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'assembly',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'bookshelves',
 
     item_count:
@@ -938,7 +934,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'assembly',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'desk',
 
     item_count:
@@ -957,7 +953,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'assembly',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'floating shelves',
 
     item_count:
@@ -979,7 +975,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'assembly',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'shelves',
 
     item_count:
@@ -1001,7 +997,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'assembly',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'wardrobe',
 
     item_count:
@@ -1020,7 +1016,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'assembly',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'office desks',
 
     item_count:
@@ -1036,7 +1032,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'assembly',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'TV stand',
 
     item_count:
@@ -1052,7 +1048,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'assembly',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'dressers',
 
     item_count:
@@ -1074,7 +1070,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'assembly',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'patio chairs',
 
     item_count:
@@ -1090,7 +1086,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'assembly',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'trampoline',
 
     item_count:
@@ -1106,7 +1102,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'assembly',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'barbecue grill',
 
     item_count:
@@ -1122,7 +1118,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'assembly',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'TV',
 
     item_count:
@@ -1144,7 +1140,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'assembly',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'cabinets',
 
     item_count:
@@ -1166,7 +1162,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'assembly',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'office desks',
 
     item_count:
@@ -1185,7 +1181,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'assembly',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'bookshelf',
 
     item_count:
@@ -1201,7 +1197,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'assembly',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'crib',
 
     item_count:
@@ -1220,7 +1216,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'delivery',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'couch',
 
     vehicle_size:
@@ -1236,7 +1232,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'delivery',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'refrigerator',
 
     heavy_handling:
@@ -1252,7 +1248,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'delivery',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'glass table',
 
     fragile_handling:
@@ -1268,7 +1264,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'delivery',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'boxes',
 
     vehicle_size:
@@ -1284,7 +1280,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'delivery',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'sofa',
 
     vehicle_size:
@@ -1303,7 +1299,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'delivery',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'birthday cake',
 
     fragile_handling:
@@ -1319,7 +1315,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'delivery',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'washing machine',
 
     heavy_handling:
@@ -1338,7 +1334,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'delivery',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'antique mirror',
 
     fragile_handling:
@@ -1354,7 +1350,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'delivery',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'dining table',
 
     vehicle_size:
@@ -1370,7 +1366,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'delivery',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'safe',
 
     heavy_handling:
@@ -1386,7 +1382,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'delivery',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'flowers',
   },
 },
@@ -1399,7 +1395,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'delivery',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'lumber',
 
     vehicle_size:
@@ -1415,7 +1411,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'delivery',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'computer monitor',
 
     fragile_handling:
@@ -1431,7 +1427,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'delivery',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'toolbox',
 
     vehicle_size:
@@ -1450,7 +1446,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'delivery',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'ceramic dishes',
 
     fragile_handling:
@@ -1466,7 +1462,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'delivery',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'mattress',
 
     vehicle_size:
@@ -1482,7 +1478,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'delivery',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'piano',
 
     heavy_handling:
@@ -1498,7 +1494,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'delivery',
 
   expectedAnswers: {
-    item_type:
+    assembly_type:
       'glass cabinet',
 
     heavy_handling:
@@ -1517,7 +1513,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'handyman',
 
   expectedAnswers: {
-    repair_type:
+    work_type:
       'leaking kitchen faucet',
   },
 },
@@ -1530,7 +1526,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'handyman',
 
   expectedAnswers: {
-    repair_type:
+    work_type:
       'loose door handle',
   },
 },
@@ -1543,7 +1539,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'handyman',
 
   expectedAnswers: {
-    repair_type:
+    work_type:
       'drywall hole repair',
 
     materials:
@@ -1559,7 +1555,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'handyman',
 
   expectedAnswers: {
-    repair_type:
+    work_type:
       'fence gate repair',
 
     materials:
@@ -1575,7 +1571,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'handyman',
 
   expectedAnswers: {
-    repair_type:
+    work_type:
       'cabinet hinge replacement',
   },
 },
@@ -1588,7 +1584,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'handyman',
 
   expectedAnswers: {
-    repair_type:
+    work_type:
       'loose handrail repair',
   },
 },
@@ -1601,7 +1597,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'handyman',
 
   expectedAnswers: {
-    repair_type:
+    work_type:
       'curtain rod installation',
 
     materials:
@@ -1617,7 +1613,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'handyman',
 
   expectedAnswers: {
-    repair_type:
+    work_type:
       'baseboard replacement',
 
     materials:
@@ -1633,7 +1629,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'handyman',
 
   expectedAnswers: {
-    repair_type:
+    work_type:
       'door adjustment',
   },
 },
@@ -1646,7 +1642,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'handyman',
 
   expectedAnswers: {
-    repair_type:
+    work_type:
       'wall repair',
 
     special_tools:
@@ -1662,7 +1658,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'handyman',
 
   expectedAnswers: {
-    repair_type:
+    work_type:
       'towel rack installation',
 
     special_tools:
@@ -1678,7 +1674,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'handyman',
 
   expectedAnswers: {
-    repair_type:
+    work_type:
       'gate latch replacement',
   },
 },
@@ -1691,7 +1687,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'handyman',
 
   expectedAnswers: {
-    repair_type:
+    work_type:
       'loose shelf repair',
 
     materials:
@@ -1707,7 +1703,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'handyman',
 
   expectedAnswers: {
-    repair_type:
+    work_type:
       'closet door repair',
   },
 },
@@ -1720,7 +1716,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'handyman',
 
   expectedAnswers: {
-    repair_type:
+    work_type:
       'weather stripping replacement',
   },
 },
@@ -1733,7 +1729,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'handyman',
 
   expectedAnswers: {
-    repair_type:
+    work_type:
       'mailbox installation',
 
     materials:
@@ -1749,7 +1745,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'handyman',
 
   expectedAnswers: {
-    repair_type:
+    work_type:
       'wooden step repair',
 
     materials:
@@ -1765,7 +1761,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'handyman',
 
   expectedAnswers: {
-    repair_type:
+    work_type:
       'cabinet door repair',
 
     special_tools:
@@ -1781,7 +1777,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'home_services',
 
   expectedAnswers: {
-    service_needed:
+    service_type:
       'dishwasher repair',
 
     affected_area:
@@ -1797,7 +1793,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'home_services',
 
   expectedAnswers: {
-    service_needed:
+    service_type:
       'washing machine repair',
 
     affected_area:
@@ -1816,7 +1812,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'home_services',
 
   expectedAnswers: {
-    service_needed:
+    service_type:
       'drain repair',
 
     affected_area:
@@ -1832,7 +1828,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'home_services',
 
   expectedAnswers: {
-    service_needed:
+    service_type:
       'toilet repair',
 
     affected_area:
@@ -1864,7 +1860,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'home_services',
 
   expectedAnswers: {
-    service_needed:
+    service_type:
       'exhaust fan repair',
 
     affected_area:
@@ -1880,7 +1876,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'home_services',
 
   expectedAnswers: {
-    service_needed:
+    service_type:
       'garage door repair',
 
     affected_area:
@@ -1912,7 +1908,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'home_services',
 
   expectedAnswers: {
-    service_needed:
+    service_type:
       'garbage disposal repair',
 
     affected_area:
@@ -1928,7 +1924,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'home_services',
 
   expectedAnswers: {
-    service_needed:
+    service_type:
       'air conditioning repair',
 
     affected_area:
@@ -1992,7 +1988,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'home_services',
 
   expectedAnswers: {
-    service_needed:
+    service_type:
       'faucet diagnosis',
 
     affected_area:
@@ -2024,7 +2020,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'home_services',
 
   expectedAnswers: {
-    service_needed:
+    service_type:
       'freezer repair',
 
     affected_area:
@@ -2056,7 +2052,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'home_services',
 
   expectedAnswers: {
-    service_needed:
+    service_type:
       'shower leak repair',
 
     affected_area:
@@ -2078,7 +2074,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     vehicle_details:
       '2020 Honda Civic',
 
-    service_needed:
+    service_type:
       'oil change',
   },
 },
@@ -2094,7 +2090,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     vehicle_details:
       '2018 Toyota Corolla',
 
-    service_needed:
+    service_type:
       'battery replacement',
   },
 },
@@ -2110,7 +2106,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     vehicle_details:
       '2017 Ford Focus',
 
-    service_needed:
+    service_type:
       'no-start diagnosis',
 
     drivability:
@@ -2129,7 +2125,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     vehicle_details:
       '2021 Honda Accord',
 
-    service_needed:
+    service_type:
       'front brake pad replacement',
   },
 },
@@ -2145,7 +2141,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     vehicle_details:
       'Toyota Camry',
 
-    service_needed:
+    service_type:
       'dashcam installation',
   },
 },
@@ -2161,7 +2157,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     vehicle_details:
       'Honda Civic',
 
-    service_needed:
+    service_type:
       'flat tire replacement',
   },
 },
@@ -2174,7 +2170,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'auto',
 
   expectedAnswers: {
-    service_needed:
+    service_type:
       'brake diagnosis',
   },
 },
@@ -2190,7 +2186,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     vehicle_details:
       'truck',
 
-    service_needed:
+    service_type:
       'diagnosis',
 
     drivability:
@@ -2206,10 +2202,10 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'auto',
 
   expectedAnswers: {
-    service_needed:
+    service_type:
       'alternator replacement',
 
-    parts_availability:
+    parts_provided:
       true,
   },
 },
@@ -2222,10 +2218,10 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'auto',
 
   expectedAnswers: {
-    service_needed:
+    service_type:
       'brake pad replacement',
 
-    parts_availability:
+    parts_provided:
       false,
   },
 },
@@ -2241,7 +2237,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     vehicle_details:
       '2019 Ford F-150',
 
-    service_needed:
+    service_type:
       'headlight replacement',
   },
 },
@@ -2257,7 +2253,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     vehicle_details:
       '2016 Civic',
 
-    service_needed:
+    service_type:
       'speaker installation',
   },
 },
@@ -2270,7 +2266,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'auto',
 
   expectedAnswers: {
-    service_needed:
+    service_type:
       'check engine light diagnosis',
 
     drivability:
@@ -2286,7 +2282,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'auto',
 
   expectedAnswers: {
-    service_needed:
+    service_type:
       'overheating diagnosis',
 
     drivability:
@@ -2305,7 +2301,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     vehicle_details:
       'SUV',
 
-    service_needed:
+    service_type:
       'tire rotation',
   },
 },
@@ -2318,10 +2314,10 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'auto',
 
   expectedAnswers: {
-    service_needed:
+    service_type:
       'windshield wiper installation',
 
-    parts_availability:
+    parts_provided:
       true,
   },
 },
@@ -2337,7 +2333,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
     vehicle_details:
       'sedan',
 
-    service_needed:
+    service_type:
       'dead battery service',
 
     drivability:
@@ -2356,10 +2352,10 @@ const EXACT_CASES: ExpectedPrefill[] = [
     'auto',
 
   expectedAnswers: {
-    service_needed:
+    service_type:
       'starter replacement',
 
-    parts_availability:
+    parts_provided:
       true,
   },
 },
@@ -3439,4 +3435,5 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => { console.error(error); process.exitCode = 1; });
+
 
