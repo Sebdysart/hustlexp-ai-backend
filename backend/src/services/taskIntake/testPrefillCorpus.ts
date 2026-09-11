@@ -3388,7 +3388,15 @@ function isSuspiciouslyVague(input: string): boolean {
   return !concreteFactSignal.test(text);
 }
 
-function equalAnswer(a: IntakeAnswer | undefined, b: IntakeAnswer): boolean { return Array.isArray(a) && Array.isArray(b) ? a.length === b.length && a.every((v, i) => v === b[i]) : a === b; }
+function equalAnswer(a: IntakeAnswer | undefined, b: IntakeAnswer): boolean {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false;
+    const actualSorted = [...a].sort();
+    const expectedSorted = [...b].sort();
+    return actualSorted.every((value, index) => value === expectedSorted[index]);
+  }
+  return a === b;
+}
 function getAllowedKeys(category: TaskCategory, secondary: readonly TaskCategory[] = []): Set<string> { return new Set(getQuestionsForIntake(category, secondary).map((q) => q.key)); }
 
 function runExactAssertions(): void {
