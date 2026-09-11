@@ -97,3 +97,21 @@ const unrelatedNumbers = extractIntakePrefill(
 );
 assert.equal(unrelatedNumbers.answers.pet_count, 2);
 assert.equal(unrelatedNumbers.answers.assembly_count, undefined);
+
+const longCompound = extractIntakePrefill(
+  'Assemble three desks, two cabinets, four chairs, and a table.',
+  'assembly',
+);
+assert.equal(longCompound.answers.assembly_count, 10);
+
+const compoundMovingLoose = extractIntakePrefill(
+  'Move two couches, six boxes and one lamp into the garage.',
+  'moving',
+);
+assert.equal(compoundMovingLoose.answers.item_count, 9);
+
+const durationCase = extractIntakePrefill(
+  'Walk two dogs for three hours.',
+  'pet_care',
+);
+assert.equal(durationCase.answers.pet_count, 2);

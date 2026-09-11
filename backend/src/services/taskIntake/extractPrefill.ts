@@ -71,18 +71,36 @@ function extractCounts(text: string): Candidate[] {
 function cleanCompoundItem(value: string): string | null { const cleaned = value.replace(/^(?:my|our|the|some|this|that|these|those|new|old)\s+/i, '').replace(/\s+/g, ' ').trim(); return !cleaned || cleaned.length > 80 ? null : cleaned; }
 function extractQuantifiedItems(raw: string): QuantifiedItem[] {
   const text = raw.toLowerCase().replace(/[;:]/g, ',').replace(/\s+/g, ' ').trim();
-  const numberPattern = ['\\d+', 'a', 'an', ...Object.keys(WORDS)].join('|');
-  const pattern = new RegExp('\\b(' + numberPattern + ')\\s+(.{1,80}?)(?=\\s*(?:,|\\band\\b|\\bthen\\b|\\bfrom\\b|\\bto\\b|\\binto\\b|\\bonto\\b|\\bupstairs\\b|\\bdownstairs\\b|$))', 'gi');
+  const quantityTokens = new Set(['a', 'an', ...Object.keys(WORDS)]);
+  const tokens = text.match(/\d+|[a-z][\w'-]*|,/gi) ?? [];
   const items: QuantifiedItem[] = [];
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(text)) !== null) {
-    const quantity = quantityFromToken(match[1]);
-    const item = cleanCompoundItem(match[2]);
-    if (quantity === null || quantity <= 0 || !item || /^(?:times?|hours?|minutes?|days?|weeks?|flights?|rooms?|guests?|people)$/.test(item)) continue;
-    items.push({ quantity, item, evidence: match[0].trim() });
+  const hardBoundaries = new Set(['then', 'from', 'to', 'into', 'onto', 'upstairs', 'downstairs', 'outside', 'inside', 'deliver', 'transport', 'assemble', 'build', 'move', 'carry', 'install', 'mount']);
+  const ignoredItems = new Set(['time', 'times', 'hour', 'hours', 'minute', 'minutes', 'day', 'days', 'week', 'weeks', 'flight', 'flights', 'room', 'rooms', 'guest', 'guests', 'people']);
+  const isQuantity = (token: string) => /^\d+$/.test(token) || quantityTokens.has(token);
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index].toLowerCase();
+    if (!isQuantity(token)) continue;
+    const quantity = quantityFromToken(token);
+    if (quantity === null || quantity <= 0) continue;
+    const itemTokens: string[] = [];
+    let cursor = index + 1;
+    while (cursor < tokens.length) {
+      const current = tokens[cursor].toLowerCase();
+      if (current === ',' || current === 'and' || hardBoundaries.has(current)) break;
+      if (itemTokens.length && isQuantity(current)) break;
+      itemTokens.push(current);
+      cursor += 1;
+    }
+    const item = cleanCompoundItem(itemTokens.join(' '));
+    const finalWord = item?.split(/\s+/).at(-1);
+    if (!item || (finalWord && ignoredItems.has(finalWord))) continue;
+    items.push({ quantity, item, evidence: [token, ...itemTokens].join(' ') });
+    index = Math.max(index, cursor - 1);
   }
   return items;
 }
+
 function totalQuantity(items: readonly QuantifiedItem[]): number { return items.reduce((total, item) => total + item.quantity, 0); }
 function compoundItemDescription(items: readonly QuantifiedItem[]): string | null { return items.length ? items.map((item) => item.item).join(' and ') : null; }
 function applyCompoundItemFacts(text: string, candidates: Candidate[]): void {
