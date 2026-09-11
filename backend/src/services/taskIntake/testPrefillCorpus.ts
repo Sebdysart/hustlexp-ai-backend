@@ -18,7 +18,7 @@ const EXACT_CASES: ExpectedPrefill[] = [
   { input: 'I need my apartment cleaned, three rooms total.', category: 'cleaning', expectedAnswers: { property_type: 'apartment', room_count: 3 } },
   { input: 'Pick up my new bed, bring it upstairs and assemble it.', category: 'delivery', secondaryIntents: ['assembly'], expectedAnswers: { delivery_item: 'bed', assembly_type: 'bed', assembly_count: 1, access_restrictions: 'The task involves carrying or accessing items upstairs.' } },
   { input: 'Move two couches and six boxes up three flights of stairs.', category: 'moving', expectedAnswers: { item_count: 8, stairs: true, stair_flights: 3, access_restrictions: '3 flights of stairs are involved.' } },
-  { input: 'Assemble one desk, two shelves, and four chairs.', category: 'assembly', expectedAnswers: { assembly_count: 7 } },
+  { input: 'Assemble one desk, two shelves, and four chairs.', category: 'assembly', expectedAnswers: { assembly_count: 7, assembly_type: 'desk and shelves and chairs' } },
   { input: 'Deliver 30 folding chairs to an event venue.', category: 'delivery', expectedAnswers: { delivery_item: 'folding chairs' } },
   { input: 'Walk two dogs for three hours.', category: 'pet_care', expectedAnswers: { pet_type: 'dog', pet_count: 2, care_type: ['walking'] } },
   { input: 'Need someone ASAP.', category: 'other', expectedAnswers: {} },
