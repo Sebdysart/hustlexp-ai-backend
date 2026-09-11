@@ -117,6 +117,23 @@ function applyCompoundItemFacts(text: string, candidates: Candidate[]): void {
   if (/\b(?:move|moving|carry|load|unload)\b/i.test(text)) add(candidates, { key: 'item_count', value: total, confidence: 0.96, evidence });
 }
 
+function extractYardFacts(text: string): Candidate[] {
+  const candidates: Candidate[] = [];
+  const yardSize = enumCandidate(text, 'yard_size', [
+    ['small', [/\bsmall\b/i, /\btiny\b/i]],
+    ['medium', [/\bmedium\b/i, /\baverage[- ]sized\b/i]],
+    ['large', [/\blarge\b/i, /\bbig\b/i, /\bhuge\b/i]],
+  ]);
+  if (yardSize) add(candidates, yardSize);
+  const debrisTypes: string[] = [];
+  if (/\bleaves?\b/i.test(text)) debrisTypes.push('leaves');
+  if (/\bbranches?\b|\btwigs?\b/i.test(text)) debrisTypes.push('branches');
+  if (/\bgrass clippings?\b|\bgreen waste\b|\byard waste\b/i.test(text)) debrisTypes.push('green_waste');
+  if (/\bjunk\b|\btrash\b|\brubbish\b|\bgarbage\b/i.test(text)) debrisTypes.push('junk');
+  if (debrisTypes.length) add(candidates, { key: 'debris_type', value: [...new Set(debrisTypes)], confidence: 0.96, evidence: 'Explicit yard debris reference' });
+  return candidates;
+}
+
 function extractGenericFacts(raw: string): Candidate[] {
   const text = raw.toLowerCase().replace(/[^\w\s'-]/g, ' ').replace(/\s+/g, ' ').trim();
   const result: Candidate[] = [];
@@ -128,7 +145,7 @@ function extractGenericFacts(raw: string): Candidate[] {
   const pet = text.match(/\b(dog|dogs|puppy|cat|cats|kitten|bird|parrot|fish|rabbit|bunny)\b/i); if (pet) add(result, { key: 'pet_type', value: /dog|puppy/i.test(pet[1]) ? 'dog' : /cat|kitten/i.test(pet[1]) ? 'cat' : pet[1], confidence: 0.97, evidence: 'Explicit pet reference' });
   const petCount = numberBefore(text, ['dog', 'dogs', 'puppy', 'puppies', 'cat', 'cats', 'pet', 'pets']); if (petCount) add(result, { key: 'pet_count', value: petCount.value, confidence: 0.98, evidence: petCount.evidence });
   const care: string[] = []; if (/\b(?:walk|walking)\b/i.test(text)) care.push('walking'); if (/\b(?:feed|feeding)\b/i.test(text)) care.push('feeding'); if (/\b(?:pet sit|pet sitting|watch my|look after)\b/i.test(text)) care.push('sitting'); if (care.length) add(result, { key: 'care_type', value: care, confidence: 0.96, evidence: 'Explicit pet-care action' });
-  for (const group of [extractCounts(text)]) for (const candidate of group) add(result, candidate);
+  for (const group of [extractCounts(text), extractYardFacts(text)]) for (const candidate of group) add(result, candidate);
   const delivery = extractActionObject(text, ['pick up', 'pickup', 'collect', 'deliver', 'transport']); if (delivery) add(result, { key: 'delivery_item', value: delivery.object, confidence: 0.94, evidence: delivery.evidence });
   const assembly = extractActionObject(text, ['assemble', 'build', 'put together']); if (assembly) add(result, { key: 'assembly_type', value: assembly.object, confidence: 0.94, evidence: assembly.evidence });
   if (!result.some((item) => item.key === 'assembly_type')) { const deliveryItem = result.find((item) => item.key === 'delivery_item'); if (deliveryItem && /\b(?:assemble|build|put together)\s+it\b/i.test(text)) { add(result, { key: 'assembly_type', value: deliveryItem.value, confidence: 0.90, evidence: 'Assembly pronoun resolved to delivery item' }); add(result, { key: 'assembly_count', value: 1, confidence: 0.90, evidence: 'Singular assembly pronoun' }); } }
