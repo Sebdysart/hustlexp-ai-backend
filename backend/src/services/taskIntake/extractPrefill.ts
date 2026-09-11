@@ -2,8 +2,10 @@ import { getQuestionsForIntake } from './definitions.js';
 import type { IntakeAnswer, IntakeAnswers, TaskCategory } from './types.js';
 
 interface Candidate { key: string; value: IntakeAnswer; confidence: number; evidence: string; }
+interface QuantifiedItem { quantity: number; item: string; evidence: string; }
 export interface IntakePrefillResult { answers: IntakeAnswers; evidence: Array<Candidate>; }
 const WORDS: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20 };
+function quantityFromToken(token: string): number | null { const normalized = token.toLowerCase(); if (normalized === 'a' || normalized === 'an') return 1; if (/^\d+$/.test(normalized)) return Number(normalized); return WORDS[normalized] ?? null; }
 function escapeRegex(value: string): string { return value.replace(/[.*+?^{}()|[\]\\]/g, '\\$&'); }
 
 function add(items: Candidate[], candidate: Candidate): void { const i = items.findIndex((item) => item.key === candidate.key); if (i < 0) items.push(candidate); else if (candidate.confidence > items[i].confidence) items[i] = candidate; }
@@ -66,6 +68,37 @@ function extractCounts(text: string): Candidate[] {
   return candidates;
 }
 
+function cleanCompoundItem(value: string): string | null { const cleaned = value.replace(/^(?:my|our|the|some|this|that|these|those|new|old)\s+/i, '').replace(/\s+/g, ' ').trim(); return !cleaned || cleaned.length > 80 ? null : cleaned; }
+function extractQuantifiedItems(raw: string): QuantifiedItem[] {
+  const text = raw.toLowerCase().replace(/[;:]/g, ',').replace(/\s+/g, ' ').trim();
+  const numberPattern = ['\\d+', 'a', 'an', ...Object.keys(WORDS)].join('|');
+  const pattern = new RegExp('\\b(' + numberPattern + ')\\s+(.{1,80}?)(?=\\s*(?:,|\\band\\b|\\bthen\\b|\\bfrom\\b|\\bto\\b|\\binto\\b|\\bonto\\b|\\bupstairs\\b|\\bdownstairs\\b|$))', 'gi');
+  const items: QuantifiedItem[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
+    const quantity = quantityFromToken(match[1]);
+    const item = cleanCompoundItem(match[2]);
+    if (quantity === null || quantity <= 0 || !item || /^(?:times?|hours?|minutes?|days?|weeks?|flights?|rooms?|guests?|people)$/.test(item)) continue;
+    items.push({ quantity, item, evidence: match[0].trim() });
+  }
+  return items;
+}
+function totalQuantity(items: readonly QuantifiedItem[]): number { return items.reduce((total, item) => total + item.quantity, 0); }
+function compoundItemDescription(items: readonly QuantifiedItem[]): string | null { return items.length ? items.map((item) => item.item).join(' and ') : null; }
+function applyCompoundItemFacts(text: string, candidates: Candidate[]): void {
+  const items = extractQuantifiedItems(text);
+  if (items.length < 2) return;
+  const total = totalQuantity(items);
+  const description = compoundItemDescription(items);
+  if (!Number.isFinite(total) || total <= 0) return;
+  const evidence = items.map((item) => item.evidence).join(' + ');
+  if (/\b(?:assemble|build|put together)\b/i.test(text)) {
+    add(candidates, { key: 'assembly_count', value: total, confidence: 0.96, evidence });
+    if (description) add(candidates, { key: 'assembly_type', value: description, confidence: 0.95, evidence });
+  }
+  if (/\b(?:move|moving|carry|load|unload)\b/i.test(text)) add(candidates, { key: 'item_count', value: total, confidence: 0.96, evidence });
+}
+
 function extractGenericFacts(raw: string): Candidate[] {
   const text = raw.toLowerCase().replace(/[^\w\s'-]/g, ' ').replace(/\s+/g, ' ').trim();
   const result: Candidate[] = [];
@@ -85,6 +118,7 @@ function extractGenericFacts(raw: string): Candidate[] {
   const wall = enumCandidate(text, 'wall_type', [['drywall', [/\bdrywall\b/i]], ['brick', [/\bbrick\b/i]], ['concrete', [/\bconcrete\b/i]], ['wood', [/\bwood(?:en)? wall\b/i]]]); if (wall) add(result, wall);
   if (/\b(?:assemble|build|put together)\s+(?:a|an|my|the|this|that)\s+[a-z][\w'-]*(?:\s+[a-z][\w'-]*){0,3}\b/i.test(text)) add(result, { key: 'assembly_count', value: 1, confidence: 0.91, evidence: 'Singular assembly object' });
   const access = extractAccess(text); if (access) add(result, access);
+  applyCompoundItemFacts(text, result);
   return result;
 }
 export function extractIntakePrefill(raw: string, primaryCategory: TaskCategory, secondaryIntents: readonly TaskCategory[] = []): IntakePrefillResult { const allowed = new Set(getQuestionsForIntake(primaryCategory, secondaryIntents).map((question) => question.key)); const accepted = extractGenericFacts(raw).filter((candidate) => candidate.confidence >= 0.88 && allowed.has(candidate.key)); const answers: IntakeAnswers = {}; for (const candidate of accepted) answers[candidate.key] = candidate.value; return { answers, evidence: accepted }; }

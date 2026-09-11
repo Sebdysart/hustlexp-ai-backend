@@ -71,3 +71,29 @@ const mixed = extractIntakePrefill(
 assert.equal(mixed.answers.delivery_item, 'bed');
 assert.equal(mixed.answers.assembly_type, 'bed');
 assert.equal(mixed.answers.assembly_count, 1);
+
+const compoundAssembly = extractIntakePrefill(
+  'Put together four dining chairs and a table.',
+  'assembly',
+);
+assert.equal(compoundAssembly.answers.assembly_count, 5);
+assert.equal(compoundAssembly.answers.assembly_type, 'dining chairs and table');
+
+const compoundMoving = extractIntakePrefill(
+  'Move two couches and six boxes into the garage.',
+  'moving',
+);
+assert.equal(compoundMoving.answers.item_count, 8);
+
+const largerAssembly = extractIntakePrefill(
+  'Assemble one desk, two shelves, and four chairs.',
+  'assembly',
+);
+assert.equal(largerAssembly.answers.assembly_count, 7);
+
+const unrelatedNumbers = extractIntakePrefill(
+  'Walk two dogs for three hours.',
+  'pet_care',
+);
+assert.equal(unrelatedNumbers.answers.pet_count, 2);
+assert.equal(unrelatedNumbers.answers.assembly_count, undefined);
