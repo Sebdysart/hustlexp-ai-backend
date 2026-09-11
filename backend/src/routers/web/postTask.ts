@@ -16,6 +16,7 @@ import { validateTaskIntake } from '../../services/taskIntake/validateIntake.js'
 import { buildTaskScopeSummary } from '../../services/taskIntake/buildScopeSummary.js';
 import type { IntakeAnswers, TaskCategory } from '../../services/taskIntake/types.js';
 import { classifyTask } from '../../services/taskClassification/classifyTask.js';
+import { extractIntakePrefill } from '../../services/taskIntake/extractPrefill.js';
 
 const PostTaskSchema = z.object({
   lead: z.object({
@@ -345,6 +346,9 @@ export const webPostTaskRouter = router({
     .input(ClassifyIntakeSchema)
     .mutation(async ({ input }) => {
       const result = await classifyTask(input.raw);
+      const prefill = result.category
+        ? extractIntakePrefill(input.raw, result.category, result.secondaryIntents)
+        : { answers: {}, evidence: [] };
       return {
         category: result.category,
         primaryCategory: result.primaryCategory,
@@ -358,6 +362,8 @@ export const webPostTaskRouter = router({
           category: candidate.category,
           score: candidate.score,
         })),
+        prefilledAnswers: prefill.answers,
+        prefillEvidence: prefill.evidence,
       };
     }),
   start: protectedProcedure
