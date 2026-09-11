@@ -55,6 +55,8 @@ const ClassifyIntakeSchema = z.object({
   raw: z.string().trim().min(3).max(2000),
 });
 
+const SecondaryIntentsSchema = z.array(z.enum(TASK_CATEGORIES)).max(5).default([]);
+
 function generateCardToken(): { raw: string; hash: string } {
   const raw = crypto.randomBytes(32).toString('hex');
   const hash = crypto.createHash('sha256').update(raw).digest('hex');
@@ -108,7 +110,10 @@ async function handlePostTask({
             const rawAnswers = structured.answers;
             const answers: IntakeAnswers = rawAnswers && typeof rawAnswers === 'object' && !Array.isArray(rawAnswers)
               ? rawAnswers as IntakeAnswers : {};
-            const intakeValidation = validateTaskIntake(category, answers);
+            const secondaryIntents = SecondaryIntentsSchema.parse(structured.secondary_intents ?? []).filter(
+              (intent, index, all) => intent !== category && intent !== 'other' && all.indexOf(intent) === index,
+            );
+            const intakeValidation = validateTaskIntake(category, answers, secondaryIntents);
             if (!intakeValidation.readyForDraft) {
               throw new TRPCError({ code: 'BAD_REQUEST', message: `Task intake is incomplete. Missing required details: ${intakeValidation.missingRequired.join(', ')}.` });
             }
@@ -165,9 +170,10 @@ async function handlePostTask({
               input.task.raw_input?.trim()
               || input.task.scope_summary?.trim()
               || input.task.title.trim();
-            const canonicalScopeSummary = buildTaskScopeSummary(category, taskText, answers);
+            const canonicalScopeSummary = buildTaskScopeSummary(category, taskText, answers, secondaryIntents);
             const canonicalStructured = {
               ...structured,
+              secondary_intents: secondaryIntents,
               answers: { ...answers, scope_policy_version: 'task_scope_v2' },
               missing_questions: intakeValidation.missingRequired,
               recommended_missing: intakeValidation.missingRecommended,
