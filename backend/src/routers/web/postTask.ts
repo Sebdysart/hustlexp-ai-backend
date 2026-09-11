@@ -15,6 +15,7 @@ import { TASK_CATEGORIES } from '../../services/taskIntake/definitions.js';
 import { validateTaskIntake } from '../../services/taskIntake/validateIntake.js';
 import { buildTaskScopeSummary } from '../../services/taskIntake/buildScopeSummary.js';
 import type { IntakeAnswers, TaskCategory } from '../../services/taskIntake/types.js';
+import { classifyTask } from '../../services/taskClassification/classifyTask.js';
 
 const PostTaskSchema = z.object({
   lead: z.object({
@@ -49,6 +50,10 @@ const PostTaskSchema = z.object({
 });
 
 type PostTaskInput = z.infer<typeof PostTaskSchema>;
+
+const ClassifyIntakeSchema = z.object({
+  raw: z.string().trim().min(3).max(2000),
+});
 
 function generateCardToken(): { raw: string; hash: string } {
   const raw = crypto.randomBytes(32).toString('hex');
@@ -330,6 +335,25 @@ async function handlePostTask({
 }
 
 export const webPostTaskRouter = router({
+  classifyIntake: protectedProcedure
+    .input(ClassifyIntakeSchema)
+    .mutation(async ({ input }) => {
+      const result = await classifyTask(input.raw);
+      return {
+        category: result.category,
+        primaryCategory: result.primaryCategory,
+        secondaryIntents: result.secondaryIntents,
+        needsClarification: result.needsClarification,
+        margin: result.margin,
+        threshold: result.threshold,
+        source: result.source,
+        overrideReason: result.overrideReason ?? null,
+        candidates: result.candidates.slice(0, 3).map((candidate) => ({
+          category: candidate.category,
+          score: candidate.score,
+        })),
+      };
+    }),
   start: protectedProcedure
     .input(PostTaskSchema)
     .mutation(handlePostTask),
