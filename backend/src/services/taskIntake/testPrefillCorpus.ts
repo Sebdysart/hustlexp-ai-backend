@@ -3404,7 +3404,10 @@ function runExactAssertions(): void {
   for (const testCase of EXACT_CASES) {
     const result = extractIntakePrefill(testCase.input, testCase.category, testCase.secondaryIntents ?? []);
     assert.deepEqual(Object.keys(result.answers).sort(), Object.keys(testCase.expectedAnswers).sort(), testCase.input);
-    for (const [key, expected] of Object.entries(testCase.expectedAnswers)) assert.ok(equalAnswer(result.answers[key], expected), `${testCase.input}: ${key}`);
+    for (const [key, expected] of Object.entries(testCase.expectedAnswers)) assert.ok(
+      equalAnswer(result.answers[key], expected),
+      [testCase.input, `field=${key}`, `expected=${JSON.stringify(expected)}`, `actual=${JSON.stringify(result.answers[key])}`].join(' | '),
+    );
     passed += 1;
   }
   console.log(`Exact cases passed: ${passed}/${EXACT_CASES.length}`);
