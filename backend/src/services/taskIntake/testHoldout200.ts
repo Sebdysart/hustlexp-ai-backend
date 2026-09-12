@@ -1396,7 +1396,7 @@ const cases: HoldoutCase[] = [{
 
   expectedAnswers: {
     assembly_count: 5,
-    assembly_type: 'chairs',
+    assembly_type: 'dining chairs',
   },
 },
 
@@ -1495,7 +1495,7 @@ const cases: HoldoutCase[] = [{
   category: 'delivery',
 
   expectedAnswers: {
-    delivery_item: 'sofa',
+    delivery_item: 'couch',
     stairs: true,
     access_restrictions: 'The task involves carrying items upstairs.',
   },

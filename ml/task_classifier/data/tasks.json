@@ -911,5 +911,8 @@
   {"input":"The ceiling fan hums loudly but still operates.","expected":"electrical"},
   {"input":"A working switch should be replaced with a new one.","expected":"electrical"},
   {"input":"The customer has a rake and leaf blower ready for outdoor cleanup.","expected":"yard"},
-  {"input":"Yard tools are already on site for clearing leaves and branches.","expected":"yard"}
+  {"input":"Yard tools are already on site for clearing leaves and branches.","expected":"yard"},
+  {"input":"Organize a company banquet for eighty attendees.","expected":"events"},
+  {"input":"Host a reception dinner for the annual meeting.","expected":"events"},
+  {"input":"Plan a corporate banquet with one hundred guests.","expected":"events"}
 ]
