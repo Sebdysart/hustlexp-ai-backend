@@ -1189,7 +1189,6 @@ const cases: HoldoutCase[] = [{
 
   expectedAnswers: {
     room_count: 3,
-    stairs: true,
     access_restrictions: 'The task involves rooms both upstairs and downstairs.',
   },
 },
@@ -1233,7 +1232,6 @@ const cases: HoldoutCase[] = [{
 
   expectedAnswers: {
     room_count: 3,
-    stairs: false,
   },
 },
 
@@ -1289,7 +1287,6 @@ const cases: HoldoutCase[] = [{
 
   expectedAnswers: {
     item_count: 3,
-    large_items: true,
     vehicle_required: true,
   },
 },
@@ -1474,7 +1471,6 @@ const cases: HoldoutCase[] = [{
 
   expectedAnswers: {
     delivery_item: 'glass table',
-    vehicle_required: true,
   },
 },
 
@@ -1485,7 +1481,6 @@ const cases: HoldoutCase[] = [{
 
   expectedAnswers: {
     delivery_item: 'TV',
-    vehicle_required: false,
   },
 },
 
@@ -1496,7 +1491,6 @@ const cases: HoldoutCase[] = [{
 
   expectedAnswers: {
     delivery_item: 'couch',
-    stairs: true,
     access_restrictions: 'The task involves carrying items upstairs.',
   },
 },

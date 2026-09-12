@@ -59,12 +59,14 @@ function cleanObjectPhrase(value: string): string | null {
     .replace(/\bover\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:hours?|hrs?|minutes?|mins?)\b.*$/i, '')
     .replace(/\bon\s+floor\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b.*$/i, '')
     .replace(/\bon\s+(?:the\s+)?(?:\d+(?:st|nd|rd|th)?|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+floor\b.*$/i, '')
+    .replace(/[;,].*$/i, '')
+    .replace(/\b(?:no vehicle is required|no vehicle required|vehicle is required|truck is needed|van is needed)\b.*$/i, '')
     .replace(/\s+/g, ' ')
     .trim();
   result = stripObjectNoise(result);
   return !result || result.length > 100 || /^(?:it|them|this|that|these|those)$/i.test(result) ? null : result;
 }
-function extractActionObject(text: string, actions: readonly string[]) { const actionPattern = actions.map(escapeRegex).join('|'); const boundary = ['and', 'then', 'bring', 'deliver', 'transport', 'assemble', 'build', 'install', 'mount', 'anchor', 'attach', 'set up', 'put together', 'move', 'carry', 'take', 'from', 'to', 'into', 'onto', 'upstairs', 'downstairs', 'outside', 'inside'].map(escapeRegex).join('|'); const match = text.match(new RegExp('\\b(?:' + actionPattern + ')\\b\\s+(.{1,100}?)(?=\\s+(?:' + boundary + ')\\b|$)', 'i')); if (!match) return null; const object = cleanObjectPhrase(match[1]); return object ? { object, evidence: match[0] } : null; }
+function extractActionObject(text: string, actions: readonly string[]) { const actionPattern = actions.map(escapeRegex).join('|'); const boundary = ['and', 'then', 'bring', 'deliver', 'transport', 'assemble', 'build', 'install', 'mount', 'anchor', 'attach', 'set up', 'put together', 'move', 'carry', 'take', 'from', 'to', 'into', 'onto', 'upstairs', 'downstairs', 'outside', 'inside', 'with', 'a vehicle', 'a truck', 'a van', 'no vehicle', 'vehicle is', 'truck is', 'van is'].map(escapeRegex).join('|'); const match = text.match(new RegExp('\\b(?:' + actionPattern + ')\\b\\s+(.{1,100}?)(?=\\s+(?:' + boundary + ')\\b|[.;]|$)', 'i')); if (!match) return null; const object = cleanObjectPhrase(match[1]); return object ? { object, evidence: match[0] } : null; }
 function enumCandidate(text: string, key: string, values: Array<[string, RegExp[]]>): Candidate | null { for (const [value, patterns] of values) for (const pattern of patterns) if (pattern.test(text)) return { key, value, confidence: 0.97, evidence: 'Explicit ' + value + ' reference' }; return null; }
 function extractAccess(text: string): Candidate | null { if (/\bupstairs\b/i.test(text)) return { key: 'access_restrictions', value: 'The task involves carrying or accessing items upstairs.', confidence: 0.96, evidence: 'upstairs' }; if (/\bdownstairs\b/i.test(text)) return { key: 'access_restrictions', value: 'The task involves carrying or accessing items downstairs.', confidence: 0.96, evidence: 'downstairs' }; return null; }
 function extractRoomCount(text: string): number | undefined { let total = 0; let found = false; const matches = text.matchAll(/\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten)[- ](?:bedrooms?|bathrooms?|rooms?)\b/gi); for (const match of matches) { const value = quantityFromToken(match[1]); if (value !== null) { total += value; found = true; } } if (/\bkitchen\b/i.test(text)) { total += 1; found = true; } return found ? total : undefined; }
@@ -224,7 +226,7 @@ type LeakState = 'CURRENT_POSITIVE' | 'HISTORICAL_STOPPED' | 'CURRENT_NEGATED' |
 
 function classifyLeakState(text: string): LeakState {
   if (/\b(?:was|were)\s+(?:leaking|dripping)\b[^.!?]{0,50}\bstopped\b|\b(?:leak|leaking|drip|dripping)\s+stopped\b|\b(?:leak|leaking|drip|dripping)\b[^.!?]{0,30}\b(?:yesterday|earlier|before)\b|\b(?:isn['’]?t|is\s+not|not)\s+(?:leaking|dripping)\s+(?:anymore|no longer)\b|\bno longer\s+(?:leaking|dripping)\b|\bstopped\s+(?:leaking|dripping)\b/i.test(text)) return 'HISTORICAL_STOPPED';
-  if (/\b(?:isn['’]?t|is\s+not|not)\s+(?:leaking|dripping)\b|\bno\s+(?:active\s+)?leak\b/i.test(text)) return 'CURRENT_NEGATED';
+  if (/\b(?:isn['’]?t|is\s+not|not)\s+(?:leaking|dripping)\b|\b(?:no|without)\s+(?:any\s+)?(?:active\s+)?leak\b|\bthere\s+isn['’]?t\s+(?:any\s+)?leak\b|\bthere\s+is\s+no\s+leak\b/i.test(text)) return 'CURRENT_NEGATED';
   if (/\b(?:is|are|currently)\s+(?:leaking|dripping)\b|\b(?:leaking|dripping)\s+(?:right now|continuously)\b|\bwater\s+is\s+(?:currently\s+)?dripping\b|\bkeeps?\s+dripping\b|\band\s+(?:currently\s+)?(?:leaking|dripping)\b|\b(?:leaking|dripping)\s+(?:pipe|piping|sink|faucet|tap|toilet|shower|bathtub|tub|drain|water\s+heater)\b/i.test(text)) return 'CURRENT_POSITIVE';
   return 'NONE';
 }
@@ -233,20 +235,22 @@ function extractExpandedCategoryFacts(text: string, activeCategories: ReadonlySe
   const candidates: Candidate[] = [];
   if (activeCategories.has('painting')) {
     const surface = enumCandidate(text, 'painting_surface', [
-      ['interior_walls', [/\b(?:interior|inside|living room|bedroom|kitchen|bathroom|hallway)\s+walls?\b/i]],
-      ['exterior_walls', [/\b(?:exterior|outside)\s+(?:walls?|of the house)\b/i]],
+      ['exterior_walls', [/\b(?:exterior|outside)\b[^.!?]{0,30}\b(?:walls?|house)\b/i]],
+      ['interior_walls', [/\b(?:interior|inside|living room|bedroom|kitchen|bathroom|hallway|lounge|guest room|dining room|garage|office|nursery)\s+walls?\b/i, /\b(?:paint|repaint|painting|painted|patch)\b[^.!?]{0,50}\bwalls?\b/i, /\bwall\b[^.!?]{0,30}\b(?:patch|paint|repaint)\b/i]],
       ['ceiling', [/\bceilings?\b/i]], ['trim', [/\b(?:trim|baseboards?|moulding|molding)\b/i]],
       ['doors', [/\b(?:front\s+)?doors?\b/i]], ['fence', [/\bfence\b/i]], ['deck', [/\bdeck\b/i]],
     ]); if (surface && !(/\bdon['’]?t\s+paint\b[^.!?]*\b(?:walls?|ceiling|trim|doors?|fence|deck)\b/i.test(text) && surface.value === 'doors')) add(candidates, surface);
-    const area = text.match(/\b(living room|bedroom|kitchen|bathroom|hallway|front door|back fence|deck)\b/i); if (area) add(candidates, { key: 'painting_area', value: area[1].toLowerCase(), confidence: 0.95, evidence: area[0] });
-    const paintNotProvided = /\bpaint\s+is\s+not\s+provided\b|\b(?:bring|supply|provide)\s+the\s+paint\b|\b(?:i|we)\s+don['’]?t\s+have\s+(?:the\s+)?paint\b|\bpaint\s+isn['’]?t\s+here\b/i.test(text);
+    const area = text.match(/\b(living room|bedroom|kitchen|bathroom|hallway|lounge|guest room|dining room|garage|office|nursery|front door|back fence|deck)\b/i); if (area) add(candidates, { key: 'painting_area', value: area[1].toLowerCase(), confidence: 0.95, evidence: area[0] });
+    const paintNotProvided = /\bpaint\s+is\s+not\s+provided\b|\b(?:you|provider)\s+(?:need\s+to\s+)?(?:bring|supply|provide)\s+(?:the\s+)?paint\b|(?:^|[.!?;,]\s*)(?:bring|supply|provide)\s+(?:the\s+)?paint\b|\b(?:i|we)\s+don['’]?t\s+have\s+(?:the\s+)?paint\b|\bpaint\s+isn['’]?t\s+here\b/i.test(text);
     const paintProvided = /\b(?:already\s+have|have|bought)\s+(?:the\s+)?paint\b|\bpaint\s+(?:has\s+already\s+been\s+)?purchased\b|\bpaint\s+is\s+(?:already\s+)?here\b|\bpaint\s+is\s+provided\b/i.test(text);
-    if (paintNotProvided) add(candidates, { key: 'paint_provided', value: false, confidence: 0.99, evidence: 'Explicit paint responsibility.' });
+    if (paintNotProvided || /\b(?:you['’]?ll|you)\s+need\s+to\s+bring\s+(?:the\s+)?paint\b/i.test(text)) add(candidates, { key: 'paint_provided', value: false, confidence: 0.99, evidence: 'Explicit provider paint responsibility.' });
+    if (/\b(?:i['’]?ll|i\s+will|we['’]?ll|we\s+will)\s+(?:supply|provide)\s+(?:the\s+)?paint\b|\b(?:we|i)\s+bought\s+(?:all\s+the\s+)?paint\b|\bpaint\s+is\s+(?:already\s+)?(?:on site|here)\b/i.test(text)) setCandidate(candidates, { key: 'paint_provided', value: true, confidence: 1.0, evidence: 'Customer explicitly provides paint.' });
     else if (paintProvided) add(candidates, { key: 'paint_provided', value: true, confidence: 0.98, evidence: 'Explicit paint availability.' });
     const noPrep = /\bno\s+(?:prep|preparation)\s+(?:needed|required)\b|\b(?:surface|walls?)\s+are\s+ready\s+(?:to\s+paint|for\s+paint)\b|\bready\s+for\s+paint\b/i.test(text);
-    if (noPrep) add(candidates, { key: 'prep_needed', value: false, confidence: 0.99, evidence: 'Explicitly no painting preparation required.' });
-    else if (/\b(?:sand|scrape|patch|strip|prime|prep(?:aration)?|surface prep)\w*\b/i.test(text)) add(candidates, { key: 'prep_needed', value: true, confidence: 0.98, evidence: 'Explicit painting preparation.' });
-    if (/\b(?:water damage|peeling paint|cracks?|damaged (?:wall|surface))\b/i.test(text)) add(candidates, { key: 'existing_damage', value: true, confidence: 0.97, evidence: 'Explicit paint-surface damage.' });
+    const readyPrep = /\b(?:already\s+prepped|already\s+prepared|surface\s+is\s+ready|walls?\s+are\s+ready|surface\s+is\s+ready\s+to\s+go|ready\s+(?:to\s+paint|for\s+painting))\b/i.test(text);
+    if (noPrep || readyPrep) add(candidates, { key: 'prep_needed', value: false, confidence: 0.99, evidence: 'Explicitly no painting preparation required.' });
+    else if (/\b(?:sand|sanding|scrape|scraping|patch|patching|strip|stripping|prime|priming|prep(?:aration)?|surface prep)\w*\b/i.test(text)) add(candidates, { key: 'prep_needed', value: true, confidence: 0.98, evidence: 'Explicit painting preparation.' });
+    if (/\b(?:water damage|peeling(?: paint)?|cracks?|cracked|damaged (?:wall|surface)|wall has cracks?)\b/i.test(text)) add(candidates, { key: 'existing_damage', value: true, confidence: 0.97, evidence: 'Explicit paint-surface damage.' });
     const coats = text.match(/\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+coats?\b/i); if (coats) { const n = quantityFromToken(coats[1]); if (n) add(candidates, { key: 'coat_count', value: n, confidence: 0.99, evidence: coats[0] }); }
   }
   if (activeCategories.has('plumbing')) {
@@ -260,30 +264,41 @@ function extractExpandedCategoryFacts(text: string, activeCategories: ReadonlySe
       ['clog', [/\b(?:clog|clogged|blocked|unclog)\b/i]],
       ['low_pressure', [
         /\b(?:low|weak)\s+(?:water\s+)?pressure\b/i,
-        /\bwater\s+pressure\s+(?:is\s+)?(?:very\s+)?(?:low|weak)\b/i,
+        /\bwater\s+pressure\s+(?:is\s+)?(?:very|really|extremely)?\s*(?:low|weak)\b/i,
+        /\b(?:pressure|water pressure)\s+is\s+(?:really|very|extremely)?\s*weak\b/i,
       ]],
       ['no_water', [/\b(?:no water|not getting water|no hot water)\b/i]],
-      ['installation', [/\b(?:install|installing|installation)\b/i]],
-      ['replacement', [/\b(?:replace|replacement)\b/i]],
-      ['repair', [/\b(?:repair|fix|fixing)\b/i]],
+      ['installation', [/\b(?:install|installing|installation)\b/i, /\bneeds?\s+(?:installing|to be installed)\b/i, /\bnew\s+(?:sink|toilet|shower|bathtub|tub|faucet|pipe|water heater|drain)\b[^.!?]{0,20}\binstalled\b/i]],
+      ['replacement', [/\b(?:replace|replacement)\b/i, /\bneeds?\s+(?:replacing|to be replaced)\b/i, /\brequires?\s+replacement\b/i]],
+      ['repair', [/\b(?:repair|fix|fixing)\b/i, /\bneeds?\s+(?:repair|to be repaired)\b/i, /\brequires?\s+repair\b/i]],
     ]);
     const requestedOperation = /\b(?:install|installing|installation)\b/i.test(text) ? 'installation' : /\b(?:replace|replacement)\b/i.test(text) ? 'replacement' : /\b(?:repair|fix|fixing)\b/i.test(text) ? 'repair' : undefined;
     if (requestedOperation && (!issue || issue.value === 'repair')) issue = { key: 'plumbing_issue', value: requestedOperation, confidence: 0.98, evidence: 'Explicit requested plumbing operation.' };
     if (!issue && (leakState === 'CURRENT_POSITIVE' || leakState === 'HISTORICAL_STOPPED')) issue = { key: 'plumbing_issue', value: 'leak', confidence: 0.97, evidence: 'Explicit leak-related plumbing issue.' };
     if (issue) add(candidates, issue);
+    if (/\b(?:can|able to)\s+(?:access|get to)\s+(?:the\s+)?(?:water\s+)?shutoff(?: valve)?\b/i.test(text)) setCandidate(candidates, { key: 'water_shutoff_available', value: true, confidence: 1.0, evidence: 'Accessible water shutoff.' });
     if (leakState === 'HISTORICAL_STOPPED' || leakState === 'CURRENT_NEGATED') add(candidates, { key: 'active_leak', value: false, confidence: 0.99, evidence: 'Leak explicitly inactive.' });
     else if (leakState === 'CURRENT_POSITIVE') add(candidates, { key: 'active_leak', value: true, confidence: 0.98, evidence: 'Current leak reported.' });
     if (/\b(?:can|able to)\s+shut off the water\b|\bshutoff valve is accessible\b|\bwater can be turned off\b/i.test(text)) add(candidates, { key: 'water_shutoff_available', value: true, confidence: 0.98, evidence: 'Accessible water shutoff.' }); else if (/\b(?:can['’]?t|cannot)\s+(?:access|shut off)\b.*\b(?:water|shutoff)\b|\bshutoff valve is inaccessible\b/i.test(text)) add(candidates, { key: 'water_shutoff_available', value: false, confidence: 0.98, evidence: 'Inaccessible water shutoff.' });
     if (/\b(?:already bought|have|got|bought)\b[^.!?]{0,30}\b(?:replacement part|faucet|parts?)\b|\bparts?\s+(?:are\s+)?provided\b/i.test(text)) add(candidates, { key: 'parts_provided', value: true, confidence: 0.97, evidence: 'Customer has plumbing parts.' }); else if (/\b(?:don['’]?t have|need to provide|supply)\b[^.!?]{0,30}\b(?:replacement part|parts?|fittings?)\b/i.test(text)) add(candidates, { key: 'parts_provided', value: false, confidence: 0.97, evidence: 'Provider must supply plumbing parts.' });
+    if (/\b(?:faucet|toilet|pipe|replacement part)\b[^.!?]{0,25}\b(?:already\s+)?(?:bought|have|here)\b|\b(?:already\s+have|have)\s+(?:the\s+)?(?:faucet|toilet|pipe|replacement part)\b/i.test(text)) setCandidate(candidates, { key: 'parts_provided', value: true, confidence: 1.0, evidence: 'Customer has the named plumbing part.' });
+    if (/\bparts?\s+(?:are|is|aren['’]?t|isn['’]?t)\s+not\s+provided\b|\b(?:i|we)\s+(?:don['’]?t|do not|haven['’]?t|have not)\s+\b(?:have\s+)?(?:the\s+)?(?:new one|replacement|part)\b/i.test(text)) setCandidate(candidates, { key: 'parts_provided', value: false, confidence: 1.0, evidence: 'Plumbing parts explicitly unavailable.' });
+    if (/\b(?:can['’]?t|cannot)\s+(?:get to|access)\s+(?:the\s+)?(?:water\s+)?shutoff(?: valve)?\b|\bno access to (?:the\s+)?shutoff(?: valve)?\b|\binaccessible shutoff\b/i.test(text)) setCandidate(candidates, { key: 'water_shutoff_available', value: false, confidence: 1.0, evidence: 'Water shutoff is inaccessible.' });
   }
   if (activeCategories.has('electrical')) {
-    const fixture = enumCandidate(text, 'electrical_fixture', [['ceiling_fan', [/\bceiling\s+fans?\b/i, /\b(?:install|replace|new)\s+(?:a\s+)?fan\b/i]], ['panel', [/\b(?:electrical|breaker)\s+panels?\b/i]], ['breaker', [/\bcircuit\s+breakers?\b|\bbreakers?\b/i]], ['doorbell', [/\bdoorbells?\b/i]], ['switch', [/\b(?:light\s+)?switch(?:es)?\b/i]], ['outlet', [/\b(?:outlets?|sockets?|receptacles?)\b/i]], ['light', [/\blights?|light\s+fixtures?\b/i]]]); if (fixture) add(candidates, fixture);
+    const fixture = enumCandidate(text, 'electrical_fixture', [['breaker', [/\b(?:circuit\s+)?breakers?\b[^.!?]{0,20}\b(?:in|inside)\s+(?:the\s+)?(?:electrical\s+)?panel\b/i, /\bcircuit\s+breakers?\b|\bbreakers?\b/i]], ['ceiling_fan', [/\bceiling\s+fans?\b/i, /\b(?:install|replace|new)\s+(?:a\s+)?fan\b/i]], ['panel', [/\b(?:electrical|breaker)\s+panels?\b/i]], ['doorbell', [/\bdoorbells?\b/i]], ['switch', [/\b(?:light\s+)?switch(?:es)?\b/i]], ['outlet', [/\b(?:outlets?|sockets?|receptacles?)\b/i]], ['light', [/\blights?|light\s+fixtures?\b/i]]]); if (fixture) add(candidates, fixture);
     let issue = enumCandidate(text, 'electrical_issue', [['flickering', [/\bflicker(?:ing)?\b/i]], ['tripping', [/\btripping\b/i]], ['not_working', [/\b(?:not working|stopped working|dead)\b/i]], ['installation', [/\b(?:install|installing|installation)\b/i]], ['replacement', [/\b(?:replace|replaced|replacement)\b/i]], ['repair', [/\b(?:repair|fix)\b/i]]]);
     const requestedElectricalOperation = /\b(?:install|installing|installation)\b/i.test(text) ? 'installation' : /\b(?:replace|replaced|replacement)\b/i.test(text) ? 'replacement' : undefined;
     const stoppedTripping = /\b(?:isn['’]?t|is\s+not|not)\s+tripping\b|\bstopped\s+tripping\b|\bno longer\s+trips?\b/i.test(text);
     if (issue?.value === 'tripping' && stoppedTripping) issue = null;
     if (requestedElectricalOperation) issue = { key: 'electrical_issue', value: requestedElectricalOperation, confidence: 0.99, evidence: 'Explicit requested electrical operation.' };
+    if (!requestedElectricalOperation && /\b(?:put\s+in|needs?\s+(?:installing|to be installed)|new\s+(?:ceiling\s+)?fan\s+needed|want\s+a\s+new\b[^.!?]{0,20}\binstalled)\b/i.test(text)) issue = { key: 'electrical_issue', value: 'installation', confidence: 0.98, evidence: 'Explicit electrical installation wording.' };
+    if (!requestedElectricalOperation && /\b(?:needs?\s+(?:replacing|replacement|to be replaced)|want\s+it\s+replaced)\b/i.test(text)) issue = { key: 'electrical_issue', value: 'replacement', confidence: 0.98, evidence: 'Explicit electrical replacement wording.' };
+    if (!requestedElectricalOperation && /\bneed(?:s)?\s+(?:a|an)\s+new\s+(?:ceiling\s+fan|fan|outlet|light|doorbell|switch|fixture)\b/i.test(text)) issue = { key: 'electrical_issue', value: 'installation', confidence: 0.98, evidence: 'New electrical fixture requested.' };
+    if (/\b(?:provider|you)\b[^.!?]{0,30}\b(?:bring|supply|provide)\b[^.!?]{0,20}\b(?:them|it|fixture|light|outlet|switch|fan)\b/i.test(text)) add(candidates, { key: 'parts_provided', value: false, confidence: 0.98, evidence: 'Provider must supply electrical parts.' });
     if (issue) add(candidates, issue);
+    if (/\b(?:has power|still has power|power is still on)\b/i.test(text)) setCandidate(candidates, { key: 'power_available', value: true, confidence: 1.0, evidence: 'Explicit power availability.' });
+    if (/\b(?:already bought it|i bought it already|have the replacement|already have the replacement|replacement is already here)\b/i.test(text) && /\b(?:fan|light|switch|outlet|fixture|doorbell)\b/i.test(text)) setCandidate(candidates, { key: 'parts_provided', value: true, confidence: 1.0, evidence: 'Customer has the named electrical part.' });
     if (/\b(?:power is on|there is power|circuit has power|power available)\b/i.test(text)) add(candidates, { key: 'power_available', value: true, confidence: 0.98, evidence: 'Explicit power availability.' }); else if (/\b(?:no power|power is off|no electricity)\b/i.test(text)) add(candidates, { key: 'power_available', value: false, confidence: 0.98, evidence: 'Explicit lack of power.' });
     const noExistingWiring = /\b(?:no wiring(?: exists)?|there is no wiring|no existing wiring|needs? new wiring|new wiring is needed|wiring needs to be added)\b/i.test(text);
     const existingWiring = /\b(?:existing wiring(?: already exists| is there)?|wiring already exists|wiring is already there|already wired|wiring exists|there is existing wiring)\b/i.test(text);
@@ -291,6 +306,7 @@ function extractExpandedCategoryFacts(text: string, activeCategories: ReadonlySe
     else if (existingWiring) add(candidates, { key: 'existing_wiring', value: true, confidence: 0.98, evidence: 'Existing wiring stated.' });
     if (/\b(?:already bought|have|got)\b[^.!?]{0,30}\b(?:fixture|light|outlet|switch|fan)\b/i.test(text)) add(candidates, { key: 'parts_provided', value: true, confidence: 0.97, evidence: 'Customer has electrical fixture.' }); else if (/\b(?:bring|supply|provide)\b[^.!?]{0,30}\b(?:fixture|light|outlet|switch|fan)\b/i.test(text)) add(candidates, { key: 'parts_provided', value: false, confidence: 0.97, evidence: 'Provider must supply electrical fixture.' });
     if (/\b(?:electrical|breaker)\s+panel\b|\binstall\s+(?:a\s+)?breaker\b|\breplace\s+(?:a\s+)?breaker\s+in\s+the\s+panel\b/i.test(text)) add(candidates, { key: 'panel_involved', value: true, confidence: 0.99, evidence: 'Panel explicitly involved.' });
+    if (/\b(?:panel is fine|panel is not involved|no panel work(?: needed)?|don['’]?t need panel work)\b/i.test(text)) setCandidate(candidates, { key: 'panel_involved', value: false, confidence: 0.99, evidence: 'Panel work explicitly excluded.' });
   }
   return candidates;
 }
@@ -320,6 +336,13 @@ function extractGenericFacts(raw: string, numericFacts: NumericFact[], objectFac
   const explicitItemCount = sumNumericFacts(numericFacts, 'item_count'); const objectTotal = totalObjectQuantity(objectFacts); const itemCount = objectFacts.length > 0 ? objectTotal : explicitItemCount; if (itemCount !== undefined && itemCount > 0) setCandidate(result, { key: 'item_count', value: itemCount, confidence: 0.99, evidence: 'Object facts supplied the canonical movable-item count.' });
   const explicitRoomCount = sumNumericFacts(numericFacts, 'room_count');
   if (explicitRoomCount !== undefined) add(result, { key: 'room_count', value: explicitRoomCount, confidence: 0.98, evidence: 'Explicit room quantities.' });
+  const cleaningRoomCounts = [...text.matchAll(/\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+rooms?\b/gi)].map((match) => quantityFromToken(match[1]) ?? 0).filter((value) => value > 0);
+  if (cleaningRoomCounts.length > 1 && /\b(?:clean|cleaning|vacuum|mop|scrub)\b/i.test(text)) add(result, { key: 'room_count', value: cleaningRoomCounts.reduce((sum, value) => sum + value, 0), confidence: 0.99, evidence: 'Summed explicit cleaning room quantities.' });
+  const parallelCleaningRooms = text.match(/\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+rooms?\s+upstairs\s+and\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+downstairs\b/i);
+  if (parallelCleaningRooms && /\b(?:clean|cleaning|vacuum|mop|scrub)\b/i.test(text)) add(result, { key: 'room_count', value: (quantityFromToken(parallelCleaningRooms[1]) ?? 0) + (quantityFromToken(parallelCleaningRooms[2]) ?? 0), confidence: 1.0, evidence: parallelCleaningRooms[0] });
+  if (/\b(?:rooms?|bedrooms?)\s+(?:upstairs|downstairs)\b|\b(?:upstairs|downstairs)\b[^.!?]{0,20}\brooms?\b/i.test(text) && /\b(?:clean|cleaning|vacuum|mop|scrub)\b/i.test(text)) add(result, { key: 'stairs', value: true, confidence: 0.96, evidence: 'Cleaning spans upstairs or downstairs rooms.' });
+  if (/\b(?:no|without)\s+stairs?\b/i.test(text) && /\b(?:clean|cleaning|vacuum|mop|scrub)\b/i.test(text)) setCandidate(result, { key: 'stairs', value: false, confidence: 1.0, evidence: 'Explicit no-stairs cleaning constraint.' });
+  if (/\b(?:i|we)\s+have\s+(?:all\s+the\s+)?(?:cleaning\s+)?supplies\b|\bcleaning supplies are here\b|\bcustomer provides supplies\b/i.test(text)) add(result, { key: 'supplies_provided', value: true, confidence: 0.97, evidence: 'Customer provides cleaning supplies.' }); else if (/\b(?:bring your own|you need to bring|provider supplies)\s+(?:cleaning\s+)?supplies\b/i.test(text)) add(result, { key: 'supplies_provided', value: false, confidence: 0.97, evidence: 'Provider supplies cleaning materials.' });
   const explicitPetCount = sumNumericFacts(numericFacts, 'pet_count');
   if (explicitPetCount !== undefined) add(result, { key: 'pet_count', value: explicitPetCount, confidence: 0.98, evidence: 'Explicit pet quantities.' });
   const eventPeopleMatch = text.match(/\b(?:event|party|wedding|reception)\b.*?\b(?:for|with|about|around)\s+(\d+)\s+people\b/i);
@@ -503,9 +526,31 @@ export function extractIntakePrefill(
   }
 
   const mountedCabinet = /\bmount\b[^.!?]{0,40}\b(?:a|an|one)?\s*cabinet\b/i.test(text); if (activeCategories.has('assembly') && mountedCabinet) { setCandidate(candidates, { key: 'assembly_type', value: 'cabinet', confidence: 0.97, evidence: 'Explicit mounted cabinet.' }); setCandidate(candidates, { key: 'assembly_count', value: 1, confidence: 0.99, evidence: 'Explicit single mounted cabinet.' }); }
+  if (activeCategories.has('assembly')) {
+    const passiveAssembly = text.match(/\b(?:need|want|have)\s+(?:a|an|one)\s+([a-z][\w'-]*)\s+(?:assembled|put together)\b/i);
+    if (passiveAssembly) {
+      setCandidate(candidates, { key: 'assembly_type', value: passiveAssembly[1].toLowerCase(), confidence: 0.99, evidence: passiveAssembly[0] });
+      setCandidate(candidates, { key: 'assembly_count', value: 1, confidence: 0.99, evidence: passiveAssembly[0] });
+    }
+    const mountedShelves = text.match(/\b(?:mount|install)\s+(?:(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+)?shelves?\b/i);
+    if (mountedShelves) {
+      const count = mountedShelves[1] ? quantityFromToken(mountedShelves[1]) : 1;
+      setCandidate(candidates, { key: 'assembly_type', value: 'shelves', confidence: 0.98, evidence: mountedShelves[0] });
+      if (count) setCandidate(candidates, { key: 'assembly_count', value: count, confidence: 0.99, evidence: mountedShelves[0] });
+      if (/\b(?:assemble|build|put together)\b/i.test(text)) {
+        const allItems = extractQuantifiedItems(text);
+        if (allItems.length > 1) {
+          setCandidate(candidates, { key: 'assembly_count', value: totalQuantity(allItems), confidence: 1.0, evidence: allItems.map((item) => item.evidence).join(' + ') });
+          setCandidate(candidates, { key: 'assembly_type', value: compoundItemDescription(allItems) ?? 'shelves', confidence: 1.0, evidence: 'Aggregated assembly-family actions.' });
+        }
+      }
+    }
+    if (/\b(?:assemble|put together|build)\s+(?:a|an|one)\s+[a-z][\w'-]*/i.test(text) && !candidates.some((candidate) => candidate.key === 'assembly_count')) setCandidate(candidates, { key: 'assembly_count', value: 1, confidence: 0.98, evidence: 'Explicit singular assembly object.' });
+  }
 
   const leavesDebrisOnSite =
     /\b(?:leave|keep)\b[^.!?]{0,50}\b(?:bags?|leaves?|branches?|debris|waste)\b/i.test(text) ||
+    /\b(?:bags?|leaves?|branches?|debris|waste)\b[^.!?]{0,50}\bleft\b/i.test(text) ||
     /\b(?:leave|keep)\s+(?:it|them)\b[^.!?]{0,50}\b(?:pile|bagged|bags?|gate|fence|shed|there|behind)\b/i.test(text) ||
     /\bpile\b[^.!?]{0,40}\b(?:branches?|leaves?|debris)\b/i.test(text);
   if (leavesDebrisOnSite) {
@@ -533,6 +578,9 @@ export function extractIntakePrefill(
   if (activeCategories.has('moving') && /\b(?:bulky|heavy|oversized)\s+(?:[\w'-]+\s+){0,2}(?:cabinet|tables?|wardrobe|desks?|dresser|couch|sofa|piano|bed|mattress)\b/i.test(text)) {
     setCandidate(candidates, { key: 'large_items', value: true, confidence: 0.98, evidence: 'Explicit bulky/heavy movable item.' });
   }
+  if (/\b(?:no vehicle is required|no vehicle required|no vehicle needed|don['’]?t need a vehicle)\b/i.test(text)) setCandidate(candidates, { key: 'vehicle_required', value: false, confidence: 0.99, evidence: 'Explicitly no vehicle required.' });
+  else if (/\b(?:a\s+)?(?:truck|van|vehicle)\s+is\s+(?:needed|required)\b/i.test(text)) setCandidate(candidates, { key: 'vehicle_required', value: true, confidence: 0.99, evidence: 'Explicit vehicle requirement.' });
+  if (/\b(?:no vehicle is needed|no vehicle needed|vehicle is not needed|don['’]?t need a vehicle|no van needed|no truck needed)\b/i.test(text)) setCandidate(candidates, { key: 'vehicle_required', value: false, confidence: 1.0, evidence: 'Explicit vehicle negation.' });
 
   if (activeCategories.has('moving') && objectFacts.length > 0) {
     const count = totalObjectQuantity(objectFacts);

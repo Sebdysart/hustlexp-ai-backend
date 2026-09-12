@@ -23,7 +23,7 @@ const cases: Array<[string, TaskCategory, Record<string, unknown>, string[]]> = 
   ['Install a fan, there is no wiring yet.', 'electrical', { electrical_fixture: 'ceiling_fan', electrical_issue: 'installation', existing_wiring: false }, []],
   ['I already bought the ceiling fan.', 'electrical', { electrical_fixture: 'ceiling_fan', parts_provided: true }, []],
   ['Bring the light fixture yourself.', 'electrical', { parts_provided: false }, []],
-  ['Panel is fine, just replace the outlet.', 'electrical', { electrical_fixture: 'outlet', electrical_issue: 'replacement' }, ['panel_involved']],
+  ['Panel is fine, just replace the outlet.', 'electrical', { electrical_fixture: 'outlet', electrical_issue: 'replacement', panel_involved: false }, []],
   ['Mount my TV.', 'assembly', {}, ['electrical_fixture']],
   ['Bathtub drain is clogged.', 'plumbing', { plumbing_fixture: 'drain', plumbing_issue: 'clog' }, []],
   ['Kitchen sink drain is clogged.', 'plumbing', { plumbing_fixture: 'drain', plumbing_issue: 'clog' }, []],
@@ -59,6 +59,9 @@ const cases: Array<[string, TaskCategory, Record<string, unknown>, string[]]> = 
   ['The outlet works but I want it replaced.', 'electrical', { electrical_fixture: 'outlet', electrical_issue: 'replacement' }, []],
   ['The light is not working.', 'electrical', { electrical_fixture: 'light', electrical_issue: 'not_working' }, []],
   ['The bathroom light keeps flickering.', 'electrical', { electrical_fixture: 'light', electrical_issue: 'flickering' }, []],
+  ['A water heater requires repair.', 'plumbing', { plumbing_fixture: 'water_heater', plumbing_issue: 'repair' }, []],
+  ['Paint the lounge walls; the surface is already prepared.', 'painting', { painting_surface: 'interior_walls', painting_area: 'lounge', prep_needed: false }, []],
+  ['Move a bulky sofa to the lower floor.', 'moving', { large_items: true }, []],
 ];
 
 const failures: string[] = [];
