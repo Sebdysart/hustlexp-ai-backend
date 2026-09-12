@@ -24,7 +24,7 @@ export function extractNumericFacts(input: string): NumericFact[] {
     { regex: new RegExp(String.raw`\b${number}\s*(?:pounds?|lbs?)\b`, 'gi'), role: 'weight', confidence: 0.99 },
     { regex: new RegExp(String.raw`\b${number}\s*(?:hours?|hrs?|minutes?|mins?)\b`, 'gi'), role: 'duration', confidence: 0.99 },
     { regex: new RegExp(String.raw`\b${number}\s*(?:miles?|mi)\b`, 'gi'), role: 'distance', confidence: 0.99 },
-    { regex: new RegExp(String.raw`\b${number}\s*(?:inches?|feet|ft)\b`, 'gi'), role: 'dimension', confidence: 0.97 },
+    { regex: new RegExp(String.raw`\b${number}\s*(?:inches?|inch|in\.?|feet|foot|ft\.?)\b`, 'gi'), role: 'dimension', confidence: 0.97 },
   ];
   for (const pattern of patterns) {
     if (pattern.role === 'guest_count' && isRangeContext) continue;

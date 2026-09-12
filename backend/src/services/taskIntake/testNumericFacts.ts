@@ -11,6 +11,9 @@ const CASES: Array<{ input: string; expected: ExpectedFact[] }> = [
   { input: 'I have a dresser that weighs about 200 pounds.', expected: [{ role: 'weight', value: 200 }] },
   { input: 'Clean 12 bedrooms and 8 bathrooms.', expected: [{ role: 'room_count', value: 12 }, { role: 'room_count', value: 8 }] },
   { input: 'Move furniture through a hallway only 30 inches wide.', expected: [{ role: 'dimension', value: 30 }] },
+  { input: 'Carry a cabinet through a 30 inch doorway.', expected: [{ role: 'dimension', value: 30 }] },
+  { input: 'The opening is 3 feet wide.', expected: [{ role: 'dimension', value: 3 }] },
+  { input: 'The shelf is 4 ft. long.', expected: [{ role: 'dimension', value: 4 }] },
   { input: 'Pick up a couch 15 miles away.', expected: [{ role: 'distance', value: 15 }] },
 ];
 const simplify = (input: string): ExpectedFact[] => extractNumericFacts(input).map((fact) => ({ role: fact.role, value: fact.value }));
