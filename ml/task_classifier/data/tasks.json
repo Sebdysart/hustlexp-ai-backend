@@ -909,5 +909,7 @@
   {"input":"Wall-mount two floating shelves on plaster.","expected":"assembly"},
   {"input":"Mount a television bracket on the living room wall.","expected":"assembly"},
   {"input":"The ceiling fan hums loudly but still operates.","expected":"electrical"},
-  {"input":"A working switch should be replaced with a new one.","expected":"electrical"}
+  {"input":"A working switch should be replaced with a new one.","expected":"electrical"},
+  {"input":"The customer has a rake and leaf blower ready for outdoor cleanup.","expected":"yard"},
+  {"input":"Yard tools are already on site for clearing leaves and branches.","expected":"yard"}
 ]

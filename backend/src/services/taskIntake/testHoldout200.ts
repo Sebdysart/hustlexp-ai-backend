@@ -1640,7 +1640,7 @@ const cases: HoldoutCase[] = [{
 {
   input: 'Repair the patio screen door.',
 
-  category: 'home_services',
+  category: 'handyman',
 
   expectedAnswers: {},
 },
