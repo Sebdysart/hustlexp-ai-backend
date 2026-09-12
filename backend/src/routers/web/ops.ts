@@ -367,7 +367,7 @@ export const webOpsRouter = router({
         }
       }
 
-      draft.taskFacts = getTaskFactsForDisplay(draft.raw_input);
+      draft.taskFacts = getTaskFactsForDisplay({ rawInput: draft.raw_input, category: draft.category, structured: draft.structured });
 
       return {
         ok: true,
@@ -573,6 +573,8 @@ export const webOpsRouter = router({
         d.status AS originating_draft_status,
         d.title AS originating_draft_title,
         d.raw_input AS originating_draft_raw_input,
+        d.category AS originating_draft_category,
+        d.structured AS originating_draft_structured,
         d.scope_summary AS originating_draft_scope_summary,
         d.created_at AS originating_draft_created_at,
         d.quote_send_ready_at AS quote_accepted_at,
@@ -668,7 +670,7 @@ export const webOpsRouter = router({
         ok: true,
         task: {
           ...result.rows[0],
-          taskFacts: getTaskFactsForDisplay(result.rows[0].request_raw_input),
+          taskFacts: getTaskFactsForDisplay({ rawInput: result.rows[0].originating_draft_raw_input ?? result.rows[0].request_raw_input, category: result.rows[0].originating_draft_category ?? result.rows[0].category, structured: result.rows[0].originating_draft_structured }),
         },
       };
     }),

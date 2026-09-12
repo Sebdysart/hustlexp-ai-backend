@@ -120,7 +120,7 @@ export const businessClaimRouter = router({
         category: row.category,
         scopeSummary: row.scope_summary,
         rawInput: row.raw_input,
-        taskFacts: getTaskFactsForDisplay(row.raw_input),
+        taskFacts: getTaskFactsForDisplay({ rawInput: row.raw_input, category: row.category, structured: row.structured }),
 
         zip: row.zip,
         region: row.region,

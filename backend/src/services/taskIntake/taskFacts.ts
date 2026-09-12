@@ -47,6 +47,13 @@ export type TaskFacts = {
   resources?: {
     provided?: string[];
     required?: string[];
+    vehicleRequired?: boolean;
+  };
+
+  serviceDetails?: string[];
+
+  staffing?: {
+    workerCount?: number;
   };
 
   measurements?: {
@@ -68,6 +75,7 @@ export type TaskFacts = {
       start: string;
       end: string;
     };
+    preference?: string;
   };
 
   constraints?: string[];

@@ -94,11 +94,11 @@ getById: protectedProcedure
           throw new TRPCError({ code: 'FORBIDDEN', message: 'Access denied' });
         }
         // Admin: full access
-        const adminRaw = await db.query<{ raw_input: string | null }>(
-          'SELECT raw_input FROM task_drafts WHERE task_id = $1 LIMIT 1',
+        const adminRaw = await db.query<{ raw_input: string | null; category: string | null; structured: unknown }>(
+          'SELECT raw_input, category, structured FROM task_drafts WHERE task_id = $1 LIMIT 1',
           [input.taskId],
         );
-        return { ...task, viewer_role: 'admin' as const, taskFacts: getTaskFactsForDisplay(adminRaw.rows[0]?.raw_input) };
+        return { ...task, viewer_role: 'admin' as const, taskFacts: getTaskFactsForDisplay({ rawInput: adminRaw.rows[0]?.raw_input, category: adminRaw.rows[0]?.category ?? undefined, structured: adminRaw.rows[0]?.structured }) };
       }
 
       // Strip sensitive identity fields for non-participants browsing the feed
@@ -117,6 +117,8 @@ getById: protectedProcedure
         originating_draft_id: string | null;
         request_scope_summary: string | null;
         request_raw_input: string | null;
+        request_category: string | null;
+        request_structured: unknown;
         request_zip: string | null;
         request_region: string | null;
         accepted_quote_id: string | null;
@@ -133,6 +135,8 @@ getById: protectedProcedure
           draft.id AS originating_draft_id,
           draft.scope_summary AS request_scope_summary,
           draft.raw_input AS request_raw_input,
+          draft.category AS request_category,
+          draft.structured AS request_structured,
           draft.zip AS request_zip,
           draft.region AS request_region,
           quote.id AS accepted_quote_id,
@@ -161,7 +165,7 @@ getById: protectedProcedure
 
       return {
         ...task,
-        taskFacts: getTaskFactsForDisplay(participantDetail?.request_raw_input),
+        taskFacts: getTaskFactsForDisplay({ rawInput: participantDetail?.request_raw_input, category: participantDetail?.request_category ?? undefined, structured: participantDetail?.request_structured }),
         viewer_role: viewerRole,
         quote_chat_role: quoteChatRole,
         quote_shortlisted_worker_id: quoteChatRole ? quoteWorkerId : null,
@@ -207,7 +211,7 @@ getDraftById: posterProcedure
     const draft = result.rows[0];
     return {
       ...draft,
-      taskFacts: getTaskFactsForDisplay(draft.raw_input),
+      taskFacts: getTaskFactsForDisplay({ rawInput: draft.raw_input, category: draft.category, structured: draft.structured }),
     };
   }),
 getQuoteVersionByQuoteId: posterProcedure
