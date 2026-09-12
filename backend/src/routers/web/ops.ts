@@ -27,6 +27,7 @@ import { buildManualTaskPolicyInput } from '../../services/ManualTaskPolicy.js';
 import { NotificationService } from '../../services/NotificationService.js';
 import { getOpsLiquidityPayload } from '../../services/OpsLiquidityService.js';
 import { assertEngineOpsServiceKey, OpsAuthError } from './opsServiceKey.js';
+import { getTaskFactsForDisplay } from '../../services/taskIntake/getTaskFactsForDisplay.js';
 
 const log = logger.child({ router: 'web.ops' });
 
@@ -366,6 +367,8 @@ export const webOpsRouter = router({
         }
       }
 
+      draft.taskFacts = getTaskFactsForDisplay(draft.raw_input);
+
       return {
         ok: true,
         draft,
@@ -663,7 +666,10 @@ export const webOpsRouter = router({
 
       return {
         ok: true,
-        task: result.rows[0],
+        task: {
+          ...result.rows[0],
+          taskFacts: getTaskFactsForDisplay(result.rows[0].request_raw_input),
+        },
       };
     }),
 

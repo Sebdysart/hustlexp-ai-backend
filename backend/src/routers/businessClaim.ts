@@ -12,6 +12,7 @@ import { db } from '../db.js';
 import {
   computePreferredArrivalWindow,
 } from '../services/QuoteTiming.js';
+import { getTaskFactsForDisplay } from '../services/taskIntake/getTaskFactsForDisplay.js';
 
 export const businessClaimRouter = router({
   preview: publicProcedure
@@ -33,6 +34,7 @@ export const businessClaimRouter = router({
         title: string | null;
         category: string;
         scope_summary: string | null;
+        raw_input: string | null;
         zip: string | null;
         region: string | null;
 
@@ -51,6 +53,7 @@ export const businessClaimRouter = router({
           draft.title,
           draft.category,
           draft.scope_summary,
+          draft.raw_input,
           draft.zip,
           draft.region,
           draft.structured,
@@ -116,6 +119,8 @@ export const businessClaimRouter = router({
         title: row.title,
         category: row.category,
         scopeSummary: row.scope_summary,
+        rawInput: row.raw_input,
+        taskFacts: getTaskFactsForDisplay(row.raw_input),
 
         zip: row.zip,
         region: row.region,

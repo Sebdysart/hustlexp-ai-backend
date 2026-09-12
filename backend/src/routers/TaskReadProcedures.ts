@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { CACHE_KEYS, CACHE_TAGS, CACHE_TTL, cachedDbQuery } from '../cache/db-cache.js';
 import { db } from '../db.js';
 import { TaskService } from '../services/TaskService.js';
+import { getTaskFactsForDisplay } from '../services/taskIntake/getTaskFactsForDisplay.js';
 import { hustlerProcedure, posterProcedure, protectedProcedure, Schemas } from '../trpc.js';
 
 type TaskViewerRole =
@@ -93,7 +94,11 @@ getById: protectedProcedure
           throw new TRPCError({ code: 'FORBIDDEN', message: 'Access denied' });
         }
         // Admin: full access
-        return { ...task, viewer_role: 'admin' as const };
+        const adminRaw = await db.query<{ raw_input: string | null }>(
+          'SELECT raw_input FROM task_drafts WHERE task_id = $1 LIMIT 1',
+          [input.taskId],
+        );
+        return { ...task, viewer_role: 'admin' as const, taskFacts: getTaskFactsForDisplay(adminRaw.rows[0]?.raw_input) };
       }
 
       // Strip sensitive identity fields for non-participants browsing the feed
@@ -156,6 +161,7 @@ getById: protectedProcedure
 
       return {
         ...task,
+        taskFacts: getTaskFactsForDisplay(participantDetail?.request_raw_input),
         viewer_role: viewerRole,
         quote_chat_role: quoteChatRole,
         quote_shortlisted_worker_id: quoteChatRole ? quoteWorkerId : null,
@@ -198,7 +204,11 @@ getDraftById: posterProcedure
       });
     }
 
-    return result.rows[0];
+    const draft = result.rows[0];
+    return {
+      ...draft,
+      taskFacts: getTaskFactsForDisplay(draft.raw_input),
+    };
   }),
 getQuoteVersionByQuoteId: posterProcedure
   .input(
