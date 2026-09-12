@@ -1,0 +1,70 @@
+import { extractIntakePrefill } from './extractPrefill.js';
+import type { TaskCategory } from './types.js';
+
+const cases: Array<[string, TaskCategory, Record<string, unknown>, string[]]> = [
+  ['Paint the fence but don\'t paint the gate.', 'painting', { painting_surface: 'fence' }, []],
+  ['No prep needed, just paint the walls.', 'painting', { prep_needed: false }, []],
+  ['Sand and paint the bedroom walls.', 'painting', { painting_surface: 'interior_walls', prep_needed: true }, []],
+  ['Give the wall two coats.', 'painting', { coat_count: 2 }, []],
+  ['Paint is already here.', 'painting', { paint_provided: true }, []],
+  ['I don\'t have paint.', 'painting', { paint_provided: false }, []],
+  ['Wall has peeling paint.', 'painting', { existing_damage: true }, []],
+  ['Paint my house.', 'painting', {}, ['painting_surface']],
+  ['Sink isn\'t leaking, it\'s just clogged.', 'plumbing', { plumbing_fixture: 'sink', plumbing_issue: 'clog', active_leak: false }, []],
+  ['The leak stopped yesterday.', 'plumbing', { plumbing_issue: 'leak', active_leak: false }, []],
+  ['Pipe is dripping right now.', 'plumbing', { plumbing_fixture: 'pipe', plumbing_issue: 'leak', active_leak: true }, []],
+  ['I can shut off the water.', 'plumbing', { water_shutoff_available: true }, []],
+  ['I cannot access the shutoff valve.', 'plumbing', { water_shutoff_available: false }, []],
+  ['Fix my sink.', 'plumbing', { plumbing_fixture: 'sink', plumbing_issue: 'repair' }, []],
+  ['Replace toilet, no leak.', 'plumbing', { plumbing_fixture: 'toilet', plumbing_issue: 'replacement', active_leak: false }, []],
+  ['The light works, I just want it replaced.', 'electrical', { electrical_fixture: 'light', electrical_issue: 'replacement' }, ['electrical_issue:not_working']],
+  ['Breaker isn\'t tripping anymore.', 'electrical', { electrical_fixture: 'breaker' }, ['electrical_issue:tripping']],
+  ['Outlet has no power.', 'electrical', { electrical_fixture: 'outlet', power_available: false }, []],
+  ['Install a fan, there is no wiring yet.', 'electrical', { electrical_fixture: 'ceiling_fan', electrical_issue: 'installation', existing_wiring: false }, []],
+  ['I already bought the ceiling fan.', 'electrical', { electrical_fixture: 'ceiling_fan', parts_provided: true }, []],
+  ['Bring the light fixture yourself.', 'electrical', { parts_provided: false }, []],
+  ['Panel is fine, just replace the outlet.', 'electrical', { electrical_fixture: 'outlet', electrical_issue: 'replacement' }, ['panel_involved']],
+  ['Mount my TV.', 'assembly', {}, ['electrical_fixture']],
+  ['Bathtub drain is clogged.', 'plumbing', { plumbing_fixture: 'drain', plumbing_issue: 'clog' }, []],
+  ['Kitchen sink drain is clogged.', 'plumbing', { plumbing_fixture: 'drain', plumbing_issue: 'clog' }, []],
+  ['No prep needed, just paint the walls.', 'painting', { prep_needed: false }, ['prep_needed:true']],
+  ['No preparation required.', 'painting', { prep_needed: false }, ['prep_needed:true']],
+  ['Sand the walls before painting.', 'painting', { prep_needed: true }, []],
+  ['Pipe is dripping right now.', 'plumbing', { plumbing_fixture: 'pipe', plumbing_issue: 'leak', active_leak: true }, []],
+  ['The faucet is dripping.', 'plumbing', { plumbing_fixture: 'faucet', plumbing_issue: 'leak', active_leak: true }, []],
+  ['Water is currently dripping from the pipe.', 'plumbing', { plumbing_fixture: 'pipe', plumbing_issue: 'leak', active_leak: true }, []],
+  ['The pipe was dripping yesterday but stopped.', 'plumbing', { plumbing_issue: 'leak', active_leak: false }, []],
+  ["It's not dripping anymore.", 'plumbing', { active_leak: false }, []],
+  ['The dripping stopped.', 'plumbing', { active_leak: false }, []],
+  ["Sink isn't leaking, it's just clogged.", 'plumbing', { plumbing_fixture: 'sink', plumbing_issue: 'clog', active_leak: false }, []],
+  ['The pipe is not leaking.', 'plumbing', { plumbing_fixture: 'pipe', active_leak: false }, ['plumbing_issue:leak']],
+  ["The faucet isn't dripping.", 'plumbing', { plumbing_fixture: 'faucet', active_leak: false }, ['plumbing_issue:leak']],
+  ['No active leak, the drain is clogged.', 'plumbing', { plumbing_fixture: 'drain', plumbing_issue: 'clog', active_leak: false }, []],
+  ['The sink was leaking yesterday but stopped.', 'plumbing', { plumbing_fixture: 'sink', plumbing_issue: 'leak', active_leak: false }, []],
+  ['The pipe is leaking right now.', 'plumbing', { active_leak: true, plumbing_issue: 'leak' }, []],
+  ['The faucet is dripping.', 'plumbing', { active_leak: true, plumbing_issue: 'leak' }, []],
+  ['The leak stopped yesterday.', 'plumbing', { plumbing_issue: 'leak', active_leak: false }, []],
+  ['The sink was leaking but stopped.', 'plumbing', { plumbing_fixture: 'sink', plumbing_issue: 'leak', active_leak: false }, []],
+  ['The pipe isn\'t leaking anymore.', 'plumbing', { plumbing_fixture: 'pipe', plumbing_issue: 'leak', active_leak: false }, []],
+  ['The faucet stopped dripping.', 'plumbing', { plumbing_fixture: 'faucet', plumbing_issue: 'leak', active_leak: false }, []],
+  ['No leak, the drain is clogged.', 'plumbing', { plumbing_fixture: 'drain', plumbing_issue: 'clog', active_leak: false }, []],
+  ["It's not leaking; the water pressure is low.", 'plumbing', { plumbing_issue: 'low_pressure', active_leak: false }, ['plumbing_issue:leak']],
+  ['The pipe is leaking right now.', 'plumbing', { plumbing_fixture: 'pipe', plumbing_issue: 'leak', active_leak: true }, []],
+  ['Replace toilet, no leak.', 'plumbing', { plumbing_fixture: 'toilet', plumbing_issue: 'replacement', active_leak: false }, []],
+  ['Install a faucet, no leak.', 'plumbing', { plumbing_fixture: 'faucet', plumbing_issue: 'installation', active_leak: false }, []],
+  ["Repair the sink, it isn't leaking.", 'plumbing', { plumbing_fixture: 'sink', plumbing_issue: 'repair', active_leak: false }, []],
+  ["No leak, water pressure is low.", 'plumbing', { plumbing_issue: 'low_pressure', active_leak: false }, []],
+  ['The light works, I just want it replaced.', 'electrical', { electrical_fixture: 'light', electrical_issue: 'replacement' }, []],
+  ['The switch still works, replace it anyway.', 'electrical', { electrical_fixture: 'switch', electrical_issue: 'replacement' }, []],
+  ['The outlet works but I want it replaced.', 'electrical', { electrical_fixture: 'outlet', electrical_issue: 'replacement' }, []],
+  ['The light is not working.', 'electrical', { electrical_fixture: 'light', electrical_issue: 'not_working' }, []],
+  ['The bathroom light keeps flickering.', 'electrical', { electrical_fixture: 'light', electrical_issue: 'flickering' }, []],
+];
+
+const failures: string[] = [];
+for (const [input, category, expected, absent] of cases) {
+  const answers = extractIntakePrefill(input, category).answers;
+  for (const [key, value] of Object.entries(expected)) if (answers[key] !== value) failures.push(`Input: "${input}"\nField: ${key}\nExpected: ${JSON.stringify(value)}\nActual: ${JSON.stringify(answers[key])}`);
+  for (const key of absent) { const [field, expectedValue] = key.split(':'); if (expectedValue === undefined ? answers[field] !== undefined : answers[field] === expectedValue) failures.push(`Input: "${input}"\nField: ${field}\nExpected absent${expectedValue ? ` (not ${expectedValue})` : ''}\nActual: ${JSON.stringify(answers[field])}`); }
+}
+if (failures.length) { console.error(`Expanded category adversarial failures: ${failures.length}`); failures.forEach((failure, index) => console.error(`\n${index + 1}. ${failure}`)); process.exitCode = 1; } else console.log(`Expanded category adversarial cases passed: ${cases.length}`);
