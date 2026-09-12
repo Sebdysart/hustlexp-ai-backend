@@ -1,3 +1,7 @@
+> Documentation status: `HISTORICAL_EVIDENCE / LEGACY_NON_EXECUTABLE`
+>
+> This body and its receipt IDs are preserved verbatim. It is not the current certification matrix and cannot authorize payment creation, a processor adapter, sandbox execution, or production enablement.
+
 # Payment Certification Checklist (EPIC-03)
 
 Payment creation remains **frozen** in production until every row below is `PROVEN` for the bounded cell/fixture and the kill switch is re-verified.

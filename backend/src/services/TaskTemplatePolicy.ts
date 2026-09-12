@@ -8,6 +8,8 @@ import {
   type CompletionCriteriaType,
 } from './TaskTemplateRegistry.js';
 
+export { isCareContent };
+
 const IN_HOME_LOCATION = /\b(apartment|condo|house|home|bedroom|bathroom|kitchen|living\s+room|garage|basement|attic)\b/i;
 const IN_HOME_ACTIVITY = /\b(clean(?:ing)?|deep\s+clean|organize|repair|fix|install|assemble|paint(?:ing)?|mount|handyman|massage)\b/i;
 const EXPLICIT_HOME_ENTRY = /\b(?:inside|enter(?:ing)?|access)\s+(?:my|the|a|an)?\s*(?:apartment|condo|house|home|bedroom|bathroom|kitchen|garage)\b/i;

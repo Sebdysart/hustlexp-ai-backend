@@ -1,8 +1,9 @@
 import type { PaymentProvider } from './PaymentProvider.js';
 import { StripePaymentProvider } from './StripePaymentProvider.js';
 import { LocalCertificationPaymentProviderAdapter } from './LocalCertificationPaymentProviderAdapter.js';
+import { StaxPaymentProvider } from './StaxPaymentProvider.js';
 
-export type PaymentProviderName = 'stripe' | 'local_test';
+export type PaymentProviderName = 'stripe' | 'stax' | 'local_test';
 
 export function resolvePaymentProvider(
   provider: PaymentProviderName,
@@ -10,6 +11,8 @@ export function resolvePaymentProvider(
   switch (provider) {
     case 'stripe':
       return StripePaymentProvider;
+    case 'stax':
+      return StaxPaymentProvider;
 
     case 'local_test':
       return LocalCertificationPaymentProviderAdapter;

@@ -1,0 +1,2576 @@
+[
+  {
+    "input": "Clean up leaves and branches from my backyard.",
+    "expected": "yard",
+    "top_category": "yard",
+    "top_score": 1.1194118136001567,
+    "second_category": "cleaning",
+    "second_score": -0.680368851340504,
+    "margin": 1.7997806649406607
+  },
+  {
+    "input": "My yard is completely overgrown and needs to be cleared.",
+    "expected": "yard",
+    "top_category": "yard",
+    "top_score": 1.1003713372082273,
+    "second_category": "cleaning",
+    "second_score": -0.846971172912643,
+    "margin": 1.9473425101208703
+  },
+  {
+    "input": "Remove three bags of garden waste and some old wood.",
+    "expected": "yard",
+    "top_category": "yard",
+    "top_score": 0.5109614825438848,
+    "second_category": "delivery",
+    "second_score": -0.7669872054787685,
+    "margin": 1.2779486880226534
+  },
+  {
+    "input": "Mow a small front lawn; I don't have a mower.",
+    "expected": "yard",
+    "top_category": "yard",
+    "top_score": 0.5790553980118052,
+    "second_category": "auto",
+    "second_score": -0.7567098603648332,
+    "margin": 1.3357652583766384
+  },
+  {
+    "input": "Trim the bushes around the driveway.",
+    "expected": "yard",
+    "top_category": "yard",
+    "top_score": 0.6871101427934321,
+    "second_category": "auto",
+    "second_score": -0.6880119345943013,
+    "margin": 1.3751220773877333
+  },
+  {
+    "input": "Clear weeds from about 500 sq ft of garden.",
+    "expected": "yard",
+    "top_category": "yard",
+    "top_score": 0.9425610425417041,
+    "second_category": "home_services",
+    "second_score": -0.8997513402235345,
+    "margin": 1.8423123827652388
+  },
+  {
+    "input": "Remove a fallen tree branch after a storm.",
+    "expected": "yard",
+    "top_category": "yard",
+    "top_score": 0.5663293603113726,
+    "second_category": "plumbing",
+    "second_score": -0.8790730166860881,
+    "margin": 1.4454023769974607
+  },
+  {
+    "input": "Clean dog waste from the backyard.",
+    "expected": "yard",
+    "top_category": "yard",
+    "top_score": 0.47017023632180477,
+    "second_category": "pet_care",
+    "second_score": -0.5399522942699748,
+    "margin": 1.0101225305917796
+  },
+  {
+    "input": "Spread mulch across several flower beds.",
+    "expected": "yard",
+    "top_category": "yard",
+    "top_score": 0.755911842064487,
+    "second_category": "handyman",
+    "second_score": -0.8863892964897582,
+    "margin": 1.6423011385542452
+  },
+  {
+    "input": "Move a pile of gravel from the driveway to the backyard.",
+    "expected": "yard",
+    "top_category": "yard",
+    "top_score": 0.7261559799257573,
+    "second_category": "moving",
+    "second_score": -0.694136206280706,
+    "margin": 1.4202921862064635
+  },
+  {
+    "input": "Clean gutters on a two-story house.",
+    "expected": "home_services",
+    "top_category": "home_services",
+    "top_score": 0.1240643232871792,
+    "second_category": "cleaning",
+    "second_score": -0.7512536168478768,
+    "margin": 0.875317940135056
+  },
+  {
+    "input": "Pressure wash my patio and driveway.",
+    "expected": "cleaning",
+    "top_category": "cleaning",
+    "top_score": 0.3315366705068479,
+    "second_category": "yard",
+    "second_score": -0.6674990720571912,
+    "margin": 0.999035742564039
+  },
+  {
+    "input": "I need someone to make my backyard presentable before Saturday.",
+    "expected": "yard",
+    "top_category": "yard",
+    "top_score": 0.3983372587449965,
+    "second_category": "events",
+    "second_score": -0.6349864360635025,
+    "margin": 1.033323694808499
+  },
+  {
+    "input": "Deep clean my two-bedroom apartment.",
+    "expected": "cleaning",
+    "top_category": "cleaning",
+    "top_score": 0.6716875088359302,
+    "second_category": "moving",
+    "second_score": -0.8421619903958812,
+    "margin": 1.5138494992318114
+  },
+  {
+    "input": "Clean my kitchen and two bathrooms only.",
+    "expected": "cleaning",
+    "top_category": "cleaning",
+    "top_score": 0.6199530379788949,
+    "second_category": "plumbing",
+    "second_score": -0.834724455252758,
+    "margin": 1.4546774932316529
+  },
+  {
+    "input": "Move-out cleaning for an empty 3-bedroom house.",
+    "expected": "cleaning",
+    "top_category": "cleaning",
+    "top_score": 0.8167165897455857,
+    "second_category": "moving",
+    "second_score": -0.6843973570692886,
+    "margin": 1.5011139468148742
+  },
+  {
+    "input": "Clean an Airbnb after guests leave.",
+    "expected": "cleaning",
+    "top_category": "cleaning",
+    "top_score": 0.570627065486325,
+    "second_category": "events",
+    "second_score": -0.69065916513698,
+    "margin": 1.261286230623305
+  },
+  {
+    "input": "My apartment hasn't been cleaned for months.",
+    "expected": "cleaning",
+    "top_category": "cleaning",
+    "top_score": 0.7313457886722912,
+    "second_category": "home_services",
+    "second_score": -0.5836877264751915,
+    "margin": 1.3150335151474826
+  },
+  {
+    "input": "Clean inside my refrigerator and oven.",
+    "expected": "cleaning",
+    "top_category": "cleaning",
+    "top_score": 0.4245828973484542,
+    "second_category": "delivery",
+    "second_score": -0.8062824260318097,
+    "margin": 1.230865323380264
+  },
+  {
+    "input": "Remove pet hair from carpets and furniture.",
+    "expected": "cleaning",
+    "top_category": "cleaning",
+    "top_score": 0.1842964991517504,
+    "second_category": "pet_care",
+    "second_score": -0.43700532884446663,
+    "margin": 0.621301827996217
+  },
+  {
+    "input": "Clean windows inside and outside.",
+    "expected": "cleaning",
+    "top_category": "cleaning",
+    "top_score": 0.5929606010623512,
+    "second_category": "home_services",
+    "second_score": -0.6265782643383758,
+    "margin": 1.219538865400727
+  },
+  {
+    "input": "Clean a garage full of dust and cobwebs.",
+    "expected": "cleaning",
+    "top_category": "cleaning",
+    "top_score": 0.48099072239580654,
+    "second_category": "yard",
+    "second_score": -0.6941046932901347,
+    "margin": 1.1750954156859412
+  },
+  {
+    "input": "I need someone to clean after a renovation.",
+    "expected": "cleaning",
+    "top_category": "cleaning",
+    "top_score": 0.5182655746790554,
+    "second_category": "painting",
+    "second_score": -0.7664477604194923,
+    "margin": 1.2847133350985476
+  },
+  {
+    "input": "Just need the floors and bathrooms cleaned.",
+    "expected": "cleaning",
+    "top_category": "cleaning",
+    "top_score": 0.617501172290249,
+    "second_category": "plumbing",
+    "second_score": -0.8611223206052259,
+    "margin": 1.478623492895475
+  },
+  {
+    "input": "Clean a small office after business hours.",
+    "expected": "cleaning",
+    "top_category": "cleaning",
+    "top_score": 0.7651801598508019,
+    "second_category": "delivery",
+    "second_score": -0.7747500550970449,
+    "margin": 1.5399302149478467
+  },
+  {
+    "input": "My tenant left the place filthy; I don't know exactly what needs cleaning.",
+    "expected": "cleaning",
+    "top_category": "cleaning",
+    "top_score": 0.8570343684308988,
+    "second_category": "home_services",
+    "second_score": -0.8557193539595279,
+    "margin": 1.7127537223904268
+  },
+  {
+    "input": "Help me move a couch and bed to another apartment.",
+    "expected": "moving",
+    "top_category": "moving",
+    "top_score": 0.9061307789976412,
+    "second_category": "delivery",
+    "second_score": -0.8203524045335268,
+    "margin": 1.726483183531168
+  },
+  {
+    "input": "Moving a one-bedroom apartment across town.",
+    "expected": "moving",
+    "top_category": "moving",
+    "top_score": 0.5526761645041101,
+    "second_category": "delivery",
+    "second_score": -0.7813398796497864,
+    "margin": 1.3340160441538964
+  },
+  {
+    "input": "Carry 20 boxes from my garage into a moving truck.",
+    "expected": "moving",
+    "top_category": "moving",
+    "top_score": 0.3740677175733855,
+    "second_category": "delivery",
+    "second_score": -0.27787719243397224,
+    "margin": 0.6519449100073578
+  },
+  {
+    "input": "Move a refrigerator down one flight of stairs.",
+    "expected": "moving",
+    "top_category": "moving",
+    "top_score": 0.335971174462117,
+    "second_category": "delivery",
+    "second_score": -0.6462144683906514,
+    "margin": 0.9821856428527684
+  },
+  {
+    "input": "Help unload a U-Haul.",
+    "expected": "moving",
+    "top_category": "moving",
+    "top_score": 0.36905596535341845,
+    "second_category": "delivery",
+    "second_score": -0.6153096736337289,
+    "margin": 0.9843656389871474
+  },
+  {
+    "input": "Move furniture between rooms in the same house.",
+    "expected": "moving",
+    "top_category": "moving",
+    "top_score": 0.8810985584585,
+    "second_category": "assembly",
+    "second_score": -0.6741937846064805,
+    "margin": 1.5552923430649805
+  },
+  {
+    "input": "Move a piano from the first floor to a truck.",
+    "expected": "moving",
+    "top_category": "moving",
+    "top_score": 0.6689796643235533,
+    "second_category": "delivery",
+    "second_score": -0.7363679444159721,
+    "margin": 1.4053476087395254
+  },
+  {
+    "input": "I need two people to move some stuff but I don't know exactly how much yet.",
+    "expected": "moving",
+    "top_category": "moving",
+    "top_score": 0.6220379904247904,
+    "second_category": "delivery",
+    "second_score": -0.9561280130631832,
+    "margin": 1.5781660034879734
+  },
+  {
+    "input": "Pick up my belongings from a storage unit and bring them home.",
+    "expected": "moving",
+    "top_category": "moving",
+    "top_score": 0.04160629927957338,
+    "second_category": "delivery",
+    "second_score": -0.27725419155462894,
+    "margin": 0.3188604908342023
+  },
+  {
+    "input": "Move 12 boxes, a TV, desk, mattress and sofa.",
+    "expected": "moving",
+    "top_category": "moving",
+    "top_score": 0.9810711154518579,
+    "second_category": "delivery",
+    "second_score": -0.7841951049282297,
+    "margin": 1.7652662203800875
+  },
+  {
+    "input": "Help me move but I already have a truck.",
+    "expected": "moving",
+    "top_category": "moving",
+    "top_score": 0.43511826326530656,
+    "second_category": "auto",
+    "second_score": -0.5001175986114895,
+    "margin": 0.9352358618767961
+  },
+  {
+    "input": "Move some furniture from upstairs; narrow staircase.",
+    "expected": "moving",
+    "top_category": "moving",
+    "top_score": 0.8862710950643202,
+    "second_category": "home_services",
+    "second_score": -0.8997531432755865,
+    "margin": 1.7860242383399068
+  },
+  {
+    "input": "Assemble an IKEA bed frame.",
+    "expected": "assembly",
+    "top_category": "assembly",
+    "top_score": 0.857184595942124,
+    "second_category": "delivery",
+    "second_score": -0.7460288444476102,
+    "margin": 1.6032134403897342
+  },
+  {
+    "input": "Put together four dining chairs and a table.",
+    "expected": "assembly",
+    "top_category": "assembly",
+    "top_score": 0.4000319736835898,
+    "second_category": "events",
+    "second_score": -0.5334906683495096,
+    "margin": 0.9335226420330994
+  },
+  {
+    "input": "Assemble a large wardrobe.",
+    "expected": "assembly",
+    "top_category": "assembly",
+    "top_score": 0.7270371950235615,
+    "second_category": "moving",
+    "second_score": -0.614673946092373,
+    "margin": 1.3417111411159346
+  },
+  {
+    "input": "Build a standing desk.",
+    "expected": "assembly",
+    "top_category": "assembly",
+    "top_score": 0.4630034166844461,
+    "second_category": "delivery",
+    "second_score": -0.7449424056099115,
+    "margin": 1.2079458222943575
+  },
+  {
+    "input": "Assemble a trampoline in my backyard.",
+    "expected": "assembly",
+    "top_category": "assembly",
+    "top_score": 0.42161605273571623,
+    "second_category": "yard",
+    "second_score": -0.6267165663601131,
+    "margin": 1.0483326190958293
+  },
+  {
+    "input": "Put together a barbecue grill.",
+    "expected": "assembly",
+    "top_category": "assembly",
+    "top_score": 0.4268773827445034,
+    "second_category": "events",
+    "second_score": -0.5548754199211714,
+    "margin": 0.9817528026656748
+  },
+  {
+    "input": "Assemble a bookshelf and anchor it to the wall.",
+    "expected": "assembly",
+    "top_category": "assembly",
+    "top_score": 0.6834523122554024,
+    "second_category": "handyman",
+    "second_score": -0.4128352232613931,
+    "margin": 1.0962875355167956
+  },
+  {
+    "input": "Mount a TV on drywall.",
+    "expected": "handyman",
+    "top_category": "handyman",
+    "top_score": 0.33731140738117493,
+    "second_category": "assembly",
+    "second_score": -0.5065941738048635,
+    "margin": 0.8439055811860384
+  },
+  {
+    "input": "Install three floating shelves on a brick wall.",
+    "expected": "handyman",
+    "top_category": "handyman",
+    "top_score": -0.013081110421060527,
+    "second_category": "assembly",
+    "second_score": -0.15606995468288132,
+    "margin": 0.1429888442618208
+  },
+  {
+    "input": "Assemble a children's playset.",
+    "expected": "assembly",
+    "top_category": "assembly",
+    "top_score": 0.7456772369660785,
+    "second_category": "handyman",
+    "second_score": -0.770898421414984,
+    "margin": 1.5165756583810626
+  },
+  {
+    "input": "I bought some furniture online and need someone to put everything together.",
+    "expected": "assembly",
+    "top_category": "assembly",
+    "top_score": 0.5397264172002201,
+    "second_category": "moving",
+    "second_score": -0.6963203390262289,
+    "margin": 1.236046756226449
+  },
+  {
+    "input": "Disassemble my bed and assemble it again after moving.",
+    "expected": "assembly",
+    "top_category": "assembly",
+    "top_score": 0.2692013990696229,
+    "second_category": "moving",
+    "second_score": -0.565752754249526,
+    "margin": 0.8349541533191489
+  },
+  {
+    "input": "Pick up a couch from Facebook Marketplace and bring it to my house.",
+    "expected": "delivery",
+    "top_category": "delivery",
+    "top_score": 0.29518919426859225,
+    "second_category": "moving",
+    "second_score": -0.6300156810490233,
+    "margin": 0.9252048753176155
+  },
+  {
+    "input": "Deliver a dining table across town.",
+    "expected": "delivery",
+    "top_category": "delivery",
+    "top_score": 0.44047799435868074,
+    "second_category": "events",
+    "second_score": -0.7429380318045959,
+    "margin": 1.1834160261632767
+  },
+  {
+    "input": "Pick up 15 boxes from a warehouse.",
+    "expected": "delivery",
+    "top_category": "delivery",
+    "top_score": 0.3024790458679256,
+    "second_category": "moving",
+    "second_score": -0.5039527486309583,
+    "margin": 0.8064317944988839
+  },
+  {
+    "input": "Transport a large mirror without breaking it.",
+    "expected": "delivery",
+    "top_category": "delivery",
+    "top_score": 0.4204970402990118,
+    "second_category": "moving",
+    "second_score": -0.6131504653390165,
+    "margin": 1.0336475056380283
+  },
+  {
+    "input": "Deliver a refrigerator; you'll need a truck.",
+    "expected": "delivery",
+    "top_category": "delivery",
+    "top_score": 0.6560696828637618,
+    "second_category": "moving",
+    "second_score": -0.7618014835095933,
+    "margin": 1.417871166373355
+  },
+  {
+    "input": "Pick up a birthday cake and deliver it.",
+    "expected": "delivery",
+    "top_category": "delivery",
+    "top_score": 0.8115393823474186,
+    "second_category": "events",
+    "second_score": -0.7392805720687459,
+    "margin": 1.5508199544161645
+  },
+  {
+    "input": "Move six bags of cement from the store to my property.",
+    "expected": "delivery",
+    "top_category": "delivery",
+    "top_score": 0.016625379438774956,
+    "second_category": "moving",
+    "second_score": -0.5813501221218271,
+    "margin": 0.5979755015606021
+  },
+  {
+    "input": "Pick up a washing machine and bring it upstairs.",
+    "expected": "delivery",
+    "top_category": "delivery",
+    "top_score": 0.037059611304852025,
+    "second_category": "cleaning",
+    "second_score": -0.552499134886882,
+    "margin": 0.589558746191734
+  },
+  {
+    "input": "Collect a package from someone's house and bring it to me.",
+    "expected": "delivery",
+    "top_category": "delivery",
+    "top_score": 0.9992917720413896,
+    "second_category": "yard",
+    "second_score": -0.9353067408387671,
+    "margin": 1.9345985128801568
+  },
+  {
+    "input": "Deliver 30 folding chairs to an event venue.",
+    "expected": "delivery",
+    "top_category": "delivery",
+    "top_score": 0.4186839667328639,
+    "second_category": "events",
+    "second_score": -0.42246247219089017,
+    "margin": 0.8411464389237541
+  },
+  {
+    "input": "Take several bags of clothes to a donation center.",
+    "expected": "delivery",
+    "top_category": "delivery",
+    "top_score": 0.3319781280519176,
+    "second_category": "events",
+    "second_score": -0.6193342534027917,
+    "margin": 0.9513123814547093
+  },
+  {
+    "input": "Haul an old mattress away.",
+    "expected": "delivery",
+    "top_category": "delivery",
+    "top_score": 0.17465063661671842,
+    "second_category": "moving",
+    "second_score": -0.5170463350057626,
+    "margin": 0.691696971622481
+  },
+  {
+    "input": "I bought something but I'm not sure whether it will fit in a normal car.",
+    "expected": "delivery",
+    "top_category": "delivery",
+    "top_score": 0.5181604917413425,
+    "second_category": "auto",
+    "second_score": -0.12577422660477489,
+    "margin": 0.6439347183461174
+  },
+  {
+    "input": "Fix a leaking kitchen faucet.",
+    "expected": "handyman",
+    "top_category": "plumbing",
+    "top_score": -0.01582887745625927,
+    "second_category": "handyman",
+    "second_score": -0.2337052394231589,
+    "margin": 0.21787636196689963
+  },
+  {
+    "input": "Repair a loose door handle.",
+    "expected": "handyman",
+    "top_category": "handyman",
+    "top_score": 0.5179959722988423,
+    "second_category": "home_services",
+    "second_score": -0.8431184751765277,
+    "margin": 1.36111444747537
+  },
+  {
+    "input": "Patch a hole in drywall.",
+    "expected": "handyman",
+    "top_category": "handyman",
+    "top_score": 0.5079565255719576,
+    "second_category": "plumbing",
+    "second_score": -0.863489608986935,
+    "margin": 1.3714461345588926
+  },
+  {
+    "input": "Replace a broken door hinge.",
+    "expected": "handyman",
+    "top_category": "handyman",
+    "top_score": 0.38473517914211763,
+    "second_category": "home_services",
+    "second_score": -0.7349784042631322,
+    "margin": 1.1197135834052498
+  },
+  {
+    "input": "Hang five pictures on the wall.",
+    "expected": "handyman",
+    "top_category": "handyman",
+    "top_score": 0.20310312000841457,
+    "second_category": "assembly",
+    "second_score": -0.7820617957855653,
+    "margin": 0.9851649157939799
+  },
+  {
+    "input": "Install curtain rods.",
+    "expected": "handyman",
+    "top_category": "handyman",
+    "top_score": 0.41713286297315477,
+    "second_category": "assembly",
+    "second_score": -0.83900345133193,
+    "margin": 1.2561363143050848
+  },
+  {
+    "input": "Replace a damaged section of baseboard.",
+    "expected": "handyman",
+    "top_category": "handyman",
+    "top_score": -0.07394469556003935,
+    "second_category": "home_services",
+    "second_score": -0.7564506322500046,
+    "margin": 0.6825059366899653
+  },
+  {
+    "input": "Fix a cabinet door that won't close.",
+    "expected": "handyman",
+    "top_category": "handyman",
+    "top_score": 0.37600225404615584,
+    "second_category": "home_services",
+    "second_score": -0.609156418619711,
+    "margin": 0.9851586726658669
+  },
+  {
+    "input": "Replace a bathroom towel rack.",
+    "expected": "handyman",
+    "top_category": "handyman",
+    "top_score": 0.20032921433537476,
+    "second_category": "plumbing",
+    "second_score": -0.8348669948318613,
+    "margin": 1.035196209167236
+  },
+  {
+    "input": "Install a ceiling-mounted curtain track.",
+    "expected": "handyman",
+    "top_category": "handyman",
+    "top_score": 0.1621715177313119,
+    "second_category": "assembly",
+    "second_score": -0.8509143687668335,
+    "margin": 1.0130858864981453
+  },
+  {
+    "input": "Repair a fence gate.",
+    "expected": "handyman",
+    "top_category": "handyman",
+    "top_score": 0.36026282512631624,
+    "second_category": "home_services",
+    "second_score": -0.7025321498637573,
+    "margin": 1.0627949749900736
+  },
+  {
+    "input": "My bedroom door keeps scraping the floor.",
+    "expected": "handyman",
+    "top_category": "handyman",
+    "top_score": -0.08326927744637247,
+    "second_category": "home_services",
+    "second_score": -0.3032824392086043,
+    "margin": 0.22001316176223185
+  },
+  {
+    "input": "Something under my sink is leaking.",
+    "expected": "home_services",
+    "top_category": "home_services",
+    "top_score": 0.10796915564874454,
+    "second_category": "plumbing",
+    "second_score": -0.35314094792343687,
+    "margin": 0.4611101035721814
+  },
+  {
+    "input": "I need several random small repairs around my house.",
+    "expected": "handyman",
+    "top_category": "handyman",
+    "top_score": 0.3288950487911777,
+    "second_category": "yard",
+    "second_score": -0.9327602404184178,
+    "margin": 1.2616552892095956
+  },
+  {
+    "input": "My dishwasher isn't draining.",
+    "expected": "home_services",
+    "top_category": "home_services",
+    "top_score": 0.34709570526391786,
+    "second_category": "plumbing",
+    "second_score": -0.7025445476584401,
+    "margin": 1.0496402529223579
+  },
+  {
+    "input": "My washing machine is leaking water.",
+    "expected": "home_services",
+    "top_category": "home_services",
+    "top_score": 0.5227775399106864,
+    "second_category": "plumbing",
+    "second_score": -0.49052035109929587,
+    "margin": 1.0132978910099824
+  },
+  {
+    "input": "The garbage disposal stopped working.",
+    "expected": "home_services",
+    "top_category": "home_services",
+    "top_score": 0.2787971401562286,
+    "second_category": "electrical",
+    "second_score": -0.7483391716498282,
+    "margin": 1.0271363118060568
+  },
+  {
+    "input": "One room has water damage near the ceiling.",
+    "expected": "home_services",
+    "top_category": "home_services",
+    "top_score": 0.6071978188161897,
+    "second_category": "electrical",
+    "second_score": -0.7834319184222539,
+    "margin": 1.3906297372384437
+  },
+  {
+    "input": "My bathroom exhaust fan stopped working.",
+    "expected": "home_services",
+    "top_category": "home_services",
+    "top_score": 0.12588335916375692,
+    "second_category": "electrical",
+    "second_score": -0.4232164036208833,
+    "margin": 0.5490997627846402
+  },
+  {
+    "input": "There's mold-looking discoloration around a window.",
+    "expected": "home_services",
+    "top_category": "home_services",
+    "top_score": 0.6451578093617596,
+    "second_category": "painting",
+    "second_score": -0.5875116027428434,
+    "margin": 1.232669412104603
+  },
+  {
+    "input": "My garage door isn't closing properly.",
+    "expected": "home_services",
+    "top_category": "home_services",
+    "top_score": 0.17864887642549165,
+    "second_category": "handyman",
+    "second_score": -0.524064522585209,
+    "margin": 0.7027133990107006
+  },
+  {
+    "input": "My toilet keeps running.",
+    "expected": "home_services",
+    "top_category": "home_services",
+    "top_score": -0.09392977699779348,
+    "second_category": "plumbing",
+    "second_score": -0.3070341577691542,
+    "margin": 0.21310438077136074
+  },
+  {
+    "input": "The kitchen sink drains extremely slowly.",
+    "expected": "home_services",
+    "top_category": "home_services",
+    "top_score": -0.13832972322718762,
+    "second_category": "plumbing",
+    "second_score": -0.22200382301044552,
+    "margin": 0.0836740997832579
+  },
+  {
+    "input": "There's a crack in the wall that's getting bigger.",
+    "expected": "home_services",
+    "top_category": "home_services",
+    "top_score": 0.20046643678274956,
+    "second_category": "handyman",
+    "second_score": -0.7515518384936681,
+    "margin": 0.9520182752764177
+  },
+  {
+    "input": "One section of my wooden floor is damaged.",
+    "expected": "home_services",
+    "top_category": "home_services",
+    "top_score": 0.5127045663002612,
+    "second_category": "handyman",
+    "second_score": -0.6372522077547158,
+    "margin": 1.149956774054977
+  },
+  {
+    "input": "My AC seems to be running but the room isn't getting cold.",
+    "expected": "home_services",
+    "top_category": "home_services",
+    "top_score": 0.24244792319201247,
+    "second_category": "electrical",
+    "second_score": -0.5880633781291968,
+    "margin": 0.8305113013212093
+  },
+  {
+    "input": "I don't know what's wrong, but there is water appearing under the bathroom floor.",
+    "expected": "home_services",
+    "top_category": "home_services",
+    "top_score": 0.2733464607778855,
+    "second_category": "plumbing",
+    "second_score": -0.48334987561344034,
+    "margin": 0.7566963363913258
+  },
+  {
+    "input": "Change the oil on my 2018 Toyota Camry.",
+    "expected": "auto",
+    "top_category": "auto",
+    "top_score": 0.7115948860208586,
+    "second_category": "plumbing",
+    "second_score": -0.7480660002275202,
+    "margin": 1.4596608862483789
+  },
+  {
+    "input": "Replace my car battery.",
+    "expected": "auto",
+    "top_category": "auto",
+    "top_score": 0.6160295245750739,
+    "second_category": "pet_care",
+    "second_score": -0.8416613048370328,
+    "margin": 1.4576908294121067
+  },
+  {
+    "input": "My car won't start.",
+    "expected": "auto",
+    "top_category": "auto",
+    "top_score": 0.7221783512174179,
+    "second_category": "electrical",
+    "second_score": -0.9288923662786615,
+    "margin": 1.6510707174960793
+  },
+  {
+    "input": "Replace front brake pads.",
+    "expected": "auto",
+    "top_category": "auto",
+    "top_score": 0.5230635884519382,
+    "second_category": "handyman",
+    "second_score": -0.7272712519440998,
+    "margin": 1.2503348403960381
+  },
+  {
+    "input": "Install a dashcam.",
+    "expected": "auto",
+    "top_category": "auto",
+    "top_score": 0.6229326041880977,
+    "second_category": "painting",
+    "second_score": -0.910394188696072,
+    "margin": 1.5333267928841696
+  },
+  {
+    "input": "Replace a flat tire.",
+    "expected": "auto",
+    "top_category": "auto",
+    "top_score": 0.5333478237395234,
+    "second_category": "handyman",
+    "second_score": -0.8489044685904622,
+    "margin": 1.3822522923299856
+  },
+  {
+    "input": "Rotate all four tires.",
+    "expected": "auto",
+    "top_category": "auto",
+    "top_score": 0.5873797208548309,
+    "second_category": "yard",
+    "second_score": -0.8688786220867731,
+    "margin": 1.456258342941604
+  },
+  {
+    "input": "Change the headlights on my truck.",
+    "expected": "auto",
+    "top_category": "auto",
+    "top_score": 0.5685956170259044,
+    "second_category": "moving",
+    "second_score": -0.7671189825094049,
+    "margin": 1.3357145995353092
+  },
+  {
+    "input": "My car is making a grinding noise when I brake.",
+    "expected": "auto",
+    "top_category": "auto",
+    "top_score": 0.7731890649050875,
+    "second_category": "electrical",
+    "second_score": -0.7941568457652713,
+    "margin": 1.5673459106703589
+  },
+  {
+    "input": "Diagnose why my check-engine light is on.",
+    "expected": "auto",
+    "top_category": "auto",
+    "top_score": 0.36072509185000967,
+    "second_category": "electrical",
+    "second_score": -0.5262398321551875,
+    "margin": 0.8869649240051972
+  },
+  {
+    "input": "Replace windshield wipers.",
+    "expected": "auto",
+    "top_category": "auto",
+    "top_score": 0.5863498694295978,
+    "second_category": "handyman",
+    "second_score": -0.7441900368829458,
+    "margin": 1.3305399063125436
+  },
+  {
+    "input": "Install new speakers in my car.",
+    "expected": "auto",
+    "top_category": "auto",
+    "top_score": 0.5930444893929038,
+    "second_category": "electrical",
+    "second_score": -0.8276430175035081,
+    "margin": 1.420687506896412
+  },
+  {
+    "input": "My vehicle doesn't run, and I need someone to look at it.",
+    "expected": "auto",
+    "top_category": "auto",
+    "top_score": 0.7575894733184513,
+    "second_category": "home_services",
+    "second_score": -0.7358456424460743,
+    "margin": 1.4934351157645256
+  },
+  {
+    "input": "I already bought the replacement alternator and need someone to install it.",
+    "expected": "auto",
+    "top_category": "auto",
+    "top_score": 0.24700111641921574,
+    "second_category": "electrical",
+    "second_score": -0.6622475428592245,
+    "margin": 0.9092486592784402
+  },
+  {
+    "input": "I need brake work but don't know what parts are required.",
+    "expected": "auto",
+    "top_category": "auto",
+    "top_score": 0.5016014558732419,
+    "second_category": "handyman",
+    "second_score": -0.6671532010598497,
+    "margin": 1.1687546569330916
+  },
+  {
+    "input": "Help set up tables and chairs for a birthday party.",
+    "expected": "events",
+    "top_category": "events",
+    "top_score": 0.6196687142315583,
+    "second_category": "assembly",
+    "second_score": -0.5825057942240028,
+    "margin": 1.202174508455561
+  },
+  {
+    "input": "Clean up after a wedding reception.",
+    "expected": "events",
+    "top_category": "events",
+    "top_score": 0.6429988091725115,
+    "second_category": "cleaning",
+    "second_score": -0.6591448528398215,
+    "margin": 1.302143662012333
+  },
+  {
+    "input": "Serve food at a party with 60 guests.",
+    "expected": "events",
+    "top_category": "events",
+    "top_score": 1.0390337754464087,
+    "second_category": "pet_care",
+    "second_score": -0.8441874711976983,
+    "margin": 1.8832212466441072
+  },
+  {
+    "input": "Help decorate a venue for a baby shower.",
+    "expected": "events",
+    "top_category": "events",
+    "top_score": 0.5706437227136668,
+    "second_category": "delivery",
+    "second_score": -0.7498572770451738,
+    "margin": 1.3205009997588406
+  },
+  {
+    "input": "Need two people to check guests in at an event.",
+    "expected": "events",
+    "top_category": "events",
+    "top_score": 0.7922792437652647,
+    "second_category": "home_services",
+    "second_score": -0.9185952976626417,
+    "margin": 1.7108745414279065
+  },
+  {
+    "input": "Set up tents, chairs and decorations for an outdoor party.",
+    "expected": "events",
+    "top_category": "events",
+    "top_score": 0.6805990403672858,
+    "second_category": "yard",
+    "second_score": -0.7608497770541848,
+    "margin": 1.4414488174214706
+  },
+  {
+    "input": "Help tear down everything after an event.",
+    "expected": "events",
+    "top_category": "events",
+    "top_score": 0.4894124338806437,
+    "second_category": "handyman",
+    "second_score": -0.6575222820638749,
+    "margin": 1.1469347159445187
+  },
+  {
+    "input": "Bartending help for a private party.",
+    "expected": "events",
+    "top_category": "events",
+    "top_score": 0.6909227318144785,
+    "second_category": "delivery",
+    "second_score": -0.8758456595203773,
+    "margin": 1.5667683913348558
+  },
+  {
+    "input": "Help serve dinner and clean dishes afterward.",
+    "expected": "events",
+    "top_category": "events",
+    "top_score": 0.4352621081314215,
+    "second_category": "pet_care",
+    "second_score": -0.8130229973944602,
+    "margin": 1.2482851055258817
+  },
+  {
+    "input": "Need someone to manage the buffet table.",
+    "expected": "events",
+    "top_category": "events",
+    "top_score": 0.38978459648889363,
+    "second_category": "handyman",
+    "second_score": -0.7846046090409703,
+    "margin": 1.174389205529864
+  },
+  {
+    "input": "Corporate event for 150 people; need setup help.",
+    "expected": "events",
+    "top_category": "events",
+    "top_score": 0.892716762560534,
+    "second_category": "delivery",
+    "second_score": -0.9088808747983962,
+    "margin": 1.8015976373589302
+  },
+  {
+    "input": "Backyard party, about 25 people, just need an extra pair of hands.",
+    "expected": "events",
+    "top_category": "events",
+    "top_score": 0.8280263839280096,
+    "second_category": "yard",
+    "second_score": -0.8161121855723448,
+    "margin": 1.6441385695003543
+  },
+  {
+    "input": "I need help with my wedding but I'm not exactly sure what jobs yet.",
+    "expected": "events",
+    "top_category": "events",
+    "top_score": 0.6374359811771938,
+    "second_category": "painting",
+    "second_score": -0.8759043665385485,
+    "margin": 1.5133403477157423
+  },
+  {
+    "input": "Walk my dog for 30 minutes.",
+    "expected": "pet_care",
+    "top_category": "pet_care",
+    "top_score": 0.8719964426906659,
+    "second_category": "yard",
+    "second_score": -0.7817831791700108,
+    "margin": 1.6537796218606768
+  },
+  {
+    "input": "Walk two large dogs twice today.",
+    "expected": "pet_care",
+    "top_category": "pet_care",
+    "top_score": 0.8677364983351417,
+    "second_category": "events",
+    "second_score": -0.938660316304403,
+    "margin": 1.8063968146395446
+  },
+  {
+    "input": "Feed my cat while I'm out of town.",
+    "expected": "pet_care",
+    "top_category": "pet_care",
+    "top_score": 0.9148656306321987,
+    "second_category": "yard",
+    "second_score": -0.766768314160086,
+    "margin": 1.6816339447922846
+  },
+  {
+    "input": "Visit my house and check on three cats.",
+    "expected": "pet_care",
+    "top_category": "pet_care",
+    "top_score": 0.822107366693523,
+    "second_category": "handyman",
+    "second_score": -0.8795840590292758,
+    "margin": 1.7016914257227989
+  },
+  {
+    "input": "Watch my dog for four hours.",
+    "expected": "pet_care",
+    "top_category": "pet_care",
+    "top_score": 0.9885534196849661,
+    "second_category": "auto",
+    "second_score": -0.8682903921730507,
+    "margin": 1.8568438118580168
+  },
+  {
+    "input": "Clean my cat's litter box and refill food and water.",
+    "expected": "pet_care",
+    "top_category": "pet_care",
+    "top_score": 0.38886622304121854,
+    "second_category": "cleaning",
+    "second_score": -0.44451967530419845,
+    "margin": 0.833385898345417
+  },
+  {
+    "input": "Take my dog to the vet.",
+    "expected": "pet_care",
+    "top_category": "pet_care",
+    "top_score": 0.7636555304425214,
+    "second_category": "delivery",
+    "second_score": -0.7505727061420289,
+    "margin": 1.5142282365845503
+  },
+  {
+    "input": "Look after my puppy overnight.",
+    "expected": "pet_care",
+    "top_category": "pet_care",
+    "top_score": 0.8373839419634503,
+    "second_category": "painting",
+    "second_score": -0.8801446169833074,
+    "margin": 1.7175285589467577
+  },
+  {
+    "input": "Feed my fish while I'm away.",
+    "expected": "pet_care",
+    "top_category": "pet_care",
+    "top_score": 0.6017973434752282,
+    "second_category": "yard",
+    "second_score": -0.7679584338921063,
+    "margin": 1.3697557773673346
+  },
+  {
+    "input": "Walk an elderly dog that needs to move slowly.",
+    "expected": "pet_care",
+    "top_category": "pet_care",
+    "top_score": 0.7406996596569615,
+    "second_category": "moving",
+    "second_score": -0.6551763224016227,
+    "margin": 1.3958759820585842
+  },
+  {
+    "input": "Watch two dogs; one needs medication at 6 PM.",
+    "expected": "pet_care",
+    "top_category": "pet_care",
+    "top_score": 0.9246008285809748,
+    "second_category": "events",
+    "second_score": -0.9217193285061493,
+    "margin": 1.8463201570871242
+  },
+  {
+    "input": "My dog is nervous around strangers.",
+    "expected": "pet_care",
+    "top_category": "pet_care",
+    "top_score": 0.7689692140300921,
+    "second_category": "electrical",
+    "second_score": -0.8587527952454258,
+    "margin": 1.627722009275518
+  },
+  {
+    "input": "Pet sit for the weekend.",
+    "expected": "pet_care",
+    "top_category": "pet_care",
+    "top_score": 0.8785787599299097,
+    "second_category": "handyman",
+    "second_score": -0.9453279700082642,
+    "margin": 1.823906729938174
+  },
+  {
+    "input": "Help rearrange furniture before guests arrive.",
+    "expected": "moving",
+    "top_category": "moving",
+    "top_score": 0.47609993696938036,
+    "second_category": "assembly",
+    "second_score": -0.6690713416330047,
+    "margin": 1.145171278602385
+  },
+  {
+    "input": "Help me hang Christmas decorations.",
+    "expected": "handyman",
+    "top_category": "handyman",
+    "top_score": 0.4414031517761554,
+    "second_category": "assembly",
+    "second_score": -0.7178274667425364,
+    "margin": 1.1592306185186918
+  },
+  {
+    "input": "Take down holiday lights.",
+    "expected": "handyman",
+    "top_category": "handyman",
+    "top_score": -0.4038894088028221,
+    "second_category": "electrical",
+    "second_score": -0.5923567139742103,
+    "margin": 0.1884673051713882
+  },
+  {
+    "input": "Water my plants while I'm away.",
+    "expected": "yard",
+    "top_category": "yard",
+    "top_score": 0.41159363748774846,
+    "second_category": "pet_care",
+    "second_score": -0.5109473598399114,
+    "margin": 0.9225409973276598
+  },
+  {
+    "input": "Help load equipment for a photo shoot.",
+    "expected": "moving",
+    "top_category": "moving",
+    "top_score": -0.024568269475492288,
+    "second_category": "handyman",
+    "second_score": -0.6486387461126879,
+    "margin": 0.6240704766371956
+  },
+  {
+    "input": "Help me clean and organize my workshop.",
+    "expected": "cleaning",
+    "top_category": "cleaning",
+    "top_score": 0.4218513516277438,
+    "second_category": "events",
+    "second_score": -0.7206095073165041,
+    "margin": 1.142460858944248
+  },
+  {
+    "input": "I need help with my backyard.",
+    "expected": "yard",
+    "top_category": "yard",
+    "top_score": 0.6644093495700576,
+    "second_category": "home_services",
+    "second_score": -0.9041606654126659,
+    "margin": 1.5685700149827235
+  },
+  {
+    "input": "I have a bunch of stuff that needs moving.",
+    "expected": "moving",
+    "top_category": "moving",
+    "top_score": 0.5952663081558982,
+    "second_category": "handyman",
+    "second_score": -0.7758139679456478,
+    "margin": 1.3710802761015461
+  },
+  {
+    "input": "Need help cleaning before my parents visit.",
+    "expected": "cleaning",
+    "top_category": "cleaning",
+    "top_score": 0.7001198475043733,
+    "second_category": "events",
+    "second_score": -0.739895210877859,
+    "margin": 1.4400150583822322
+  },
+  {
+    "input": "Need someone handy for a few hours.",
+    "expected": "handyman",
+    "top_category": "handyman",
+    "top_score": -0.031129824532295514,
+    "second_category": "auto",
+    "second_score": -0.7372414248579557,
+    "margin": 0.7061116003256602
+  },
+  {
+    "input": "My car is acting weird.",
+    "expected": "auto",
+    "top_category": "auto",
+    "top_score": 0.8748255758047322,
+    "second_category": "home_services",
+    "second_score": -0.7273493043315111,
+    "margin": 1.6021748801362432
+  },
+  {
+    "input": "I bought a large thing and need it brought home.",
+    "expected": "delivery",
+    "top_category": "delivery",
+    "top_score": 0.6934514880213063,
+    "second_category": "home_services",
+    "second_score": -0.7842221714713382,
+    "margin": 1.4776736594926445
+  },
+  {
+    "input": "I have about 10 things that need fixing.",
+    "expected": "handyman",
+    "top_category": "handyman",
+    "top_score": 0.20783863678215186,
+    "second_category": "auto",
+    "second_score": -0.8635926756881768,
+    "margin": 1.0714313124703287
+  },
+  {
+    "input": "Pick up my new bed, bring it upstairs and assemble it.",
+    "expected": "delivery",
+    "top_category": "delivery",
+    "top_score": 0.003112581139284032,
+    "second_category": "assembly",
+    "second_score": -0.22862000300685148,
+    "margin": 0.2317325841461355
+  },
+  {
+    "input": "Move my couch and mount my TV after we get to the new apartment.",
+    "expected": "moving",
+    "top_category": "moving",
+    "top_score": 0.31876259895123504,
+    "second_category": "delivery",
+    "second_score": -0.755619328243591,
+    "margin": 1.074381927194826
+  },
+  {
+    "input": "Clean my backyard and haul all the debris away.",
+    "expected": "yard",
+    "top_category": "yard",
+    "top_score": 0.4315980964083057,
+    "second_category": "cleaning",
+    "second_score": -0.6969539833634992,
+    "margin": 1.128552079771805
+  },
+  {
+    "input": "Assemble a cabinet and attach it to the wall.",
+    "expected": "assembly",
+    "top_category": "assembly",
+    "top_score": 0.6515374951822341,
+    "second_category": "handyman",
+    "second_score": -0.43538845005422844,
+    "margin": 1.0869259452364626
+  },
+  {
+    "input": "Pick up a refrigerator and install it.",
+    "expected": "delivery",
+    "top_category": "delivery",
+    "top_score": 0.2070632434211268,
+    "second_category": "handyman",
+    "second_score": -0.8440826603626195,
+    "margin": 1.0511459037837463
+  },
+  {
+    "input": "Help set up my party and clean everything afterward.",
+    "expected": "events",
+    "top_category": "events",
+    "top_score": 0.7117148430630512,
+    "second_category": "cleaning",
+    "second_score": -0.7704112791600216,
+    "margin": 1.4821261222230728
+  },
+  {
+    "input": "Move my old washing machine outside and install the new one.",
+    "expected": "home_services",
+    "top_category": "home_services",
+    "top_score": -0.21833906725464236,
+    "second_category": "delivery",
+    "second_score": -0.7820442441476803,
+    "margin": 0.5637051768930379
+  },
+  {
+    "input": "Clean my garage and take all the junk to the dump.",
+    "expected": "cleaning",
+    "top_category": "cleaning",
+    "top_score": 0.026450118624808727,
+    "second_category": "yard",
+    "second_score": -0.7025961508220013,
+    "margin": 0.7290462694468101
+  },
+  {
+    "input": "Buy some shelves, deliver them and install them in my garage.",
+    "expected": "handyman",
+    "top_category": "handyman",
+    "top_score": -0.124858022944768,
+    "second_category": "delivery",
+    "second_score": -0.508862964335588,
+    "margin": 0.38400494139082
+  },
+  {
+    "input": "Move my furniture out of the room so the floor can be cleaned.",
+    "expected": "moving",
+    "top_category": "moving",
+    "top_score": 0.15522736337020904,
+    "second_category": "cleaning",
+    "second_score": -0.23616816905972082,
+    "margin": 0.39139553242992986
+  },
+  {
+    "input": "Pick up a desk from IKEA, assemble it and remove the packaging.",
+    "expected": "delivery",
+    "top_category": "delivery",
+    "top_score": 0.4660096202730213,
+    "second_category": "assembly",
+    "second_score": -0.44672191635964476,
+    "margin": 0.912731536632666
+  },
+  {
+    "input": "Trim my trees and haul away the branches.",
+    "expected": "yard",
+    "top_category": "yard",
+    "top_score": 0.6561080553934009,
+    "second_category": "pet_care",
+    "second_score": -0.8596827736468586,
+    "margin": 1.5157908290402595
+  },
+  {
+    "input": "Need someone to move 1 box.",
+    "expected": "moving",
+    "top_category": "moving",
+    "top_score": 0.5906774399513703,
+    "second_category": "delivery",
+    "second_score": -0.7376696448394117,
+    "margin": 1.328347084790782
+  },
+  {
+    "input": "Need someone to move approximately 200 boxes.",
+    "expected": "moving",
+    "top_category": "moving",
+    "top_score": 0.65033338670843,
+    "second_category": "delivery",
+    "second_score": -0.9447362916547344,
+    "margin": 1.5950696783631644
+  },
+  {
+    "input": "Clean 12 bedrooms and 8 bathrooms.",
+    "expected": "cleaning",
+    "top_category": "cleaning",
+    "top_score": 0.7430482751934813,
+    "second_category": "moving",
+    "second_score": -0.9281819915302587,
+    "margin": 1.67123026672374
+  },
+  {
+    "input": "Assemble 25 office desks.",
+    "expected": "assembly",
+    "top_category": "assembly",
+    "top_score": 0.4648941037062122,
+    "second_category": "moving",
+    "second_score": -0.7701951144178032,
+    "margin": 1.2350892181240154
+  },
+  {
+    "input": "Deliver a 400-pound safe.",
+    "expected": "delivery",
+    "top_category": "delivery",
+    "top_score": 0.5557050300125799,
+    "second_category": "moving",
+    "second_score": -0.7668317349415772,
+    "margin": 1.322536764954157
+  },
+  {
+    "input": "Move a sofa up five flights of stairs with no elevator.",
+    "expected": "moving",
+    "top_category": "moving",
+    "top_score": 0.726083700702506,
+    "second_category": "handyman",
+    "second_score": -0.9007196880081952,
+    "margin": 1.6268033887107012
+  },
+  {
+    "input": "Clean a house but the water is currently shut off.",
+    "expected": "cleaning",
+    "top_category": "cleaning",
+    "top_score": 0.40413244827796824,
+    "second_category": "plumbing",
+    "second_score": -0.681543403326312,
+    "margin": 1.0856758516042802
+  },
+  {
+    "input": "Yard cleanup, but there's no outdoor power outlet.",
+    "expected": "yard",
+    "top_category": "yard",
+    "top_score": 0.6866937288602553,
+    "second_category": "cleaning",
+    "second_score": -0.7521212022916521,
+    "margin": 1.4388149311519074
+  },
+  {
+    "input": "Mount TV but I don't know what the wall is made of.",
+    "expected": "handyman",
+    "top_category": "handyman",
+    "top_score": 0.05809848978615473,
+    "second_category": "assembly",
+    "second_score": -0.3275153158599058,
+    "margin": 0.3856138056460605
+  },
+  {
+    "input": "Fix faucet; I already bought some parts but don't know if they're correct.",
+    "expected": "handyman",
+    "top_category": "handyman",
+    "top_score": 0.007831550691280276,
+    "second_category": "plumbing",
+    "second_score": -0.2412166792332796,
+    "margin": 0.24904822992455988
+  },
+  {
+    "input": "Car won't start and it's parked in an underground garage.",
+    "expected": "auto",
+    "top_category": "auto",
+    "top_score": 0.2524890460415997,
+    "second_category": "home_services",
+    "second_score": -0.5625088505246263,
+    "margin": 0.814997896566226
+  },
+  {
+    "input": "Deliver a glass dining table that's extremely fragile.",
+    "expected": "delivery",
+    "top_category": "delivery",
+    "top_score": 0.6068295298150372,
+    "second_category": "home_services",
+    "second_score": -0.729528111717288,
+    "margin": 1.3363576415323253
+  },
+  {
+    "input": "Pet sit four dogs, two cats and a parrot.",
+    "expected": "pet_care",
+    "top_category": "pet_care",
+    "top_score": 0.7838845087320201,
+    "second_category": "assembly",
+    "second_score": -0.7198606744432774,
+    "margin": 1.5037451831752975
+  },
+  {
+    "input": "Setup event for somewhere between 50 and 200 people.",
+    "expected": "events",
+    "top_category": "events",
+    "top_score": 0.725386208387819,
+    "second_category": "assembly",
+    "second_score": -0.7367725146233597,
+    "margin": 1.4621587230111786
+  },
+  {
+    "input": "Move furniture but the hallway is only 30 inches wide.",
+    "expected": "moving",
+    "top_category": "moving",
+    "top_score": 0.6485566396345384,
+    "second_category": "assembly",
+    "second_score": -0.9256194840434029,
+    "margin": 1.5741761236779412
+  },
+  {
+    "input": "Need cleanup after a party; not sure how bad it will be.",
+    "expected": "events",
+    "top_category": "events",
+    "top_score": 0.5811934004576179,
+    "second_category": "cleaning",
+    "second_score": -0.32001964629708546,
+    "margin": 0.9012130467547034
+  },
+  {
+    "input": "Assemble furniture but some pieces might be missing.",
+    "expected": "assembly",
+    "top_category": "assembly",
+    "top_score": 0.7380891095919893,
+    "second_category": "delivery",
+    "second_score": -0.8975639021444612,
+    "margin": 1.6356530117364505
+  },
+  {
+    "input": "Need handyman work in a rental property; landlord approval may be required.",
+    "expected": "handyman",
+    "top_category": "handyman",
+    "top_score": 0.17404716792779107,
+    "second_category": "cleaning",
+    "second_score": -0.6212463529261543,
+    "margin": 0.7952935208539453
+  },
+  {
+    "input": "yo need someone to grab a couch from this dude like 15 mins away and bring it over, probably need a van cuz it's kinda huge",
+    "expected": "delivery",
+    "top_category": "delivery",
+    "top_score": 0.41947343242618174,
+    "second_category": "moving",
+    "second_score": -0.6243490355079869,
+    "margin": 1.0438224679341688
+  },
+  {
+    "input": "backyard is fucked lol bunch of leaves branches and random junk everywhere, just want all of it gone",
+    "expected": "yard",
+    "top_category": "yard",
+    "top_score": 1.042820673996957,
+    "second_category": "home_services",
+    "second_score": -0.760221423513886,
+    "margin": 1.803042097510843
+  },
+  {
+    "input": "moving next week got like bed tv desk maybe 10 boxes idk, second floor rn new place has elevator",
+    "expected": "moving",
+    "top_category": "moving",
+    "top_score": 0.8965473135484014,
+    "second_category": "delivery",
+    "second_score": -0.8834865857556577,
+    "margin": 1.7800338993040592
+  },
+  {
+    "input": "something leaking below kitchen sink not sure what, got water on cabinet floor",
+    "expected": "home_services",
+    "top_category": "home_services",
+    "top_score": 0.12941560664225216,
+    "second_category": "plumbing",
+    "second_score": -0.5931775245594311,
+    "margin": 0.7225931312016832
+  },
+  {
+    "input": "Paint my living room walls.",
+    "expected": "painting",
+    "top_category": "painting",
+    "top_score": 0.8017012904965906,
+    "second_category": "cleaning",
+    "second_score": -0.8299725104569962,
+    "margin": 1.6316738009535867
+  },
+  {
+    "input": "Repaint the bedroom ceiling this weekend.",
+    "expected": "painting",
+    "top_category": "painting",
+    "top_score": 0.6571324605973088,
+    "second_category": "electrical",
+    "second_score": -0.9234229970520009,
+    "margin": 1.5805554576493097
+  },
+  {
+    "input": "Paint our exterior house walls.",
+    "expected": "painting",
+    "top_category": "painting",
+    "top_score": 1.082927955275183,
+    "second_category": "cleaning",
+    "second_score": -0.8885974298410382,
+    "margin": 1.971525385116221
+  },
+  {
+    "input": "The front door needs a fresh coat of paint.",
+    "expected": "painting",
+    "top_category": "painting",
+    "top_score": 1.1484922707760037,
+    "second_category": "cleaning",
+    "second_score": -1.0296133343971086,
+    "margin": 2.178105605173112
+  },
+  {
+    "input": "Paint the wooden fence in the backyard.",
+    "expected": "painting",
+    "top_category": "painting",
+    "top_score": 0.6128078926194174,
+    "second_category": "yard",
+    "second_score": -0.3325127594201458,
+    "margin": 0.9453206520395632
+  },
+  {
+    "input": "Can someone stain and paint my deck?",
+    "expected": "painting",
+    "top_category": "painting",
+    "top_score": 0.8030231846200648,
+    "second_category": "events",
+    "second_score": -0.7795997890107789,
+    "margin": 1.5826229736308437
+  },
+  {
+    "input": "I need the baseboards and trim painted.",
+    "expected": "painting",
+    "top_category": "painting",
+    "top_score": 0.7016207420723746,
+    "second_category": "handyman",
+    "second_score": -0.8086872452517428,
+    "margin": 1.5103079873241174
+  },
+  {
+    "input": "Paint two bedrooms, I already bought the paint.",
+    "expected": "painting",
+    "top_category": "painting",
+    "top_score": 1.0747440386244846,
+    "second_category": "cleaning",
+    "second_score": -0.9879364884853978,
+    "margin": 2.0626805271098823
+  },
+  {
+    "input": "Paint is not provided; please bring it for the kitchen.",
+    "expected": "painting",
+    "top_category": "painting",
+    "top_score": 0.79758282917671,
+    "second_category": "delivery",
+    "second_score": -0.692902345285065,
+    "margin": 1.4904851744617749
+  },
+  {
+    "input": "Sand and prime the walls before painting.",
+    "expected": "painting",
+    "top_category": "painting",
+    "top_score": 0.9497839444651937,
+    "second_category": "yard",
+    "second_score": -1.0433439688839277,
+    "margin": 1.9931279133491213
+  },
+  {
+    "input": "Repaint a peeling bathroom wall.",
+    "expected": "painting",
+    "top_category": "painting",
+    "top_score": 0.7175939434187846,
+    "second_category": "plumbing",
+    "second_score": -0.9005289997263615,
+    "margin": 1.618122943145146
+  },
+  {
+    "input": "Give the ceiling two coats.",
+    "expected": "painting",
+    "top_category": "painting",
+    "top_score": 0.6183554615049816,
+    "second_category": "electrical",
+    "second_score": -0.9247429020178731,
+    "margin": 1.5430983635228546
+  },
+  {
+    "input": "We need painting done inside the house.",
+    "expected": "painting",
+    "top_category": "painting",
+    "top_score": 0.9818220234809754,
+    "second_category": "cleaning",
+    "second_score": -1.0188871381331983,
+    "margin": 2.0007091616141737
+  },
+  {
+    "input": "Paint the garage doors.",
+    "expected": "painting",
+    "top_category": "painting",
+    "top_score": 0.40823816793259526,
+    "second_category": "home_services",
+    "second_score": -0.6882131846802201,
+    "margin": 1.0964513526128155
+  },
+  {
+    "input": "Could you paint the fence and gate?",
+    "expected": "painting",
+    "top_category": "painting",
+    "top_score": 1.0211809799663036,
+    "second_category": "handyman",
+    "second_score": -0.7965209757677691,
+    "margin": 1.8177019557340728
+  },
+  {
+    "input": "Painting job for the kitchen walls.",
+    "expected": "painting",
+    "top_category": "painting",
+    "top_score": 0.9206544167273025,
+    "second_category": "events",
+    "second_score": -0.9594657869581344,
+    "margin": 1.880120203685437
+  },
+  {
+    "input": "Touch up the exterior trim.",
+    "expected": "painting",
+    "top_category": "painting",
+    "top_score": 0.2639513518363976,
+    "second_category": "auto",
+    "second_score": -0.6811369679380606,
+    "margin": 0.9450883197744582
+  },
+  {
+    "input": "Paint the porch deck, surface needs scraping first.",
+    "expected": "painting",
+    "top_category": "painting",
+    "top_score": 0.4839013699159982,
+    "second_category": "yard",
+    "second_score": -0.8705148569687472,
+    "margin": 1.3544162268847453
+  },
+  {
+    "input": "I want the walls painted, no prep needed.",
+    "expected": "painting",
+    "top_category": "painting",
+    "top_score": 0.9970035110436972,
+    "second_category": "handyman",
+    "second_score": -0.8569122405459366,
+    "margin": 1.8539157515896338
+  },
+  {
+    "input": "Paint my house, inside and out.",
+    "expected": "painting",
+    "top_category": "painting",
+    "top_score": 0.7921817928926205,
+    "second_category": "cleaning",
+    "second_score": -0.7117860206768223,
+    "margin": 1.5039678135694428
+  },
+  {
+    "input": "Coat the back fence with weatherproof paint.",
+    "expected": "painting",
+    "top_category": "painting",
+    "top_score": 0.6287230585394323,
+    "second_category": "handyman",
+    "second_score": -0.6207582282858525,
+    "margin": 1.2494812868252847
+  },
+  {
+    "input": "Paint the doors in three rooms.",
+    "expected": "painting",
+    "top_category": "painting",
+    "top_score": 0.4874828594846565,
+    "second_category": "cleaning",
+    "second_score": -0.9215040460530034,
+    "margin": 1.40898690553766
+  },
+  {
+    "input": "Need a painter for a ceiling repair and repaint.",
+    "expected": "painting",
+    "top_category": "painting",
+    "top_score": 0.7229262802488565,
+    "second_category": "electrical",
+    "second_score": -0.894530453122387,
+    "margin": 1.6174567333712435
+  },
+  {
+    "input": "Paint the hallway walls tomorrow.",
+    "expected": "painting",
+    "top_category": "painting",
+    "top_score": 0.8112823569893599,
+    "second_category": "events",
+    "second_score": -0.9357454975362034,
+    "margin": 1.7470278545255633
+  },
+  {
+    "input": "Fresh paint for my apartment walls.",
+    "expected": "painting",
+    "top_category": "painting",
+    "top_score": 0.8290759447108962,
+    "second_category": "cleaning",
+    "second_score": -0.8058383544039662,
+    "margin": 1.6349142991148624
+  },
+  {
+    "input": "Kitchen sink is leaking.",
+    "expected": "plumbing",
+    "top_category": "plumbing",
+    "top_score": 0.04983412218727845,
+    "second_category": "home_services",
+    "second_score": -0.2744014635436598,
+    "margin": 0.32423558573093825
+  },
+  {
+    "input": "The toilet is clogged again.",
+    "expected": "plumbing",
+    "top_category": "plumbing",
+    "top_score": 0.5337405030095675,
+    "second_category": "home_services",
+    "second_score": -0.4014529949999994,
+    "margin": 0.935193498009567
+  },
+  {
+    "input": "Install a new kitchen faucet.",
+    "expected": "plumbing",
+    "top_category": "plumbing",
+    "top_score": 0.31704362633142325,
+    "second_category": "handyman",
+    "second_score": -0.6729878082112898,
+    "margin": 0.990031434542713
+  },
+  {
+    "input": "Replace my bathroom sink.",
+    "expected": "plumbing",
+    "top_category": "plumbing",
+    "top_score": 0.3560335064339638,
+    "second_category": "handyman",
+    "second_score": -0.7710711780768007,
+    "margin": 1.1271046845107646
+  },
+  {
+    "input": "Shower water pressure is very low.",
+    "expected": "plumbing",
+    "top_category": "plumbing",
+    "top_score": 0.5443541026565378,
+    "second_category": "cleaning",
+    "second_score": -0.8307819320905216,
+    "margin": 1.3751360347470594
+  },
+  {
+    "input": "The bathtub drain is blocked.",
+    "expected": "plumbing",
+    "top_category": "plumbing",
+    "top_score": 0.7168496254358859,
+    "second_category": "home_services",
+    "second_score": -0.6232830520639628,
+    "margin": 1.3401326774998488
+  },
+  {
+    "input": "A pipe under the sink is dripping.",
+    "expected": "plumbing",
+    "top_category": "plumbing",
+    "top_score": 0.8619635419141759,
+    "second_category": "home_services",
+    "second_score": -0.5774591455290952,
+    "margin": 1.4394226874432712
+  },
+  {
+    "input": "My water heater needs repair.",
+    "expected": "plumbing",
+    "top_category": "plumbing",
+    "top_score": 0.4467083076074655,
+    "second_category": "home_services",
+    "second_score": -0.40843075095687814,
+    "margin": 0.8551390585643437
+  },
+  {
+    "input": "No water comes from the kitchen tap.",
+    "expected": "plumbing",
+    "top_category": "plumbing",
+    "top_score": 0.4681650204675295,
+    "second_category": "home_services",
+    "second_score": -0.7828595726648996,
+    "margin": 1.251024593132429
+  },
+  {
+    "input": "Fix a leaking pipe; I have the replacement part.",
+    "expected": "plumbing",
+    "top_category": "plumbing",
+    "top_score": 0.6446708068767711,
+    "second_category": "handyman",
+    "second_score": -0.7383874547868398,
+    "margin": 1.383058261663611
+  },
+  {
+    "input": "Can you unclog the bathroom drain?",
+    "expected": "plumbing",
+    "top_category": "plumbing",
+    "top_score": 0.5385478520740011,
+    "second_category": "yard",
+    "second_score": -0.8414698976156768,
+    "margin": 1.380017749689678
+  },
+  {
+    "input": "Install a replacement toilet.",
+    "expected": "plumbing",
+    "top_category": "plumbing",
+    "top_score": 0.36304047586489274,
+    "second_category": "home_services",
+    "second_score": -0.8688998312293358,
+    "margin": 1.2319403070942285
+  },
+  {
+    "input": "The faucet is dripping and needs fixing.",
+    "expected": "plumbing",
+    "top_category": "plumbing",
+    "top_score": 0.4331283915160705,
+    "second_category": "handyman",
+    "second_score": -0.7990993086780755,
+    "margin": 1.2322277001941462
+  },
+  {
+    "input": "Replace the old water heater.",
+    "expected": "plumbing",
+    "top_category": "plumbing",
+    "top_score": 0.4061603851080152,
+    "second_category": "home_services",
+    "second_score": -0.6266430742306308,
+    "margin": 1.0328034593386461
+  },
+  {
+    "input": "There is a leak behind the shower wall.",
+    "expected": "plumbing",
+    "top_category": "plumbing",
+    "top_score": 0.48567435267262693,
+    "second_category": "home_services",
+    "second_score": -0.435904443244138,
+    "margin": 0.921578795916765
+  },
+  {
+    "input": "Repair the broken supply pipe.",
+    "expected": "plumbing",
+    "top_category": "plumbing",
+    "top_score": 0.5421511491114904,
+    "second_category": "electrical",
+    "second_score": -0.8024866432612017,
+    "margin": 1.344637792372692
+  },
+  {
+    "input": "Low pressure at every bathroom faucet.",
+    "expected": "plumbing",
+    "top_category": "plumbing",
+    "top_score": 0.6431883562295032,
+    "second_category": "handyman",
+    "second_score": -0.8593916713390188,
+    "margin": 1.5025800275685222
+  },
+  {
+    "input": "Water shutoff valve is accessible; replace sink pipe.",
+    "expected": "plumbing",
+    "top_category": "plumbing",
+    "top_score": 0.9370356660979217,
+    "second_category": "electrical",
+    "second_score": -0.9275152612104817,
+    "margin": 1.8645509273084033
+  },
+  {
+    "input": "The kitchen drain is slow and clogged.",
+    "expected": "plumbing",
+    "top_category": "plumbing",
+    "top_score": 0.19069294513860446,
+    "second_category": "home_services",
+    "second_score": -0.45690201214787274,
+    "margin": 0.6475949572864772
+  },
+  {
+    "input": "Need a plumber for a faucet installation.",
+    "expected": "plumbing",
+    "top_category": "plumbing",
+    "top_score": 0.9109309752473173,
+    "second_category": "handyman",
+    "second_score": -0.7633211150814194,
+    "margin": 1.6742520903287366
+  },
+  {
+    "input": "Toilet replacement, parts already purchased.",
+    "expected": "plumbing",
+    "top_category": "plumbing",
+    "top_score": 0.514150473296528,
+    "second_category": "auto",
+    "second_score": -0.8006417204640273,
+    "margin": 1.3147921937605553
+  },
+  {
+    "input": "No hot water from the heater.",
+    "expected": "plumbing",
+    "top_category": "plumbing",
+    "top_score": 0.6939378874432819,
+    "second_category": "cleaning",
+    "second_score": -0.8850225834557689,
+    "margin": 1.5789604708990508
+  },
+  {
+    "input": "Pipe replacement in the basement.",
+    "expected": "plumbing",
+    "top_category": "plumbing",
+    "top_score": 0.8053038598258496,
+    "second_category": "yard",
+    "second_score": -0.8488190283862752,
+    "margin": 1.6541228882121248
+  },
+  {
+    "input": "Fix my leaking bathtub.",
+    "expected": "plumbing",
+    "top_category": "plumbing",
+    "top_score": 0.37459033719288926,
+    "second_category": "handyman",
+    "second_score": -0.6240712032300666,
+    "margin": 0.9986615404229559
+  },
+  {
+    "input": "Install two ceiling lights.",
+    "expected": "electrical",
+    "top_category": "electrical",
+    "top_score": 0.7113434769398296,
+    "second_category": "assembly",
+    "second_score": -0.8327525320843105,
+    "margin": 1.5440960090241402
+  },
+  {
+    "input": "Replace a broken outlet.",
+    "expected": "electrical",
+    "top_category": "electrical",
+    "top_score": 0.5781315584429655,
+    "second_category": "plumbing",
+    "second_score": -0.8590884448371554,
+    "margin": 1.437220003280121
+  },
+  {
+    "input": "The bathroom light keeps flickering.",
+    "expected": "electrical",
+    "top_category": "electrical",
+    "top_score": 0.5187322092186134,
+    "second_category": "home_services",
+    "second_score": -0.8450005803605494,
+    "margin": 1.3637327895791627
+  },
+  {
+    "input": "The breaker keeps tripping.",
+    "expected": "electrical",
+    "top_category": "electrical",
+    "top_score": 0.6424439566279035,
+    "second_category": "auto",
+    "second_score": -0.7985686078032364,
+    "margin": 1.4410125644311398
+  },
+  {
+    "input": "Install a new ceiling fan.",
+    "expected": "electrical",
+    "top_category": "electrical",
+    "top_score": 0.6324659819095596,
+    "second_category": "home_services",
+    "second_score": -0.8171774272824852,
+    "margin": 1.4496434091920447
+  },
+  {
+    "input": "Replace two light switches.",
+    "expected": "electrical",
+    "top_category": "electrical",
+    "top_score": 0.6322328371094476,
+    "second_category": "auto",
+    "second_score": -0.7618592159807701,
+    "margin": 1.3940920530902177
+  },
+  {
+    "input": "The doorbell is not working.",
+    "expected": "electrical",
+    "top_category": "electrical",
+    "top_score": 0.6274733477477098,
+    "second_category": "home_services",
+    "second_score": -0.6991428996210375,
+    "margin": 1.3266162473687473
+  },
+  {
+    "input": "Install an outlet; existing wiring is there.",
+    "expected": "electrical",
+    "top_category": "electrical",
+    "top_score": 0.8767031227298999,
+    "second_category": "auto",
+    "second_score": -0.6540885801646198,
+    "margin": 1.5307917028945197
+  },
+  {
+    "input": "Replace a ceiling light, I bought the fixture.",
+    "expected": "electrical",
+    "top_category": "electrical",
+    "top_score": 0.5904511308487285,
+    "second_category": "handyman",
+    "second_score": -0.7055728402890776,
+    "margin": 1.296023971137806
+  },
+  {
+    "input": "The bedroom has no power.",
+    "expected": "electrical",
+    "top_category": "electrical",
+    "top_score": 0.48350022613619437,
+    "second_category": "delivery",
+    "second_score": -0.9324188805196916,
+    "margin": 1.415919106655886
+  },
+  {
+    "input": "Repair the electrical panel.",
+    "expected": "electrical",
+    "top_category": "electrical",
+    "top_score": 0.7965559248463586,
+    "second_category": "home_services",
+    "second_score": -0.8769723763777734,
+    "margin": 1.673528301224132
+  },
+  {
+    "input": "A socket stopped working.",
+    "expected": "electrical",
+    "top_category": "electrical",
+    "top_score": 0.47682304400742603,
+    "second_category": "home_services",
+    "second_score": -0.7799037743489634,
+    "margin": 1.2567268183563893
+  },
+  {
+    "input": "Add a light fixture to the hallway.",
+    "expected": "electrical",
+    "top_category": "electrical",
+    "top_score": 0.2786058846064813,
+    "second_category": "handyman",
+    "second_score": -0.8953082745744487,
+    "margin": 1.1739141591809301
+  },
+  {
+    "input": "The circuit breaker is faulty.",
+    "expected": "electrical",
+    "top_category": "electrical",
+    "top_score": 0.9228555961956947,
+    "second_category": "home_services",
+    "second_score": -0.7156312666501968,
+    "margin": 1.6384868628458915
+  },
+  {
+    "input": "Install a replacement outlet.",
+    "expected": "electrical",
+    "top_category": "electrical",
+    "top_score": 0.7681864274395299,
+    "second_category": "plumbing",
+    "second_score": -0.8472525440131878,
+    "margin": 1.6154389714527178
+  },
+  {
+    "input": "Ceiling fan wiring and installation.",
+    "expected": "electrical",
+    "top_category": "electrical",
+    "top_score": 0.6827756794180985,
+    "second_category": "auto",
+    "second_score": -0.667426362526318,
+    "margin": 1.3502020419444165
+  },
+  {
+    "input": "No electricity at the kitchen switch.",
+    "expected": "electrical",
+    "top_category": "electrical",
+    "top_score": 0.7058513208047276,
+    "second_category": "plumbing",
+    "second_score": -0.8787068644339174,
+    "margin": 1.584558185238645
+  },
+  {
+    "input": "Replace the panel breaker.",
+    "expected": "electrical",
+    "top_category": "electrical",
+    "top_score": 0.6529247936110977,
+    "second_category": "auto",
+    "second_score": -0.7342414957811394,
+    "margin": 1.387166289392237
+  },
+  {
+    "input": "Light is dead but power is on.",
+    "expected": "electrical",
+    "top_category": "electrical",
+    "top_score": 0.8482756998335143,
+    "second_category": "auto",
+    "second_score": -0.7511617692162416,
+    "margin": 1.599437469049756
+  },
+  {
+    "input": "Install a doorbell transformer.",
+    "expected": "electrical",
+    "top_category": "electrical",
+    "top_score": 0.6608266554819221,
+    "second_category": "delivery",
+    "second_score": -0.8007206928071123,
+    "margin": 1.4615473482890344
+  },
+  {
+    "input": "Outlet has no power.",
+    "expected": "electrical",
+    "top_category": "electrical",
+    "top_score": 0.9801827647492564,
+    "second_category": "yard",
+    "second_score": -0.9044709746198667,
+    "margin": 1.884653739369123
+  },
+  {
+    "input": "Fix flickering ceiling lights.",
+    "expected": "electrical",
+    "top_category": "electrical",
+    "top_score": 0.7717524918767634,
+    "second_category": "handyman",
+    "second_score": -0.43430603654398603,
+    "margin": 1.2060585284207495
+  },
+  {
+    "input": "Put in two new switches.",
+    "expected": "electrical",
+    "top_category": "electrical",
+    "top_score": 0.7232540129128874,
+    "second_category": "auto",
+    "second_score": -0.794913398946844,
+    "margin": 1.5181674118597313
+  },
+  {
+    "input": "The panel needs an electrician.",
+    "expected": "electrical",
+    "top_category": "electrical",
+    "top_score": 0.5931548980124489,
+    "second_category": "events",
+    "second_score": -0.9508837228459177,
+    "margin": 1.5440386208583665
+  },
+  {
+    "input": "Replace the bathroom fan wiring.",
+    "expected": "electrical",
+    "top_category": "electrical",
+    "top_score": 0.5863595293961442,
+    "second_category": "plumbing",
+    "second_score": -0.7475450623090558,
+    "margin": 1.3339045917052
+  },
+  {
+    "input": "Electrical repair for a tripping breaker.",
+    "expected": "electrical",
+    "top_category": "electrical",
+    "top_score": 0.3139468363630188,
+    "second_category": "handyman",
+    "second_score": -0.7133636020295386,
+    "margin": 1.0273104383925573
+  },
+  {
+    "input": "Carry several dining chairs to the lower level.",
+    "expected": "moving",
+    "top_category": "moving",
+    "top_score": 0.39962822538105325,
+    "second_category": "delivery",
+    "second_score": -0.6462283949770113,
+    "margin": 1.0458566203580646
+  },
+  {
+    "input": "Relocate a wardrobe and bedside lamp to another room.",
+    "expected": "moving",
+    "top_category": "moving",
+    "top_score": 0.28079951648089074,
+    "second_category": "electrical",
+    "second_score": -0.7168975914482137,
+    "margin": 0.9976971079291045
+  },
+  {
+    "input": "Move a sofa, two end tables, and a bookcase with a van.",
+    "expected": "moving",
+    "top_category": "moving",
+    "top_score": 0.6841192413142521,
+    "second_category": "assembly",
+    "second_score": -0.6339547037920243,
+    "margin": 1.3180739451062764
+  },
+  {
+    "input": "Take four stools downstairs.",
+    "expected": "moving",
+    "top_category": "moving",
+    "top_score": 0.16799717252147306,
+    "second_category": "assembly",
+    "second_score": -0.8837170679471434,
+    "margin": 1.0517142404686166
+  },
+  {
+    "input": "Move an oversized desk and a floor lamp.",
+    "expected": "moving",
+    "top_category": "moving",
+    "top_score": 0.2497289931968576,
+    "second_category": "delivery",
+    "second_score": -0.5269785384267428,
+    "margin": 0.7767075316236004
+  },
+  {
+    "input": "Clean the office and bring your own cleaning supplies.",
+    "expected": "cleaning",
+    "top_category": "cleaning",
+    "top_score": 0.7351245824706631,
+    "second_category": "delivery",
+    "second_score": -0.6483594924927404,
+    "margin": 1.3834840749634036
+  },
+  {
+    "input": "Please deep clean the workspace; I will provide supplies.",
+    "expected": "cleaning",
+    "top_category": "cleaning",
+    "top_score": 0.45199825254066006,
+    "second_category": "handyman",
+    "second_score": -0.9135175519543592,
+    "margin": 1.3655158044950193
+  },
+  {
+    "input": "Bring a television over to my apartment without needing a vehicle.",
+    "expected": "delivery",
+    "top_category": "delivery",
+    "top_score": 0.16403707433633574,
+    "second_category": "moving",
+    "second_score": -0.5242991438602462,
+    "margin": 0.688336218196582
+  },
+  {
+    "input": "Take a compact desk over to the office.",
+    "expected": "delivery",
+    "top_category": "delivery",
+    "top_score": 0.3132111101596735,
+    "second_category": "assembly",
+    "second_score": -0.6996206203421944,
+    "margin": 1.012831730501868
+  },
+  {
+    "input": "Carry two lamps and a decorative vase to my home.",
+    "expected": "delivery",
+    "top_category": "delivery",
+    "top_score": 0.18454666907541317,
+    "second_category": "moving",
+    "second_score": -0.5986045256179631,
+    "margin": 0.7831511946933762
+  },
+  {
+    "input": "Drop off a small table at the studio.",
+    "expected": "delivery",
+    "top_category": "delivery",
+    "top_score": 0.12559150917283035,
+    "second_category": "events",
+    "second_score": -0.7843981192282699,
+    "margin": 0.9099896284011002
+  },
+  {
+    "input": "Tighten the loose handrail by the stairs.",
+    "expected": "handyman",
+    "top_category": "handyman",
+    "top_score": 0.2585927451849037,
+    "second_category": "moving",
+    "second_score": -0.769055451969151,
+    "margin": 1.0276481971540548
+  },
+  {
+    "input": "Repair a cabinet hinge in the kitchen.",
+    "expected": "handyman",
+    "top_category": "handyman",
+    "top_score": 0.5444191970043843,
+    "second_category": "assembly",
+    "second_score": -0.7396531755959698,
+    "margin": 1.2840723726003542
+  },
+  {
+    "input": "Fix a wobbly fence panel.",
+    "expected": "handyman",
+    "top_category": "handyman",
+    "top_score": 0.7164797284835993,
+    "second_category": "painting",
+    "second_score": -0.764961915242969,
+    "margin": 1.4814416437265683
+  },
+  {
+    "input": "Inspect a damaged roof section.",
+    "expected": "home_services",
+    "top_category": "home_services",
+    "top_score": 0.4017166684559459,
+    "second_category": "auto",
+    "second_score": -0.6959531217297803,
+    "margin": 1.0976697901857262
+  },
+  {
+    "input": "Check the bathroom exhaust vent for damage.",
+    "expected": "home_services",
+    "top_category": "home_services",
+    "top_score": 0.3941311973841142,
+    "second_category": "plumbing",
+    "second_score": -0.6317066752801866,
+    "margin": 1.025837872664301
+  },
+  {
+    "input": "Service a broken window mechanism.",
+    "expected": "home_services",
+    "top_category": "home_services",
+    "top_score": 0.2328854698159275,
+    "second_category": "handyman",
+    "second_score": -0.8228163766360349,
+    "margin": 1.0557018464519623
+  },
+  {
+    "input": "Look over an attic vent with no visible damage.",
+    "expected": "home_services",
+    "top_category": "home_services",
+    "top_score": 0.6688729359169929,
+    "second_category": "painting",
+    "second_score": -0.7564486218622692,
+    "margin": 1.4253215577792622
+  },
+  {
+    "input": "Have someone inspect an issue near the chimney.",
+    "expected": "home_services",
+    "top_category": "home_services",
+    "top_score": 0.2218809518853999,
+    "second_category": "handyman",
+    "second_score": -0.7430539013119949,
+    "margin": 0.9649348531973948
+  },
+  {
+    "input": "Fix a torn screen door on the patio.",
+    "expected": "home_services",
+    "top_category": "home_services",
+    "top_score": -0.07232951499437068,
+    "second_category": "handyman",
+    "second_score": -0.3705058757299535,
+    "margin": 0.29817636073558285
+  },
+  {
+    "input": "Arrange repair for a garage door opener.",
+    "expected": "home_services",
+    "top_category": "home_services",
+    "top_score": -0.09588610636855743,
+    "second_category": "handyman",
+    "second_score": -0.4705481293745527,
+    "margin": 0.37466202300599527
+  },
+  {
+    "input": "The transmission keeps the car from moving; please inspect it.",
+    "expected": "auto",
+    "top_category": "auto",
+    "top_score": 0.5105368644636256,
+    "second_category": "electrical",
+    "second_score": -0.7322883239498553,
+    "margin": 1.2428251884134809
+  },
+  {
+    "input": "I already own the wiper blades; replace them on my car.",
+    "expected": "auto",
+    "top_category": "auto",
+    "top_score": 0.5089000204396493,
+    "second_category": "cleaning",
+    "second_score": -0.788820752613614,
+    "margin": 1.2977207730532632
+  },
+  {
+    "input": "My sedan needs new windshield wipers installed.",
+    "expected": "auto",
+    "top_category": "auto",
+    "top_score": 0.8978903409868523,
+    "second_category": "home_services",
+    "second_score": -0.8182418111749714,
+    "margin": 1.7161321521618236
+  },
+  {
+    "input": "Wall-mount two floating shelves on plaster.",
+    "expected": "assembly",
+    "top_category": "assembly",
+    "top_score": 0.3050887605623134,
+    "second_category": "handyman",
+    "second_score": -0.16095650609229184,
+    "margin": 0.4660452666546052
+  },
+  {
+    "input": "Mount a television bracket on the living room wall.",
+    "expected": "assembly",
+    "top_category": "assembly",
+    "top_score": 0.049461441413757745,
+    "second_category": "handyman",
+    "second_score": -0.16124331846518158,
+    "margin": 0.21070475987893933
+  },
+  {
+    "input": "The ceiling fan hums loudly but still operates.",
+    "expected": "electrical",
+    "top_category": "electrical",
+    "top_score": 0.4071888385153196,
+    "second_category": "home_services",
+    "second_score": -0.6461885521339059,
+    "margin": 1.0533773906492256
+  },
+  {
+    "input": "A working switch should be replaced with a new one.",
+    "expected": "electrical",
+    "top_category": "electrical",
+    "top_score": 0.7707541354428743,
+    "second_category": "home_services",
+    "second_score": -0.8460119968081636,
+    "margin": 1.6167661322510378
+  },
+  {
+    "input": "The customer has a rake and leaf blower ready for outdoor cleanup.",
+    "expected": "yard",
+    "top_category": "yard",
+    "top_score": 0.6345406719376876,
+    "second_category": "cleaning",
+    "second_score": -0.6189289061935916,
+    "margin": 1.2534695781312792
+  },
+  {
+    "input": "Yard tools are already on site for clearing leaves and branches.",
+    "expected": "yard",
+    "top_category": "yard",
+    "top_score": 1.1506246771087276,
+    "second_category": "handyman",
+    "second_score": -0.8283020136279389,
+    "margin": 1.9789266907366665
+  },
+  {
+    "input": "Organize a company banquet for eighty attendees.",
+    "expected": "events",
+    "top_category": "events",
+    "top_score": 0.8303666978682865,
+    "second_category": "assembly",
+    "second_score": -0.8510372660742775,
+    "margin": 1.681403963942564
+  },
+  {
+    "input": "Host a reception dinner for the annual meeting.",
+    "expected": "events",
+    "top_category": "events",
+    "top_score": 0.8136494105364355,
+    "second_category": "delivery",
+    "second_score": -0.59344084038645,
+    "margin": 1.4070902509228853
+  },
+  {
+    "input": "Plan a corporate banquet with one hundred guests.",
+    "expected": "events",
+    "top_category": "events",
+    "top_score": 0.8681084464474474,
+    "second_category": "delivery",
+    "second_score": -0.9589419314648592,
+    "margin": 1.8270503779123066
+  }
+]

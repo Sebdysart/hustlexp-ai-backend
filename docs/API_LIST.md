@@ -1,5 +1,9 @@
 # API List — tRPC Procedures
 
+Status: `HISTORICAL_IMPLEMENTATION_SNAPSHOT / SOURCE_DATED_2026-03-13`
+
+This inventory is not current authority. Router registration and strict input/auth tests at the exact reviewed SHA win. Procedures named `escrow`, `payment`, `admin`, or similar describe legacy implementation surfaces; they do not authorize positive production money, direct status mutation, or the collapsed escrow lifecycle. See [the Team Goal and Execution Contract](HUSTLEXP_TEAM_ALIGNMENT.md).
+
 **Base path:** `/trpc`  
 **Auth:** `Authorization: Bearer <firebase_jwt>` for protected/admin procedures.  
 **Last updated:** 2026-03-13

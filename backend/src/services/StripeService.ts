@@ -223,6 +223,7 @@ export const StripeService = {
               automatic_payment_methods: { enabled: true },
               metadata: {
                 task_id: taskId,
+                escrow_id: escrowId,
                 poster_id: posterId,
                 platform_fee: platformFee.toString(),
               },

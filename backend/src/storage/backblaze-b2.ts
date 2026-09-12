@@ -244,5 +244,6 @@ export const backblazeB2 = {
   downloadFile,
   deleteFile,
   getSignedUrlForObject,
-  verifyFile,
+  verifyFile
 };
+

@@ -16,3 +16,4 @@ WHEN (
 EXECUTE FUNCTION public.enforce_worker_offer_decision_on_accept();
 
 COMMIT;
+

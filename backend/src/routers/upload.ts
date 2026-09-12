@@ -59,6 +59,8 @@ const s3Client = isB2Configured
         accessKeyId: b2Config.keyId,
         secretAccessKey: b2Config.applicationKey,
       },
+        requestChecksumCalculation: 'WHEN_REQUIRED',
+    responseChecksumValidation: 'WHEN_REQUIRED',
     })
   : null;
 
@@ -190,22 +192,32 @@ export const uploadRouter = router({
       // Generate real presigned URL if R2 is configured
       let uploadUrl: string;
       if (s3Client) {
-        const command = new PutObjectCommand({
-          Bucket: b2Config.bucketName,
-          Key: key,
-          ContentType: input.contentType,
-          ContentLength: input.fileSize,
-          Metadata: {
-            'uploaded-by': ctx.user.id,
-            'task-id': input.taskId,
-            'receipt-id': receiptId,
-            purpose: input.purpose,
-          },
-        });
+      const command = new PutObjectCommand({
+        Bucket: b2Config.bucketName,
+        Key: key,
+        ContentType: input.contentType,
+        Metadata: {
+          'uploaded-by': ctx.user.id,
+          'task-id': input.taskId,
+          'receipt-id': receiptId,
+          purpose: input.purpose,
+        },
+      });
 
-        uploadUrl = await getSignedUrl(s3Client, command, {
+      uploadUrl = await getSignedUrl(
+        s3Client,
+        command,
+        {
           expiresIn: PRESIGN_EXPIRY,
-        });
+
+          unhoistableHeaders: new Set([
+            'x-amz-meta-uploaded-by',
+            'x-amz-meta-task-id',
+            'x-amz-meta-receipt-id',
+            'x-amz-meta-purpose',
+          ]),
+        },
+      );
       } else {
         // Fallback remains non-authoritative: finalization still requires a real
         // quarantine object and therefore fails closed without Backblaze B2.
@@ -231,7 +243,25 @@ export const uploadRouter = router({
         ]
       );
 
-      return { uploadUrl, receiptId, expiresAt: expiresAt.toISOString() };
+      return {
+        uploadUrl,
+        receiptId,
+        expiresAt: expiresAt.toISOString(),
+
+        uploadHeaders: {
+          'x-amz-meta-uploaded-by':
+            ctx.user.id,
+
+          'x-amz-meta-task-id':
+            input.taskId,
+
+          'x-amz-meta-receipt-id':
+            receiptId,
+
+          'x-amz-meta-purpose':
+            input.purpose,
+        },
+      };
     }),
 
   finalizeImageUpload: protectedProcedure
