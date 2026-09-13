@@ -116,7 +116,20 @@ async function handlePostTask({
             );
             const intakeValidation = validateTaskIntake(category, answers, secondaryIntents);
             if (!intakeValidation.readyForDraft) {
-              throw new TRPCError({ code: 'BAD_REQUEST', message: `Task intake is incomplete. Missing required details: ${intakeValidation.missingRequired.join(', ')}.` });
+              const missing = intakeValidation.missingRequired;
+              const invalid = intakeValidation.invalidAnswers ?? [];
+              const prefix = missing.length
+                ? 'Task intake is incomplete.'
+                : `Task intake contains invalid details: ${invalid.join(', ')}.`;
+              const detail = missing.length && invalid.length
+                ? ` Invalid details: ${invalid.join(', ')}.`
+                : '';
+              throw new TRPCError({
+                code: 'BAD_REQUEST',
+                message: missing.length
+                  ? `${prefix} Missing required details: ${missing.join(', ')}.${detail}`
+                  : prefix,
+              });
             }
 
             // 2. Create lead.
