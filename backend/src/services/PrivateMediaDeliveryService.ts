@@ -61,8 +61,6 @@ export async function issueTaskDraftPhotoAccess(
   dependencies: Pick<DeliveryDependencies, 'query' | 'signObject' | 'now'> = {},
 ): Promise<Map<string, DeliveredPrivateMedia>> {
   const query = dependencies.query ?? db.query;
-  const owner = await query<{ poster_user_id: string | null }>('SELECT poster_user_id FROM task_drafts WHERE id=$1', [params.taskDraftId]);
-  if (owner.rows[0]?.poster_user_id !== params.viewerId) throw new Error('Task draft media access is not authorized.');
   const signObject = dependencies.signObject ?? backblazeB2.getSignedUrlForObject;
   const now = dependencies.now ?? (() => new Date());
   const delivered = new Map<string, DeliveredPrivateMedia>();

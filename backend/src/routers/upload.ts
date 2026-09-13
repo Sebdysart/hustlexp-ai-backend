@@ -166,6 +166,38 @@ async function assertDraftPhotoAuthority(taskDraftId: string, userId: string): P
   }
 }
 
+async function assertDraftPhotoReadAuthority(taskDraftId: string, userId: string): Promise<void> {
+  const result = await db.query<{ poster_user_id: string | null; worker_id: string | null; business_organization_id: string | null }>(
+    `SELECT d.poster_user_id, t.worker_id,
+            COALESCE(t.business_fulfiller_organization_id, q.business_organization_id) AS business_organization_id
+       FROM task_drafts d
+       LEFT JOIN tasks t ON t.id = d.task_id
+       LEFT JOIN quotes q ON q.id = d.quote_id
+      WHERE d.id = $1`,
+    [taskDraftId],
+  );
+  const row = result.rows[0];
+  if (!row) throw new TRPCError({ code: 'NOT_FOUND', message: 'Task draft not found' });
+  if (row.poster_user_id === userId || row.worker_id === userId) return;
+  if (row.business_organization_id) {
+    const membership = await db.query(
+      `SELECT 1 FROM business_memberships
+        WHERE organization_id=$1 AND user_id=$2 AND status='ACTIVE'
+          AND role IN ('OWNER','ADMIN','DISPATCHER') LIMIT 1`,
+      [row.business_organization_id, userId],
+    );
+    if (membership.rows[0]) return;
+  }
+  const admin = await db.query(
+    `SELECT 1 FROM admin_roles
+      WHERE user_id=$1 AND role = ANY($2::text[])
+        AND (role IN ('admin','founder') OR COALESCE(can_resolve_disputes,false) OR COALESCE(can_manage_incidents,false) OR COALESCE(can_manage_operations,false))
+      LIMIT 1`,
+    [userId, ['admin', 'support', 'finance', 'moderator', 'founder']],
+  );
+  if (!admin.rows[0]) throw new TRPCError({ code: 'FORBIDDEN', message: 'Not authorized to view task photos.' });
+}
+
 export const uploadRouter = router({
   /**
    * Get a presigned URL for uploading a file to R2
@@ -359,7 +391,7 @@ export const uploadRouter = router({
   listTaskDraftPhotos: protectedProcedure
     .input(z.object({ taskDraftId: z.string().uuid() }))
     .query(async ({ ctx, input }) => {
-      await assertDraftPhotoAuthority(input.taskDraftId, ctx.user.id);
+      await assertDraftPhotoReadAuthority(input.taskDraftId, ctx.user.id);
       const rows = await db.query<{
         id: string; upload_receipt_id: string; sequence_number: number;
         canonical_key: string; canonical_content_type: string; canonical_size_bytes: number;
