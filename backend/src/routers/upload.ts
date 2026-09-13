@@ -31,6 +31,7 @@ import {
   MAX_MEDIA_UPLOAD_BYTES,
   SUPPORTED_SANITIZED_IMAGE_TYPES,
 } from '../services/MediaSanitizationService.js';
+import { issueTaskDraftPhotoAccess } from '../services/PrivateMediaDeliveryService.js';
 
 const log = logger.child({ router: 'upload' });
 
@@ -146,8 +147,23 @@ async function assertUploadAuthority(
   }
 }
 
-function canonicalPurpose(purpose: 'proof' | 'message'): MediaUploadPurpose {
-  return purpose === 'message' ? 'MESSAGE' : 'PROOF';
+type RouterUploadPurpose = 'proof' | 'message' | 'task_draft_photo';
+
+function canonicalPurpose(purpose: RouterUploadPurpose): MediaUploadPurpose {
+  if (purpose === 'message') return 'MESSAGE';
+  if (purpose === 'task_draft_photo') return 'TASK_DRAFT_PHOTO';
+  return 'PROOF';
+}
+
+async function assertDraftPhotoAuthority(taskDraftId: string, userId: string): Promise<void> {
+  const result = await db.query<{ poster_user_id: string | null }>(
+    'SELECT poster_user_id FROM task_drafts WHERE id=$1',
+    [taskDraftId],
+  );
+  if (!result.rows[0]) throw new TRPCError({ code: 'NOT_FOUND', message: 'Task draft not found' });
+  if (!result.rows[0].poster_user_id || result.rows[0].poster_user_id !== userId) {
+    throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the task draft owner can upload photos.' });
+  }
 }
 
 export const uploadRouter = router({
@@ -158,7 +174,8 @@ export const uploadRouter = router({
   getPresignedUrl: protectedProcedure
     .input(
       z.object({
-        taskId: z.string().uuid(),
+        taskId: z.string().uuid().optional(),
+        taskDraftId: z.string().uuid().optional(),
         filename: z
           .string()
           .min(1)
@@ -173,11 +190,33 @@ export const uploadRouter = router({
           .number()
           .min(1, 'File cannot be empty')
           .max(MAX_FILE_SIZE, `File size must be under ${MAX_FILE_SIZE / 1024 / 1024}MB`),
-        purpose: z.enum(['proof', 'message']).optional().default('proof'),
+        purpose: z.enum(['proof', 'message', 'task_draft_photo']).optional().default('proof'),
+        sequenceNumber: z.number().int().min(0).max(7).optional(),
+      }).superRefine((value, ctx) => {
+        if (value.purpose === 'task_draft_photo') {
+          if (!value.taskDraftId) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['taskDraftId'], message: 'taskDraftId is required.' });
+          if (value.taskId) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['taskId'], message: 'taskId is not valid for draft photos.' });
+          if (value.sequenceNumber === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['sequenceNumber'], message: 'sequenceNumber is required.' });
+        } else if (!value.taskId) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['taskId'], message: 'taskId is required.' });
+        } else if (value.taskDraftId || value.sequenceNumber !== undefined) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['taskDraftId'], message: 'Draft photo fields are only valid for draft photos.' });
+        }
       })
     )
     .mutation(async ({ ctx, input }) => {
-      await assertUploadAuthority(input.taskId, ctx.user.id, input.purpose);
+      if (input.purpose === 'task_draft_photo') {
+        await assertDraftPhotoAuthority(input.taskDraftId!, ctx.user.id);
+        const count = await db.query<{ count: string }>(
+          `SELECT COUNT(*)::TEXT AS count FROM task_draft_photos WHERE task_draft_id=$1`,
+          [input.taskDraftId],
+        );
+        if (Number(count.rows[0]?.count ?? 0) >= 8) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'A task draft can have at most 8 photos.' });
+        const duplicate = await db.query('SELECT 1 FROM task_draft_photos WHERE task_draft_id=$1 AND sequence_number=$2', [input.taskDraftId, input.sequenceNumber]);
+        if (duplicate.rows[0]) throw new TRPCError({ code: 'CONFLICT', message: 'That photo sequence position is already in use.' });
+      } else {
+        await assertUploadAuthority(input.taskId!, ctx.user.id, input.purpose as 'proof' | 'message');
+      }
 
       const receiptId = randomUUID();
       const ext = path
@@ -185,7 +224,8 @@ export const uploadRouter = router({
         .toLowerCase()
         .replace(/[^a-z0-9]/g, '')
         .slice(0, 4);
-      const key = `quarantine/${input.purpose}/${input.taskId}/${ctx.user.id}/${receiptId}${ext ? '.' + ext : ''}`;
+      const targetId = input.taskDraftId ?? input.taskId!;
+      const key = `quarantine/${input.purpose}/${targetId}/${ctx.user.id}/${receiptId}${ext ? '.' + ext : ''}`;
       const expiresAt = new Date(Date.now() + PRESIGN_EXPIRY * 1000);
       const receiptExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
@@ -198,7 +238,7 @@ export const uploadRouter = router({
         ContentType: input.contentType,
         Metadata: {
           'uploaded-by': ctx.user.id,
-          'task-id': input.taskId,
+          ...(input.taskDraftId ? { 'task-draft-id': input.taskDraftId } : { 'task-id': input.taskId! }),
           'receipt-id': receiptId,
           purpose: input.purpose,
         },
@@ -212,7 +252,7 @@ export const uploadRouter = router({
 
           unhoistableHeaders: new Set([
             'x-amz-meta-uploaded-by',
-            'x-amz-meta-task-id',
+            ...(input.taskDraftId ? ['x-amz-meta-task-draft-id'] : ['x-amz-meta-task-id']),
             'x-amz-meta-receipt-id',
             'x-amz-meta-purpose',
           ]),
@@ -227,12 +267,13 @@ export const uploadRouter = router({
 
       await db.query(
         `INSERT INTO media_upload_receipts (
-           id, task_id, uploader_id, purpose, quarantine_key,
+           id, task_id, task_draft_id, uploader_id, purpose, quarantine_key,
            expected_content_type, expected_size_bytes, quarantine_expires_at, expires_at
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
         [
           receiptId,
-          input.taskId,
+          input.taskId ?? null,
+          input.taskDraftId ?? null,
           ctx.user.id,
           canonicalPurpose(input.purpose),
           key,
@@ -252,8 +293,9 @@ export const uploadRouter = router({
           'x-amz-meta-uploaded-by':
             ctx.user.id,
 
-          'x-amz-meta-task-id':
-            input.taskId,
+          ...(input.taskDraftId
+            ? { 'x-amz-meta-task-draft-id': input.taskDraftId }
+            : { 'x-amz-meta-task-id': input.taskId! }),
 
           'x-amz-meta-receipt-id':
             receiptId,
@@ -267,18 +309,89 @@ export const uploadRouter = router({
   finalizeImageUpload: protectedProcedure
     .input(
       z.object({
-        taskId: z.string().uuid(),
+        taskId: z.string().uuid().optional(),
+        taskDraftId: z.string().uuid().optional(),
         receiptId: z.string().uuid(),
-        purpose: z.enum(['proof', 'message']).optional().default('proof'),
+        purpose: z.enum(['proof', 'message', 'task_draft_photo']).optional().default('proof'),
+        sequenceNumber: z.number().int().min(0).max(7).optional(),
+      }).superRefine((value, ctx) => {
+        if (value.purpose === 'task_draft_photo') {
+          if (!value.taskDraftId) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['taskDraftId'], message: 'taskDraftId is required.' });
+          if (value.taskId) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['taskId'], message: 'taskId is not valid for draft photos.' });
+          if (value.sequenceNumber === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['sequenceNumber'], message: 'sequenceNumber is required.' });
+        } else if (!value.taskId) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['taskId'], message: 'taskId is required.' });
+        }
       })
     )
     .mutation(async ({ ctx, input }) => {
-      await assertUploadAuthority(input.taskId, ctx.user.id, input.purpose);
-      return finalizeMediaUpload({
+      if (input.purpose === 'task_draft_photo') await assertDraftPhotoAuthority(input.taskDraftId!, ctx.user.id);
+      else await assertUploadAuthority(input.taskId!, ctx.user.id, input.purpose as 'proof' | 'message');
+      const evidence = await finalizeMediaUpload({
         receiptId: input.receiptId,
         taskId: input.taskId,
+        taskDraftId: input.taskDraftId,
         uploaderId: ctx.user.id,
         purpose: canonicalPurpose(input.purpose),
+      });
+      if (input.purpose !== 'task_draft_photo') return evidence;
+      const association = await db.transaction(async (query) => {
+        const receipt = await query<{ task_draft_id: string | null; task_id: string | null; uploader_id: string; purpose: string; status: string; consumed_kind: string | null; consumed_id: string | null }>('SELECT task_draft_id, task_id, uploader_id, purpose, status, consumed_kind, consumed_id FROM media_upload_receipts WHERE id=$1 FOR UPDATE', [input.receiptId]);
+        const row = receipt.rows[0];
+        if (!row || row.task_draft_id !== input.taskDraftId || row.task_id !== null || row.uploader_id !== ctx.user.id || row.purpose !== 'TASK_DRAFT_PHOTO') throw new TRPCError({ code: 'FORBIDDEN', message: 'Upload receipt is outside your draft authority.' });
+        const existing = await query<{ id: string; sequence_number: number }>('SELECT id, sequence_number FROM task_draft_photos WHERE upload_receipt_id=$1', [input.receiptId]);
+        let photoId = existing.rows[0]?.id;
+        if (existing.rows[0] && existing.rows[0].sequence_number !== input.sequenceNumber) throw new TRPCError({ code: 'CONFLICT', message: 'Upload receipt is already attached at another sequence position.' });
+        if (!photoId) {
+          if (row.status !== 'FINALIZED' && row.status !== 'CONSUMED') throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Upload receipt is not finalized.' });
+          const count = await query<{ count: string }>('SELECT COUNT(*)::TEXT AS count FROM task_draft_photos WHERE task_draft_id=$1', [input.taskDraftId]);
+          if (Number(count.rows[0]?.count ?? 0) >= 8) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'A task draft can have at most 8 photos.' });
+          const inserted = await query<{ id: string }>('INSERT INTO task_draft_photos (task_draft_id, upload_receipt_id, sequence_number) VALUES ($1,$2,$3) RETURNING id', [input.taskDraftId, input.receiptId, input.sequenceNumber]);
+          photoId = inserted.rows[0].id;
+        }
+        if (row.status === 'FINALIZED') await query(`UPDATE media_upload_receipts SET status='CONSUMED', consumed_kind='TASK_DRAFT_PHOTO', consumed_id=$2, consumed_at=NOW() WHERE id=$1 AND status='FINALIZED'`, [input.receiptId, photoId]);
+        await query(`UPDATE task_drafts SET photo_count=(SELECT COUNT(*) FROM task_draft_photos WHERE task_draft_id=$1) WHERE id=$1`, [input.taskDraftId]);
+        return photoId;
+      });
+      return { ...evidence, photoId: association };
+    }),
+
+  listTaskDraftPhotos: protectedProcedure
+    .input(z.object({ taskDraftId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      await assertDraftPhotoAuthority(input.taskDraftId, ctx.user.id);
+      const rows = await db.query<{
+        id: string; upload_receipt_id: string; sequence_number: number;
+        canonical_key: string; canonical_content_type: string; canonical_size_bytes: number;
+        pixel_width: number; pixel_height: number;
+      }>(`SELECT p.id, p.upload_receipt_id, p.sequence_number,
+                 r.canonical_key, r.canonical_content_type, r.canonical_size_bytes,
+                 r.pixel_width, r.pixel_height
+          FROM task_draft_photos p
+          JOIN media_upload_receipts r ON r.id=p.upload_receipt_id
+         WHERE p.task_draft_id=$1 AND r.status IN ('FINALIZED','CONSUMED')
+         ORDER BY p.sequence_number`, [input.taskDraftId]);
+      const signed = await issueTaskDraftPhotoAccess({
+        taskDraftId: input.taskDraftId,
+        viewerId: ctx.user.id,
+        storageKeys: rows.rows.map((row) => ({ photoId: row.id, storageKey: row.canonical_key })),
+      });
+      return rows.rows.flatMap((row) => {
+        const access = signed.get(row.id);
+        return access ? [{ id: row.id, uploadReceiptId: row.upload_receipt_id, sequenceNumber: row.sequence_number, downloadUrl: access.downloadUrl, contentType: row.canonical_content_type, fileSizeBytes: Number(row.canonical_size_bytes), width: Number(row.pixel_width), height: Number(row.pixel_height) }] : [];
+      });
+    }),
+
+  removeTaskDraftPhoto: protectedProcedure
+    .input(z.object({ taskDraftId: z.string().uuid(), photoId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      await assertDraftPhotoAuthority(input.taskDraftId, ctx.user.id);
+      return db.transaction(async (query) => {
+        const deleted = await query<{ id: string }>('DELETE FROM task_draft_photos WHERE id=$1 AND task_draft_id=$2 RETURNING id', [input.photoId, input.taskDraftId]);
+        if (!deleted.rows[0]) throw new TRPCError({ code: 'NOT_FOUND', message: 'Draft photo not found.' });
+        const count = await query<{ count: string }>('SELECT COUNT(*)::TEXT AS count FROM task_draft_photos WHERE task_draft_id=$1', [input.taskDraftId]);
+        await query('UPDATE task_drafts SET photo_count=$2 WHERE id=$1', [input.taskDraftId, Number(count.rows[0]?.count ?? 0)]);
+        return { ok: true, photoCount: Number(count.rows[0]?.count ?? 0) };
       });
     }),
 });

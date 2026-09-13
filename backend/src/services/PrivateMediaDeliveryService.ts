@@ -56,6 +56,32 @@ export interface DeliveryDependencies {
   now?: () => Date;
 }
 
+export async function issueTaskDraftPhotoAccess(
+  params: { taskDraftId: string; viewerId: string; storageKeys: Array<{ photoId: string; storageKey: string }> },
+  dependencies: Pick<DeliveryDependencies, 'query' | 'signObject' | 'now'> = {},
+): Promise<Map<string, DeliveredPrivateMedia>> {
+  const query = dependencies.query ?? db.query;
+  const owner = await query<{ poster_user_id: string | null }>('SELECT poster_user_id FROM task_drafts WHERE id=$1', [params.taskDraftId]);
+  if (owner.rows[0]?.poster_user_id !== params.viewerId) throw new Error('Task draft media access is not authorized.');
+  const signObject = dependencies.signObject ?? backblazeB2.getSignedUrlForObject;
+  const now = dependencies.now ?? (() => new Date());
+  const delivered = new Map<string, DeliveredPrivateMedia>();
+  for (const item of params.storageKeys) {
+    const downloadUrl = await signObject(item.storageKey, PRIVATE_MEDIA_URL_TTL_SECONDS);
+    assertSafeSignedUrl(downloadUrl);
+    delivered.set(item.photoId, {
+      downloadUrl,
+      expiresAt: new Date(now().getTime() + PRIVATE_MEDIA_URL_TTL_SECONDS * 1000).toISOString(),
+    });
+    await query(
+      `INSERT INTO task_draft_media_access_log (task_draft_id, photo_id, viewer_id, signed_url_expires_at)
+       VALUES ($1,$2,$3,$4)`,
+      [params.taskDraftId, item.photoId, params.viewerId, delivered.get(item.photoId)!.expiresAt],
+    );
+  }
+  return delivered;
+}
+
 function referenceIdentity(reference: PrivateMediaReference): string {
   return `${reference.consumerId}\u0000${reference.storageKey}`;
 }
