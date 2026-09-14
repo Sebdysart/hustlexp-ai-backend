@@ -2089,7 +2089,25 @@ export const webOpsRouter = router({
   setSupportThreadStatus: operationsAdminProcedure
     .input(z.object({ id: z.string().uuid(), status: z.enum(['OPEN', 'IN_PROGRESS', 'RESOLVED']) }))
     .mutation(async ({ ctx, input }) => {
-      const result = await db.query(`UPDATE support_threads SET status = $2, resolved_at = CASE WHEN $2 = 'RESOLVED' THEN NOW() ELSE NULL END, resolved_by_user_id = CASE WHEN $2 = 'RESOLVED' THEN $3 ELSE NULL END, updated_at = NOW() WHERE id = $1 RETURNING id, status`, [input.id, input.status, ctx.user.id]);
+      const result = await db.query(
+        `
+        UPDATE support_threads
+        SET
+          status = $2::text,
+          resolved_at = CASE
+            WHEN $2::text = 'RESOLVED' THEN NOW()
+            ELSE NULL
+          END,
+          resolved_by_user_id = CASE
+            WHEN $2::text = 'RESOLVED' THEN $3::uuid
+            ELSE NULL
+          END,
+          updated_at = NOW()
+        WHERE id = $1::uuid
+        RETURNING id, status
+        `,
+        [input.id, input.status, ctx.user.id],
+      );
       if (!result.rows[0]) throw new TRPCError({ code: 'NOT_FOUND' });
       return { ok: true as const, thread: result.rows[0] };
     }),
