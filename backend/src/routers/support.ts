@@ -24,6 +24,52 @@ export const supportRouter = router({
       await NotificationService.createForOperationsInTransaction(db.query.bind(db), { type: 'SUPPORT_REQUEST_CREATED', title: 'New support request', message: input.subject, entityType: 'support_thread', entityId: threadId, actionUrl: `/ops/support/${threadId}`, dedupeKey: `support-created:${threadId}` });
       return { ok: true as const, threadId, reused: false as const };
     }),
+  listMyThreads: protectedProcedure
+    .input(
+      z
+        .object({
+          limit: z.number().min(1).max(100).default(50),
+        })
+        .default({ limit: 50 }),
+    )
+    .query(async ({ ctx, input }) => {
+      const result = await db.query(
+        `
+        SELECT
+          st.id,
+          st.opened_by_user_id,
+          st.business_organization_id,
+          st.status,
+          st.subject,
+          st.context_type,
+          st.task_draft_id,
+          st.task_id,
+          st.proposal_id,
+          st.quote_id,
+          st.source_route,
+          st.resolved_at,
+          st.created_at,
+          st.updated_at,
+          (
+            SELECT sm.body
+            FROM support_messages sm
+            WHERE sm.thread_id = st.id
+            ORDER BY sm.created_at DESC
+            LIMIT 1
+          ) AS latest_message
+        FROM support_threads st
+        WHERE st.opened_by_user_id = $1
+        ORDER BY st.updated_at DESC
+        LIMIT $2
+        `,
+        [ctx.user.id, input.limit],
+      );
+
+      return {
+        ok: true as const,
+        threads: result.rows,
+      };
+    }),
   getContextThread: protectedProcedure
     .input(SupportContextLookupSchema)
     .query(async ({ ctx, input }) => {

@@ -2085,34 +2085,7 @@ export const webOpsRouter = router({
       }
       const thread = existing.rows[0];
       const messageId = result.rows[0].message_id as string;
-      let actionUrl: string | null = null;
-
-      const safeSourceRoute =
-        typeof thread.source_route === 'string' &&
-        thread.source_route.startsWith('/') &&
-        !thread.source_route.startsWith('/claim/')
-          ? thread.source_route
-          : null;
-
-      if (safeSourceRoute) {
-        actionUrl = safeSourceRoute;
-      } else if (thread.proposal_id) {
-        actionUrl = `/business/proposals/${thread.proposal_id}`;
-      } else if (
-        thread.business_organization_id &&
-        thread.task_id
-      ) {
-        actionUrl = `/business/tasks/${thread.task_id}`;
-      } else if (
-        thread.business_organization_id &&
-        thread.task_draft_id
-      ) {
-        actionUrl = `/business/claims/${thread.task_draft_id}`;
-      } else if (thread.task_id) {
-        actionUrl = `/dashboard/tasks/${thread.task_id}`;
-      } else if (thread.task_draft_id) {
-        actionUrl = `/dashboard/drafts/${thread.task_draft_id}`;
-      }
+      const actionUrl = `/support/${input.id}`;
       await NotificationService.createInTransaction(db.query.bind(db), { userId: thread.opened_by_user_id, type: 'SUPPORT_OPS_REPLY', title: 'HustleXP support replied', message: 'HustleXP replied to your support request.', entityType: 'support_thread', entityId: input.id, actionUrl, dedupeKey: `support-ops-reply:${messageId}` });
       return { ok: true as const };
     }),
