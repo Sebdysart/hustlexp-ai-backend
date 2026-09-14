@@ -5,6 +5,7 @@ import { protectedProcedure, router } from '../trpc.js';
 import { createBusinessQuoteInTransaction, validateBusinessQuoteContext } from '../services/BusinessClaimService.js';
 import { computePreferredArrivalWindow } from '../services/QuoteTiming.js';
 import { getTaskFactsForDisplay } from '../services/taskIntake/getTaskFactsForDisplay.js';
+import { requestBusinessProposalAssessment } from '../services/BusinessAssessmentService.js';
 
 const statuses = ['PENDING','VIEWED','QUOTED','REJECTED','CANCELLED','EXPIRED'] as const;
 type Status = typeof statuses[number];
@@ -28,7 +29,7 @@ export const businessProposalRouter = router({
     const answers = structured && typeof structured === 'object' && !Array.isArray(structured) && 'answers' in structured && structured.answers && typeof structured.answers === 'object' && !Array.isArray(structured.answers) ? structured.answers as Record<string, unknown> : {};
     const preferredWindow = String(answers.preferred_window ?? 'flexible');
     const preferred = computePreferredArrivalWindow(preferredWindow);
-    return { ...proposal, structured: undefined, taskFacts: getTaskFactsForDisplay({ rawInput: proposal.raw_input, category: proposal.category, structured: proposal.structured }), preferred_arrival_window_start: preferred.arrivalStart.toISOString(), preferred_arrival_window_end: preferred.arrivalEnd.toISOString(), expires_at: proposal.expires_at.toISOString(), viewed_at: proposal.viewed_at?.toISOString() ?? null, responded_at: proposal.responded_at?.toISOString() ?? null, created_at: proposal.created_at.toISOString() };
+    return { ...proposal, structured: undefined, taskFacts: getTaskFactsForDisplay({ rawInput: proposal.raw_input, category: proposal.category, structured: proposal.structured }), preferred_window: preferredWindow, preferred_arrival_window_start: preferred.arrivalStart.toISOString(), preferred_arrival_window_end: preferred.arrivalEnd.toISOString(), expires_at: proposal.expires_at.toISOString(), viewed_at: proposal.viewed_at?.toISOString() ?? null, responded_at: proposal.responded_at?.toISOString() ?? null, created_at: proposal.created_at.toISOString() };
   }),
   reject: protectedProcedure.input(z.object({ proposalId: z.string().uuid(), reason: z.string().trim().max(1000).optional() }).strict()).mutation(async ({ ctx, input }) => db.transaction(async (tx) => {
     const proposal = (await tx<any>(`SELECT p.id,p.status,p.expires_at FROM business_task_proposals p WHERE p.id=$1 AND EXISTS (SELECT 1 FROM business_memberships bm WHERE bm.organization_id=p.business_organization_id AND bm.user_id=$2 AND bm.status='ACTIVE') FOR UPDATE`, [input.proposalId, ctx.user.id])).rows[0];
@@ -38,6 +39,28 @@ export const businessProposalRouter = router({
     await tx(`UPDATE business_task_proposals SET status='REJECTED', rejection_reason=$2, responded_at=NOW(), updated_at=NOW() WHERE id=$1`, [proposal.id, input.reason ?? null]);
     return { ok: true, proposal_id: proposal.id, status: 'REJECTED' as const };
   })),
+  requestAssessment: protectedProcedure
+    .input(z.object({
+      proposalId: z.string().uuid(),
+      businessMessage: z.string().trim().min(1).max(4000),
+      proposedWindowStart: z.string().datetime(),
+      proposedWindowEnd: z.string().datetime(),
+    }).strict())
+    .mutation(async ({ ctx, input }) => {
+      const result = await requestBusinessProposalAssessment({
+        ...input,
+        actorId: ctx.user.id,
+      });
+
+      if (!result.success) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: result.error.message,
+        });
+      }
+
+      return result.data;
+    }),
   quote: protectedProcedure.input(z.object({
     proposalId: z.string().uuid(),
     serviceProfileId: z.string().uuid(),
