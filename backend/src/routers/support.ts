@@ -2,6 +2,7 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { db } from '../db.js';
 import { protectedProcedure, router } from '../trpc.js';
+import { NotificationService } from '../services/NotificationService.js';
 
 const contextType = z.enum(['GENERAL', 'TASK_DRAFT', 'TASK', 'PROPOSAL', 'QUOTE']);
 const SupportContextLookupSchema = z.object({ contextType, taskDraftId: z.string().uuid().optional(), taskId: z.string().uuid().optional(), proposalId: z.string().uuid().optional(), quoteId: z.string().uuid().optional(), businessOrganizationId: z.string().uuid().optional() }).strict();
@@ -19,7 +20,9 @@ export const supportRouter = router({
       const existingThread = await findActiveSupportThread({ userId: ctx.user.id, contextType: input.contextType, taskDraftId: input.taskDraftId, taskId: input.taskId, proposalId: input.proposalId, quoteId: input.quoteId, businessOrganizationId: input.businessOrganizationId });
       if (existingThread) return { ok: true as const, threadId: existingThread.id as string, reused: true as const };
       const result = await db.query(`WITH inserted_thread AS (INSERT INTO support_threads (opened_by_user_id,business_organization_id,status,subject,context_type,task_draft_id,task_id,proposal_id,quote_id,source_route) VALUES ($1,$2,'OPEN',$3,$4,$5,$6,$7,$8,$9) RETURNING id) INSERT INTO support_messages (thread_id,sender_user_id,sender_kind,body) SELECT id,$1,'USER',$10 FROM inserted_thread RETURNING thread_id`, [ctx.user.id, input.businessOrganizationId ?? null, input.subject, input.contextType, input.taskDraftId ?? null, input.taskId ?? null, input.proposalId ?? null, input.quoteId ?? null, input.sourceRoute ?? null, input.message]);
-      return { ok: true as const, threadId: result.rows[0].thread_id as string, reused: false as const };
+      const threadId = result.rows[0].thread_id as string;
+      await NotificationService.createForOperationsInTransaction(db.query.bind(db), { type: 'SUPPORT_REQUEST_CREATED', title: 'New support request', message: input.subject, entityType: 'support_thread', entityId: threadId, actionUrl: `/ops/support/${threadId}`, dedupeKey: `support-created:${threadId}` });
+      return { ok: true as const, threadId, reused: false as const };
     }),
   getContextThread: protectedProcedure
     .input(SupportContextLookupSchema)
@@ -54,7 +57,9 @@ export const supportRouter = router({
         await db.query(`SELECT business_require_action($1, $2, 'READ_WORKSPACE')`, [thread.business_organization_id, ctx.user.id]);
       }
       if (thread.status === 'RESOLVED') throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This support request has already been resolved.' });
-      await db.query(`WITH inserted_message AS (INSERT INTO support_messages (thread_id,sender_user_id,sender_kind,body) VALUES ($1,$2,'USER',$3) RETURNING id) UPDATE support_threads st SET updated_at=NOW() FROM inserted_message im WHERE st.id=$1`, [input.threadId, ctx.user.id, input.message]);
+      const inserted = await db.query(`WITH inserted_message AS (INSERT INTO support_messages (thread_id,sender_user_id,sender_kind,body) VALUES ($1,$2,'USER',$3) RETURNING id) UPDATE support_threads st SET updated_at=NOW() FROM inserted_message im WHERE st.id=$1 RETURNING im.id AS message_id`, [input.threadId, ctx.user.id, input.message]);
+      const messageId = inserted.rows[0].message_id as string;
+      await NotificationService.createForOperationsInTransaction(db.query.bind(db), { type: 'SUPPORT_USER_REPLY', title: 'New support reply', message: 'A user replied to a support conversation.', entityType: 'support_thread', entityId: input.threadId, actionUrl: `/ops/support/${input.threadId}`, dedupeKey: `support-user-reply:${messageId}` });
       return { ok: true as const };
     }),
 });

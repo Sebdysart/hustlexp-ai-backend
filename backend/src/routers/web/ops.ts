@@ -2049,7 +2049,7 @@ export const webOpsRouter = router({
   replySupportThread: operationsAdminProcedure
     .input(z.object({ id: z.string().uuid(), message: z.string().trim().min(1).max(4000) }))
     .mutation(async ({ ctx, input }) => {
-      const existing = await db.query(`SELECT status FROM support_threads WHERE id = $1 LIMIT 1`, [input.id]);
+      const existing = await db.query(`SELECT status, opened_by_user_id, business_organization_id, task_draft_id, task_id, proposal_id, quote_id FROM support_threads WHERE id = $1 LIMIT 1`, [input.id]);
       if (!existing.rows[0]) throw new TRPCError({ code: 'NOT_FOUND' });
       if (existing.rows[0].status === 'RESOLVED') throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Resolved support requests cannot be replied to.' });
       const result = await db.query(
@@ -2083,6 +2083,15 @@ export const webOpsRouter = router({
           message: 'Support request not found.',
         });
       }
+      const thread = existing.rows[0];
+      const messageId = result.rows[0].message_id as string;
+      let actionUrl: string | null = null;
+      if (thread.proposal_id) actionUrl = `/business/proposals/${thread.proposal_id}`;
+      else if (thread.business_organization_id && thread.task_id) actionUrl = `/business/tasks/${thread.task_id}`;
+      else if (thread.business_organization_id && thread.task_draft_id) actionUrl = `/business/claims/${thread.task_draft_id}`;
+      else if (thread.task_id) actionUrl = `/dashboard/tasks/${thread.task_id}`;
+      else if (thread.task_draft_id) actionUrl = `/dashboard/drafts/${thread.task_draft_id}`;
+      await NotificationService.createInTransaction(db.query.bind(db), { userId: thread.opened_by_user_id, type: 'SUPPORT_OPS_REPLY', title: 'HustleXP support replied', message: 'HustleXP replied to your support request.', entityType: 'support_thread', entityId: input.id, actionUrl, dedupeKey: `support-ops-reply:${messageId}` });
       return { ok: true as const };
     }),
 
