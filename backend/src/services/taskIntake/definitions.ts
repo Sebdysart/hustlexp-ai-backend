@@ -1,4 +1,4 @@
-import type { IntakeQuestion, TaskCategory } from './types.js';
+import type { IntakeProfile, IntakeQuestion, TaskCategory } from './types.js';
 export const U:IntakeQuestion[]=[
  {key:'access_restrictions',label:'Are there any access restrictions the provider should know about?',kind:'text',importance:'recommended'},
  {key:'special_constraints',label:'Is there anything else that could make this task harder or affect the price?',kind:'text',importance:'recommended'},
@@ -20,9 +20,21 @@ export const B:Record<TaskCategory,IntakeQuestion[]>={
  electrical:[q('electrical_fixture','What electrical fixture or component is involved?','select','required',undefined,['light','outlet','switch','ceiling_fan','breaker','panel','doorbell','other']),q('electrical_issue','What electrical issue or work is needed?','select','required',undefined,['not_working','installation','replacement','flickering','tripping','repair','other']),q('power_available','Is power currently available to the relevant area or device?','yesno','recommended'),q('existing_wiring','Is existing wiring already present?','yesno','recommended'),q('parts_provided','Do you have the required fixture or replacement parts?','yesno','recommended'),q('panel_involved','Is the breaker or electrical panel explicitly involved?','yesno','recommended')],
  other:[q('task_goal','What result would you like the provider to achieve?'),q('task_quantity','Approximately how much work is involved?'),q('provider_resources','Does the provider need to bring any tools, materials, or equipment?','text','recommended')],
 };
+export const PROFILE_QUESTIONS:Record<IntakeProfile,IntakeQuestion[]>={
+ cleaning_indoor:B.cleaning,
+ cleaning_surface:[q('surface_type','What outdoor surface needs cleaning?','select','required',undefined,['driveway','patio','walkway','siding','concrete','deck','other']),q('surface_area','About how large is the surface?','text','recommended'),q('equipment_provided','Will you provide the required cleaning equipment?','yesno'),q('water_access','Is a usable water connection available near the work area?','yesno')],
+ auto_repair:B.auto,
+ auto_cleaning:[q('vehicle_details','What vehicle is this for?'),q('auto_cleaning_type','What kind of vehicle cleaning is needed?','select','required',undefined,['exterior_wash','interior_detail','full_detail','pressure_wash','other']),q('equipment_provided','Will you provide the required washing or detailing equipment?','yesno')],
+};
+export const PROFILE_CLARIFICATION_QUESTIONS:Record<'cleaning'|'auto',IntakeQuestion>={
+ cleaning:q('intake_profile','What are you cleaning?','select','required',undefined,['cleaning_indoor','cleaning_surface','auto_cleaning']),
+ auto:q('intake_profile','What kind of vehicle work do you need?','select','required',undefined,['auto_repair','auto_cleaning']),
+};
 function dedupeQuestions(questions:IntakeQuestion[]):IntakeQuestion[]{const seen=new Set<string>();return questions.filter((question)=>{if(seen.has(question.key))return false;seen.add(question.key);return true;});}
-export function getQuestionsForIntake(primaryCategory:TaskCategory,secondaryIntents:readonly TaskCategory[]=[]):IntakeQuestion[]{const secondary=secondaryIntents.filter((category,index,all)=>category!==primaryCategory&&category!=='other'&&all.indexOf(category)===index);return dedupeQuestions([...B[primaryCategory],...secondary.flatMap((category)=>B[category]),...U]);}
-export function getQuestionsForCategory(category:TaskCategory):IntakeQuestion[]{return getQuestionsForIntake(category,[])}
+function primaryQuestions(category:TaskCategory,profile?:IntakeProfile|null):IntakeQuestion[]{if(category==='cleaning'||category==='auto'){if(profile)return PROFILE_QUESTIONS[profile]??[];if(profile===null)return [PROFILE_CLARIFICATION_QUESTIONS[category]];}return B[category];}
+export function getQuestionsForIntake(primaryCategory:TaskCategory,secondaryIntents:readonly TaskCategory[]=[],profile?:IntakeProfile|null):IntakeQuestion[]{const secondary=secondaryIntents.filter((category,index,all)=>category!==primaryCategory&&category!=='other'&&all.indexOf(category)===index);return dedupeQuestions([...primaryQuestions(primaryCategory,profile),...secondary.flatMap((category)=>B[category]),...U]);}
+export function getQuestionsForCategory(category:TaskCategory,profile?:IntakeProfile|null):IntakeQuestion[]{return getQuestionsForIntake(category,[],profile)}
+export function getKnownIntakeQuestionKeys():Set<string>{return new Set([...Object.values(B).flat(),...Object.values(PROFILE_QUESTIONS).flat(),...Object.values(PROFILE_CLARIFICATION_QUESTIONS),...U].map((question)=>question.key));}
 export const TASK_CATEGORIES=Object.freeze(['yard','cleaning','moving','assembly','delivery','handyman','home_services','auto','events','pet_care','painting','plumbing','electrical','other'] as const);
 
 

@@ -1,4 +1,5 @@
 export type TaskCategory = 'yard'|'cleaning'|'moving'|'assembly'|'delivery'|'handyman'|'home_services'|'auto'|'events'|'pet_care'|'painting'|'plumbing'|'electrical'|'other';
+export type IntakeProfile = 'cleaning_indoor'|'cleaning_surface'|'auto_repair'|'auto_cleaning';
 export type IntakeAnswer = string|boolean|string[]|number;
 export type IntakeAnswers = Record<string, IntakeAnswer>;
 export type QuestionKind = 'yesno'|'select'|'multiselect'|'text'|'number';

@@ -14,9 +14,12 @@ import { buildManualTaskPolicyInput } from '../../services/ManualTaskPolicy.js';
 import { TASK_CATEGORIES } from '../../services/taskIntake/definitions.js';
 import { validateTaskIntake } from '../../services/taskIntake/validateIntake.js';
 import { buildTaskScopeSummary } from '../../services/taskIntake/buildScopeSummary.js';
-import type { IntakeAnswers, TaskCategory } from '../../services/taskIntake/types.js';
+import type { IntakeAnswers, IntakeProfile, TaskCategory } from '../../services/taskIntake/types.js';
 import { classifyTask } from '../../services/taskClassification/classifyTask.js';
 import { extractIntakePrefill } from '../../services/taskIntake/extractPrefill.js';
+import { buildTaskFacts } from '../../services/taskIntake/buildTaskFacts.js';
+import { resolveIntakeProfile } from '../../services/taskIntake/resolveIntakeProfile.js';
+import { sanitizeIntakeAnswers } from '../../services/taskIntake/sanitizeIntakeAnswers.js';
 
 const PostTaskSchema = z.object({
   lead: z.object({
@@ -57,6 +60,8 @@ const ClassifyIntakeSchema = z.object({
 });
 
 const SecondaryIntentsSchema = z.array(z.enum(TASK_CATEGORIES)).max(5).default([]);
+const IntakeProfileSchema = z.enum(['cleaning_indoor', 'cleaning_surface', 'auto_repair', 'auto_cleaning']);
+const IntakeProfileSourceSchema = z.enum(['resolver', 'user']);
 
 function generateCardToken(): { raw: string; hash: string } {
   const raw = crypto.randomBytes(32).toString('hex');
@@ -109,12 +114,18 @@ async function handlePostTask({
             const structured = input.task.structured && typeof input.task.structured === 'object' && !Array.isArray(input.task.structured)
               ? input.task.structured as Record<string, unknown> : {};
             const rawAnswers = structured.answers;
-            const answers: IntakeAnswers = rawAnswers && typeof rawAnswers === 'object' && !Array.isArray(rawAnswers)
+            const unsanitizedAnswers: IntakeAnswers = rawAnswers && typeof rawAnswers === 'object' && !Array.isArray(rawAnswers)
               ? rawAnswers as IntakeAnswers : {};
             const secondaryIntents = SecondaryIntentsSchema.parse(structured.secondary_intents ?? []).filter(
               (intent, index, all) => intent !== category && intent !== 'other' && all.indexOf(intent) === index,
             );
-            const intakeValidation = validateTaskIntake(category, answers, secondaryIntents);
+            const parsedProfile = IntakeProfileSchema.safeParse(structured.intake_profile);
+            if (structured.intake_profile !== undefined && !parsedProfile.success) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Task intake contains an invalid intake profile.' });
+            const intakeProfile = parsedProfile.data as IntakeProfile | undefined;
+            const parsedProfileSource = IntakeProfileSourceSchema.safeParse(structured.intake_profile_source);
+            if (structured.intake_profile_source !== undefined && !parsedProfileSource.success) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Task intake contains an invalid profile source.' });
+            const answers = sanitizeIntakeAnswers(category, unsanitizedAnswers, secondaryIntents, intakeProfile ?? null);
+            const intakeValidation = validateTaskIntake(category, answers, secondaryIntents, intakeProfile ?? null);
             if (!intakeValidation.readyForDraft) {
               const missing = intakeValidation.missingRequired;
               const invalid = intakeValidation.invalidAnswers ?? [];
@@ -184,9 +195,11 @@ async function handlePostTask({
               input.task.raw_input?.trim()
               || input.task.scope_summary?.trim()
               || input.task.title.trim();
-            const canonicalScopeSummary = buildTaskScopeSummary(category, taskText, answers, secondaryIntents);
+            const canonicalScopeSummary = buildTaskScopeSummary(category, taskText, answers, secondaryIntents, intakeProfile);
             const canonicalStructured = {
               ...structured,
+              intake_profile: intakeProfile,
+              intake_profile_source: intakeProfile ? parsedProfileSource.data ?? 'resolver' : undefined,
               secondary_intents: secondaryIntents,
               answers: { ...answers, scope_policy_version: 'task_scope_v2' },
               missing_questions: intakeValidation.missingRequired,
@@ -359,13 +372,22 @@ export const webPostTaskRouter = router({
     .input(ClassifyIntakeSchema)
     .mutation(async ({ input }) => {
       const result = await classifyTask(input.raw);
-      const prefill = result.category
-        ? extractIntakePrefill(input.raw, result.category, result.secondaryIntents)
+      const profileResolution = result.category
+        ? resolveIntakeProfile({ category: result.category, raw: input.raw, facts: buildTaskFacts(input.raw) })
+        : null;
+      const routedCategory = profileResolution?.category ?? result.category;
+      const routedSecondaryIntents = result.secondaryIntents.filter((intent) => intent !== routedCategory);
+      const prefill = routedCategory
+        ? extractIntakePrefill(input.raw, routedCategory, routedSecondaryIntents, profileResolution?.profile ?? null)
         : { answers: {}, evidence: [] };
       return {
-        category: result.category,
-        primaryCategory: result.primaryCategory,
-        secondaryIntents: result.secondaryIntents,
+        category: routedCategory,
+        primaryCategory: routedCategory,
+        classifierCategory: result.category,
+        secondaryIntents: routedSecondaryIntents,
+        intakeProfile: profileResolution?.profile ?? null,
+        needsProfileClarification: profileResolution?.needsProfileClarification ?? false,
+        profileEvidence: profileResolution?.evidence ?? [],
         needsClarification: result.needsClarification,
         margin: result.margin,
         threshold: result.threshold,

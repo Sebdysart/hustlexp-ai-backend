@@ -3,7 +3,7 @@ import { extractNumericFacts, type NumericFact } from './extractNumericFacts.js'
 import { extractObjectFacts, totalObjectQuantity, type ObjectFact } from './extractObjectFacts.js';
 import { extractConstraintFacts, type ConstraintFact } from './extractConstraintFacts.js';
 import { resolveObjectReferences, type ObjectReferenceFact } from './resolveObjectReferences.js';
-import type { IntakeAnswer, IntakeAnswers, TaskCategory } from './types.js';
+import type { IntakeAnswer, IntakeAnswers, IntakeProfile, TaskCategory } from './types.js';
 
 interface Candidate { key: string; value: IntakeAnswer; confidence: number; evidence: string; }
 interface QuantifiedItem { quantity: number; item: string; evidence: string; }
@@ -358,14 +358,59 @@ function extractGenericFacts(raw: string, numericFacts: NumericFact[], objectFac
   if (sumNumericFacts(numericFacts, 'item_count') === undefined && /\bmove\b/i.test(text)) { const singles = text.match(/\b(?:couch|sofa|bed|dresser|refrigerator|fridge|piano|mattress|desk|table|washer|washing machine|dryer|cabinet|tv)\b/gi) ?? []; if (singles.length) add(result, { key: 'item_count', value: singles.length, confidence: 0.9, evidence: 'Explicit individual moving items were named.' }); }
   return result;
 }
+
+function extractProfileFacts(text: string, profile: IntakeProfile | undefined): Candidate[] {
+  const candidates: Candidate[] = [];
+  if (profile === 'cleaning_indoor') {
+    const cleaningType = enumCandidate(text, 'cleaning_type', [
+      ['deep', [/\bdeep\s+clean(?:ing)?\b/i]],
+      ['move_in_out', [/\bmove[- ](?:in|out)\s+clean(?:ing)?\b/i]],
+      ['standard', [/\b(?:standard|regular|routine)(?:\s+\w+){0,2}\s+clean(?:ing)?\b/i]],
+    ]);
+    if (cleaningType) add(candidates, cleaningType);
+  }
+  if (profile === 'cleaning_surface') {
+    const surface = enumCandidate(text, 'surface_type', [
+      ['driveway', [/\bdriveways?\b/i]],
+      ['patio', [/\bpatios?\b/i]],
+      ['walkway', [/\b(?:walkways?|sidewalks?|paths?)\b/i]],
+      ['siding', [/\bsiding\b/i]],
+      ['concrete', [/\bconcrete(?:\s+surface)?\b/i]],
+      ['deck', [/\bdecks?\b/i]],
+    ]);
+    if (surface) add(candidates, surface);
+    if (/\b(?:i|we)\s+(?:have|will provide|can provide)\b[^.!?]{0,30}\b(?:washer|equipment|tools?)\b/i.test(text)) add(candidates, { key: 'equipment_provided', value: true, confidence: 0.98, evidence: 'Customer explicitly provides surface-cleaning equipment.' });
+    if (/\b(?:bring|provide|supply)\s+(?:your\s+own\s+|the\s+)?(?:pressure\s+washer|power\s+washer|equipment|tools?)\b/i.test(text)) setCandidate(candidates, { key: 'equipment_provided', value: false, confidence: 0.99, evidence: 'Provider explicitly supplies surface-cleaning equipment.' });
+    if (/\b(?:water|outdoor\s+faucet|hose\s+connection|spigot)\b[^.!?]{0,25}\b(?:available|accessible|works|on site)\b/i.test(text)) add(candidates, { key: 'water_access', value: true, confidence: 0.98, evidence: 'Water access is explicitly available.' });
+    if (/\b(?:no|without)\s+(?:water|outdoor\s+faucet|hose\s+connection|spigot)\b|\bwater\s+(?:is\s+)?not\s+available\b/i.test(text)) setCandidate(candidates, { key: 'water_access', value: false, confidence: 0.99, evidence: 'Water access is explicitly unavailable.' });
+  }
+  if (profile === 'auto_cleaning' || profile === 'auto_repair') {
+    const vehicle = text.match(/\b(suv|sedan|car|truck|vehicle)s?\b/i);
+    if (vehicle) add(candidates, { key: 'vehicle_details', value: vehicle[1].toUpperCase() === 'SUV' ? 'SUV' : vehicle[1].toLowerCase(), confidence: 0.95, evidence: vehicle[0] });
+  }
+  if (profile === 'auto_cleaning') {
+    const cleaningType = enumCandidate(text, 'auto_cleaning_type', [
+      ['pressure_wash', [/\b(?:pressure|power)[- ]?wash(?:ing)?\b/i]],
+      ['full_detail', [/\b(?:full|complete)\s+detail(?:ing)?\b/i]],
+      ['interior_detail', [/\b(?:vacuum|clean|detail)\b[^.!?]{0,30}\b(?:inside|interior|cabin|seats?)\b|\b(?:inside|interior|cabin|seats?)\b[^.!?]{0,30}\b(?:vacuum|clean|detail)\b/i]],
+      ['exterior_wash', [/\b(?:wash|clean)\b[^.!?]{0,25}\b(?:cars?|vehicles?|suvs?|sedans?|trucks?)\b|\b(?:cars?|vehicles?|suvs?|sedans?|trucks?)\b[^.!?]{0,25}\b(?:wash|clean)\b/i]],
+    ]);
+    if (cleaningType) add(candidates, cleaningType);
+    if (/\b(?:i|we)\s+(?:have|will provide|can provide)\b[^.!?]{0,30}\b(?:washing|detailing|cleaning)?\s*(?:equipment|supplies|tools?)\b/i.test(text)) add(candidates, { key: 'equipment_provided', value: true, confidence: 0.98, evidence: 'Customer explicitly provides vehicle-cleaning equipment.' });
+    if (/\b(?:bring|provide|supply)\s+(?:your\s+own\s+|the\s+)?(?:washing|detailing|cleaning)?\s*(?:equipment|supplies|tools?)\b/i.test(text)) setCandidate(candidates, { key: 'equipment_provided', value: false, confidence: 0.99, evidence: 'Provider explicitly supplies vehicle-cleaning equipment.' });
+  }
+  return candidates;
+}
 export function extractIntakePrefill(
   raw: string,
   primaryCategory: TaskCategory,
-  secondaryIntents: readonly TaskCategory[] = []
+  secondaryIntents: readonly TaskCategory[] = [],
+  intakeProfile?: IntakeProfile | null,
 ): IntakePrefillResult {
   const text = raw.toLowerCase();
+  const activeProfile = intakeProfile && (intakeProfile.startsWith('cleaning_') ? primaryCategory === 'cleaning' : primaryCategory === 'auto') ? intakeProfile : undefined;
   const allowed = new Set(
-    getQuestionsForIntake(primaryCategory, secondaryIntents).map((question) => question.key)
+    getQuestionsForIntake(primaryCategory, secondaryIntents, intakeProfile === null ? null : activeProfile).map((question) => question.key)
   );
   const numericFacts = extractNumericFacts(raw);
   const objectFacts = extractObjectFacts(raw);
@@ -381,6 +426,7 @@ export function extractIntakePrefill(
   const activeCategories = new Set([primaryCategory, ...secondaryIntents]);
   for (const candidate of extractExpandedCategoryFacts(text, activeCategories))
     setCandidate(candidates, candidate);
+  for (const candidate of extractProfileFacts(text, activeProfile)) setCandidate(candidates, candidate);
   const hasExplicitAssemblyAction = /\b(?:assemble|reassemble|put together|build|install)\b/i.test(
     text
   );
