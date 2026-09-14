@@ -1,4 +1,5 @@
 export const REQUIRED_MIGRATION_FILES = [
+  { name: '20260915_support_threads', fileName: '20260915_support_threads.sql' },
   { name: '20260910_business_task_proposals', fileName: '20260910_business_task_proposals.sql' },
   { name: '20260910_task_completion_verifications', fileName: '20260910_task_completion_verifications.sql' },
   { name: 'add_missing_tables_v2', fileName: 'add_missing_tables_v2.sql' },

@@ -2025,6 +2025,44 @@ export const webOpsRouter = router({
       await recordOpsAudit({ actorUserId: ctx.user.id, action: 'business_task_proposal_cancelled', targetType: 'task_draft', targetId: proposal.task_draft_id, meta: { proposal_id: proposal.id, business_organization_id: proposal.business_organization_id } });
       return { ok: true, proposal_id: proposal.id };
     }),
+
+  listSupportThreads: operationsAdminProcedure
+    .input(z.object({ status: z.enum(['OPEN', 'IN_PROGRESS', 'RESOLVED']).optional(), limit: z.number().min(1).max(100).default(50) }))
+    .query(async ({ input }) => {
+      const params: unknown[] = [];
+      const conditions: string[] = [];
+      if (input.status) conditions.push(`st.status = $${params.push(input.status)}`);
+      params.push(input.limit);
+      const result = await db.query(`SELECT st.id, st.status, st.subject, st.context_type, st.task_draft_id, st.task_id, st.proposal_id, st.quote_id, st.business_organization_id, st.created_at, st.updated_at, u.full_name AS opened_by_name, u.email AS opened_by_email, (SELECT sm.body FROM support_messages sm WHERE sm.thread_id = st.id ORDER BY sm.created_at DESC LIMIT 1) AS latest_message FROM support_threads st LEFT JOIN users u ON u.id = st.opened_by_user_id ${conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''} ORDER BY CASE st.status WHEN 'OPEN' THEN 0 WHEN 'IN_PROGRESS' THEN 1 ELSE 2 END, st.updated_at DESC LIMIT $${params.length}`, params);
+      return { ok: true as const, threads: result.rows };
+    }),
+
+  getSupportThread: operationsAdminProcedure
+    .input(z.object({ id: z.string().uuid() }))
+    .query(async ({ input }) => {
+      const threadResult = await db.query(`SELECT st.*, u.full_name AS opened_by_name, u.email AS opened_by_email FROM support_threads st LEFT JOIN users u ON u.id = st.opened_by_user_id WHERE st.id = $1 LIMIT 1`, [input.id]);
+      if (!threadResult.rows[0]) throw new TRPCError({ code: 'NOT_FOUND', message: 'Support request not found.' });
+      const messagesResult = await db.query(`SELECT sm.id, sm.sender_user_id, sm.sender_kind, sm.body, sm.created_at, u.full_name AS sender_name FROM support_messages sm LEFT JOIN users u ON u.id = sm.sender_user_id WHERE sm.thread_id = $1 ORDER BY sm.created_at ASC`, [input.id]);
+      return { ok: true as const, thread: threadResult.rows[0], messages: messagesResult.rows };
+    }),
+
+  replySupportThread: operationsAdminProcedure
+    .input(z.object({ id: z.string().uuid(), message: z.string().trim().min(1).max(4000) }))
+    .mutation(async ({ ctx, input }) => {
+      const existing = await db.query(`SELECT status FROM support_threads WHERE id = $1 LIMIT 1`, [input.id]);
+      if (!existing.rows[0]) throw new TRPCError({ code: 'NOT_FOUND' });
+      if (existing.rows[0].status === 'RESOLVED') throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Resolved support requests cannot be replied to.' });
+      await db.query(`INSERT INTO support_messages (thread_id, sender_user_id, sender_kind, body) VALUES ($1, $2, 'OPS', $3); UPDATE support_threads SET status = CASE WHEN status = 'OPEN' THEN 'IN_PROGRESS' ELSE status END, updated_at = NOW() WHERE id = $1`, [input.id, ctx.user.id, input.message]);
+      return { ok: true as const };
+    }),
+
+  setSupportThreadStatus: operationsAdminProcedure
+    .input(z.object({ id: z.string().uuid(), status: z.enum(['OPEN', 'IN_PROGRESS', 'RESOLVED']) }))
+    .mutation(async ({ ctx, input }) => {
+      const result = await db.query(`UPDATE support_threads SET status = $2, resolved_at = CASE WHEN $2 = 'RESOLVED' THEN NOW() ELSE NULL END, resolved_by_user_id = CASE WHEN $2 = 'RESOLVED' THEN $3 ELSE NULL END, updated_at = NOW() WHERE id = $1 RETURNING id, status`, [input.id, input.status, ctx.user.id]);
+      if (!result.rows[0]) throw new TRPCError({ code: 'NOT_FOUND' });
+      return { ok: true as const, thread: result.rows[0] };
+    }),
 });
 
 
