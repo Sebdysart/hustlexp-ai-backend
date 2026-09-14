@@ -2052,7 +2052,37 @@ export const webOpsRouter = router({
       const existing = await db.query(`SELECT status FROM support_threads WHERE id = $1 LIMIT 1`, [input.id]);
       if (!existing.rows[0]) throw new TRPCError({ code: 'NOT_FOUND' });
       if (existing.rows[0].status === 'RESOLVED') throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Resolved support requests cannot be replied to.' });
-      await db.query(`INSERT INTO support_messages (thread_id, sender_user_id, sender_kind, body) VALUES ($1, $2, 'OPS', $3); UPDATE support_threads SET status = CASE WHEN status = 'OPEN' THEN 'IN_PROGRESS' ELSE status END, updated_at = NOW() WHERE id = $1`, [input.id, ctx.user.id, input.message]);
+      const result = await db.query(
+        `
+        WITH inserted_message AS (
+          INSERT INTO support_messages (
+            thread_id,
+            sender_user_id,
+            sender_kind,
+            body
+          )
+          VALUES ($1, $2, 'OPS', $3)
+          RETURNING id
+        )
+        UPDATE support_threads st
+        SET
+          status = CASE
+            WHEN st.status = 'OPEN' THEN 'IN_PROGRESS'
+            ELSE st.status
+          END,
+          updated_at = NOW()
+        FROM inserted_message im
+        WHERE st.id = $1
+        RETURNING st.id, st.status, im.id AS message_id
+        `,
+        [input.id, ctx.user.id, input.message],
+      );
+      if (!result.rows[0]) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'Support request not found.',
+        });
+      }
       return { ok: true as const };
     }),
 
