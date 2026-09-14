@@ -1,0 +1,1512 @@
+{
+  "name": "HustleXP classifier blind holdout 300",
+  "purpose": "Final classifier evaluation only. Do not inspect or tune against individual examples during iterative development.",
+  "policy": {
+    "trainingAllowed": false,
+    "inspectDuringTuning": false,
+    "runOnlyAtFinalEvaluation": true,
+    "expectedNullMeans": "abstain / needsClarification"
+  },
+  "cases": [
+    {
+      "id": "blind_001",
+      "raw": "Mow the front lawn and trim the edges.",
+      "expectedCategory": "yard"
+    },
+    {
+      "id": "blind_002",
+      "raw": "Need the backyard grass cut this weekend.",
+      "expectedCategory": "yard"
+    },
+    {
+      "id": "blind_003",
+      "raw": "Please rake up the leaves in my yard.",
+      "expectedCategory": "yard"
+    },
+    {
+      "id": "blind_004",
+      "raw": "Overgrown weeds need pulling around the garden beds.",
+      "expectedCategory": "yard"
+    },
+    {
+      "id": "blind_005",
+      "raw": "Cut the grass and clean up the clippings.",
+      "expectedCategory": "yard"
+    },
+    {
+      "id": "blind_006",
+      "raw": "My lawn is getting tall, need someone to mow it.",
+      "expectedCategory": "yard"
+    },
+    {
+      "id": "blind_007",
+      "raw": "Need hedge trimming along the side fence.",
+      "expectedCategory": "yard"
+    },
+    {
+      "id": "blind_008",
+      "raw": "Please clear fallen branches and leaves from the backyard.",
+      "expectedCategory": "yard"
+    },
+    {
+      "id": "blind_009",
+      "raw": "Small lawn needs mowing, nothing else.",
+      "expectedCategory": "yard"
+    },
+    {
+      "id": "blind_010",
+      "raw": "Can someone weed the flower beds and tidy the yard?",
+      "expectedCategory": "yard"
+    },
+    {
+      "id": "blind_011",
+      "raw": "The front yard needs a general cleanup before guests arrive.",
+      "expectedCategory": "yard"
+    },
+    {
+      "id": "blind_012",
+      "raw": "Need leaves bagged and hauled out of the backyard.",
+      "expectedCategory": "yard"
+    },
+    {
+      "id": "blind_013",
+      "raw": "Trim two bushes and mow the lawn.",
+      "expectedCategory": "yard"
+    },
+    {
+      "id": "blind_014",
+      "raw": "Yard is full of weeds after the rain, need cleanup.",
+      "expectedCategory": "yard"
+    },
+    {
+      "id": "blind_015",
+      "raw": "Need someone to rake and bag pine needles outside.",
+      "expectedCategory": "yard"
+    },
+    {
+      "id": "blind_016",
+      "raw": "Back garden needs weeds removed and edges cleaned up.",
+      "expectedCategory": "yard"
+    },
+    {
+      "id": "blind_017",
+      "raw": "Grass cutting plus leaf cleanup around the driveway.",
+      "expectedCategory": "yard"
+    },
+    {
+      "id": "blind_018",
+      "raw": "Need a quick lawn mow for a medium-sized yard.",
+      "expectedCategory": "yard"
+    },
+    {
+      "id": "blind_019",
+      "raw": "Please prune the shrubs and clean up the yard debris.",
+      "expectedCategory": "yard"
+    },
+    {
+      "id": "blind_020",
+      "raw": "My backyard needs mowing and a basic seasonal cleanup.",
+      "expectedCategory": "yard"
+    },
+    {
+      "id": "blind_021",
+      "raw": "Deep clean my two-bedroom apartment.",
+      "expectedCategory": "cleaning"
+    },
+    {
+      "id": "blind_022",
+      "raw": "Need the kitchen and bathrooms cleaned before move-in.",
+      "expectedCategory": "cleaning"
+    },
+    {
+      "id": "blind_023",
+      "raw": "Please clean three rooms upstairs.",
+      "expectedCategory": "cleaning"
+    },
+    {
+      "id": "blind_024",
+      "raw": "Looking for a standard house cleaning tomorrow.",
+      "expectedCategory": "cleaning"
+    },
+    {
+      "id": "blind_025",
+      "raw": "Need a move-out clean for a one-bedroom apartment.",
+      "expectedCategory": "cleaning"
+    },
+    {
+      "id": "blind_026",
+      "raw": "Clean the floors, counters, and bathroom.",
+      "expectedCategory": "cleaning"
+    },
+    {
+      "id": "blind_027",
+      "raw": "Apartment needs a thorough deep cleaning.",
+      "expectedCategory": "cleaning"
+    },
+    {
+      "id": "blind_028",
+      "raw": "Need someone to clean my studio before guests arrive.",
+      "expectedCategory": "cleaning"
+    },
+    {
+      "id": "blind_029",
+      "raw": "Please clean two bathrooms and the kitchen.",
+      "expectedCategory": "cleaning"
+    },
+    {
+      "id": "blind_030",
+      "raw": "Regular cleaning for my small townhouse.",
+      "expectedCategory": "cleaning"
+    },
+    {
+      "id": "blind_031",
+      "raw": "Need a full home clean after renovation dust.",
+      "expectedCategory": "cleaning"
+    },
+    {
+      "id": "blind_032",
+      "raw": "Clean the living room, bedrooms, and kitchen.",
+      "expectedCategory": "cleaning"
+    },
+    {
+      "id": "blind_033",
+      "raw": "Need someone for a basic apartment cleaning.",
+      "expectedCategory": "cleaning"
+    },
+    {
+      "id": "blind_034",
+      "raw": "House needs vacuuming, mopping, and bathroom cleaning.",
+      "expectedCategory": "cleaning"
+    },
+    {
+      "id": "blind_035",
+      "raw": "Please deep clean the kitchen including greasy surfaces.",
+      "expectedCategory": "cleaning"
+    },
+    {
+      "id": "blind_036",
+      "raw": "Need cleaning help for four rooms.",
+      "expectedCategory": "cleaning"
+    },
+    {
+      "id": "blind_037",
+      "raw": "Clean my condo before I hand over the keys.",
+      "expectedCategory": "cleaning"
+    },
+    {
+      "id": "blind_038",
+      "raw": "Looking for someone to clean a messy guest room and bathroom.",
+      "expectedCategory": "cleaning"
+    },
+    {
+      "id": "blind_039",
+      "raw": "Need floors mopped and surfaces wiped throughout the apartment.",
+      "expectedCategory": "cleaning"
+    },
+    {
+      "id": "blind_040",
+      "raw": "Please do a standard clean of my two-bedroom home.",
+      "expectedCategory": "cleaning"
+    },
+    {
+      "id": "blind_041",
+      "raw": "Move my couch and bed into the upstairs apartment.",
+      "expectedCategory": "moving"
+    },
+    {
+      "id": "blind_042",
+      "raw": "Need help moving five boxes from the garage to the second floor.",
+      "expectedCategory": "moving"
+    },
+    {
+      "id": "blind_043",
+      "raw": "Carry a dresser and two chairs into another room.",
+      "expectedCategory": "moving"
+    },
+    {
+      "id": "blind_044",
+      "raw": "Help me move furniture around inside the house.",
+      "expectedCategory": "moving"
+    },
+    {
+      "id": "blind_045",
+      "raw": "Need two people to move a heavy sofa downstairs.",
+      "expectedCategory": "moving"
+    },
+    {
+      "id": "blind_046",
+      "raw": "Move ten boxes from my apartment to the storage unit.",
+      "expectedCategory": "moving"
+    },
+    {
+      "id": "blind_047",
+      "raw": "I need help loading my belongings into a moving van.",
+      "expectedCategory": "moving"
+    },
+    {
+      "id": "blind_048",
+      "raw": "Unload furniture from the truck and bring it inside.",
+      "expectedCategory": "moving"
+    },
+    {
+      "id": "blind_049",
+      "raw": "Move a bed frame, mattress, and desk to the third floor.",
+      "expectedCategory": "moving"
+    },
+    {
+      "id": "blind_050",
+      "raw": "Need help relocating some furniture across the building.",
+      "expectedCategory": "moving"
+    },
+    {
+      "id": "blind_051",
+      "raw": "Carry several boxes and a bookshelf upstairs.",
+      "expectedCategory": "moving"
+    },
+    {
+      "id": "blind_052",
+      "raw": "Moving out, need help loading boxes and furniture.",
+      "expectedCategory": "moving"
+    },
+    {
+      "id": "blind_053",
+      "raw": "Need someone to move my dining table into the garage.",
+      "expectedCategory": "moving"
+    },
+    {
+      "id": "blind_054",
+      "raw": "Help shift a washer and dryer to another room.",
+      "expectedCategory": "moving"
+    },
+    {
+      "id": "blind_055",
+      "raw": "Move six packed boxes from one apartment to another nearby.",
+      "expectedCategory": "moving"
+    },
+    {
+      "id": "blind_056",
+      "raw": "Need lifting help for a couch, dresser, and bed.",
+      "expectedCategory": "moving"
+    },
+    {
+      "id": "blind_057",
+      "raw": "Carry my furniture from the basement up one flight.",
+      "expectedCategory": "moving"
+    },
+    {
+      "id": "blind_058",
+      "raw": "Moving apartments and need help with the heavy items.",
+      "expectedCategory": "moving"
+    },
+    {
+      "id": "blind_059",
+      "raw": "Please move a cabinet and four chairs into the spare room.",
+      "expectedCategory": "moving"
+    },
+    {
+      "id": "blind_060",
+      "raw": "Need help unloading a van full of household items.",
+      "expectedCategory": "moving"
+    },
+    {
+      "id": "blind_061",
+      "raw": "Assemble my new IKEA desk.",
+      "expectedCategory": "assembly"
+    },
+    {
+      "id": "blind_062",
+      "raw": "Need a bed frame put together.",
+      "expectedCategory": "assembly"
+    },
+    {
+      "id": "blind_063",
+      "raw": "Please assemble two bookshelves.",
+      "expectedCategory": "assembly"
+    },
+    {
+      "id": "blind_064",
+      "raw": "Put together a flat-pack wardrobe.",
+      "expectedCategory": "assembly"
+    },
+    {
+      "id": "blind_065",
+      "raw": "Need someone to build my new dining table.",
+      "expectedCategory": "assembly"
+    },
+    {
+      "id": "blind_066",
+      "raw": "Assemble three office chairs.",
+      "expectedCategory": "assembly"
+    },
+    {
+      "id": "blind_067",
+      "raw": "Can you put together a TV stand?",
+      "expectedCategory": "assembly"
+    },
+    {
+      "id": "blind_068",
+      "raw": "Need a cabinet assembled from the box.",
+      "expectedCategory": "assembly"
+    },
+    {
+      "id": "blind_069",
+      "raw": "Assemble a dresser and nightstand.",
+      "expectedCategory": "assembly"
+    },
+    {
+      "id": "blind_070",
+      "raw": "Please build this shelving unit.",
+      "expectedCategory": "assembly"
+    },
+    {
+      "id": "blind_071",
+      "raw": "Need help assembling a patio furniture set.",
+      "expectedCategory": "assembly"
+    },
+    {
+      "id": "blind_072",
+      "raw": "Put together a small storage rack.",
+      "expectedCategory": "assembly"
+    },
+    {
+      "id": "blind_073",
+      "raw": "Assemble one crib from the instructions.",
+      "expectedCategory": "assembly"
+    },
+    {
+      "id": "blind_074",
+      "raw": "Need my new work desk assembled.",
+      "expectedCategory": "assembly"
+    },
+    {
+      "id": "blind_075",
+      "raw": "Build two flat-pack bookcases.",
+      "expectedCategory": "assembly"
+    },
+    {
+      "id": "blind_076",
+      "raw": "Please assemble the boxed coffee table.",
+      "expectedCategory": "assembly"
+    },
+    {
+      "id": "blind_077",
+      "raw": "Need four dining chairs assembled.",
+      "expectedCategory": "assembly"
+    },
+    {
+      "id": "blind_078",
+      "raw": "Put together a metal bed frame.",
+      "expectedCategory": "assembly"
+    },
+    {
+      "id": "blind_079",
+      "raw": "Assemble a freestanding wardrobe.",
+      "expectedCategory": "assembly"
+    },
+    {
+      "id": "blind_080",
+      "raw": "Need someone to assemble a shoe cabinet.",
+      "expectedCategory": "assembly"
+    },
+    {
+      "id": "blind_081",
+      "raw": "Pick up a package from the store and deliver it to my house.",
+      "expectedCategory": "delivery"
+    },
+    {
+      "id": "blind_082",
+      "raw": "Need a small table picked up and brought to me.",
+      "expectedCategory": "delivery"
+    },
+    {
+      "id": "blind_083",
+      "raw": "Collect groceries from the supermarket and deliver them.",
+      "expectedCategory": "delivery"
+    },
+    {
+      "id": "blind_084",
+      "raw": "Pick up a chair from the seller and drop it at my apartment.",
+      "expectedCategory": "delivery"
+    },
+    {
+      "id": "blind_085",
+      "raw": "Need a parcel delivered across town.",
+      "expectedCategory": "delivery"
+    },
+    {
+      "id": "blind_086",
+      "raw": "Please collect a boxed monitor and bring it to my office.",
+      "expectedCategory": "delivery"
+    },
+    {
+      "id": "blind_087",
+      "raw": "Pick up my order from the shop and deliver it tonight.",
+      "expectedCategory": "delivery"
+    },
+    {
+      "id": "blind_088",
+      "raw": "Need two boxes transported from one address to another.",
+      "expectedCategory": "delivery"
+    },
+    {
+      "id": "blind_089",
+      "raw": "Collect a cake from the bakery and bring it to the venue.",
+      "expectedCategory": "delivery"
+    },
+    {
+      "id": "blind_090",
+      "raw": "Pick up a small dresser from the store and deliver it to my building.",
+      "expectedCategory": "delivery"
+    },
+    {
+      "id": "blind_091",
+      "raw": "Need a document envelope delivered to another office.",
+      "expectedCategory": "delivery"
+    },
+    {
+      "id": "blind_092",
+      "raw": "Please bring a purchased lamp from the seller to my home.",
+      "expectedCategory": "delivery"
+    },
+    {
+      "id": "blind_093",
+      "raw": "Collect a package from a friend and drop it off at my place.",
+      "expectedCategory": "delivery"
+    },
+    {
+      "id": "blind_094",
+      "raw": "Need a bicycle picked up and delivered.",
+      "expectedCategory": "delivery"
+    },
+    {
+      "id": "blind_095",
+      "raw": "Pick up the artwork and transport it carefully to my apartment.",
+      "expectedCategory": "delivery"
+    },
+    {
+      "id": "blind_096",
+      "raw": "Need a few bags delivered from the shop to my house.",
+      "expectedCategory": "delivery"
+    },
+    {
+      "id": "blind_097",
+      "raw": "Collect a boxed printer and deliver it to my workplace.",
+      "expectedCategory": "delivery"
+    },
+    {
+      "id": "blind_098",
+      "raw": "Please pick up my online order and bring it over.",
+      "expectedCategory": "delivery"
+    },
+    {
+      "id": "blind_099",
+      "raw": "Need a small appliance transported from the store to me.",
+      "expectedCategory": "delivery"
+    },
+    {
+      "id": "blind_100",
+      "raw": "Pickup from one address and dropoff at another, just one box.",
+      "expectedCategory": "delivery"
+    },
+    {
+      "id": "blind_101",
+      "raw": "Repair the broken garden gate.",
+      "expectedCategory": "handyman"
+    },
+    {
+      "id": "blind_102",
+      "raw": "Fix a loose cabinet door in my kitchen.",
+      "expectedCategory": "handyman"
+    },
+    {
+      "id": "blind_103",
+      "raw": "Need a damaged shelf repaired.",
+      "expectedCategory": "handyman"
+    },
+    {
+      "id": "blind_104",
+      "raw": "Please fix the sticking bedroom door.",
+      "expectedCategory": "handyman"
+    },
+    {
+      "id": "blind_105",
+      "raw": "Repair a broken drawer track.",
+      "expectedCategory": "handyman"
+    },
+    {
+      "id": "blind_106",
+      "raw": "Need a curtain rod installed.",
+      "expectedCategory": "handyman"
+    },
+    {
+      "id": "blind_107",
+      "raw": "Fix a loose handrail on the stairs.",
+      "expectedCategory": "handyman"
+    },
+    {
+      "id": "blind_108",
+      "raw": "Please repair a small hole in the drywall.",
+      "expectedCategory": "handyman"
+    },
+    {
+      "id": "blind_109",
+      "raw": "Need a wall-mounted shelf installed.",
+      "expectedCategory": "assembly"
+    },
+    {
+      "id": "blind_110",
+      "raw": "Fix a cabinet hinge that came loose.",
+      "expectedCategory": "handyman"
+    },
+    {
+      "id": "blind_111",
+      "raw": "Repair the latch on my backyard gate.",
+      "expectedCategory": "handyman"
+    },
+    {
+      "id": "blind_112",
+      "raw": "Need a mirror mounted securely on the wall.",
+      "expectedCategory": "assembly"
+    },
+    {
+      "id": "blind_113",
+      "raw": "Please fix a wobbly interior door handle.",
+      "expectedCategory": "handyman"
+    },
+    {
+      "id": "blind_114",
+      "raw": "Install a towel rack in the bathroom.",
+      "expectedCategory": "handyman"
+    },
+    {
+      "id": "blind_115",
+      "raw": "Need a small section of drywall patched.",
+      "expectedCategory": "handyman"
+    },
+    {
+      "id": "blind_116",
+      "raw": "Repair a closet door that is off its track.",
+      "expectedCategory": "handyman"
+    },
+    {
+      "id": "blind_117",
+      "raw": "Install two floating shelves.",
+      "expectedCategory": "assembly"
+    },
+    {
+      "id": "blind_118",
+      "raw": "Fix a loose piece of trim near the doorway.",
+      "expectedCategory": "handyman"
+    },
+    {
+      "id": "blind_119",
+      "raw": "Need someone to mount a coat rack.",
+      "expectedCategory": "assembly"
+    },
+    {
+      "id": "blind_120",
+      "raw": "Repair a broken kitchen drawer.",
+      "expectedCategory": "handyman"
+    },
+    {
+      "id": "blind_121",
+      "raw": "Need someone to inspect and repair water damage on the ceiling.",
+      "expectedCategory": "home_services"
+    },
+    {
+      "id": "blind_122",
+      "raw": "There is mold-looking damage around a window that needs assessment.",
+      "expectedCategory": "home_services"
+    },
+    {
+      "id": "blind_123",
+      "raw": "Need help with damaged drywall after a small leak.",
+      "expectedCategory": "home_services"
+    },
+    {
+      "id": "blind_124",
+      "raw": "Please inspect the damaged area around my bathroom wall.",
+      "expectedCategory": "home_services"
+    },
+    {
+      "id": "blind_125",
+      "raw": "Need a home repair assessment for cracked plaster.",
+      "expectedCategory": "home_services"
+    },
+    {
+      "id": "blind_126",
+      "raw": "There is visible damage around a window frame after rain.",
+      "expectedCategory": "home_services"
+    },
+    {
+      "id": "blind_127",
+      "raw": "Need someone to assess a soft spot in the wall.",
+      "expectedCategory": "home_services"
+    },
+    {
+      "id": "blind_128",
+      "raw": "Please inspect a damaged section of ceiling and suggest repair.",
+      "expectedCategory": "home_services"
+    },
+    {
+      "id": "blind_129",
+      "raw": "Need help figuring out damage around the baseboard.",
+      "expectedCategory": "home_services"
+    },
+    {
+      "id": "blind_130",
+      "raw": "There is a stained ceiling area from an old leak.",
+      "expectedCategory": "home_services"
+    },
+    {
+      "id": "blind_131",
+      "raw": "Need general home repair for a damaged wall section.",
+      "expectedCategory": "home_services"
+    },
+    {
+      "id": "blind_132",
+      "raw": "Please inspect a cracked interior wall.",
+      "expectedCategory": "home_services"
+    },
+    {
+      "id": "blind_133",
+      "raw": "Need help repairing an area damaged by moisture.",
+      "expectedCategory": "home_services"
+    },
+    {
+      "id": "blind_134",
+      "raw": "There is peeling and damaged material around the window.",
+      "expectedCategory": "home_services"
+    },
+    {
+      "id": "blind_135",
+      "raw": "Need an assessment of minor structural-looking wall damage.",
+      "expectedCategory": "home_services"
+    },
+    {
+      "id": "blind_136",
+      "raw": "Please check a damaged patch of ceiling.",
+      "expectedCategory": "home_services"
+    },
+    {
+      "id": "blind_137",
+      "raw": "Need home repair help for a warped section near a doorway.",
+      "expectedCategory": "home_services"
+    },
+    {
+      "id": "blind_138",
+      "raw": "There is old water damage around the laundry room wall.",
+      "expectedCategory": "home_services"
+    },
+    {
+      "id": "blind_139",
+      "raw": "Need someone to inspect and repair a damaged interior surface.",
+      "expectedCategory": "home_services"
+    },
+    {
+      "id": "blind_140",
+      "raw": "Please assess damage around the corner of the room.",
+      "expectedCategory": "home_services"
+    },
+    {
+      "id": "blind_141",
+      "raw": "Need an oil change for my Honda Civic.",
+      "expectedCategory": "auto"
+    },
+    {
+      "id": "blind_142",
+      "raw": "My car battery is dead and needs replacement.",
+      "expectedCategory": "auto"
+    },
+    {
+      "id": "blind_143",
+      "raw": "Need brake pads replaced on my sedan.",
+      "expectedCategory": "auto"
+    },
+    {
+      "id": "blind_144",
+      "raw": "Car won't start, need someone to check it.",
+      "expectedCategory": "auto"
+    },
+    {
+      "id": "blind_145",
+      "raw": "Need a tire changed on my vehicle.",
+      "expectedCategory": "auto"
+    },
+    {
+      "id": "blind_146",
+      "raw": "Please replace the air filter in my car.",
+      "expectedCategory": "auto"
+    },
+    {
+      "id": "blind_147",
+      "raw": "Need a basic car diagnostic for a warning light.",
+      "expectedCategory": "auto"
+    },
+    {
+      "id": "blind_148",
+      "raw": "My vehicle needs a new battery installed.",
+      "expectedCategory": "auto"
+    },
+    {
+      "id": "blind_149",
+      "raw": "Need help replacing a flat tire.",
+      "expectedCategory": "auto"
+    },
+    {
+      "id": "blind_150",
+      "raw": "Please change the oil and filter in my car.",
+      "expectedCategory": "auto"
+    },
+    {
+      "id": "blind_151",
+      "raw": "Need someone to inspect noisy brakes.",
+      "expectedCategory": "auto"
+    },
+    {
+      "id": "blind_152",
+      "raw": "Car is drivable but the battery keeps dying.",
+      "expectedCategory": "auto"
+    },
+    {
+      "id": "blind_153",
+      "raw": "Need spark plugs replaced.",
+      "expectedCategory": "auto"
+    },
+    {
+      "id": "blind_154",
+      "raw": "Please install a replacement headlight bulb in my car.",
+      "expectedCategory": "auto"
+    },
+    {
+      "id": "blind_155",
+      "raw": "Need a mechanic to look at a rough idle.",
+      "expectedCategory": "auto"
+    },
+    {
+      "id": "blind_156",
+      "raw": "My car needs front brake service.",
+      "expectedCategory": "auto"
+    },
+    {
+      "id": "blind_157",
+      "raw": "Need a tire rotation for my SUV.",
+      "expectedCategory": "auto"
+    },
+    {
+      "id": "blind_158",
+      "raw": "Please replace the windshield wipers on my vehicle.",
+      "expectedCategory": "auto"
+    },
+    {
+      "id": "blind_159",
+      "raw": "Need help diagnosing why the car won't crank.",
+      "expectedCategory": "auto"
+    },
+    {
+      "id": "blind_160",
+      "raw": "Car needs a minor maintenance service.",
+      "expectedCategory": "auto"
+    },
+    {
+      "id": "blind_161",
+      "raw": "Need help setting up tables and chairs for a birthday party.",
+      "expectedCategory": "events"
+    },
+    {
+      "id": "blind_162",
+      "raw": "Looking for event help for a 30-person anniversary dinner.",
+      "expectedCategory": "events"
+    },
+    {
+      "id": "blind_163",
+      "raw": "Need someone to help serve food at a small party.",
+      "expectedCategory": "events"
+    },
+    {
+      "id": "blind_164",
+      "raw": "Birthday party for 20 guests needs setup assistance.",
+      "expectedCategory": "events"
+    },
+    {
+      "id": "blind_165",
+      "raw": "Need cleanup help after a family celebration.",
+      "expectedCategory": "events"
+    },
+    {
+      "id": "blind_166",
+      "raw": "Looking for someone to help run a backyard event.",
+      "expectedCategory": "events"
+    },
+    {
+      "id": "blind_167",
+      "raw": "Need two people for setup and cleanup at a graduation party.",
+      "expectedCategory": "events"
+    },
+    {
+      "id": "blind_168",
+      "raw": "Anniversary dinner for 18 people needs some extra hands.",
+      "expectedCategory": "events"
+    },
+    {
+      "id": "blind_169",
+      "raw": "Need help arranging decorations for a baby shower.",
+      "expectedCategory": "events"
+    },
+    {
+      "id": "blind_170",
+      "raw": "Small wedding reception needs setup support.",
+      "expectedCategory": "events"
+    },
+    {
+      "id": "blind_171",
+      "raw": "Looking for event staff for a 40-person gathering.",
+      "expectedCategory": "events"
+    },
+    {
+      "id": "blind_172",
+      "raw": "Need help with chairs, tables, and cleanup for a party.",
+      "expectedCategory": "events"
+    },
+    {
+      "id": "blind_173",
+      "raw": "Hosting a retirement dinner and need assistance.",
+      "expectedCategory": "events"
+    },
+    {
+      "id": "blind_174",
+      "raw": "Need someone to help with a community event setup.",
+      "expectedCategory": "events"
+    },
+    {
+      "id": "blind_175",
+      "raw": "Party tomorrow, need help serving and cleaning up.",
+      "expectedCategory": "events"
+    },
+    {
+      "id": "blind_176",
+      "raw": "Need an extra pair of hands for a bridal shower.",
+      "expectedCategory": "events"
+    },
+    {
+      "id": "blind_177",
+      "raw": "Hosting 25 guests and need event support.",
+      "expectedCategory": "events"
+    },
+    {
+      "id": "blind_178",
+      "raw": "Need help setting up decorations before a birthday.",
+      "expectedCategory": "events"
+    },
+    {
+      "id": "blind_179",
+      "raw": "Family gathering needs cleanup help afterward.",
+      "expectedCategory": "events"
+    },
+    {
+      "id": "blind_180",
+      "raw": "Need assistance with setup for a dinner event.",
+      "expectedCategory": "events"
+    },
+    {
+      "id": "blind_181",
+      "raw": "Need someone to walk my dog this evening.",
+      "expectedCategory": "pet_care"
+    },
+    {
+      "id": "blind_182",
+      "raw": "Looking for a sitter for my cat overnight.",
+      "expectedCategory": "pet_care"
+    },
+    {
+      "id": "blind_183",
+      "raw": "Need my two dogs fed and walked while I'm away.",
+      "expectedCategory": "pet_care"
+    },
+    {
+      "id": "blind_184",
+      "raw": "Please check on my cat and refill food and water.",
+      "expectedCategory": "pet_care"
+    },
+    {
+      "id": "blind_185",
+      "raw": "Need dog sitting for the weekend.",
+      "expectedCategory": "pet_care"
+    },
+    {
+      "id": "blind_186",
+      "raw": "Looking for someone to feed my rabbit tomorrow.",
+      "expectedCategory": "pet_care"
+    },
+    {
+      "id": "blind_187",
+      "raw": "Need a 30-minute dog walk.",
+      "expectedCategory": "pet_care"
+    },
+    {
+      "id": "blind_188",
+      "raw": "Please watch my puppy for a few hours.",
+      "expectedCategory": "pet_care"
+    },
+    {
+      "id": "blind_189",
+      "raw": "Need someone to care for two cats while I'm traveling.",
+      "expectedCategory": "pet_care"
+    },
+    {
+      "id": "blind_190",
+      "raw": "Looking for a pet sitter for one dog.",
+      "expectedCategory": "pet_care"
+    },
+    {
+      "id": "blind_191",
+      "raw": "Need my dog let out and fed at lunchtime.",
+      "expectedCategory": "pet_care"
+    },
+    {
+      "id": "blind_192",
+      "raw": "Please feed the cat and clean the litter box.",
+      "expectedCategory": "pet_care"
+    },
+    {
+      "id": "blind_193",
+      "raw": "Need someone to walk two dogs together.",
+      "expectedCategory": "pet_care"
+    },
+    {
+      "id": "blind_194",
+      "raw": "Looking for overnight care for my small dog.",
+      "expectedCategory": "pet_care"
+    },
+    {
+      "id": "blind_195",
+      "raw": "Need help checking on my pet bird for two days.",
+      "expectedCategory": "pet_care"
+    },
+    {
+      "id": "blind_196",
+      "raw": "Please visit my cat once in the evening.",
+      "expectedCategory": "pet_care"
+    },
+    {
+      "id": "blind_197",
+      "raw": "Need pet care while I'm out of town.",
+      "expectedCategory": "pet_care"
+    },
+    {
+      "id": "blind_198",
+      "raw": "Looking for someone to give my dog food and a walk.",
+      "expectedCategory": "pet_care"
+    },
+    {
+      "id": "blind_199",
+      "raw": "Need my puppy watched during the afternoon.",
+      "expectedCategory": "pet_care"
+    },
+    {
+      "id": "blind_200",
+      "raw": "Please care for my two cats this weekend.",
+      "expectedCategory": "pet_care"
+    },
+    {
+      "id": "blind_201",
+      "raw": "Paint the interior walls in my bedroom.",
+      "expectedCategory": "painting"
+    },
+    {
+      "id": "blind_202",
+      "raw": "Need the living room ceiling painted.",
+      "expectedCategory": "painting"
+    },
+    {
+      "id": "blind_203",
+      "raw": "Please repaint two doors and the trim.",
+      "expectedCategory": "painting"
+    },
+    {
+      "id": "blind_204",
+      "raw": "Need my backyard fence painted.",
+      "expectedCategory": "painting"
+    },
+    {
+      "id": "blind_205",
+      "raw": "Paint one bedroom, walls only.",
+      "expectedCategory": "painting"
+    },
+    {
+      "id": "blind_206",
+      "raw": "Need exterior wall painting on the back of the house.",
+      "expectedCategory": "painting"
+    },
+    {
+      "id": "blind_207",
+      "raw": "Please paint the deck after light prep.",
+      "expectedCategory": "painting"
+    },
+    {
+      "id": "blind_208",
+      "raw": "Need a hallway repainted.",
+      "expectedCategory": "painting"
+    },
+    {
+      "id": "blind_209",
+      "raw": "Paint the kitchen walls and ceiling.",
+      "expectedCategory": "painting"
+    },
+    {
+      "id": "blind_210",
+      "raw": "Need touch-up painting on interior walls.",
+      "expectedCategory": "painting"
+    },
+    {
+      "id": "blind_211",
+      "raw": "Please repaint the front door.",
+      "expectedCategory": "painting"
+    },
+    {
+      "id": "blind_212",
+      "raw": "Need two coats of paint on the bedroom walls.",
+      "expectedCategory": "painting"
+    },
+    {
+      "id": "blind_213",
+      "raw": "Paint the baseboards and trim in one room.",
+      "expectedCategory": "painting"
+    },
+    {
+      "id": "blind_214",
+      "raw": "Need my fence scraped and painted.",
+      "expectedCategory": "painting"
+    },
+    {
+      "id": "blind_215",
+      "raw": "Please paint a small bathroom ceiling.",
+      "expectedCategory": "painting"
+    },
+    {
+      "id": "blind_216",
+      "raw": "Need exterior trim repainted.",
+      "expectedCategory": "painting"
+    },
+    {
+      "id": "blind_217",
+      "raw": "Paint three interior doors.",
+      "expectedCategory": "painting"
+    },
+    {
+      "id": "blind_218",
+      "raw": "Need a wall patched lightly and then painted.",
+      "expectedCategory": "painting"
+    },
+    {
+      "id": "blind_219",
+      "raw": "Please repaint the living room walls.",
+      "expectedCategory": "painting"
+    },
+    {
+      "id": "blind_220",
+      "raw": "Need the deck stained or painted.",
+      "expectedCategory": "painting"
+    },
+    {
+      "id": "blind_221",
+      "raw": "Fix a leaking kitchen faucet.",
+      "expectedCategory": "plumbing"
+    },
+    {
+      "id": "blind_222",
+      "raw": "My bathroom sink is clogged.",
+      "expectedCategory": "plumbing"
+    },
+    {
+      "id": "blind_223",
+      "raw": "Need a toilet repaired because it keeps running.",
+      "expectedCategory": "plumbing"
+    },
+    {
+      "id": "blind_224",
+      "raw": "Replace the pipe under my sink.",
+      "expectedCategory": "plumbing"
+    },
+    {
+      "id": "blind_225",
+      "raw": "Shower drain is blocked and draining slowly.",
+      "expectedCategory": "plumbing"
+    },
+    {
+      "id": "blind_226",
+      "raw": "Need a new faucet installed.",
+      "expectedCategory": "plumbing"
+    },
+    {
+      "id": "blind_227",
+      "raw": "There is an active leak under the bathroom sink.",
+      "expectedCategory": "plumbing"
+    },
+    {
+      "id": "blind_228",
+      "raw": "My toilet is clogged and won't flush properly.",
+      "expectedCategory": "plumbing"
+    },
+    {
+      "id": "blind_229",
+      "raw": "Need the water heater checked because there is no hot water.",
+      "expectedCategory": "plumbing"
+    },
+    {
+      "id": "blind_230",
+      "raw": "Replace a leaking section of pipe.",
+      "expectedCategory": "plumbing"
+    },
+    {
+      "id": "blind_231",
+      "raw": "Kitchen sink has very low water pressure.",
+      "expectedCategory": "plumbing"
+    },
+    {
+      "id": "blind_232",
+      "raw": "Need a shower fixture replaced.",
+      "expectedCategory": "plumbing"
+    },
+    {
+      "id": "blind_233",
+      "raw": "Bathroom faucet is dripping constantly.",
+      "expectedCategory": "plumbing"
+    },
+    {
+      "id": "blind_234",
+      "raw": "Need a clogged drain cleared.",
+      "expectedCategory": "plumbing"
+    },
+    {
+      "id": "blind_235",
+      "raw": "Please install a replacement toilet.",
+      "expectedCategory": "plumbing"
+    },
+    {
+      "id": "blind_236",
+      "raw": "Pipe under the sink is leaking.",
+      "expectedCategory": "plumbing"
+    },
+    {
+      "id": "blind_237",
+      "raw": "Need a bathtub faucet repaired.",
+      "expectedCategory": "plumbing"
+    },
+    {
+      "id": "blind_238",
+      "raw": "Water pressure is low at the kitchen sink.",
+      "expectedCategory": "plumbing"
+    },
+    {
+      "id": "blind_239",
+      "raw": "Need a bathroom drain unclogged.",
+      "expectedCategory": "plumbing"
+    },
+    {
+      "id": "blind_240",
+      "raw": "Replace an old faucet with a new one.",
+      "expectedCategory": "plumbing"
+    },
+    {
+      "id": "blind_241",
+      "raw": "Replace a broken light switch.",
+      "expectedCategory": "electrical"
+    },
+    {
+      "id": "blind_242",
+      "raw": "One outlet in my bedroom has no power.",
+      "expectedCategory": "electrical"
+    },
+    {
+      "id": "blind_243",
+      "raw": "Need a ceiling fan installed.",
+      "expectedCategory": "electrical"
+    },
+    {
+      "id": "blind_244",
+      "raw": "Kitchen light keeps flickering.",
+      "expectedCategory": "electrical"
+    },
+    {
+      "id": "blind_245",
+      "raw": "Breaker keeps tripping when I use the outlet.",
+      "expectedCategory": "electrical"
+    },
+    {
+      "id": "blind_246",
+      "raw": "Need a new wall outlet installed.",
+      "expectedCategory": "electrical"
+    },
+    {
+      "id": "blind_247",
+      "raw": "Replace an old ceiling light fixture.",
+      "expectedCategory": "electrical"
+    },
+    {
+      "id": "blind_248",
+      "raw": "My doorbell stopped working.",
+      "expectedCategory": "electrical"
+    },
+    {
+      "id": "blind_249",
+      "raw": "Need a faulty switch repaired.",
+      "expectedCategory": "electrical"
+    },
+    {
+      "id": "blind_250",
+      "raw": "Install two light fixtures in the hallway.",
+      "expectedCategory": "electrical"
+    },
+    {
+      "id": "blind_251",
+      "raw": "One outlet is not working at all.",
+      "expectedCategory": "electrical"
+    },
+    {
+      "id": "blind_252",
+      "raw": "Need a ceiling fan replaced.",
+      "expectedCategory": "electrical"
+    },
+    {
+      "id": "blind_253",
+      "raw": "The breaker for my bedroom keeps tripping.",
+      "expectedCategory": "electrical"
+    },
+    {
+      "id": "blind_254",
+      "raw": "Replace a damaged electrical outlet.",
+      "expectedCategory": "electrical"
+    },
+    {
+      "id": "blind_255",
+      "raw": "Need a new light switch installed.",
+      "expectedCategory": "electrical"
+    },
+    {
+      "id": "blind_256",
+      "raw": "Existing ceiling light flickers constantly.",
+      "expectedCategory": "electrical"
+    },
+    {
+      "id": "blind_257",
+      "raw": "Please install a replacement doorbell.",
+      "expectedCategory": "electrical"
+    },
+    {
+      "id": "blind_258",
+      "raw": "Need an electrician to check a dead outlet.",
+      "expectedCategory": "electrical"
+    },
+    {
+      "id": "blind_259",
+      "raw": "Replace an old wall switch.",
+      "expectedCategory": "electrical"
+    },
+    {
+      "id": "blind_260",
+      "raw": "Need a ceiling light installed where wiring already exists.",
+      "expectedCategory": "electrical"
+    },
+    {
+      "id": "blind_261",
+      "raw": "Need some help around the house.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_262",
+      "raw": "Can someone come by and help me out?",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_263",
+      "raw": "I have a few things that need doing.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_264",
+      "raw": "Need someone ASAP.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_265",
+      "raw": "Looking for help this weekend.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_266",
+      "raw": "Can anyone handle a small job for me?",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_267",
+      "raw": "Need a person for about an hour.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_268",
+      "raw": "Something at home needs attention.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_269",
+      "raw": "I need help with a thing in my apartment.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_270",
+      "raw": "Small job, shouldn't take long.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_271",
+      "raw": "Need somebody local to help tomorrow.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_272",
+      "raw": "Looking for someone handy.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_273",
+      "raw": "Can someone take care of this for me?",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_274",
+      "raw": "I have a quick task.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_275",
+      "raw": "Need help at my place.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_276",
+      "raw": "Looking for general assistance.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_277",
+      "raw": "Can somebody help with a home project?",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_278",
+      "raw": "Need a reliable person for a small task.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_279",
+      "raw": "I have something that needs fixing or sorting out.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_280",
+      "raw": "Need help with an issue at home.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_281",
+      "raw": "Can someone help me with this?",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_282",
+      "raw": "Quick job available.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_283",
+      "raw": "Need assistance sometime today.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_284",
+      "raw": "Looking for a person to do a task.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_285",
+      "raw": "There's something I need taken care of.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_286",
+      "raw": "Need help with a few odd things.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_287",
+      "raw": "Small household task.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_288",
+      "raw": "Need someone to come over for a job.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_289",
+      "raw": "Could use some help around here.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_290",
+      "raw": "I need a hand with something.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_291",
+      "raw": "Need somebody for a basic task.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_292",
+      "raw": "Looking for help at home.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_293",
+      "raw": "Can someone assist me this afternoon?",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_294",
+      "raw": "Need a quick service call.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_295",
+      "raw": "I have a job that needs doing.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_296",
+      "raw": "Need someone experienced.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_297",
+      "raw": "Looking for someone available tomorrow.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_298",
+      "raw": "Can you send someone to help?",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_299",
+      "raw": "Need help with a small project.",
+      "expectedCategory": null
+    },
+    {
+      "id": "blind_300",
+      "raw": "Something needs to be done before Friday.",
+      "expectedCategory": null
+    }
+  ]
+}

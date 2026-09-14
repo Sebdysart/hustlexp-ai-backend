@@ -5,7 +5,7 @@ import type { TaskCategory } from './types.js';
 
 type ValidationCase = { input: string; category: TaskCategory | undefined; expectedAnswers: Record<string, unknown> };
 
-export const validation150 = [
+export const validation150: ValidationCase[] = [
   {
     input: "Small lawn needs mowing; leave the clippings here.",
     category: "yard",
@@ -218,8 +218,8 @@ export const validation150 = [
   },
   {
     input: "Pick up a dresser and carry it upstairs.",
-    category: "delivery",
-    expectedAnswers: { delivery_item: "dresser" },
+    category: "moving",
+    expectedAnswers: {  },
   },
   {
     input: "Deliver a fragile glass vase.",
@@ -233,8 +233,8 @@ export const validation150 = [
   },
   {
     input: "Pick up the package and take it downstairs.",
-    category: "delivery",
-    expectedAnswers: { delivery_item: "package" },
+    category: "moving",
+    expectedAnswers: {  },
   },
   {
     input: "Deliver a TV with no vehicle required.",

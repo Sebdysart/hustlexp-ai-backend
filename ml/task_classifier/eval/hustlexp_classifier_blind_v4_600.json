@@ -1,0 +1,3602 @@
+[
+  {
+    "id": "v4-0474",
+    "input": "Posting this for my parents: i need a new faucet installed; replacement is already here. Thanks.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0206",
+    "input": "For tomorrow, a cabinet hinge has come loose and the door hangs crooked. Parking is easy.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0365",
+    "input": "Hi \u2014 need someone to clean the litter box and feed the cat. Morning would be easiest.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0079",
+    "input": "Not urgent, but the house is mostly tidy, just needs bathrooms and floors done. The place is occupied.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0429",
+    "input": "Not urgent, but need the spare room walls redone in a lighter color. The place is occupied.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0530",
+    "input": "Quick job: can somebody help with a project? Ideally this week.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0033",
+    "input": "Before the weekend, the hedge by the driveway is swallowing the mailbox. Trim it back. Please message before arriving.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0231",
+    "input": "Garden gate won't latch anymore; repair it.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0162",
+    "input": "Bit of an odd one: collect the flowers from the shop and bring them to the venue. No rush.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0563",
+    "input": "If anyone is free, looking for a reliable person for a small job. I can be flexible on timing.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0249",
+    "input": "Not urgent, but please inspect damage around the window frame. The place is occupied.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0126",
+    "input": "For tomorrow, build the new dining table from the supplied parts. Parking is easy.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0531",
+    "input": "Hey, need someone for about an hour. That's the main thing.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0493",
+    "input": "Before the weekend, breaker trips whenever the microwave runs. Please message before arriving.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0292",
+    "input": "Bit of an odd one: steering wheel shakes once I get above highway speed. No rush. This is about the vehicle itself, not the garage.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0594",
+    "input": "Need a person to come take care of something.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0111",
+    "input": "Take the dresser from the bedroom upstairs to the garage.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0073",
+    "input": "Before the weekend, please clean the downstairs rooms; supplies are already here. Please message before arriving.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0412",
+    "input": "Bit of an odd one: repaint the bedroom ceiling white. No rush. The wall itself is sound; it only needs the finish redone.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0338",
+    "input": "Hey, hosting a company mixer and need check-in help. That's the main thing.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0352",
+    "input": "Bit of an odd one: small anniversary dinner for 18. people; need someone to help serve. No rush. This is for hosted guests, not just dinner for us.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0329",
+    "input": "Not urgent, but private dinner with 24 guests needs serving assistance. The place is occupied.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0036",
+    "input": "For tomorrow, branches from last night's wind. are scattered across the backyard. Parking is easy.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0419",
+    "input": "Not urgent, but need the spare room walls redone in a lighter color. The place is occupied.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0573",
+    "input": "If anyone is free, looking for local help. I can be flexible on timing.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0060",
+    "input": "If anyone is free, need a move-out clean for a small apartment. I can be flexible on timing.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0096",
+    "input": "For tomorrow, bring the washing machine from. the patio into the utility room. Parking is easy.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0398",
+    "input": "Hey, please watch my puppy for a few hours. That's the main thing.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0170",
+    "input": "If anyone is free, i need a same-day document dropoff downtown. I can be flexible on timing.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0007",
+    "input": "Quick job: rake the lawn and leave the clippings in the green bin. Ideally this week.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0333",
+    "input": "Before the weekend, looking for event staff for a backyard graduation gathering. Please message before arriving.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0131",
+    "input": "Flat-pack wardrobe is still in the boxes and needs putting together.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0400",
+    "input": "If anyone is free, walk the dog and wipe. his paws when you come back. I can be flexible on timing.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0532",
+    "input": "Not urgent, but i have something that needs fixing up. The place is occupied.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0251",
+    "input": "There is damp damage on the wall and I need someone to assess the area.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0057",
+    "input": "Quick job: one bedroom and the hall are dusty after some renovation work. Ideally this week.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0396",
+    "input": "For tomorrow, take the dog out, give. him dinner, and lock up afterward. Parking is easy.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0055",
+    "input": "Hi \u2014 the oven, counters, and floors all need attention. Morning would be easiest.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0193",
+    "input": "Before the weekend, need a small dresser picked up from a seller and delivered here. Please message before arriving.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0214",
+    "input": "Posting this for my parents: the curtain rod pulled partly out of the wall. Thanks.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0430",
+    "input": "If anyone is free, exterior wall section needs repainting where the old finish peeled. I can be flexible on timing.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0342",
+    "input": "Bit of an odd one: small anniversary dinner for 18 people; need someone to help serve. No rush.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0452",
+    "input": "Bit of an odd one: toilet keeps running after it fills. No rush. The cabinet around it is fine.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0093",
+    "input": "Before the weekend, carry five dining chairs up one floor; no van needed. Please message before arriving.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0339",
+    "input": "Not urgent, but private dinner with 24 guests needs serving assistance. The place is occupied.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0442",
+    "input": "Bit of an odd one: toilet keeps running after it fills. No rush.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0597",
+    "input": "Posting this for my parents: i need help around the property. Thanks.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0225",
+    "input": "Hi \u2014 need someone to repair a broken drawer runner. Morning would be easiest.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0067",
+    "input": "Quick job: one bedroom and the hall are dusty after some renovation work. Ideally this week.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0119",
+    "input": "Not urgent, but move several storage bins from the attic down to the hallway. The place is occupied.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0486",
+    "input": "For tomorrow, ceiling fan has power but won't spin. Parking is easy.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0312",
+    "input": "Bit of an odd one: steering wheel shakes once I get above highway speed. No rush. This is about the vehicle itself, not the garage.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0374",
+    "input": "Posting this for my parents: looking for a sitter for one dog for the afternoon. Thanks.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0330",
+    "input": "If anyone is free, i need teardown help after a community event. I can be flexible on timing.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0282",
+    "input": "Bit of an odd one: steering wheel shakes once I get above highway speed. No rush.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0363",
+    "input": "Before the weekend, check on two rabbits and refill their hay. Please message before arriving.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0451",
+    "input": "Kitchen sink is draining very slowly.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0437",
+    "input": "Quick job: please paint the hallway; prep has already been done. Ideally this week.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0315",
+    "input": "Hi \u2014 battery keeps going flat overnight. Morning would be easiest.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0461",
+    "input": "Kitchen sink is draining very slowly.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0407",
+    "input": "Quick job: paint the hallway; prep has already been done. Ideally this week.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0395",
+    "input": "Hi \u2014 need someone to clean the litter box and feed the cat. Morning would be easiest.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0438",
+    "input": "Hey, front door needs a new coat of paint. That's the main thing.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0102",
+    "input": "Bit of an odd one: i need help shifting a couch and two chairs into the next room. No rush.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0110",
+    "input": "If anyone is free, help relocate a bookcase inside the house. I can be flexible on timing.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0083",
+    "input": "Before the weekend, carry five dining chairs up one floor; no van needed. Please message before arriving.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0130",
+    "input": "If anyone is free, the crib arrived disassembled and needs putting together. I can be flexible on timing.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0207",
+    "input": "Quick job: patch a few small holes left by old wall anchors. Ideally this week.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0323",
+    "input": "Before the weekend, looking for event staff for a backyard graduation gathering. Please message before arriving.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0565",
+    "input": "Bit of an odd one: i need some help this weekend. No rush.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0161",
+    "input": "Pick up a boxed monitor from Bellevue and drop it at my place.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0003",
+    "input": "Before the weekend, the hedge by the driveway is swallowing the mailbox. Trim it back. Please message before arriving.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0048",
+    "input": "Hey, can someone clean three rooms. upstairs and bring their own supplies? That's the main thing.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0306",
+    "input": "For tomorrow, engine is running rough and the check-engine light came on. Parking is easy.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0245",
+    "input": "Hi \u2014 need someone to look at a damaged section of drywall and assess it. Morning would be easiest.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0320",
+    "input": "If anyone is free, vehicle starts, but stalls a few seconds later. I can be flexible on timing.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0401",
+    "input": "Living room walls need a fresh coat; paint is already here.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0223",
+    "input": "Before the weekend, loose shelf bracket needs fixing before it falls. Please message before arriving.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0434",
+    "input": "Posting this for my parents: touch up the scuffed trim around three doors. Thanks.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0572",
+    "input": "Not urgent, but i have something that needs fixing up. The place is occupied.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0220",
+    "input": "If anyone is free, need a mirror bracket repaired, not the mirror itself. I can be flexible on timing.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0416",
+    "input": "For tomorrow, kitchen walls need repainting after patch work. Parking is easy.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0104",
+    "input": "Posting this for my parents: move boxes from the basement into the spare room. Thanks. No pickup from another address is involved.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0211",
+    "input": "Garden gate won't latch anymore; repair it.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0168",
+    "input": "Hey, pick up a chair from a marketplace. seller and drop it off at my apartment. That's the main thing.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0408",
+    "input": "Hey, front door needs a new coat of paint. That's the main thing.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0585",
+    "input": "Bit of an odd one: i need some help this weekend. No rush.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0366",
+    "input": "For tomorrow, take the dog out, give him dinner, and lock up afterward. Parking is easy.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0250",
+    "input": "If anyone is free, a section of wall was damaged and I need the affected area evaluated. I can be flexible on timing.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0381",
+    "input": "Feed the cat and refresh her water while I'm away.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0164",
+    "input": "Posting this for my parents: please take this package to the office across town. Thanks.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0433",
+    "input": "Before the weekend, exterior fence needs painting before winter. Please message before arriving.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0229",
+    "input": "Not urgent, but fix the cracked wooden step by the back door. The place is occupied.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0047",
+    "input": "Quick job: one bedroom and the hall are dusty after some renovation work. Ideally this week.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0411",
+    "input": "Living room walls need a fresh coat; paint is already here.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0143",
+    "input": "Before the weekend, can you put together a new desk and office chair? Please message before arriving.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0507",
+    "input": "Quick job: doorbell isn't working anymore. Ideally this week.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0271",
+    "input": "There is damp damage on the wall and I need someone to assess the area.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0453",
+    "input": "Before the weekend, there is an active leak under the bathroom sink. Please message before arriving.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0200",
+    "input": "If anyone is free, need a same-day document dropoff downtown. I can be flexible on timing.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0212",
+    "input": "Bit of an odd one: bedroom door sticks badly and needs adjusting. No rush. The light beside it works fine.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0260",
+    "input": "If anyone is free, a section of wall was damaged. and I need the affected area evaluated. I can be flexible on timing.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0116",
+    "input": "For tomorrow, bring the washing machine from. the patio into the utility room. Parking is easy.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0081",
+    "input": "Take the dresser from the bedroom upstairs to the garage.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0031",
+    "input": "Back patch is getting wild; knock the grass down and edge along the paving.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0554",
+    "input": "Need a person to come take care of something.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0557",
+    "input": "Posting this for my parents: i need help around the property. Thanks.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0379",
+    "input": "Not urgent, but need help giving fresh food and water to the birds. The place is occupied.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0403",
+    "input": "Before the weekend, exterior fence needs painting before winter. Please message before arriving.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0224",
+    "input": "Posting this for my parents: the curtain rod pulled partly out of the wall. Thanks. The light beside it works fine.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0371",
+    "input": "Feed the cat and refresh her water while I'm away.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0180",
+    "input": "If anyone is free, need a same-day document dropoff downtown. I can be flexible on timing.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0422",
+    "input": "Bit of an odd one: repaint the bedroom ceiling white. No rush.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0008",
+    "input": "Hey, need the overgrown shrubs along the fence shaped up. That's the main thing.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0049",
+    "input": "Not urgent, but the house is mostly tidy, just needs bathrooms and floors done. The place is occupied.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0264",
+    "input": "Posting this for my parents: there is visible damage around. the baseboard after a leak. Thanks. I am not asking for painting yet.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0061",
+    "input": "Kitchen and two bathrooms need a proper scrub before guests arrive.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0509",
+    "input": "Not urgent, but kitchen light keeps cutting in and out. The place is occupied.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0570",
+    "input": "Quick job: can somebody help with a project? Ideally this week.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0189",
+    "input": "Not urgent, but take a sealed box from my house to my sister's place. The place is occupied.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0528",
+    "input": "Hi \u2014 looking for someone handy. Morning would be easiest.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0270",
+    "input": "If anyone is free, a section of wall was damaged and I need the affected area evaluated. I can be flexible on timing.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0600",
+    "input": "Quick job: looking for someone tomorrow afternoon. Ideally this week.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0268",
+    "input": "Hey, there is staining and deterioration. around one corner of the ceiling. That's the main thing.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0195",
+    "input": "Hi \u2014 courier needed for a fragile artwork pickup this afternoon. Morning would be easiest.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0586",
+    "input": "Before the weekend, could use an extra pair of hands. Please message before arriving.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0505",
+    "input": "Hi \u2014 bedroom switch stopped working. Morning would be easiest.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0472",
+    "input": "Bit of an odd one: toilet keeps running after it fills. No rush. The cabinet around it is fine.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0335",
+    "input": "Hi \u2014 wedding reception needs extra hands for guest seating. Morning would be easiest.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0423",
+    "input": "Before the weekend, exterior fence needs painting before winter. Please message before arriving.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0382",
+    "input": "Bit of an odd one: i need someone to walk my dog twice this Saturday. No rush.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0125",
+    "input": "Hi \u2014 there is a shoe rack in pieces that needs assembly. Morning would be easiest.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0239",
+    "input": "Not urgent, but fix the cracked wooden step by the back door. The place is occupied.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0232",
+    "input": "Bit of an odd one: bedroom door sticks badly and needs adjusting. No rush. The light beside it works fine.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0144",
+    "input": "Posting this for my parents: tV wall bracket is here;. mount the television on it. Thanks. The wall itself is not damaged.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0587",
+    "input": "Posting this for my parents: there is a job around. the house I need done. Thanks.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0547",
+    "input": "Posting this for my parents: there is a job around. the house I need done. Thanks.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0484",
+    "input": "Posting this for my parents: need a new light fixture. installed where wiring already exists. Thanks.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0001",
+    "input": "Back patch is getting wild; knock the grass down and edge along the paving.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0317",
+    "input": "Quick job: car pulls to one side under braking. Ideally this week.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0569",
+    "input": "For tomorrow, i need assistance with a task. Parking is easy.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0124",
+    "input": "Posting this for my parents: tV wall bracket is here;. mount the television on it. Thanks.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0302",
+    "input": "Bit of an odd one: steering wheel shakes once I get above highway speed. No rush.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0226",
+    "input": "For tomorrow, a cabinet hinge has come loose and the door hangs crooked. Parking is easy.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0029",
+    "input": "Not urgent, but small garden area needs cleanup after pruning. The place is occupied.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0255",
+    "input": "Hi \u2014 need someone to look at a damaged section of drywall and assess it. Morning would be easiest.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0300",
+    "input": "If anyone is free, vehicle starts, but stalls a few seconds later. I can be flexible on timing.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0331",
+    "input": "Need help setting up tables and chairs for a birthday party.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0024",
+    "input": "Posting this for my parents: front lawn needs a cut before the weekend. Thanks. No indoor work is needed.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0539",
+    "input": "For tomorrow, i have some work that needs doing. Parking is easy.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0497",
+    "input": "Quick job: doorbell isn't working anymore. Ideally this week.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0475",
+    "input": "Hi \u2014 shower has almost no water pressure. Morning would be easiest.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0128",
+    "input": "Hey, please assemble three bar stools. That's the main thing.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0016",
+    "input": "For tomorrow, branches from last night's wind. are scattered across the backyard. Parking is easy.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0174",
+    "input": "Posting this for my parents: please take this package to the office across town. Thanks.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0032",
+    "input": "Bit of an odd one: could use someone to clear the leaves. from the side yard and bag them. No rush. No indoor work is needed.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0291",
+    "input": "Car cranks but won't actually start.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0276",
+    "input": "For tomorrow, the wall has a soft. swollen patch near the floor. Parking is easy.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0593",
+    "input": "If anyone is free, looking for local help. I can be flexible on timing.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0046",
+    "input": "For tomorrow, i need the place cleaned top to bottom before handover. Parking is easy.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0203",
+    "input": "Before the weekend, loose shelf bracket needs fixing before it falls. Please message before arriving.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0377",
+    "input": "Quick job: two cats need morning feeding for three days. Ideally this week.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0373",
+    "input": "Before the weekend, please check on two rabbits and refill their hay. Please message before arriving.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0118",
+    "input": "Hey, shift the bed frame from one bedroom to another. That's the main thing.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0490",
+    "input": "If anyone is free, a breaker in the panel is getting hot and needs checking. I can be flexible on timing.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0525",
+    "input": "Bit of an odd one: i need some help this weekend. No rush.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0284",
+    "input": "Posting this for my parents: there is a grinding noise. from the front wheel when turning. Thanks.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0241",
+    "input": "There is damp damage on the wall and I need someone to assess the area.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0138",
+    "input": "Hey, please assemble three bar stools. That's the main thing.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0325",
+    "input": "Hi \u2014 wedding reception needs extra hands for guest seating. Morning would be easiest.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0478",
+    "input": "Hey, water heater isn't producing hot water. That's the main thing.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0308",
+    "input": "Hey, air conditioner blows warm even. with the setting on cold. That's the main thing.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0314",
+    "input": "Posting this for my parents: there is a grinding noise from the front wheel when turning. Thanks.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0571",
+    "input": "Hey, need someone for about an hour. That's the main thing.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0201",
+    "input": "Garden gate won't latch anymore; repair it.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0336",
+    "input": "For tomorrow, can someone help run food and. clear tables at a family celebration? Parking is easy.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0378",
+    "input": "Hey, please watch my puppy for a few hours. That's the main thing.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0196",
+    "input": "For tomorrow, collect two tires from the garage. and deliver them to my address. Parking is easy.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0428",
+    "input": "Hey, front door needs a new coat of paint. That's the main thing.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0435",
+    "input": "Hi \u2014 deck boards are ready and need two coats. Morning would be easiest.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0063",
+    "input": "Before the weekend, clean the downstairs rooms; supplies are already here. Please message before arriving.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0254",
+    "input": "Posting this for my parents: there is visible damage around the baseboard after a leak. Thanks.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0222",
+    "input": "Bit of an odd one: bedroom door sticks badly and needs adjusting. No rush.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0186",
+    "input": "For tomorrow, collect two tires from the garage and deliver them to my address. Parking is easy.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0204",
+    "input": "Posting this for my parents: the curtain rod pulled partly out of the wall. Thanks.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0184",
+    "input": "Posting this for my parents: please take this package to the office across town. Thanks. Nothing inside the house needs rearranging.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0455",
+    "input": "Hi \u2014 shower has almost no water pressure. Morning would be easiest.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0534",
+    "input": "Need a person to come take care of something.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0087",
+    "input": "Quick job: need two people to lift a heavy cabinet upstairs. Ideally this week.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0341",
+    "input": "Need help setting up tables and chairs for a birthday party.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0368",
+    "input": "Hey, please watch my puppy for a few hours. That's the main thing.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0543",
+    "input": "If anyone is free, looking for a reliable person for a small job. I can be flexible on timing.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0248",
+    "input": "Hey, there is staining and deterioration. around one corner of the ceiling. That's the main thing.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0492",
+    "input": "Bit of an odd one: ceiling light flickers even after changing the bulb. No rush. The shelf next to it does not need work.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0517",
+    "input": "Quick job: doorbell isn't working anymore. Ideally this week.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0318",
+    "input": "Hey, air conditioner blows warm even with the setting on cold. That's the main thing.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0383",
+    "input": "Before the weekend, check on two rabbits and refill their hay. Please message before arriving.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0082",
+    "input": "Bit of an odd one: i need help shifting a couch and two chairs into the next room. No rush.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0050",
+    "input": "If anyone is free, i need a move-out clean for a small apartment. I can be flexible on timing.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0480",
+    "input": "If anyone is free, the leak has stopped, but. the pipe still needs repair. I can be flexible on timing.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0253",
+    "input": "Before the weekend, please check the cracked plaster around the window and tell me what repair it needs. Please message before arriving.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0109",
+    "input": "Not urgent, but move several storage bins from the attic down to the hallway. The place is occupied.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0041",
+    "input": "Kitchen and two bathrooms need a proper scrub before guests arrive.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0005",
+    "input": "Hi \u2014 weeds have taken over the flower beds; pull them and tidy the soil. Morning would be easiest.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0293",
+    "input": "Before the weekend, brake pedal feels soft and takes more travel than usual. Please message before arriving.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0549",
+    "input": "For tomorrow, i need assistance with a task. Parking is easy.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0244",
+    "input": "Posting this for my parents: there is visible damage around. the baseboard after a leak. Thanks.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0006",
+    "input": "For tomorrow, branches from last night's wind are scattered across the backyard. Parking is easy.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0322",
+    "input": "Bit of an odd one: small anniversary dinner for 18 people; need someone to help serve. No rush.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0546",
+    "input": "Before the weekend, could use an extra pair of hands. Please message before arriving.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0139",
+    "input": "Not urgent, but wall-mounted storage rack needs to be installed. The place is occupied.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0020",
+    "input": "If anyone is free, the grass behind the house is knee high now. I can be flexible on timing.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0022",
+    "input": "Bit of an odd one: could use someone to clear the leaves from the side yard and bag them. No rush.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0069",
+    "input": "Not urgent, but the house is mostly tidy, just needs bathrooms and floors done. The place is occupied.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0155",
+    "input": "Hi \u2014 there is a shoe rack in pieces that needs assembly. Morning would be easiest.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0030",
+    "input": "If anyone is free, the grass behind the house is knee high now. I can be flexible on timing.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0343",
+    "input": "Before the weekend, looking for event staff for a backyard graduation gathering. Please message before arriving.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0208",
+    "input": "Hey, the bathroom towel rail is wobbling and needs securing. That's the main thing.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0240",
+    "input": "If anyone is free, need a mirror bracket repaired, not the mirror itself. I can be flexible on timing.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0194",
+    "input": "Posting this for my parents: please take this package to the office across town. Thanks.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0145",
+    "input": "Hi \u2014 there is a shoe rack in pieces that needs assembly. Morning would be easiest.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0015",
+    "input": "Hi \u2014 weeds have taken over the flower beds; pull them and tidy the soil. Morning would be easiest.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0540",
+    "input": "Quick job: looking for someone tomorrow afternoon. Ideally this week.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0243",
+    "input": "Before the weekend, check the cracked plaster around the window and tell me what repair it needs. Please message before arriving.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0421",
+    "input": "Living room walls need a fresh coat; paint is already here.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0574",
+    "input": "Need a person to come take care of something.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0025",
+    "input": "Hi \u2014 weeds have taken over the flower beds; pull them and tidy the soil. Morning would be easiest.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0221",
+    "input": "Garden gate won't latch anymore; repair it.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0108",
+    "input": "Hey, shift the bed frame from one bedroom to another. That's the main thing.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0101",
+    "input": "Take the dresser from the bedroom upstairs to the garage.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0272",
+    "input": "Bit of an odd one: ceiling has a patch of. water damage that needs inspection. No rush. I am not asking for painting yet.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0098",
+    "input": "Hey, shift the bed frame from one bedroom to another. That's the main thing.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0106",
+    "input": "For tomorrow, bring the washing machine from the patio into the utility room. Parking is easy.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0439",
+    "input": "Not urgent, but need the spare room walls redone in a lighter color. The place is occupied.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0070",
+    "input": "If anyone is free, i need a move-out clean for a small apartment. I can be flexible on timing.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0290",
+    "input": "If anyone is free, vehicle starts, but stalls a few seconds later. I can be flexible on timing.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0406",
+    "input": "For tomorrow, kitchen walls need repainting after patch work. Parking is easy.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0088",
+    "input": "Hey, shift the bed frame from one bedroom to another. That's the main thing.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0035",
+    "input": "Hi \u2014 weeds have taken over the flower beds; pull them and tidy the soil. Morning would be easiest.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0583",
+    "input": "If anyone is free, looking for a reliable person for a small job. I can be flexible on timing.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0279",
+    "input": "Not urgent, but inspect damage around the window frame. The place is occupied.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0498",
+    "input": "Hey, i need an existing outlet replaced. That's the main thing.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0181",
+    "input": "Pick up a boxed monitor from Bellevue and drop it at my place.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0483",
+    "input": "Before the weekend, breaker trips whenever the microwave runs. Please message before arriving.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0044",
+    "input": "Posting this for my parents: looking for someone to do a. normal weekly clean of the flat. Thanks.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0521",
+    "input": "Hey, i need a hand with something at home. That's the main thing.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0213",
+    "input": "Before the weekend, loose shelf bracket needs fixing before it falls. Please message before arriving.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0454",
+    "input": "Posting this for my parents: i need a new faucet installed; replacement is already here. Thanks.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0476",
+    "input": "For tomorrow, pipe under the sink is leaking at the joint. Parking is easy.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0273",
+    "input": "Before the weekend, please check the cracked plaster around the window and tell me what repair it needs. Please message before arriving.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0515",
+    "input": "Hi \u2014 bedroom switch stopped working. Morning would be easiest.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0135",
+    "input": "Hi \u2014 there is a shoe rack in pieces that needs assembly. Morning would be easiest.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0004",
+    "input": "Posting this for my parents: front lawn needs a cut before the weekend. Thanks.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0064",
+    "input": "Posting this for my parents: looking for someone to do a. normal weekly clean of the flat. Thanks. Nothing is broken; it just needs cleaning.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0311",
+    "input": "Car cranks but won't actually start.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0295",
+    "input": "Hi \u2014 battery keeps going flat overnight. Morning would be easiest.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0591",
+    "input": "Hey, need someone for about an hour. That's the main thing.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0519",
+    "input": "Not urgent, but kitchen light keeps cutting in and out. The place is occupied.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0140",
+    "input": "If anyone is free, the crib arrived disassembled and needs putting together. I can be flexible on timing.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0463",
+    "input": "Before the weekend, there is an active leak under the bathroom sink. Please message before arriving.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0286",
+    "input": "For tomorrow, engine is running rough and the check-engine light came on. Parking is easy.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0355",
+    "input": "Hi \u2014 wedding reception needs extra hands for guest seating. Morning would be easiest.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0448",
+    "input": "Hey, water heater isn't producing hot water. That's the main thing.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0059",
+    "input": "Not urgent, but the house is mostly tidy, just needs bathrooms and floors done. The place is occupied.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0216",
+    "input": "For tomorrow, a cabinet hinge has come. loose and the door hangs crooked. Parking is easy.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0510",
+    "input": "If anyone is free, a breaker in the panel is getting hot and needs checking. I can be flexible on timing.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0447",
+    "input": "Quick job: bathtub drain is completely blocked. Ideally this week.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0415",
+    "input": "Hi \u2014 deck boards are ready and need two coats. Morning would be easiest.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0504",
+    "input": "Posting this for my parents: need a new light fixture. installed where wiring already exists. Thanks. The shelf next to it does not need work.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0387",
+    "input": "Quick job: two cats need morning feeding for three days. Ideally this week.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0037",
+    "input": "Quick job: please rake the lawn and leave the clippings in the green bin. Ideally this week.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0386",
+    "input": "For tomorrow, take the dog out, give him dinner, and lock up afterward. Parking is easy.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0351",
+    "input": "Need help setting up tables and chairs for a birthday party.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0089",
+    "input": "Not urgent, but move several storage bins from the attic down to the hallway. The place is occupied.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0588",
+    "input": "Hi \u2014 looking for someone handy. Morning would be easiest.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0575",
+    "input": "Bit of an odd one: small job, should not take long. No rush.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0100",
+    "input": "If anyone is free, help relocate a bookcase inside the house. I can be flexible on timing.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0464",
+    "input": "Posting this for my parents: need a new faucet installed; replacement is already here. Thanks. The cabinet around it is fine.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0513",
+    "input": "Before the weekend, breaker trips whenever the microwave runs. Please message before arriving.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0062",
+    "input": "Bit of an odd one: apartment needs a deep clean after the tenants moved out. No rush.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0233",
+    "input": "Before the weekend, loose shelf bracket needs fixing before it falls. Please message before arriving.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0153",
+    "input": "Before the weekend, can you put together a new desk and office chair? Please message before arriving.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0520",
+    "input": "If anyone is free, a breaker in the panel. is getting hot and needs checking. I can be flexible on timing.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0002",
+    "input": "Bit of an odd one: could use someone to clear the leaves from the side yard and bag them. No rush.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0256",
+    "input": "For tomorrow, the wall has a soft. swollen patch near the floor. Parking is easy.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0027",
+    "input": "Quick job: rake the lawn and leave the clippings in the green bin. Ideally this week.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0418",
+    "input": "Hey, front door needs a new coat of paint. That's the main thing.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0568",
+    "input": "Hi \u2014 looking for someone handy. Morning would be easiest.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0347",
+    "input": "Quick job: need support setting up decorations before an engagement party. Ideally this week.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0479",
+    "input": "Not urgent, but need the old toilet replaced with a new one. The place is occupied.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0198",
+    "input": "Hey, pick up a chair from a marketplace seller and drop it off at my apartment. That's the main thing.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0105",
+    "input": "Hi \u2014 we are rearranging the office and need desks moved across the floor. Morning would be easiest.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0021",
+    "input": "Back patch is getting wild; knock the grass down and edge along the paving.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0427",
+    "input": "Quick job: paint the hallway; prep has already been done. Ideally this week.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0414",
+    "input": "Posting this for my parents: touch up the scuffed trim around three doors. Thanks.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0566",
+    "input": "Before the weekend, could use an extra pair of hands. Please message before arriving.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0564",
+    "input": "I have a few things that need sorting.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0358",
+    "input": "Hey, hosting a company mixer and need check-in help. That's the main thing.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0252",
+    "input": "Bit of an odd one: ceiling has a patch of. water damage that needs inspection. No rush. I am not asking for painting yet.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0578",
+    "input": "Hi \u2014 anyone available for a quick task? Morning would be easiest.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0537",
+    "input": "Posting this for my parents: i need help around the property. Thanks.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0443",
+    "input": "Before the weekend, there is an active leak under the bathroom sink. Please message before arriving.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0502",
+    "input": "Bit of an odd one: ceiling light flickers even after changing the bulb. No rush.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0236",
+    "input": "For tomorrow, a cabinet hinge has come. loose and the door hangs crooked. Parking is easy.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0026",
+    "input": "For tomorrow, branches from last night's wind are scattered across the backyard. Parking is easy.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0304",
+    "input": "Posting this for my parents: there is a grinding noise. from the front wheel when turning. Thanks. This is about the vehicle itself, not the garage.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0462",
+    "input": "Bit of an odd one: toilet keeps running after it fills. No rush.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0146",
+    "input": "For tomorrow, build the new dining table from the supplied parts. Parking is easy.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0095",
+    "input": "Hi \u2014 we are rearranging the office and need desks moved across the floor. Morning would be easiest.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0179",
+    "input": "Not urgent, but take a sealed box from my house to my sister's place. The place is occupied.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0551",
+    "input": "Hey, need someone for about an hour. That's the main thing.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0175",
+    "input": "Hi \u2014 courier needed for a fragile artwork pickup this afternoon. Morning would be easiest.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0372",
+    "input": "Bit of an odd one: need someone to walk my dog twice this Saturday. No rush. The floor does not need cleaning.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0340",
+    "input": "If anyone is free, need teardown help after a community event. I can be flexible on timing.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0466",
+    "input": "For tomorrow, pipe under the sink is leaking at the joint. Parking is easy.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0496",
+    "input": "For tomorrow, ceiling fan has power but won't spin. Parking is easy.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0028",
+    "input": "Hey, need the overgrown shrubs along the fence shaped up. That's the main thing.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0072",
+    "input": "Bit of an odd one: apartment needs a deep clean. after the tenants moved out. No rush. Nothing is broken; it just needs cleaning.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0045",
+    "input": "Hi \u2014 the oven, counters, and floors all need attention. Morning would be easiest.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0010",
+    "input": "If anyone is free, the grass behind the house is knee high now. I can be flexible on timing.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0327",
+    "input": "Quick job: need support setting up decorations before an engagement party. Ideally this week.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0376",
+    "input": "For tomorrow, take the dog out, give. him dinner, and lock up afterward. Parking is easy.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0014",
+    "input": "Posting this for my parents: front lawn needs a cut before the weekend. Thanks.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0169",
+    "input": "Not urgent, but take a sealed box from my house to my sister's place. The place is occupied.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0580",
+    "input": "Quick job: looking for someone tomorrow afternoon. Ideally this week.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0390",
+    "input": "If anyone is free, walk the dog and wipe his paws when you come back. I can be flexible on timing.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0163",
+    "input": "Before the weekend, need a small dresser picked up from a seller and delivered here. Please message before arriving.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0242",
+    "input": "Bit of an odd one: ceiling has a patch of water damage that needs inspection. No rush.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0599",
+    "input": "For tomorrow, i have some work that needs doing. Parking is easy.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0346",
+    "input": "For tomorrow, can someone help run food and clear tables at a family celebration? Parking is easy.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0440",
+    "input": "If anyone is free, exterior wall section needs repainting. where the old finish peeled. I can be flexible on timing.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0369",
+    "input": "Not urgent, but need help giving fresh food and water to the birds. The place is occupied.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0589",
+    "input": "For tomorrow, i need assistance with a task. Parking is easy.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0205",
+    "input": "Hi \u2014 need someone to repair a broken drawer runner. Morning would be easiest.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0477",
+    "input": "Quick job: bathtub drain is completely blocked. Ideally this week.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0259",
+    "input": "Not urgent, but inspect damage around the window frame. The place is occupied.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0357",
+    "input": "Quick job: need support setting up decorations before an engagement party. Ideally this week.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0278",
+    "input": "Hey, there is staining and deterioration around one corner of the ceiling. That's the main thing.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0393",
+    "input": "Before the weekend, please check on two rabbits and refill their hay. Please message before arriving.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0115",
+    "input": "Hi \u2014 we are rearranging the office and need desks moved across the floor. Morning would be easiest.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0562",
+    "input": "Not urgent, but can someone come by and help me out? The place is occupied.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0066",
+    "input": "For tomorrow, i need the place cleaned top to bottom before handover. Parking is easy.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0468",
+    "input": "Hey, water heater isn't producing hot water. That's the main thing.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0113",
+    "input": "Before the weekend, carry five dining chairs up one floor; no van needed. Please message before arriving.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0209",
+    "input": "Not urgent, but fix the cracked wooden step by the back door. The place is occupied.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0167",
+    "input": "Quick job: need someone with a car to bring groceries from the store. Ideally this week.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0465",
+    "input": "Hi \u2014 shower has almost no water pressure. Morning would be easiest.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0154",
+    "input": "Posting this for my parents: tV wall bracket is here; mount the television on it. Thanks.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0018",
+    "input": "Hey, i need the overgrown shrubs along the fence shaped up. That's the main thing.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0160",
+    "input": "If anyone is free, the crib arrived disassembled and needs putting together. I can be flexible on timing.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0197",
+    "input": "Quick job: need someone with a car to bring groceries from the store. Ideally this week.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0598",
+    "input": "Hi \u2014 anyone available for a quick task? Morning would be easiest.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0470",
+    "input": "If anyone is free, the leak has stopped, but the pipe still needs repair. I can be flexible on timing.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0183",
+    "input": "Before the weekend, need a small dresser picked up from a seller and delivered here. Please message before arriving.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0337",
+    "input": "Quick job: need support setting up decorations before an engagement party. Ideally this week.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0237",
+    "input": "Quick job: patch a few small holes left by old wall anchors. Ideally this week.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0467",
+    "input": "Quick job: bathtub drain is completely blocked. Ideally this week.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0034",
+    "input": "Posting this for my parents: front lawn needs a cut before the weekend. Thanks.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0550",
+    "input": "Quick job: can somebody help with a project? Ideally this week.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0176",
+    "input": "For tomorrow, collect two tires from the garage. and deliver them to my address. Parking is easy.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0157",
+    "input": "Quick job: need a small cabinet assembled from the instruction manual. Ideally this week.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0313",
+    "input": "Before the weekend, brake pedal feels soft and takes more travel than usual. Please message before arriving.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0077",
+    "input": "Quick job: one bedroom and the hall are dusty after some renovation work. Ideally this week.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0148",
+    "input": "Hey, please assemble three bar stools. That's the main thing.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0099",
+    "input": "Not urgent, but move several storage bins from the attic down to the hallway. The place is occupied.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0558",
+    "input": "Hi \u2014 anyone available for a quick task? Morning would be easiest.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0501",
+    "input": "One wall outlet has no power.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0147",
+    "input": "Quick job: need a small cabinet assembled from the instruction manual. Ideally this week.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0117",
+    "input": "Quick job: need two people to lift a heavy cabinet upstairs. Ideally this week.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0173",
+    "input": "Before the weekend, need a small dresser picked up from a seller and delivered here. Please message before arriving.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0592",
+    "input": "Not urgent, but i have something that needs fixing up. The place is occupied.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0485",
+    "input": "Hi \u2014 bedroom switch stopped working. Morning would be easiest.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0127",
+    "input": "Quick job: need a small cabinet assembled from the instruction manual. Ideally this week.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0052",
+    "input": "Bit of an odd one: apartment needs a deep clean. after the tenants moved out. No rush. Nothing is broken; it just needs cleaning.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0533",
+    "input": "If anyone is free, looking for local help. I can be flexible on timing.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0288",
+    "input": "Hey, air conditioner blows warm even. with the setting on cold. That's the main thing.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0552",
+    "input": "Not urgent, but i have something that needs fixing up. The place is occupied.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0362",
+    "input": "Bit of an odd one: i need someone to walk my dog twice this Saturday. No rush.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0361",
+    "input": "Feed the cat and refresh her water while I'm away.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0389",
+    "input": "Not urgent, but need help giving fresh food and water to the birds. The place is occupied.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0360",
+    "input": "If anyone is free, need teardown help after a community event. I can be flexible on timing.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0103",
+    "input": "Before the weekend, carry five dining chairs up one floor; no van needed. Please message before arriving.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0538",
+    "input": "Hi \u2014 anyone available for a quick task? Morning would be easiest.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0084",
+    "input": "Posting this for my parents: move boxes from the basement into the spare room. Thanks.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0516",
+    "input": "For tomorrow, ceiling fan has power but won't spin. Parking is easy.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0178",
+    "input": "Hey, pick up a chair from a marketplace seller and drop it off at my apartment. That's the main thing.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0121",
+    "input": "Flat-pack wardrobe is still in the boxes and needs putting together.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0364",
+    "input": "Posting this for my parents: looking for a sitter for. one dog for the afternoon. Thanks.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0150",
+    "input": "If anyone is free, the crib arrived disassembled and needs putting together. I can be flexible on timing.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0133",
+    "input": "Before the weekend, can you put together a new desk and office chair? Please message before arriving.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0581",
+    "input": "Hey, i need a hand with something at home. That's the main thing.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0228",
+    "input": "Hey, the bathroom towel rail is wobbling and needs securing. That's the main thing.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0405",
+    "input": "Hi \u2014 deck boards are ready and need two coats. Morning would be easiest.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0112",
+    "input": "Bit of an odd one: need help shifting a couch and. two chairs into the next room. No rush. No pickup from another address is involved.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0559",
+    "input": "For tomorrow, i have some work that needs doing. Parking is easy.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0294",
+    "input": "Posting this for my parents: there is a grinding noise from the front wheel when turning. Thanks.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0039",
+    "input": "Not urgent, but small garden area needs cleanup after pruning. The place is occupied.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0051",
+    "input": "Kitchen and two bathrooms need a proper scrub before guests arrive.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0348",
+    "input": "Hey, hosting a company mixer and need check-in help. That's the main thing.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0560",
+    "input": "Quick job: looking for someone tomorrow afternoon. Ideally this week.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0582",
+    "input": "Not urgent, but can someone come by and help me out? The place is occupied.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0487",
+    "input": "Quick job: doorbell isn't working anymore. Ideally this week.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0187",
+    "input": "Quick job: need someone with a car to bring groceries from the store. Ideally this week.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0495",
+    "input": "Hi \u2014 bedroom switch stopped working. Morning would be easiest.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0301",
+    "input": "Car cranks but won't actually start.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0090",
+    "input": "If anyone is free, help relocate a bookcase inside the house. I can be flexible on timing.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0316",
+    "input": "For tomorrow, engine is running rough and. the check-engine light came on. Parking is easy.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0556",
+    "input": "Before the weekend, could use help with a couple of things. Please message before arriving.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0054",
+    "input": "Posting this for my parents: looking for someone to do a normal weekly clean of the flat. Thanks.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0192",
+    "input": "Bit of an odd one: collect the flowers from the shop. and bring them to the venue. No rush. Nothing inside the house needs rearranging.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0065",
+    "input": "Hi \u2014 the oven, counters, and floors all need attention. Morning would be easiest.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0391",
+    "input": "Feed the cat and refresh her water while I'm away.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0555",
+    "input": "Bit of an odd one: small job, should not take long. No rush.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0456",
+    "input": "For tomorrow, pipe under the sink is leaking at the joint. Parking is easy.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0075",
+    "input": "Hi \u2014 the oven, counters, and floors all need attention. Morning would be easiest.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0017",
+    "input": "Quick job: please rake the lawn and leave the clippings in the green bin. Ideally this week.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0526",
+    "input": "Before the weekend, could use an extra pair of hands. Please message before arriving.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0277",
+    "input": "Quick job: i need an assessment of some interior damage before deciding on repairs. Ideally this week.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0488",
+    "input": "Hey, need an existing outlet replaced. That's the main thing.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0524",
+    "input": "I have a few things that need sorting.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0129",
+    "input": "Not urgent, but wall-mounted storage rack needs to be installed. The place is occupied.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0076",
+    "input": "For tomorrow, need the place cleaned top to bottom before handover. Parking is easy.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0012",
+    "input": "Bit of an odd one: could use someone to clear the leaves. from the side yard and bag them. No rush. No indoor work is needed.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0114",
+    "input": "Posting this for my parents: move boxes from the basement into the spare room. Thanks.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0417",
+    "input": "Quick job: please paint the hallway; prep has already been done. Ideally this week.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0350",
+    "input": "If anyone is free, i need teardown help after a community event. I can be flexible on timing.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0522",
+    "input": "Not urgent, but can someone come by and help me out? The place is occupied.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0269",
+    "input": "Not urgent, but please inspect damage around the window frame. The place is occupied.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0518",
+    "input": "Hey, i need an existing outlet replaced. That's the main thing.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0210",
+    "input": "If anyone is free, i need a mirror bracket repaired, not the mirror itself. I can be flexible on timing.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0043",
+    "input": "Before the weekend, clean the downstairs rooms; supplies are already here. Please message before arriving.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0085",
+    "input": "Hi \u2014 we are rearranging the office and need desks moved across the floor. Morning would be easiest.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0202",
+    "input": "Bit of an odd one: bedroom door sticks badly and needs adjusting. No rush.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0305",
+    "input": "Hi \u2014 battery keeps going flat overnight. Morning would be easiest.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0298",
+    "input": "Hey, air conditioner blows warm even with the setting on cold. That's the main thing.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0460",
+    "input": "If anyone is free, the leak has stopped, but. the pipe still needs repair. I can be flexible on timing.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0503",
+    "input": "Before the weekend, breaker trips whenever the microwave runs. Please message before arriving.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0120",
+    "input": "If anyone is free, help relocate a bookcase inside the house. I can be flexible on timing.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0261",
+    "input": "There is damp damage on the wall and I need someone to assess the area.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0159",
+    "input": "Not urgent, but wall-mounted storage rack needs to be installed. The place is occupied.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0328",
+    "input": "Hey, hosting a company mixer and need check-in help. That's the main thing.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0156",
+    "input": "For tomorrow, build the new dining table from the supplied parts. Parking is easy.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0436",
+    "input": "For tomorrow, kitchen walls need repainting after patch work. Parking is easy.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0444",
+    "input": "Posting this for my parents: need a new faucet installed; replacement is already here. Thanks.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0266",
+    "input": "For tomorrow, the wall has a soft swollen patch near the floor. Parking is easy.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0023",
+    "input": "Before the weekend, the hedge by the driveway is swallowing the mailbox. Trim it back. Please message before arriving.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0137",
+    "input": "Quick job: need a small cabinet assembled from the instruction manual. Ideally this week.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0166",
+    "input": "For tomorrow, collect two tires from the garage and deliver them to my address. Parking is easy.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0388",
+    "input": "Hey, please watch my puppy for a few hours. That's the main thing.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0227",
+    "input": "Quick job: patch a few small holes left by old wall anchors. Ideally this week.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0425",
+    "input": "Hi \u2014 deck boards are ready and need two coats. Morning would be easiest.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0402",
+    "input": "Bit of an odd one: repaint the bedroom ceiling white. No rush.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0258",
+    "input": "Hey, there is staining and deterioration around one corner of the ceiling. That's the main thing.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0217",
+    "input": "Quick job: patch a few small holes left by old wall anchors. Ideally this week.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0215",
+    "input": "Hi \u2014 need someone to repair a broken drawer runner. Morning would be easiest.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0287",
+    "input": "Quick job: car pulls to one side under braking. Ideally this week.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0469",
+    "input": "Not urgent, but need the old toilet replaced with a new one. The place is occupied.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0500",
+    "input": "If anyone is free, a breaker in the panel. is getting hot and needs checking. I can be flexible on timing.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0471",
+    "input": "Kitchen sink is draining very slowly.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0508",
+    "input": "Hey, need an existing outlet replaced. That's the main thing.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0152",
+    "input": "Bit of an odd one: need two bookshelves assembled and fixed to the wall. No rush. The wall itself is not damaged.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0136",
+    "input": "For tomorrow, build the new dining table from the supplied parts. Parking is easy.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0235",
+    "input": "Hi \u2014 need someone to repair a broken drawer runner. Morning would be easiest.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0576",
+    "input": "Before the weekend, could use help with a couple of things. Please message before arriving.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0097",
+    "input": "Quick job: need two people to lift a heavy cabinet upstairs. Ideally this week.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0303",
+    "input": "Before the weekend, brake pedal feels soft and takes more travel than usual. Please message before arriving.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0544",
+    "input": "I have a few things that need sorting.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0182",
+    "input": "Bit of an odd one: collect the flowers from the shop and bring them to the venue. No rush.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0326",
+    "input": "For tomorrow, can someone help run food and clear tables at a family celebration? Parking is easy.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0191",
+    "input": "Pick up a boxed monitor from Bellevue and drop it at my place.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0263",
+    "input": "Before the weekend, check the cracked plaster around the window and tell me what repair it needs. Please message before arriving.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0122",
+    "input": "Bit of an odd one: i need two bookshelves assembled and fixed to the wall. No rush.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0426",
+    "input": "For tomorrow, kitchen walls need repainting after patch work. Parking is easy.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0267",
+    "input": "Quick job: i need an assessment of some interior damage before deciding on repairs. Ideally this week.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0218",
+    "input": "Hey, the bathroom towel rail is wobbling and needs securing. That's the main thing.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0523",
+    "input": "If anyone is free, looking for a reliable person for a small job. I can be flexible on timing.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0019",
+    "input": "Not urgent, but small garden area needs cleanup after pruning. The place is occupied.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0596",
+    "input": "Before the weekend, could use help with a couple of things. Please message before arriving.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0397",
+    "input": "Quick job: two cats need morning feeding for three days. Ideally this week.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0579",
+    "input": "For tomorrow, i have some work that needs doing. Parking is easy.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0094",
+    "input": "Posting this for my parents: move boxes from the basement into the spare room. Thanks.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0092",
+    "input": "Bit of an odd one: need help shifting a couch and. two chairs into the next room. No rush. No pickup from another address is involved.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0158",
+    "input": "Hey, please assemble three bar stools. That's the main thing.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0246",
+    "input": "For tomorrow, the wall has a soft swollen patch near the floor. Parking is easy.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0394",
+    "input": "Posting this for my parents: looking for a sitter for one dog for the afternoon. Thanks.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0265",
+    "input": "Hi \u2014 need someone to look at a damaged section of drywall and assess it. Morning would be easiest.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0107",
+    "input": "Quick job: need two people to lift a heavy cabinet upstairs. Ideally this week.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0172",
+    "input": "Bit of an odd one: collect the flowers from the shop. and bring them to the venue. No rush. Nothing inside the house needs rearranging.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0432",
+    "input": "Bit of an odd one: repaint the bedroom ceiling white. No rush. The wall itself is sound; it only needs the finish redone.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0353",
+    "input": "Before the weekend, looking for event staff for a backyard graduation gathering. Please message before arriving.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0310",
+    "input": "If anyone is free, vehicle starts, but stalls a few seconds later. I can be flexible on timing.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0123",
+    "input": "Before the weekend, can you put together a new desk and office chair? Please message before arriving.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0370",
+    "input": "If anyone is free, walk the dog and wipe his paws when you come back. I can be flexible on timing.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0199",
+    "input": "Not urgent, but take a sealed box from my house to my sister's place. The place is occupied.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0590",
+    "input": "Quick job: can somebody help with a project? Ideally this week.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0441",
+    "input": "Kitchen sink is draining very slowly.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0299",
+    "input": "Not urgent, but there is a coolant smell after driving. The place is occupied.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0529",
+    "input": "For tomorrow, i need assistance with a task. Parking is easy.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0091",
+    "input": "Take the dresser from the bedroom upstairs to the garage.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0511",
+    "input": "One wall outlet has no power.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0491",
+    "input": "One wall outlet has no power.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0459",
+    "input": "Not urgent, but need the old toilet replaced with a new one. The place is occupied.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0074",
+    "input": "Posting this for my parents: looking for someone to do a normal weekly clean of the flat. Thanks.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0458",
+    "input": "Hey, water heater isn't producing hot water. That's the main thing.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0359",
+    "input": "Not urgent, but private dinner with 24 guests needs serving assistance. The place is occupied.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0238",
+    "input": "Hey, the bathroom towel rail is wobbling and needs securing. That's the main thing.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0319",
+    "input": "Not urgent, but there is a coolant smell after driving. The place is occupied.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0274",
+    "input": "Posting this for my parents: there is visible damage around the baseboard after a leak. Thanks.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0494",
+    "input": "Posting this for my parents: i need a new light fixture installed where wiring already exists. Thanks.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0132",
+    "input": "Bit of an odd one: need two bookshelves assembled and fixed to the wall. No rush. The wall itself is not damaged.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0285",
+    "input": "Hi \u2014 battery keeps going flat overnight. Morning would be easiest.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0141",
+    "input": "Flat-pack wardrobe is still in the boxes and needs putting together.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0542",
+    "input": "Not urgent, but can someone come by and help me out? The place is occupied.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0078",
+    "input": "Hey, can someone clean three rooms upstairs and bring their own supplies? That's the main thing.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0446",
+    "input": "For tomorrow, pipe under the sink is leaking at the joint. Parking is easy.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0512",
+    "input": "Bit of an odd one: ceiling light flickers even after changing the bulb. No rush. The shelf next to it does not need work.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0375",
+    "input": "Hi \u2014 need someone to clean the litter box and feed the cat. Morning would be easiest.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0399",
+    "input": "Not urgent, but need help giving fresh food and water to the birds. The place is occupied.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0413",
+    "input": "Before the weekend, exterior fence needs painting before winter. Please message before arriving.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0058",
+    "input": "Hey, can someone clean three rooms upstairs and bring their own supplies? That's the main thing.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0424",
+    "input": "Posting this for my parents: touch up the scuffed trim around three doors. Thanks. The wall itself is sound; it only needs the finish redone.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0548",
+    "input": "Hi \u2014 looking for someone handy. Morning would be easiest.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0080",
+    "input": "If anyone is free, need a move-out clean for a small apartment. I can be flexible on timing.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0142",
+    "input": "Bit of an odd one: i need two bookshelves assembled and fixed to the wall. No rush.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0219",
+    "input": "Not urgent, but fix the cracked wooden step by the back door. The place is occupied.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0309",
+    "input": "Not urgent, but there is a coolant smell after driving. The place is occupied.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0349",
+    "input": "Not urgent, but private dinner with 24 guests needs serving assistance. The place is occupied.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0553",
+    "input": "If anyone is free, looking for local help. I can be flexible on timing.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0321",
+    "input": "Need help setting up tables and chairs for a birthday party.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0149",
+    "input": "Not urgent, but wall-mounted storage rack needs to be installed. The place is occupied.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0345",
+    "input": "Hi \u2014 wedding reception needs extra hands for guest seating. Morning would be easiest.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0040",
+    "input": "If anyone is free, the grass behind the house is knee high now. I can be flexible on timing.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0595",
+    "input": "Bit of an odd one: small job, should not take long. No rush.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0068",
+    "input": "Hey, can someone clean three rooms. upstairs and bring their own supplies? That's the main thing.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0567",
+    "input": "Posting this for my parents: there is a job around. the house I need done. Thanks.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0281",
+    "input": "Car cranks but won't actually start.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0404",
+    "input": "Posting this for my parents: touch up the scuffed trim around three doors. Thanks.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0536",
+    "input": "Before the weekend, could use help with a couple of things. Please message before arriving.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0535",
+    "input": "Bit of an odd one: small job, should not take long. No rush.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0185",
+    "input": "Hi \u2014 courier needed for a fragile artwork pickup this afternoon. Morning would be easiest.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0385",
+    "input": "Hi \u2014 need someone to clean the litter box and feed the cat. Morning would be easiest.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0584",
+    "input": "I have a few things that need sorting.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0392",
+    "input": "Bit of an odd one: need someone to walk my dog twice this Saturday. No rush. The floor does not need cleaning.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0514",
+    "input": "Posting this for my parents: i need a new light fixture installed where wiring already exists. Thanks.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0499",
+    "input": "Not urgent, but kitchen light keeps cutting in and out. The place is occupied.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0042",
+    "input": "Bit of an odd one: apartment needs a deep clean after the tenants moved out. No rush.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0151",
+    "input": "Flat-pack wardrobe is still in the boxes and needs putting together.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0489",
+    "input": "Not urgent, but kitchen light keeps cutting in and out. The place is occupied.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0053",
+    "input": "Before the weekend, please clean the downstairs rooms; supplies are already here. Please message before arriving.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0384",
+    "input": "Posting this for my parents: looking for a sitter for. one dog for the afternoon. Thanks. The floor does not need cleaning.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0354",
+    "input": "Posting this for my parents: i need two people to help with setup and cleanup for a baby shower. Thanks.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0257",
+    "input": "Quick job: i need an assessment of some interior damage before deciding on repairs. Ideally this week.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0481",
+    "input": "One wall outlet has no power.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0473",
+    "input": "Before the weekend, there is an active leak under the bathroom sink. Please message before arriving.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0056",
+    "input": "For tomorrow, need the place cleaned top to bottom before handover. Parking is easy.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0449",
+    "input": "Not urgent, but need the old toilet replaced with a new one. The place is occupied.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0289",
+    "input": "Not urgent, but there is a coolant smell after driving. The place is occupied.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0134",
+    "input": "Posting this for my parents: tV wall bracket is here; mount the television on it. Thanks.",
+    "expectedCategory": "assembly",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0275",
+    "input": "Hi \u2014 need someone to look at a damaged section of drywall and assess it. Morning would be easiest.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0344",
+    "input": "Posting this for my parents: need two people to help with. setup and cleanup for a baby shower. Thanks. This is for hosted guests, not just dinner for us.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0457",
+    "input": "Quick job: bathtub drain is completely blocked. Ideally this week.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0367",
+    "input": "Quick job: two cats need morning feeding for three days. Ideally this week.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0334",
+    "input": "Posting this for my parents: i need two people to help with setup and cleanup for a baby shower. Thanks.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0013",
+    "input": "Before the weekend, the hedge by the driveway is swallowing the mailbox. Trim it back. Please message before arriving.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0561",
+    "input": "Hey, i need a hand with something at home. That's the main thing.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0071",
+    "input": "Kitchen and two bathrooms need a proper scrub before guests arrive.",
+    "expectedCategory": "cleaning",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0410",
+    "input": "If anyone is free, exterior wall section needs repainting where the old finish peeled. I can be flexible on timing.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0577",
+    "input": "Posting this for my parents: i need help around the property. Thanks.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0283",
+    "input": "Before the weekend, brake pedal feels soft and takes more travel than usual. Please message before arriving.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0247",
+    "input": "Quick job: i need an assessment of some interior damage before deciding on repairs. Ideally this week.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0280",
+    "input": "If anyone is free, a section of wall was damaged. and I need the affected area evaluated. I can be flexible on timing.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0307",
+    "input": "Quick job: car pulls to one side under braking. Ideally this week.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0450",
+    "input": "If anyone is free, the leak has stopped, but the pipe still needs repair. I can be flexible on timing.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0506",
+    "input": "For tomorrow, ceiling fan has power but won't spin. Parking is easy.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0431",
+    "input": "Living room walls need a fresh coat; paint is already here.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0009",
+    "input": "Not urgent, but small garden area needs cleanup after pruning. The place is occupied.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0324",
+    "input": "Posting this for my parents: need two people to help with. setup and cleanup for a baby shower. Thanks.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0230",
+    "input": "If anyone is free, i need a mirror bracket repaired, not the mirror itself. I can be flexible on timing.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0234",
+    "input": "Posting this for my parents: the curtain rod pulled partly out of the wall. Thanks.",
+    "expectedCategory": "handyman",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0296",
+    "input": "For tomorrow, engine is running rough and. the check-engine light came on. Parking is easy.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0420",
+    "input": "If anyone is free, exterior wall section needs repainting. where the old finish peeled. I can be flexible on timing.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0409",
+    "input": "Not urgent, but need the spare room walls redone in a lighter color. The place is occupied.",
+    "expectedCategory": "painting",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0297",
+    "input": "Quick job: car pulls to one side under braking. Ideally this week.",
+    "expectedCategory": "auto",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0038",
+    "input": "Hey, i need the overgrown shrubs along the fence shaped up. That's the main thing.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0177",
+    "input": "Quick job: need someone with a car to bring groceries from the store. Ideally this week.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0545",
+    "input": "Bit of an odd one: i need some help this weekend. No rush.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0011",
+    "input": "Back patch is getting wild; knock the grass down and edge along the paving.",
+    "expectedCategory": "yard",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0165",
+    "input": "Hi \u2014 courier needed for a fragile artwork pickup this afternoon. Morning would be easiest.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0445",
+    "input": "Hi \u2014 shower has almost no water pressure. Morning would be easiest.",
+    "expectedCategory": "plumbing",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0188",
+    "input": "Hey, pick up a chair from a marketplace. seller and drop it off at my apartment. That's the main thing.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0262",
+    "input": "Bit of an odd one: ceiling has a patch of water damage that needs inspection. No rush.",
+    "expectedCategory": "home_services",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0190",
+    "input": "If anyone is free, i need a same-day document dropoff downtown. I can be flexible on timing.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0171",
+    "input": "Pick up a boxed monitor from Bellevue and drop it at my place.",
+    "expectedCategory": "delivery",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0527",
+    "input": "Posting this for my parents: there is a job around. the house I need done. Thanks.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0356",
+    "input": "For tomorrow, can someone help run food and. clear tables at a family celebration? Parking is easy.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0541",
+    "input": "Hey, i need a hand with something at home. That's the main thing.",
+    "expectedCategory": null,
+    "kind": "vague"
+  },
+  {
+    "id": "v4-0332",
+    "input": "Bit of an odd one: small anniversary dinner for 18. people; need someone to help serve. No rush. This is for hosted guests, not just dinner for us.",
+    "expectedCategory": "events",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0086",
+    "input": "For tomorrow, bring the washing machine from the patio into the utility room. Parking is easy.",
+    "expectedCategory": "moving",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0380",
+    "input": "If anyone is free, walk the dog and wipe. his paws when you come back. I can be flexible on timing.",
+    "expectedCategory": "pet_care",
+    "kind": "concrete"
+  },
+  {
+    "id": "v4-0482",
+    "input": "Bit of an odd one: ceiling light flickers even after changing the bulb. No rush.",
+    "expectedCategory": "electrical",
+    "kind": "concrete"
+  }
+]

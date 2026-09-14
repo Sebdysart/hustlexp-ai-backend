@@ -12,7 +12,7 @@ DATA_PATH = ROOT / "data" / "tasks.json"
 OUTPUT_PATH = (ROOT / ".." / ".." / "backend" / "models" / "task-classifier.json").resolve()
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 PRODUCTION_EMBEDDING_MODEL = "onnx-community/all-MiniLM-L6-v2-ONNX"
-AMBIGUITY_THRESHOLD = 0.45
+AMBIGUITY_THRESHOLD = 0.50
 
 
 def load_rows():

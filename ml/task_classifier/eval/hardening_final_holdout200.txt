@@ -1,0 +1,10 @@
+Holdout 200 cases: 200
+Category mismatches: 4
+Expected-answer mismatches: 0
+Cases passed: 196
+Cases failed: 4
+\nHoldout failures: 4
+\n1. Input: "Need plumbing help in the bathroom."\nMismatch type: category\nExpected: plumbing\nActual: undefined
+\n2. Input: "Need electrical help in the kitchen."\nMismatch type: category\nExpected: electrical\nActual: undefined
+\n3. Input: "Help at a wedding reception for 180 people."\nMismatch type: category\nExpected: events\nActual: undefined
+\n4. Input: "Need cleanup help after a party for 60 people."\nMismatch type: category\nExpected: events\nActual: undefined

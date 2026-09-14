@@ -2,3 +2,7 @@
 __pycache__/
 
 .hf_cache/
+eval/development_scores.json
+eval/development_results*.txt
+eval/extended_embeddings.npz
+eval/extended_results*.txt

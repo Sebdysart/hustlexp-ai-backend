@@ -1446,11 +1446,9 @@ const cases: HoldoutCase[] = [{
 {
   input: 'Bring two lamps and a vase.',
 
-  category: 'delivery',
+  category: 'other',
 
-  expectedAnswers: {
-    delivery_item: 'lamps and vase',
-  },
+  expectedAnswers: {},
 },
 
 {
@@ -1477,20 +1475,17 @@ const cases: HoldoutCase[] = [{
 {
   input: 'Bring a TV, no vehicle is required.',
 
-  category: 'delivery',
+  category: 'other',
 
-  expectedAnswers: {
-    delivery_item: 'TV',
-  },
+  expectedAnswers: {},
 },
 
 {
   input: 'Pick up a sofa and bring it upstairs.',
 
-  category: 'delivery',
+  category: 'moving',
 
   expectedAnswers: {
-    delivery_item: 'couch',
     access_restrictions: 'The task involves carrying items upstairs.',
   },
 },

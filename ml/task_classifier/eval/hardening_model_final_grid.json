@@ -1,0 +1,607 @@
+{
+  "training_count": 532,
+  "stress_count": 2420,
+  "candidate_additions": {
+    "boundary": 0,
+    "language": 0
+  },
+  "results": [
+    {
+      "variant": "final_training",
+      "C": 0.5,
+      "threshold": 0.4,
+      "correct": 1473,
+      "wrong": 190,
+      "abstained": 637,
+      "vague_ok": 86,
+      "false_vague": 34,
+      "precision": 0.868002357100766,
+      "coverage": 0.7230434782608696,
+      "accuracy": 0.6404347826086957
+    },
+    {
+      "variant": "final_training",
+      "C": 0.5,
+      "threshold": 0.45,
+      "correct": 1413,
+      "wrong": 165,
+      "abstained": 722,
+      "vague_ok": 95,
+      "false_vague": 25,
+      "precision": 0.8814722395508422,
+      "coverage": 0.6860869565217391,
+      "accuracy": 0.6143478260869565
+    },
+    {
+      "variant": "final_training",
+      "C": 0.5,
+      "threshold": 0.5,
+      "correct": 1367,
+      "wrong": 151,
+      "abstained": 782,
+      "vague_ok": 96,
+      "false_vague": 24,
+      "precision": 0.8865110246433203,
+      "coverage": 0.66,
+      "accuracy": 0.5943478260869566
+    },
+    {
+      "variant": "final_training",
+      "C": 0.5,
+      "threshold": 0.55,
+      "correct": 1320,
+      "wrong": 125,
+      "abstained": 855,
+      "vague_ok": 97,
+      "false_vague": 23,
+      "precision": 0.8991825613079019,
+      "coverage": 0.6282608695652174,
+      "accuracy": 0.5739130434782609
+    },
+    {
+      "variant": "final_training",
+      "C": 0.5,
+      "threshold": 0.6,
+      "correct": 1272,
+      "wrong": 110,
+      "abstained": 918,
+      "vague_ok": 98,
+      "false_vague": 22,
+      "precision": 0.905982905982906,
+      "coverage": 0.6008695652173913,
+      "accuracy": 0.5530434782608695
+    },
+    {
+      "variant": "final_training",
+      "C": 1.0,
+      "threshold": 0.4,
+      "correct": 1553,
+      "wrong": 196,
+      "abstained": 551,
+      "vague_ok": 87,
+      "false_vague": 33,
+      "precision": 0.8714927048260381,
+      "coverage": 0.7604347826086957,
+      "accuracy": 0.6752173913043479
+    },
+    {
+      "variant": "final_training",
+      "C": 1.0,
+      "threshold": 0.45,
+      "correct": 1495,
+      "wrong": 176,
+      "abstained": 629,
+      "vague_ok": 94,
+      "false_vague": 26,
+      "precision": 0.8809664113140837,
+      "coverage": 0.7265217391304348,
+      "accuracy": 0.65
+    },
+    {
+      "variant": "final_training",
+      "C": 1.0,
+      "threshold": 0.5,
+      "correct": 1437,
+      "wrong": 145,
+      "abstained": 718,
+      "vague_ok": 96,
+      "false_vague": 24,
+      "precision": 0.8947696139476962,
+      "coverage": 0.6878260869565217,
+      "accuracy": 0.6247826086956522
+    },
+    {
+      "variant": "final_training",
+      "C": 1.0,
+      "threshold": 0.55,
+      "correct": 1392,
+      "wrong": 126,
+      "abstained": 782,
+      "vague_ok": 97,
+      "false_vague": 23,
+      "precision": 0.9033095392602206,
+      "coverage": 0.66,
+      "accuracy": 0.6052173913043478
+    },
+    {
+      "variant": "final_training",
+      "C": 1.0,
+      "threshold": 0.6,
+      "correct": 1339,
+      "wrong": 112,
+      "abstained": 849,
+      "vague_ok": 97,
+      "false_vague": 23,
+      "precision": 0.9084124830393487,
+      "coverage": 0.6308695652173913,
+      "accuracy": 0.5821739130434782
+    },
+    {
+      "variant": "final_training",
+      "C": 1.5,
+      "threshold": 0.4,
+      "correct": 1571,
+      "wrong": 198,
+      "abstained": 531,
+      "vague_ok": 83,
+      "false_vague": 37,
+      "precision": 0.8698781838316723,
+      "coverage": 0.7691304347826087,
+      "accuracy": 0.6830434782608695
+    },
+    {
+      "variant": "final_training",
+      "C": 1.5,
+      "threshold": 0.45,
+      "correct": 1525,
+      "wrong": 174,
+      "abstained": 601,
+      "vague_ok": 93,
+      "false_vague": 27,
+      "precision": 0.8835457705677868,
+      "coverage": 0.7386956521739131,
+      "accuracy": 0.6630434782608695
+    },
+    {
+      "variant": "final_training",
+      "C": 1.5,
+      "threshold": 0.5,
+      "correct": 1484,
+      "wrong": 152,
+      "abstained": 664,
+      "vague_ok": 96,
+      "false_vague": 24,
+      "precision": 0.8939759036144578,
+      "coverage": 0.711304347826087,
+      "accuracy": 0.6452173913043479
+    },
+    {
+      "variant": "final_training",
+      "C": 1.5,
+      "threshold": 0.55,
+      "correct": 1430,
+      "wrong": 134,
+      "abstained": 736,
+      "vague_ok": 97,
+      "false_vague": 23,
+      "precision": 0.9010712035286704,
+      "coverage": 0.68,
+      "accuracy": 0.6217391304347826
+    },
+    {
+      "variant": "final_training",
+      "C": 1.5,
+      "threshold": 0.6,
+      "correct": 1385,
+      "wrong": 110,
+      "abstained": 805,
+      "vague_ok": 97,
+      "false_vague": 23,
+      "precision": 0.9123847167325428,
+      "coverage": 0.65,
+      "accuracy": 0.6021739130434782
+    },
+    {
+      "variant": "final_training",
+      "C": 2.0,
+      "threshold": 0.4,
+      "correct": 1600,
+      "wrong": 196,
+      "abstained": 504,
+      "vague_ok": 82,
+      "false_vague": 38,
+      "precision": 0.8724100327153762,
+      "coverage": 0.7808695652173913,
+      "accuracy": 0.6956521739130435
+    },
+    {
+      "variant": "final_training",
+      "C": 2.0,
+      "threshold": 0.45,
+      "correct": 1548,
+      "wrong": 177,
+      "abstained": 575,
+      "vague_ok": 90,
+      "false_vague": 30,
+      "precision": 0.882051282051282,
+      "coverage": 0.75,
+      "accuracy": 0.6730434782608695
+    },
+    {
+      "variant": "final_training",
+      "C": 2.0,
+      "threshold": 0.5,
+      "correct": 1507,
+      "wrong": 147,
+      "abstained": 646,
+      "vague_ok": 96,
+      "false_vague": 24,
+      "precision": 0.898092967818832,
+      "coverage": 0.7191304347826087,
+      "accuracy": 0.6552173913043479
+    },
+    {
+      "variant": "final_training",
+      "C": 2.0,
+      "threshold": 0.55,
+      "correct": 1464,
+      "wrong": 129,
+      "abstained": 707,
+      "vague_ok": 97,
+      "false_vague": 23,
+      "precision": 0.905940594059406,
+      "coverage": 0.6926086956521739,
+      "accuracy": 0.6365217391304347
+    },
+    {
+      "variant": "final_training",
+      "C": 2.0,
+      "threshold": 0.6,
+      "correct": 1417,
+      "wrong": 114,
+      "abstained": 769,
+      "vague_ok": 97,
+      "false_vague": 23,
+      "precision": 0.9118404118404119,
+      "coverage": 0.6656521739130434,
+      "accuracy": 0.6160869565217392
+    }
+  ],
+  "cross_validation": {
+    "by_c": [
+      {
+        "C": 0.5,
+        "folds": [
+          {
+            "fold": 1,
+            "precision": 0.9552238805970149,
+            "coverage": 0.6261682242990654,
+            "accepted_recall": 0.5981308411214953
+          },
+          {
+            "fold": 2,
+            "precision": 0.9393939393939394,
+            "coverage": 0.616822429906542,
+            "accepted_recall": 0.5794392523364486
+          },
+          {
+            "fold": 3,
+            "precision": 0.8933333333333333,
+            "coverage": 0.7075471698113207,
+            "accepted_recall": 0.6320754716981132
+          },
+          {
+            "fold": 4,
+            "precision": 0.9545454545454546,
+            "coverage": 0.6226415094339622,
+            "accepted_recall": 0.5943396226415094
+          },
+          {
+            "fold": 5,
+            "precision": 0.9210526315789473,
+            "coverage": 0.7169811320754716,
+            "accepted_recall": 0.660377358490566
+          }
+        ]
+      },
+      {
+        "C": 1.0,
+        "folds": [
+          {
+            "fold": 1,
+            "precision": 0.9452054794520548,
+            "coverage": 0.6822429906542056,
+            "accepted_recall": 0.6448598130841121
+          },
+          {
+            "fold": 2,
+            "precision": 0.9154929577464789,
+            "coverage": 0.6635514018691588,
+            "accepted_recall": 0.6074766355140186
+          },
+          {
+            "fold": 3,
+            "precision": 0.8947368421052632,
+            "coverage": 0.7169811320754716,
+            "accepted_recall": 0.6415094339622641
+          },
+          {
+            "fold": 4,
+            "precision": 0.9324324324324325,
+            "coverage": 0.6981132075471698,
+            "accepted_recall": 0.6509433962264151
+          },
+          {
+            "fold": 5,
+            "precision": 0.9230769230769231,
+            "coverage": 0.7358490566037735,
+            "accepted_recall": 0.6792452830188679
+          }
+        ]
+      },
+      {
+        "C": 1.5,
+        "folds": [
+          {
+            "fold": 1,
+            "precision": 0.9459459459459459,
+            "coverage": 0.6915887850467289,
+            "accepted_recall": 0.6542056074766355
+          },
+          {
+            "fold": 2,
+            "precision": 0.9154929577464789,
+            "coverage": 0.6635514018691588,
+            "accepted_recall": 0.6074766355140186
+          },
+          {
+            "fold": 3,
+            "precision": 0.9,
+            "coverage": 0.7547169811320755,
+            "accepted_recall": 0.6792452830188679
+          },
+          {
+            "fold": 4,
+            "precision": 0.8974358974358975,
+            "coverage": 0.7358490566037735,
+            "accepted_recall": 0.660377358490566
+          },
+          {
+            "fold": 5,
+            "precision": 0.9,
+            "coverage": 0.7547169811320755,
+            "accepted_recall": 0.6792452830188679
+          }
+        ]
+      },
+      {
+        "C": 2.0,
+        "folds": [
+          {
+            "fold": 1,
+            "precision": 0.9473684210526315,
+            "coverage": 0.7102803738317757,
+            "accepted_recall": 0.6728971962616822
+          },
+          {
+            "fold": 2,
+            "precision": 0.9066666666666666,
+            "coverage": 0.7009345794392523,
+            "accepted_recall": 0.6355140186915887
+          },
+          {
+            "fold": 3,
+            "precision": 0.891566265060241,
+            "coverage": 0.7830188679245284,
+            "accepted_recall": 0.6981132075471698
+          },
+          {
+            "fold": 4,
+            "precision": 0.8860759493670886,
+            "coverage": 0.7452830188679245,
+            "accepted_recall": 0.660377358490566
+          },
+          {
+            "fold": 5,
+            "precision": 0.9024390243902439,
+            "coverage": 0.7735849056603774,
+            "accepted_recall": 0.6981132075471698
+          }
+        ]
+      }
+    ],
+    "folds": [
+      {
+        "fold": 1,
+        "precision": 0.9452054794520548,
+        "coverage": 0.6822429906542056,
+        "accepted_recall": 0.6448598130841121
+      },
+      {
+        "fold": 2,
+        "precision": 0.9154929577464789,
+        "coverage": 0.6635514018691588,
+        "accepted_recall": 0.6074766355140186
+      },
+      {
+        "fold": 3,
+        "precision": 0.8947368421052632,
+        "coverage": 0.7169811320754716,
+        "accepted_recall": 0.6415094339622641
+      },
+      {
+        "fold": 4,
+        "precision": 0.9324324324324325,
+        "coverage": 0.6981132075471698,
+        "accepted_recall": 0.6509433962264151
+      },
+      {
+        "fold": 5,
+        "precision": 0.9230769230769231,
+        "coverage": 0.7358490566037735,
+        "accepted_recall": 0.6792452830188679
+      }
+    ],
+    "per_category_accepted_recall": {
+      "assembly": {
+        "correct": 26,
+        "total": 45
+      },
+      "auto": {
+        "correct": 31,
+        "total": 37
+      },
+      "cleaning": {
+        "correct": 23,
+        "total": 39
+      },
+      "delivery": {
+        "correct": 16,
+        "total": 39
+      },
+      "electrical": {
+        "correct": 36,
+        "total": 45
+      },
+      "events": {
+        "correct": 31,
+        "total": 33
+      },
+      "handyman": {
+        "correct": 20,
+        "total": 65
+      },
+      "home_services": {
+        "correct": 30,
+        "total": 50
+      },
+      "moving": {
+        "correct": 24,
+        "total": 48
+      },
+      "painting": {
+        "correct": 28,
+        "total": 35
+      },
+      "pet_care": {
+        "correct": 27,
+        "total": 29
+      },
+      "plumbing": {
+        "correct": 29,
+        "total": 41
+      },
+      "yard": {
+        "correct": 22,
+        "total": 26
+      }
+    },
+    "confusions": [
+      {
+        "expected": "home_services",
+        "actual": "plumbing",
+        "count": 4
+      },
+      {
+        "expected": "moving",
+        "actual": "delivery",
+        "count": 2
+      },
+      {
+        "expected": "assembly",
+        "actual": "handyman",
+        "count": 2
+      },
+      {
+        "expected": "handyman",
+        "actual": "plumbing",
+        "count": 2
+      },
+      {
+        "expected": "cleaning",
+        "actual": "plumbing",
+        "count": 2
+      },
+      {
+        "expected": "handyman",
+        "actual": "assembly",
+        "count": 2
+      },
+      {
+        "expected": "assembly",
+        "actual": "moving",
+        "count": 1
+      },
+      {
+        "expected": "home_services",
+        "actual": "electrical",
+        "count": 1
+      },
+      {
+        "expected": "electrical",
+        "actual": "painting",
+        "count": 1
+      },
+      {
+        "expected": "plumbing",
+        "actual": "home_services",
+        "count": 1
+      },
+      {
+        "expected": "handyman",
+        "actual": "electrical",
+        "count": 1
+      },
+      {
+        "expected": "cleaning",
+        "actual": "events",
+        "count": 1
+      },
+      {
+        "expected": "delivery",
+        "actual": "moving",
+        "count": 1
+      },
+      {
+        "expected": "moving",
+        "actual": "assembly",
+        "count": 1
+      },
+      {
+        "expected": "moving",
+        "actual": "cleaning",
+        "count": 1
+      },
+      {
+        "expected": "cleaning",
+        "actual": "painting",
+        "count": 1
+      },
+      {
+        "expected": "delivery",
+        "actual": "auto",
+        "count": 1
+      },
+      {
+        "expected": "cleaning",
+        "actual": "handyman",
+        "count": 1
+      },
+      {
+        "expected": "electrical",
+        "actual": "home_services",
+        "count": 1
+      },
+      {
+        "expected": "handyman",
+        "actual": "home_services",
+        "count": 1
+      },
+      {
+        "expected": "handyman",
+        "actual": "cleaning",
+        "count": 1
+      }
+    ]
+  }
+}
