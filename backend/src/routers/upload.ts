@@ -31,7 +31,7 @@ import {
   MAX_MEDIA_UPLOAD_BYTES,
   SUPPORTED_SANITIZED_IMAGE_TYPES,
 } from '../services/MediaSanitizationService.js';
-import { issueTaskDraftPhotoAccess } from '../services/PrivateMediaDeliveryService.js';
+import { listDeliveredTaskDraftPhotos } from '../services/TaskDraftPhotoReadService.js';
 
 const log = logger.child({ router: 'upload' });
 
@@ -392,25 +392,9 @@ export const uploadRouter = router({
     .input(z.object({ taskDraftId: z.string().uuid() }))
     .query(async ({ ctx, input }) => {
       await assertDraftPhotoReadAuthority(input.taskDraftId, ctx.user.id);
-      const rows = await db.query<{
-        id: string; upload_receipt_id: string; sequence_number: number;
-        canonical_key: string; canonical_content_type: string; canonical_size_bytes: number;
-        pixel_width: number; pixel_height: number;
-      }>(`SELECT p.id, p.upload_receipt_id, p.sequence_number,
-                 r.canonical_key, r.canonical_content_type, r.canonical_size_bytes,
-                 r.pixel_width, r.pixel_height
-          FROM task_draft_photos p
-          JOIN media_upload_receipts r ON r.id=p.upload_receipt_id
-         WHERE p.task_draft_id=$1 AND r.status IN ('FINALIZED','CONSUMED')
-         ORDER BY p.sequence_number`, [input.taskDraftId]);
-      const signed = await issueTaskDraftPhotoAccess({
+      return listDeliveredTaskDraftPhotos({
         taskDraftId: input.taskDraftId,
-        viewerId: ctx.user.id,
-        storageKeys: rows.rows.map((row) => ({ photoId: row.id, storageKey: row.canonical_key })),
-      });
-      return rows.rows.flatMap((row) => {
-        const access = signed.get(row.id);
-        return access ? [{ id: row.id, uploadReceiptId: row.upload_receipt_id, sequenceNumber: row.sequence_number, downloadUrl: access.downloadUrl, contentType: row.canonical_content_type, fileSizeBytes: Number(row.canonical_size_bytes), width: Number(row.pixel_width), height: Number(row.pixel_height) }] : [];
+        authority: { kind: 'AUTHENTICATED', viewerId: ctx.user.id },
       });
     }),
 

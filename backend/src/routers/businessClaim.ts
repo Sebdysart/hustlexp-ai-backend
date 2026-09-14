@@ -13,82 +13,67 @@ import {
   computePreferredArrivalWindow,
 } from '../services/QuoteTiming.js';
 import { getTaskFactsForDisplay } from '../services/taskIntake/getTaskFactsForDisplay.js';
+import { listDeliveredTaskDraftPhotos } from '../services/TaskDraftPhotoReadService.js';
+
+const claimPreviewInputSchema = z.object({
+  token: z.string().regex(/^[0-9a-f]{64}$/i),
+}).strict();
+
+interface PreviewableClaimRow {
+  claim_link_id: string;
+  task_draft_id: string;
+  status: string;
+  expires_at: Date;
+  title: string | null;
+  category: string;
+  scope_summary: string | null;
+  raw_input: string | null;
+  zip: string | null;
+  region: string | null;
+  est_price_min_cents: number | null;
+  est_price_max_cents: number | null;
+  quote_id: string | null;
+  structured: unknown;
+}
+
+async function loadPreviewableClaim(token: string): Promise<PreviewableClaimRow> {
+  const tokenHash = createHash('sha256').update(token).digest('hex');
+  const result = await db.query<PreviewableClaimRow>(
+    `SELECT link.id AS claim_link_id,
+            link.task_draft_id,
+            link.status,
+            link.expires_at,
+            draft.title,
+            draft.category,
+            draft.scope_summary,
+            draft.raw_input,
+            draft.zip,
+            draft.region,
+            draft.structured,
+            draft.est_price_min_cents,
+            draft.est_price_max_cents,
+            draft.quote_id
+       FROM ops_business_claim_links link
+       JOIN task_drafts draft ON draft.id = link.task_draft_id
+      WHERE link.token_hash = $1
+      LIMIT 1`,
+    [tokenHash],
+  );
+  const row = result.rows[0];
+  if (!row || row.status !== 'OPEN' || row.expires_at <= new Date() || row.quote_id) {
+    throw new TRPCError({
+      code: 'NOT_FOUND',
+      message: 'This claim link is no longer available.',
+    });
+  }
+  return row;
+}
 
 export const businessClaimRouter = router({
   preview: publicProcedure
-    .input(
-      z.object({
-        token: z.string().regex(/^[0-9a-f]{64}$/i),
-      }).strict(),
-    )
+    .input(claimPreviewInputSchema)
     .query(async ({ input }) => {
-      const tokenHash = createHash('sha256')
-        .update(input.token)
-        .digest('hex');
-
-      const result = await db.query<{
-        task_draft_id: string;
-        status: string;
-        expires_at: Date;
-
-        title: string | null;
-        category: string;
-        scope_summary: string | null;
-        raw_input: string | null;
-        zip: string | null;
-        region: string | null;
-
-        est_price_min_cents: number | null;
-        est_price_max_cents: number | null;
-
-        quote_id: string | null;
-        structured: unknown;
-      }>(
-        `
-        SELECT
-          link.task_draft_id,
-          link.status,
-          link.expires_at,
-
-          draft.title,
-          draft.category,
-          draft.scope_summary,
-          draft.raw_input,
-          draft.zip,
-          draft.region,
-          draft.structured,
-
-
-          draft.est_price_min_cents,
-          draft.est_price_max_cents,
-
-          draft.quote_id
-
-        FROM ops_business_claim_links link
-
-        JOIN task_drafts draft
-          ON draft.id = link.task_draft_id
-
-        WHERE link.token_hash = $1
-
-        LIMIT 1
-        `,
-        [tokenHash],
-      );
-
-      const row = result.rows[0];
-
-      if (
-        !row ||
-        row.status !== 'OPEN' ||
-        row.expires_at <= new Date() ||
-        row.quote_id
-      ) {
-        throw new TRPCError({
-          code: 'NOT_FOUND',
-          message: 'This claim link is no longer available.',
-        });
-      }
+      const row = await loadPreviewableClaim(input.token);
       const structured =
         row.structured;
 
@@ -141,6 +126,16 @@ export const businessClaimRouter = router({
         preferredArrivalWindowEnd:
           customerWindow.arrivalEnd.toISOString(),
       };
+    }),
+
+  listPreviewPhotos: publicProcedure
+    .input(claimPreviewInputSchema)
+    .query(async ({ input }) => {
+      const claim = await loadPreviewableClaim(input.token);
+      return listDeliveredTaskDraftPhotos({
+        taskDraftId: claim.task_draft_id,
+        authority: { kind: 'CLAIM_PREVIEW', claimLinkId: claim.claim_link_id },
+      });
     }),
 
   requestAssessment: protectedProcedure

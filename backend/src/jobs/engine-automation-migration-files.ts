@@ -130,6 +130,7 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260909_business_stax_merchant_accounts', fileName: '20260909_business_stax_merchant_accounts.sql' },
   { name: '20260909_quote_payment_stax_merchant_binding', fileName: '20260909_quote_payment_stax_merchant_binding.sql' },
   { name: '20260913_task_draft_photos', fileName: '20260913_task_draft_photos.sql' },
+  { name: '20260914_claim_preview_photo_access_audit', fileName: '20260914_claim_preview_photo_access_audit.sql' },
 ] as const;
 
 
