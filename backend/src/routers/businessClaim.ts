@@ -200,10 +200,24 @@ listClaimedDrafts: protectedProcedure
     }).strict(),
   )
   .query(async ({ ctx, input }) => {
-    await db.query(
-      `SELECT business_require_action($1, $2, 'READ_WORKSPACE')`,
+    const membership = await db.query(
+      `
+      SELECT 1
+      FROM business_memberships
+      WHERE organization_id = $1
+        AND user_id = $2
+        AND status = 'ACTIVE'
+      LIMIT 1
+      `,
       [input.organizationId, ctx.user.id],
     );
+
+    if (!membership.rows[0]) {
+      throw new TRPCError({
+        code: 'FORBIDDEN',
+        message: 'Business membership required.',
+      });
+    }
 
     const result = await db.query<{
       task_draft_id: string;

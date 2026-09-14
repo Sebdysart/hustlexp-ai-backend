@@ -36,7 +36,6 @@ getById: protectedProcedure
               WHERE organization_id = $1
                 AND user_id = $2
                 AND status = 'ACTIVE'
-                AND role = 'OWNER'
               LIMIT 1
               `,
               [

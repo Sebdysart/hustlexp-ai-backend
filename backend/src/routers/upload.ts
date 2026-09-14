@@ -167,37 +167,77 @@ async function assertDraftPhotoAuthority(taskDraftId: string, userId: string): P
 }
 
 async function assertDraftPhotoReadAuthority(taskDraftId: string, userId: string): Promise<void> {
-  const result = await db.query<{ poster_user_id: string | null; worker_id: string | null; business_organization_id: string | null }>(
-    `SELECT d.poster_user_id, t.worker_id,
-            COALESCE(t.business_fulfiller_organization_id, q.business_organization_id) AS business_organization_id
-       FROM task_drafts d
-       LEFT JOIN tasks t ON t.id = d.task_id
-       LEFT JOIN quotes q ON q.id = d.quote_id
-      WHERE d.id = $1`,
-    [taskDraftId],
+  const result = await db.query<{ allowed: boolean }>(
+    `
+    SELECT EXISTS (
+      SELECT 1
+      FROM task_drafts draft
+      LEFT JOIN tasks task
+        ON task.id = draft.task_id
+      WHERE draft.id = $1
+        AND (
+          draft.poster_user_id = $2
+          OR task.worker_id = $2
+          OR EXISTS (
+            SELECT 1
+            FROM business_memberships membership
+            WHERE membership.user_id = $2
+              AND membership.status = 'ACTIVE'
+              AND membership.organization_id = task.business_fulfiller_organization_id
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM quotes quote
+            JOIN business_memberships membership
+              ON membership.organization_id = quote.business_organization_id
+            WHERE quote.id = draft.quote_id
+              AND membership.user_id = $2
+              AND membership.status = 'ACTIVE'
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM business_task_proposals proposal
+            JOIN business_memberships membership
+              ON membership.organization_id = proposal.business_organization_id
+            WHERE proposal.task_draft_id = draft.id
+              AND membership.user_id = $2
+              AND membership.status = 'ACTIVE'
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM ops_business_claim_links claim_link
+            JOIN business_memberships membership
+              ON membership.organization_id = claim_link.claimed_by_organization_id
+            WHERE claim_link.task_draft_id = draft.id
+              AND claim_link.status = 'CLAIMED'
+              AND membership.user_id = $2
+              AND membership.status = 'ACTIVE'
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM admin_roles admin_role
+            WHERE admin_role.user_id = $2
+              AND admin_role.role = ANY(
+                ARRAY['admin', 'support', 'finance', 'moderator', 'founder']::text[]
+              )
+              AND (
+                admin_role.role IN ('admin', 'founder')
+                OR COALESCE(admin_role.can_resolve_disputes, false)
+                OR COALESCE(admin_role.can_manage_incidents, false)
+                OR COALESCE(admin_role.can_manage_operations, false)
+              )
+          )
+        )
+    ) AS allowed
+    `,
+    [taskDraftId, userId],
   );
-  const row = result.rows[0];
-  if (!row) throw new TRPCError({ code: 'NOT_FOUND', message: 'Task draft not found' });
-  if (row.poster_user_id === userId || row.worker_id === userId) return;
-  if (row.business_organization_id) {
-    try {
-      await db.query(
-        `SELECT business_require_action($1, $2, 'READ_WORKSPACE')`,
-        [row.business_organization_id, userId],
-      );
-      return;
-    } catch {
-      // Not authorized through the business workspace. Continue checking ops/admin access.
-    }
+  if (!result.rows[0]?.allowed) {
+    throw new TRPCError({
+      code: 'FORBIDDEN',
+      message: 'Not authorized to view task photos.',
+    });
   }
-  const admin = await db.query(
-    `SELECT 1 FROM admin_roles
-      WHERE user_id=$1 AND role = ANY($2::text[])
-        AND (role IN ('admin','founder') OR COALESCE(can_resolve_disputes,false) OR COALESCE(can_manage_incidents,false) OR COALESCE(can_manage_operations,false))
-      LIMIT 1`,
-    [userId, ['admin', 'support', 'finance', 'moderator', 'founder']],
-  );
-  if (!admin.rows[0]) throw new TRPCError({ code: 'FORBIDDEN', message: 'Not authorized to view task photos.' });
 }
 
 export const uploadRouter = router({
