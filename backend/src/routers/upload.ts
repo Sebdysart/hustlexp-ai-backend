@@ -180,13 +180,15 @@ async function assertDraftPhotoReadAuthority(taskDraftId: string, userId: string
   if (!row) throw new TRPCError({ code: 'NOT_FOUND', message: 'Task draft not found' });
   if (row.poster_user_id === userId || row.worker_id === userId) return;
   if (row.business_organization_id) {
-    const membership = await db.query(
-      `SELECT 1 FROM business_memberships
-        WHERE organization_id=$1 AND user_id=$2 AND status='ACTIVE'
-          AND role IN ('OWNER','ADMIN','DISPATCHER') LIMIT 1`,
-      [row.business_organization_id, userId],
-    );
-    if (membership.rows[0]) return;
+    try {
+      await db.query(
+        `SELECT business_require_action($1, $2, 'READ_WORKSPACE')`,
+        [row.business_organization_id, userId],
+      );
+      return;
+    } catch {
+      // Not authorized through the business workspace. Continue checking ops/admin access.
+    }
   }
   const admin = await db.query(
     `SELECT 1 FROM admin_roles
