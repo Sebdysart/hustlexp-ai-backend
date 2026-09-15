@@ -243,12 +243,15 @@ function classifyLeakState(text: string): LeakState {
 function extractExpandedCategoryFacts(text: string, activeCategories: ReadonlySet<TaskCategory>): Candidate[] {
   const candidates: Candidate[] = [];
   if (activeCategories.has('painting')) {
-    const surface = enumCandidate(text, 'painting_surface', [
-      ['exterior_walls', [/\b(?:exterior|outside)\b[^.!?]{0,30}\b(?:walls?|house)\b/i]],
-      ['interior_walls', [/\b(?:interior|inside|living room|bedroom|kitchen|bathroom|hallway|lounge|guest room|dining room|garage|office|nursery)\s+walls?\b/i, /\b(?:paint|repaint|painting|painted|patch)\b[^.!?]{0,50}\bwalls?\b/i, /\bwall\b[^.!?]{0,30}\b(?:patch|paint|repaint)\b/i]],
-      ['ceiling', [/\bceilings?\b/i]], ['trim', [/\b(?:trim|baseboards?|moulding|molding)\b/i]],
-      ['doors', [/\b(?:front\s+)?doors?\b/i]], ['fence', [/\bfence\b/i]], ['deck', [/\bdeck\b/i]],
-    ]); if (surface && !(/\bdon['â€™]?t\s+paint\b[^.!?]*\b(?:walls?|ceiling|trim|doors?|fence|deck)\b/i.test(text) && surface.value === 'doors')) add(candidates, surface);
+    const paintingSurfaces: string[] = [];
+    if (/\b(?:exterior|outside)\b[^.!?]{0,30}\b(?:walls?|house)\b/i.test(text)) paintingSurfaces.push('exterior_walls');
+    if (/\b(?:interior|inside|living room|bedroom|kitchen|bathroom|hallway|lounge|guest room|dining room|garage|office|nursery)\s+walls?\b/i.test(text) || /\b(?:paint|repaint|painting|painted|patch)\b[^.!?]{0,50}\bwalls?\b/i.test(text) || /\bwall\b[^.!?]{0,30}\b(?:patch|paint|repaint)\b/i.test(text)) paintingSurfaces.push('interior_walls');
+    if (/\bceilings?\b/i.test(text)) paintingSurfaces.push('ceiling');
+    if (/\b(?:trim|baseboards?|moulding|molding)\b/i.test(text)) paintingSurfaces.push('trim');
+    if (/\b(?:front\s+)?doors?\b/i.test(text) && !/\bdon['’]?t\s+paint\b[^.!?]*\bdoors?\b/i.test(text)) paintingSurfaces.push('doors');
+    if (/\bfence\b/i.test(text)) paintingSurfaces.push('fence');
+    if (/\bdeck\b/i.test(text)) paintingSurfaces.push('deck');
+    if (paintingSurfaces.length) add(candidates, { key: 'painting_surface', value: [...new Set(paintingSurfaces)], confidence: 0.97, evidence: 'Explicit painting surfaces.' });
     const area = text.match(/\b(living room|bedroom|kitchen|bathroom|hallway|lounge|guest room|dining room|garage|office|nursery|front door|back fence|deck)\b/i); if (area) add(candidates, { key: 'painting_area', value: area[1].toLowerCase(), confidence: 0.95, evidence: area[0] });
     const paintingSize = enumCandidate(text, 'painting_size', [['whole_property', [/\b(?:whole|entire)\s+(?:house|home|property|building)\b/i, /\b(?:all|every)\s+(?:the\s+)?(?:walls?|rooms?)\b/i]], ['several_rooms', [/\b(?:several|multiple|a few)\s+rooms?\b/i, /\b(?:two|three|four|five|six|2|3|4|5|6)\s+rooms?\b/i]], ['one_room', [/\b(?:one|1|single)\s+room\b/i, /\b(?:paint|repaint)\s+(?:the\s+)?(?:bedroom|kitchen|bathroom|living room|office|garage)\b/i]], ['small_feature', [/\b(?:one|single)\s+(?:door|wall|fence panel|small area|section)\b/i, /\bsmall\s+(?:area|section|patch)\b/i]]]); if (paintingSize) add(candidates, paintingSize);
     const surfaceCondition = enumCandidate(text, 'surface_condition', [['damaged', [/\b(?:water[- ]damaged|badly damaged|damaged drywall|damaged wall|surface damage)\b/i]], ['peeling_or_cracked', [/\b(?:peeling|flaking|cracked|cracks)\b/i]], ['minor_wear', [/\b(?:minor wear|scuffs?|small marks?|light wear)\b/i]], ['good', [/\b(?:surface|walls?)\s+(?:is|are)\s+(?:in\s+)?good condition\b/i, /\bclean\s+(?:and\s+)?(?:undamaged\s+)?walls?\b/i]]]); if (surfaceCondition) add(candidates, surfaceCondition);

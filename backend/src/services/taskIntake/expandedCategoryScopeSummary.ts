@@ -7,12 +7,12 @@ const pretty=(v:string)=>v.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase())
 
 export function appendExpandedCategorySummary(category: TaskCategory, a: IntakeAnswers, p: string[]): void {
   if (category === 'painting') {
-    const surface = str(a, 'painting_surface');
+    const surfaces = Array.isArray(a.painting_surface) ? a.painting_surface as string[] : [];
     const area = str(a, 'painting_area');
     const size = str(a, 'painting_size');
     const condition = str(a, 'surface_condition');
     const colorChange = str(a, 'color_change');
-    if (surface || area) p.push(`Painting work${surface ? `: ${pretty(surface).toLowerCase()}` : ''}${area ? ` in ${area}` : ''}.`);
+    if (surfaces.length || area) p.push(`Painting work${surfaces.length ? `: ${surfaces.map((surface) => pretty(surface).toLowerCase()).join(', ')}` : ''}${area ? ` in ${area}` : ''}.`);
     if (size) { const sizeLabel: Record<string, string> = { small_feature: 'a small area or single feature', one_room: 'approximately one room or similar area', several_rooms: 'several rooms or a large area', whole_property: 'most or all of the property', unknown: 'an unspecified amount of surface' }; p.push(`Painting scope covers ${sizeLabel[size] ?? pretty(size).toLowerCase()}.`); }
     if (condition) { const conditionLabel: Record<string, string> = { good: 'good', minor_wear: 'showing minor wear', peeling_or_cracked: 'peeling or cracked', damaged: 'damaged', unknown: 'not yet confirmed' }; p.push(`Current surface condition is ${conditionLabel[condition] ?? pretty(condition).toLowerCase()}.`); }
     if (bool(a, 'paint_provided') === true) p.push('Customer will provide paint.');
