@@ -25,8 +25,9 @@ export function appendExpandedCategorySummary(category: TaskCategory, a: IntakeA
     if (colorChange) { const colorLabel: Record<string, string> = { similar: 'similar to the existing color', light_to_dark: 'changing from a lighter color to a darker color', dark_to_light: 'changing from a darker color to a lighter color', unknown: 'not yet confirmed' }; p.push(`Color change is ${colorLabel[colorChange] ?? pretty(colorChange).toLowerCase()}.`); }
     const coats = num(a, 'coat_count'); if (coats !== null) p.push(`${coats} coat${coats === 1 ? '' : 's'} requested.`);
   } else if (category === 'plumbing') {
-    const fixture=str(a,'plumbing_fixture'), issue=str(a,'plumbing_issue');
+    const fixture=str(a,'plumbing_fixture'), issue=str(a,'plumbing_issue'), scope=str(a,'issue_scope');
     if (fixture || issue) p.push(`Plumbing work${issue ? `: ${pretty(issue).toLowerCase()}` : ''}${fixture ? ` involving a ${pretty(fixture).toLowerCase()}` : ''}.`);
+    if (scope) { const scopeLabels: Record<string, string> = { single_fixture: 'one fixture or component', multiple_fixtures: 'multiple fixtures or areas', whole_property: 'most or all of the property', unknown: 'an unspecified area' }; p.push(`Affected plumbing scope: ${scopeLabels[scope] ?? pretty(scope).toLowerCase()}.`); }
     if (bool(a,'active_leak') === true) p.push('Active leak reported.');
     if (bool(a,'active_leak') === false) p.push('No active leak reported.');
     if (bool(a,'water_shutoff_available') === true) p.push('Water shutoff is available.');
@@ -34,8 +35,9 @@ export function appendExpandedCategorySummary(category: TaskCategory, a: IntakeA
     if (bool(a,'parts_provided') === true) p.push('Customer will provide required parts.');
     if (bool(a,'parts_provided') === false) p.push('Provider should supply required parts.');
   } else if (category === 'electrical') {
-    const fixture=str(a,'electrical_fixture'), issue=str(a,'electrical_issue');
+    const fixture=str(a,'electrical_fixture'), issue=str(a,'electrical_issue'), scope=str(a,'issue_scope');
     if (fixture || issue) p.push(`Electrical work${issue ? `: ${pretty(issue).toLowerCase()}` : ''}${fixture ? ` involving a ${pretty(fixture).toLowerCase()}` : ''}.`);
+    if (scope) { const scopeLabels: Record<string, string> = { single_fixture: 'one fixture or component', multiple_fixtures: 'multiple fixtures or components', room_or_area: 'one room or area', whole_property: 'most or all of the property', unknown: 'an unspecified area' }; p.push(`Affected electrical scope: ${scopeLabels[scope] ?? pretty(scope).toLowerCase()}.`); }
     if (bool(a,'power_available') === true) p.push('Power is available.');
     if (bool(a,'power_available') === false) p.push('Power is not available.');
     if (bool(a,'existing_wiring') === true) p.push('Existing wiring is available.');
