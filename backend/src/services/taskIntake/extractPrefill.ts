@@ -241,6 +241,8 @@ function extractExpandedCategoryFacts(text: string, activeCategories: ReadonlySe
       ['doors', [/\b(?:front\s+)?doors?\b/i]], ['fence', [/\bfence\b/i]], ['deck', [/\bdeck\b/i]],
     ]); if (surface && !(/\bdon['’]?t\s+paint\b[^.!?]*\b(?:walls?|ceiling|trim|doors?|fence|deck)\b/i.test(text) && surface.value === 'doors')) add(candidates, surface);
     const area = text.match(/\b(living room|bedroom|kitchen|bathroom|hallway|lounge|guest room|dining room|garage|office|nursery|front door|back fence|deck)\b/i); if (area) add(candidates, { key: 'painting_area', value: area[1].toLowerCase(), confidence: 0.95, evidence: area[0] });
+    const paintingSize = enumCandidate(text, 'painting_size', [['whole_property', [/\b(?:whole|entire)\s+(?:house|home|property|building)\b/i, /\b(?:all|every)\s+(?:the\s+)?(?:walls?|rooms?)\b/i]], ['several_rooms', [/\b(?:several|multiple|a few)\s+rooms?\b/i, /\b(?:two|three|four|five|six|2|3|4|5|6)\s+rooms?\b/i]], ['one_room', [/\b(?:one|1|single)\s+room\b/i, /\b(?:paint|repaint)\s+(?:the\s+)?(?:bedroom|kitchen|bathroom|living room|office|garage)\b/i]], ['small_feature', [/\b(?:one|single)\s+(?:door|wall|fence panel|small area|section)\b/i, /\bsmall\s+(?:area|section|patch)\b/i]]]); if (paintingSize) add(candidates, paintingSize);
+    const surfaceCondition = enumCandidate(text, 'surface_condition', [['damaged', [/\b(?:water[- ]damaged|badly damaged|damaged drywall|damaged wall|surface damage)\b/i]], ['peeling_or_cracked', [/\b(?:peeling|flaking|cracked|cracks)\b/i]], ['minor_wear', [/\b(?:minor wear|scuffs?|small marks?|light wear)\b/i]], ['good', [/\b(?:surface|walls?)\s+(?:is|are)\s+(?:in\s+)?good condition\b/i, /\bclean\s+(?:and\s+)?(?:undamaged\s+)?walls?\b/i]]]); if (surfaceCondition) add(candidates, surfaceCondition);
     const paintNotProvided = /\bpaint\s+is\s+not\s+provided\b|\b(?:you|provider)\s+(?:need\s+to\s+)?(?:bring|supply|provide)\s+(?:the\s+)?paint\b|(?:^|[.!?;,]\s*)(?:bring|supply|provide)\s+(?:the\s+)?paint\b|\b(?:i|we)\s+don['’]?t\s+have\s+(?:the\s+)?paint\b|\bpaint\s+isn['’]?t\s+here\b/i.test(text);
     const paintProvided = /\b(?:already\s+have|have|bought)\s+(?:the\s+)?paint\b|\bpaint\s+(?:has\s+already\s+been\s+)?purchased\b|\bpaint\s+is\s+(?:already\s+)?here\b|\bpaint\s+is\s+provided\b/i.test(text);
     if (paintNotProvided || /\b(?:you['’]?ll|you)\s+need\s+to\s+bring\s+(?:the\s+)?paint\b/i.test(text)) add(candidates, { key: 'paint_provided', value: false, confidence: 0.99, evidence: 'Explicit provider paint responsibility.' });
@@ -250,8 +252,27 @@ function extractExpandedCategoryFacts(text: string, activeCategories: ReadonlySe
     const readyPrep = /\b(?:already\s+prepped|already\s+prepared|surface\s+is\s+ready|walls?\s+are\s+ready|surface\s+is\s+ready\s+to\s+go|ready\s+(?:to\s+paint|for\s+painting))\b/i.test(text);
     if (noPrep || readyPrep) add(candidates, { key: 'prep_needed', value: false, confidence: 0.99, evidence: 'Explicitly no painting preparation required.' });
     else if (/\b(?:sand|sanding|scrape|scraping|patch|patching|strip|stripping|prime|priming|prep(?:aration)?|surface prep)\w*\b/i.test(text)) add(candidates, { key: 'prep_needed', value: true, confidence: 0.98, evidence: 'Explicit painting preparation.' });
+    const prepDetails: string[] = []; if (/\bpatch(?:ing)?\b/i.test(text)) prepDetails.push('patching'); if (/\bsand(?:ing)?\b/i.test(text)) prepDetails.push('sanding'); if (/\bscrap(?:e|ing)\b/i.test(text)) prepDetails.push('scraping'); if (/\bstrip(?:ping)?\b/i.test(text)) prepDetails.push('stripping'); if (/\bprim(?:e|ing)\b/i.test(text)) prepDetails.push('priming'); if (prepDetails.length) setCandidate(candidates, { key: 'prep_details', value: [...new Set(prepDetails)], confidence: 0.98, evidence: 'Explicit painting preparation work.' });
+    if (/\b(?:high|tall|two[- ]story|second[- ]story|double[- ]height|vaulted)\s+(?:walls?|ceiling|exterior|area)\b|\b(?:ladder|scaffolding)\s+(?:needed|required)\b/i.test(text)) add(candidates, { key: 'high_access', value: true, confidence: 0.97, evidence: 'Explicit high or difficult painting access.' });
+    if (/\b(?:no ladder|no scaffolding|easy to reach|ground[- ]level only)\b/i.test(text)) setCandidate(candidates, { key: 'high_access', value: false, confidence: 0.97, evidence: 'Painting area explicitly described as easily accessible.' });
+    if (/\b(?:dark|black|navy|brown|deep)\b[^.!?]{0,35}\b(?:to|into)\s+(?:white|cream|light|lighter)\b/i.test(text)) add(candidates, { key: 'color_change', value: 'dark_to_light', confidence: 0.94, evidence: 'Explicit dark-to-light paint change.' }); else if (/\b(?:white|cream|light|lighter)\b[^.!?]{0,35}\b(?:to|into)\s+(?:dark|black|navy|brown|deep)\b/i.test(text)) add(candidates, { key: 'color_change', value: 'light_to_dark', confidence: 0.94, evidence: 'Explicit light-to-dark paint change.' }); else if (/\b(?:same|similar)\s+(?:color|colour|shade)\b/i.test(text)) add(candidates, { key: 'color_change', value: 'similar', confidence: 0.96, evidence: 'Similar paint color explicitly requested.' });
     if (/\b(?:water damage|peeling(?: paint)?|cracks?|cracked|damaged (?:wall|surface)|wall has cracks?)\b/i.test(text)) add(candidates, { key: 'existing_damage', value: true, confidence: 0.97, evidence: 'Explicit paint-surface damage.' });
     const coats = text.match(/\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+coats?\b/i); if (coats) { const n = quantityFromToken(coats[1]); if (n) add(candidates, { key: 'coat_count', value: n, confidence: 0.99, evidence: coats[0] }); }
+  }
+  if (activeCategories.has('handyman')) {
+    const jobType = enumCandidate(text, 'handyman_job_type', [['installation', [/\binstall(?:ing|ation)?\b/i, /\bput\s+in\b/i]], ['replacement', [/\breplace(?:ment|d|ing)?\b/i, /\bswap(?:ping)?\s+out\b/i]], ['mounting', [/\bmount(?:ing)?\b/i, /\bhang(?:ing)?\b[^.!?]{0,30}\b(?:wall|tv|shelf|mirror|cabinet)\b/i]], ['adjustment', [/\badjust(?:ment|ing)?\b/i, /\brealign(?:ment|ing)?\b/i]], ['maintenance', [/\bmaintenance\b/i, /\bservice(?:ing)?\b/i]], ['repair', [/\brepair(?:ing)?\b/i, /\bfix(?:ing)?\b/i]]]); if (jobType) add(candidates, jobType);
+    const workCount = text.match(/\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:items?|fixtures?|doors?|shelves?|cabinets?|areas?)\b/i); if (workCount) { const value = quantityFromToken(workCount[1]); if (value) add(candidates, { key: 'work_count', value, confidence: 0.94, evidence: workCount[0] }); }
+    const itemCondition = enumCandidate(text, 'item_condition', [['new_installation', [/(?:brand[- ]new|new)\b[^.!?]{0,30}\b(?:install|mount|fit)\b/i]], ['not_working', [/\b(?:not working|doesn['’]?t work|won['’]?t work|stopped working)\b/i]], ['partially_broken', [/\b(?:partially broken|sometimes works|intermittent)\b/i]], ['damaged', [/\b(?:broken|damaged|cracked)\b/i]], ['working_but_needs_adjustment', [/\b(?:still works|working)\b[^.!?]{0,40}\b(?:adjust|realign|tighten)\b/i]]]); if (itemCondition) add(candidates, itemCondition);
+  }
+  if (activeCategories.has('home_services')) {
+    const serviceScale = enumCandidate(text, 'service_scale', [['whole_property', [/\b(?:whole|entire)\s+(?:house|home|property|building)\b/i]], ['multiple_areas', [/\b(?:multiple|several|a few)\s+(?:rooms?|areas?|locations?)\b/i]], ['single_area', [/\b(?:one|single)\s+(?:room|area)\b/i]], ['single_item', [/\b(?:one|single)\s+(?:item|fixture|unit|appliance)\b/i]]]); if (serviceScale) add(candidates, serviceScale);
+    if (/\b(?:can['’]?t|cannot|unable to)\s+(?:use|operate)\b|\b(?:not usable|unusable|out of service)\b/i.test(text)) add(candidates, { key: 'currently_usable', value: false, confidence: 0.96, evidence: 'Affected area or system explicitly unusable.' }); else if (/\b(?:still usable|still works|can still use|working normally)\b/i.test(text)) add(candidates, { key: 'currently_usable', value: true, confidence: 0.96, evidence: 'Affected area or system explicitly remains usable.' });
+  }
+  if (activeCategories.has('other')) {
+    const location = enumCandidate(text, 'work_location_type', [['multiple_locations', [/\b(?:multiple|several|two|three)\s+locations?\b/i, /\bbetween\s+(?:two|multiple)\s+locations?\b/i]], ['business', [/\b(?:office|store|shop|warehouse|commercial property|business premises)\b/i]], ['outdoors', [/\b(?:outside|outdoors?|exterior|backyard|front yard)\b/i]], ['indoors', [/\b(?:inside|indoors?|interior|room|apartment|house)\b/i]], ['vehicle', [/\b(?:car|vehicle|truck|suv|van)\b/i]]]); if (location) add(candidates, location);
+    if (/\b(?:heavy|bulky|awkward|fragile|very large|oversized)\b/i.test(text)) add(candidates, { key: 'heavy_or_awkward', value: true, confidence: 0.94, evidence: 'Explicit heavy, bulky, fragile, or awkward work.' });
+    if (/\b(?:provider|you)\s+(?:need|needs|will need|should)\s+to\s+(?:bring|supply|provide)\s+(?:the\s+)?(?:materials?|parts?|supplies?)\b/i.test(text)) add(candidates, { key: 'materials_needed', value: true, confidence: 0.96, evidence: 'Provider explicitly needs to supply materials.' });
+    if (/\b(?:i|we|customer)\s+(?:already\s+)?(?:have|provide|will provide)\s+(?:all\s+)?(?:the\s+)?(?:materials?|parts?|supplies?)\b/i.test(text)) setCandidate(candidates, { key: 'materials_needed', value: false, confidence: 0.96, evidence: 'Customer explicitly provides required materials.' });
   }
   if (activeCategories.has('plumbing')) {
     const compoundDrain = /\b(?:bathtub|tub|shower|sink)\s+drain\b/i.test(text);
@@ -636,6 +657,79 @@ export function extractIntakePrefill(
   if (activeCategories.has('delivery')) {
     const deliveryList = extractDeliveryList(text);
     if (deliveryList) setCandidate(candidates, { key: 'delivery_item', value: deliveryList, confidence: 1.01, evidence: 'Explicit coordinated delivery items.' });
+  }
+
+
+  if (activeCategories.has('moving')) {
+    const moveType = enumCandidate(text, 'move_type', [
+      ['loading_unloading', [/\b(?:load|unload|loading|unloading)\b[^.!?]{0,40}\b(?:truck|van|moving truck|container)\b/i]],
+      ['same_building', [/\b(?:upstairs|downstairs|another floor|different floor)\b/i, /\bwithin\s+(?:the\s+)?same\s+building\b/i]],
+      ['within_property', [/\b(?:within|around)\s+(?:the\s+)?(?:house|home|property|yard)\b/i, /\bfrom\s+(?:one\s+)?room\s+to\s+(?:another|another room)\b/i]],
+      ['pickup_only', [/\bpick\s*up\s+only\b/i]],
+      ['dropoff_only', [/\b(?:drop[- ]?off|delivery)\s+only\b/i]],
+      ['local_move', [/\bmove\b[^.!?]{0,60}\bfrom\b[^.!?]{0,60}\bto\b/i, /\bmoving\s+(?:house|home|apartment|apartments)\b/i]],
+    ]);
+    if (moveType) add(candidates, moveType);
+  }
+  if (activeCategories.has('delivery')) {
+    const quantityMatch = text.match(/\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:items?|packages?|boxes?|parcels?|pieces?)\b/i);
+    if (quantityMatch) {
+      const quantity = quantityFromToken(quantityMatch[1]);
+      if (quantity) add(candidates, { key: 'delivery_quantity', value: quantity, confidence: 0.96, evidence: quantityMatch[0] });
+    }
+    const pickupAccess = enumCandidate(text, 'pickup_access', [
+      ['loading_area', [/\bpickup\b[^.!?]{0,50}\b(?:loading dock|loading area)\b/i]],
+      ['elevator', [/\bpickup\b[^.!?]{0,50}\belevator\b/i]],
+      ['stairs', [/\bpickup\b[^.!?]{0,50}\bstairs?\b/i]],
+      ['curbside', [/\bcurbside\s+pickup\b/i]],
+      ['ground_floor', [/\bpickup\b[^.!?]{0,50}\bground floor\b/i]],
+    ]);
+    if (pickupAccess) add(candidates, pickupAccess);
+    const dropoffAccess = enumCandidate(text, 'dropoff_access', [
+      ['loading_area', [/\b(?:drop[- ]?off|delivery)\b[^.!?]{0,50}\b(?:loading dock|loading area)\b/i]],
+      ['elevator', [/\b(?:drop[- ]?off|delivery)\b[^.!?]{0,50}\belevator\b/i]],
+      ['stairs', [/\b(?:drop[- ]?off|delivery)\b[^.!?]{0,50}\bstairs?\b/i]],
+      ['curbside', [/\bcurbside\s+(?:drop[- ]?off|delivery)\b/i]],
+      ['ground_floor', [/\b(?:drop[- ]?off|delivery)\b[^.!?]{0,50}\bground floor\b/i]],
+    ]);
+    if (dropoffAccess) add(candidates, dropoffAccess);
+    if (/\b(?:someone|i|we|customer)\s+(?:will|can)\s+help\s+(?:load|unload)\b/i.test(text)) add(candidates, { key: 'loading_help', value: true, confidence: 0.96, evidence: 'Loading or unloading help explicitly available.' });
+    if (/\b(?:no one|nobody)\s+(?:will|can)\s+help\s+(?:load|unload)\b|\bno\s+help\s+(?:loading|unloading)\b/i.test(text)) setCandidate(candidates, { key: 'loading_help', value: false, confidence: 0.97, evidence: 'No loading or unloading help available.' });
+  }
+  if (activeCategories.has('events')) {
+    const duration = enumCandidate(text, 'event_duration', [
+      ['multiple_days', [/\b(?:multiple|several|two|three|four)\s+days?\b/i]],
+      ['full_day', [/\b(?:full|entire|whole)\s+day\b/i, /\ball[- ]day\b/i]],
+      ['4_8_hours', [/\b(?:4|5|6|7|8)\s+hours?\b/i]],
+      ['2_4_hours', [/\b(?:2|3|4)\s+hours?\b/i]],
+      ['under_2_hours', [/\b(?:30|45|60|90)\s+minutes?\b/i, /\b(?:one|1)\s+hour\b/i]],
+    ]);
+    if (duration) add(candidates, duration);
+    const venue = enumCandidate(text, 'venue_type', [
+      ['outdoor', [/\b(?:outdoor|outside|park|garden|backyard)\b/i]],
+      ['event_venue', [/\b(?:event venue|banquet hall|reception hall|wedding venue)\b/i]],
+      ['office', [/\b(?:office|workplace|corporate event)\b/i]],
+      ['home', [/\b(?:at home|my house|our house|residence)\b/i]],
+    ]);
+    if (venue) add(candidates, venue);
+    if (/\b(?:provider|you)\s+(?:need|needs|should|will need)\s+to\s+(?:bring|supply|provide)\s+(?:event\s+)?(?:equipment|supplies|tables|chairs)\b/i.test(text)) add(candidates, { key: 'equipment_needed', value: true, confidence: 0.95, evidence: 'Provider event equipment responsibility explicitly stated.' });
+  }
+  if (activeCategories.has('pet_care')) {
+    const duration = enumCandidate(text, 'care_duration', [
+      ['multiple_days', [/\b(?:for\s+)?(?:two|three|four|five|several|multiple)\s+days?\b/i, /\bfor\s+the\s+weekend\b/i]],
+      ['overnight', [/\bovernight\b/i, /\bstay\s+the\s+night\b/i]],
+      ['full_day', [/\b(?:full|whole|entire)\s+day\b/i, /\ball[- ]day\b/i]],
+      ['few_hours', [/\b(?:two|three|four|2|3|4)\s+hours?\b/i, /\bfew\s+hours?\b/i]],
+      ['under_1_hour', [/\b(?:30|45)\s+minutes?\b/i, /\b(?:less than|under)\s+(?:an?\s+)?hour\b/i]],
+    ]);
+    if (duration) add(candidates, duration);
+    const frequency = enumCandidate(text, 'care_frequency', [
+      ['multiple_times_per_day', [/\b(?:twice|three times|multiple times)\s+(?:a|per)\s+day\b/i]],
+      ['daily', [/\b(?:once\s+)?daily\b/i, /\bonce\s+(?:a|per)\s+day\b/i]],
+      ['recurring', [/\b(?:every week|weekly|recurring|regularly)\b/i]],
+      ['one_time', [/\b(?:one[- ]time|just once|single visit)\b/i]],
+    ]);
+    if (frequency) add(candidates, frequency);
   }
 
   const accepted = candidates.filter(
