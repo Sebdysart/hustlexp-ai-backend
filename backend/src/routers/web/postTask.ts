@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { config } from '../../config.js';
 import { protectedProcedure, router } from '../../trpc.js';
 import { db } from '../../db.js';
+import { notifyProviderOsProvidersOfNewDraft } from '../../lib/provider-os-notifications.js';
 import { ComplianceGuardianService } from '../../services/ComplianceGuardianService.js';
 import { deriveManualTaskRisk } from '../../services/ManualTaskRisk.js';
 import {
@@ -356,6 +357,14 @@ async function handlePostTask({
             record: true,
         },
         ); */
+
+        if (!result.replayed) {
+          void notifyProviderOsProvidersOfNewDraft({
+            posterUserId,
+            draftId: result.taskDraftId,
+          });
+        }
+
         return {
             ok: true,
             ...result,

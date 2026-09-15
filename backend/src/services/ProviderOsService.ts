@@ -1,0 +1,828 @@
+import { createHash, randomBytes } from 'node:crypto';
+import { db } from '../db.js';
+import type { ServiceResult } from '../types.js';
+import { notifyProviderOsClientOnboarded } from '../lib/provider-os-notifications.js';
+import {
+  createBusinessQuoteInTransaction,
+  validateBusinessQuoteContext,
+} from './BusinessClaimService.js';
+import { computePreferredArrivalWindow } from './QuoteTiming.js';
+import {
+  isProviderOsEligibleDraft,
+  isProviderOsInviteToken,
+  normalizePosterEmail,
+  PROVIDER_OS_ELIGIBLE_DRAFT_STATUSES,
+  PROVIDER_OS_INVITE_TTL_DAYS,
+} from './ProviderOsPolicy.js';
+
+export interface ProviderOsClient {
+  relationshipId: string;
+  posterUserId: string;
+  fullName: string;
+  email: string;
+  onboardedAt: string;
+  openDraftCount: number;
+}
+
+export interface ProviderOsDraftSummary {
+  id: string;
+  posterUserId: string;
+  posterName: string;
+  title: string;
+  category: string;
+  status: string;
+  scopeSummary: string;
+  zip: string | null;
+  region: string | null;
+  estPriceMinCents: number | null;
+  estPriceMaxCents: number | null;
+  createdAt: string;
+}
+
+export interface ProviderOsDraftDetail extends ProviderOsDraftSummary {
+  rawInput: string;
+  quoteId: string | null;
+  preferredWindow: string;
+  preferredArrivalWindowStart: string;
+  preferredArrivalWindowEnd: string;
+  quoteAction: {
+    kind: 'EXISTING_QUOTE_FLOW';
+    href: string;
+  };
+}
+
+export interface ProviderOsInviteCreated {
+  inviteId: string;
+  token: string;
+  invitePath: string;
+  intendedEmail: string | null;
+  expiresAt: string;
+}
+
+export interface ProviderOsInvitePreview {
+  inviteId: string;
+  providerName: string;
+  intendedEmail: string | null;
+  expiresAt: string;
+}
+
+function preferredWindowFromStructured(structured: unknown): string {
+  const answers =
+    structured &&
+    typeof structured === 'object' &&
+    !Array.isArray(structured) &&
+    'answers' in structured &&
+    structured.answers &&
+    typeof structured.answers === 'object' &&
+    !Array.isArray(structured.answers)
+      ? structured.answers as Record<string, unknown>
+      : {};
+
+  return String(answers.preferred_window ?? 'flexible');
+}
+
+function failure(code: string, message: string): ServiceResult<never> {
+  return { success: false, error: { code, message } };
+}
+
+function hashInviteToken(token: string): string {
+  return createHash('sha256').update(token.trim()).digest('hex');
+}
+
+function newInviteToken(): string {
+  return randomBytes(32).toString('hex');
+}
+
+async function assertProviderOsAccess(actorId: string): Promise<ServiceResult<true>> {
+  const user = await db.query<{ default_mode: string }>(
+    `SELECT default_mode FROM users WHERE id = $1`,
+    [actorId],
+  );
+  if (!user.rows[0]) return failure('NOT_FOUND', 'Account not found.');
+  if (user.rows[0].default_mode === 'worker') return { success: true, data: true };
+
+  const workspace = await db.query<{ id: string }>(
+    `SELECT o.id
+       FROM business_memberships m
+       JOIN business_organizations o ON o.id = m.organization_id
+      WHERE m.user_id = $1
+        AND m.status = 'ACTIVE'
+        AND o.provider_enabled = TRUE
+      LIMIT 1`,
+    [actorId],
+  );
+  if (workspace.rows[0]) return { success: true, data: true };
+  return failure('FORBIDDEN', 'Provider OS is available to hustlers and provider-enabled businesses.');
+}
+
+async function upsertProviderOsRelationship(input: {
+  providerUserId: string;
+  posterUserId: string;
+}): Promise<ServiceResult<{
+  relationshipId: string;
+  posterUserId: string;
+  fullName: string;
+  email: string;
+  onboardedAt: string;
+}>> {
+  if (input.providerUserId === input.posterUserId) {
+    return failure('INVALID_INPUT', 'A provider cannot onboard themselves as a Provider OS client.');
+  }
+
+  const poster = await db.query<{ id: string; full_name: string; email: string }>(
+    `SELECT id, full_name, email FROM users WHERE id = $1`,
+    [input.posterUserId],
+  );
+  const row = poster.rows[0];
+  if (!row) return failure('NOT_FOUND', 'Client account not found.');
+
+  const upsert = await db.query<{
+    id: string;
+    poster_user_id: string;
+    onboarded_at: Date;
+  }>(
+    `INSERT INTO provider_os_relationships (provider_user_id, poster_user_id, status)
+     VALUES ($1, $2, 'active')
+     ON CONFLICT (provider_user_id, poster_user_id)
+     DO UPDATE SET status = 'active', updated_at = now()
+     RETURNING id, poster_user_id, onboarded_at`,
+    [input.providerUserId, row.id],
+  );
+  const rel = upsert.rows[0];
+  if (!rel) return failure('SERVER_ERROR', 'Could not save the Provider OS relationship.');
+
+  return {
+    success: true,
+    data: {
+      relationshipId: rel.id,
+      posterUserId: row.id,
+      fullName: row.full_name,
+      email: row.email,
+      onboardedAt: rel.onboarded_at.toISOString(),
+    },
+  };
+}
+
+/** @deprecated Prefer createProviderOsInvite + acceptProviderOsInvite for new/existing customers. */
+export async function onboardProviderOsClient(input: {
+  actorId: string;
+  posterEmail: string;
+}): Promise<ServiceResult<ProviderOsClient>> {
+  const access = await assertProviderOsAccess(input.actorId);
+  if (!access.success) return access;
+
+  const email = normalizePosterEmail(input.posterEmail);
+  if (!email || !email.includes('@')) {
+    return failure('INVALID_INPUT', 'Enter a valid client email.');
+  }
+
+  const poster = await db.query<{ id: string }>(
+    `SELECT id FROM users WHERE lower(email) = $1`,
+    [email],
+  );
+  const row = poster.rows[0];
+  if (!row) {
+    return failure(
+      'NOT_FOUND',
+      'No HustleXP account matched that email. Create an invite link instead so new customers can join.',
+    );
+  }
+
+  const linked = await upsertProviderOsRelationship({
+    providerUserId: input.actorId,
+    posterUserId: row.id,
+  });
+  if (!linked.success) return linked;
+
+  return {
+    success: true,
+    data: {
+      ...linked.data,
+      openDraftCount: 0,
+    },
+  };
+}
+
+export async function createProviderOsInvite(input: {
+  actorId: string;
+  intendedEmail?: string | null;
+}): Promise<ServiceResult<ProviderOsInviteCreated>> {
+  const access = await assertProviderOsAccess(input.actorId);
+  if (!access.success) return access;
+
+  let intendedEmail: string | null = null;
+  if (input.intendedEmail && input.intendedEmail.trim()) {
+    intendedEmail = normalizePosterEmail(input.intendedEmail);
+    if (!intendedEmail.includes('@')) {
+      return failure('INVALID_INPUT', 'Enter a valid client email, or leave it blank.');
+    }
+  }
+
+  const token = newInviteToken();
+  const tokenHash = hashInviteToken(token);
+  const expiresAt = new Date(
+    Date.now() + PROVIDER_OS_INVITE_TTL_DAYS * 24 * 60 * 60 * 1000,
+  );
+
+  const inserted = await db.query<{ id: string; expires_at: Date }>(
+    `INSERT INTO provider_os_invites (
+       provider_user_id, token_hash, intended_email, status, expires_at
+     ) VALUES ($1, $2, $3, 'open', $4)
+     RETURNING id, expires_at`,
+    [input.actorId, tokenHash, intendedEmail, expiresAt.toISOString()],
+  );
+  const row = inserted.rows[0];
+  if (!row) return failure('SERVER_ERROR', 'Could not create the invite link.');
+
+  return {
+    success: true,
+    data: {
+      inviteId: row.id,
+      token,
+      invitePath: `/provider-os/invite/${token}`,
+      intendedEmail,
+      expiresAt: row.expires_at.toISOString(),
+    },
+  };
+}
+
+export async function previewProviderOsInvite(
+  rawToken: string,
+): Promise<ServiceResult<ProviderOsInvitePreview>> {
+  const token = rawToken.trim();
+  if (!isProviderOsInviteToken(token)) {
+    return failure('NOT_FOUND', 'This invite link is invalid or no longer available.');
+  }
+
+  const tokenHash = hashInviteToken(token);
+  const result = await db.query<{
+    id: string;
+    status: string;
+    expires_at: Date;
+    intended_email: string | null;
+    provider_name: string;
+  }>(
+    `SELECT i.id,
+            i.status,
+            i.expires_at,
+            i.intended_email,
+            u.full_name AS provider_name
+       FROM provider_os_invites i
+       JOIN users u ON u.id = i.provider_user_id
+      WHERE i.token_hash = $1
+      LIMIT 1`,
+    [tokenHash],
+  );
+
+  const row = result.rows[0];
+  if (!row || row.status !== 'open') {
+    return failure('NOT_FOUND', 'This invite link is invalid or no longer available.');
+  }
+
+  if (row.expires_at.getTime() <= Date.now()) {
+    await db.query(
+      `UPDATE provider_os_invites
+          SET status = 'expired', updated_at = now()
+        WHERE id = $1 AND status = 'open'`,
+      [row.id],
+    );
+    return failure('NOT_FOUND', 'This invite link is invalid or no longer available.');
+  }
+
+  return {
+    success: true,
+    data: {
+      inviteId: row.id,
+      providerName: row.provider_name,
+      intendedEmail: row.intended_email,
+      expiresAt: row.expires_at.toISOString(),
+    },
+  };
+}
+
+export async function acceptProviderOsInvite(input: {
+  actorId: string;
+  actorEmail: string | null | undefined;
+  token: string;
+}): Promise<ServiceResult<ProviderOsClient>> {
+  const token = input.token.trim();
+  if (!isProviderOsInviteToken(token)) {
+    return failure('NOT_FOUND', 'This invite link is invalid or no longer available.');
+  }
+
+  const tokenHash = hashInviteToken(token);
+  const result = await db.query<{
+    id: string;
+    provider_user_id: string;
+    status: string;
+    expires_at: Date;
+    intended_email: string | null;
+  }>(
+    `SELECT id, provider_user_id, status, expires_at, intended_email
+       FROM provider_os_invites
+      WHERE token_hash = $1
+      LIMIT 1`,
+    [tokenHash],
+  );
+
+  const invite = result.rows[0];
+  if (!invite || invite.status !== 'open') {
+    return failure('NOT_FOUND', 'This invite link is invalid or no longer available.');
+  }
+
+  if (invite.expires_at.getTime() <= Date.now()) {
+    await db.query(
+      `UPDATE provider_os_invites
+          SET status = 'expired', updated_at = now()
+        WHERE id = $1 AND status = 'open'`,
+      [invite.id],
+    );
+    return failure('NOT_FOUND', 'This invite link is invalid or no longer available.');
+  }
+
+  if (invite.intended_email) {
+    const actorEmail = normalizePosterEmail(input.actorEmail ?? '');
+    if (!actorEmail || actorEmail !== invite.intended_email) {
+      return failure(
+        'FORBIDDEN',
+        'Sign in with the email this invite was created for.',
+      );
+    }
+  }
+
+  const linked = await upsertProviderOsRelationship({
+    providerUserId: invite.provider_user_id,
+    posterUserId: input.actorId,
+  });
+  if (!linked.success) return linked;
+
+  await db.query(
+    `UPDATE provider_os_invites
+        SET accepted_count = accepted_count + 1,
+            updated_at = now()
+      WHERE id = $1`,
+    [invite.id],
+  );
+
+  // Side effect only — never fail onboarding if SMS enqueue fails.
+  void notifyProviderOsClientOnboarded({
+    providerUserId: invite.provider_user_id,
+    posterUserId: input.actorId,
+    relationshipId: linked.data.relationshipId,
+  });
+
+  return {
+    success: true,
+    data: {
+      ...linked.data,
+      openDraftCount: 0,
+    },
+  };
+}
+
+export async function listProviderOsClients(actorId: string): Promise<ServiceResult<ProviderOsClient[]>> {
+  const access = await assertProviderOsAccess(actorId);
+  if (!access.success) return access;
+
+  const result = await db.query<{
+    id: string;
+    poster_user_id: string;
+    full_name: string;
+    email: string;
+    onboarded_at: Date;
+    open_draft_count: string;
+  }>(
+    `SELECT r.id,
+            r.poster_user_id,
+            u.full_name,
+            u.email,
+            r.onboarded_at,
+            COUNT(d.id) FILTER (
+              WHERE d.claimed_at IS NULL
+                AND d.task_id IS NULL
+                AND d.quote_id IS NULL
+                AND d.status = ANY($2::text[])
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM quotes q
+                  WHERE q.task_draft_id = d.id
+                    AND q.claimed_by_user_id = r.provider_user_id
+                    AND q.status NOT IN ('rejected', 'withdrawn', 'expired', 'superseded')
+                )
+            )::text AS open_draft_count
+       FROM provider_os_relationships r
+       JOIN users u ON u.id = r.poster_user_id
+       LEFT JOIN task_drafts d ON d.poster_user_id = r.poster_user_id
+      WHERE r.provider_user_id = $1
+        AND r.status = 'active'
+      GROUP BY r.id, r.poster_user_id, u.full_name, u.email, r.onboarded_at
+      ORDER BY r.onboarded_at DESC`,
+    [actorId, [...PROVIDER_OS_ELIGIBLE_DRAFT_STATUSES]],
+  );
+
+  return {
+    success: true,
+    data: result.rows.map((row) => ({
+      relationshipId: row.id,
+      posterUserId: row.poster_user_id,
+      fullName: row.full_name,
+      email: row.email,
+      onboardedAt: row.onboarded_at.toISOString(),
+      openDraftCount: Number(row.open_draft_count),
+    })),
+  };
+}
+
+export async function listProviderOsDrafts(input: {
+  actorId: string;
+  posterUserId?: string;
+}): Promise<ServiceResult<ProviderOsDraftSummary[]>> {
+  const access = await assertProviderOsAccess(input.actorId);
+  if (!access.success) return access;
+
+  const result = await db.query<{
+    id: string;
+    poster_user_id: string;
+    poster_name: string;
+    title: string | null;
+    category: string;
+    status: string;
+    scope_summary: string | null;
+    zip: string | null;
+    region: string | null;
+    est_price_min_cents: number | null;
+    est_price_max_cents: number | null;
+    created_at: Date;
+    claimed_at: Date | null;
+    task_id: string | null;
+    quote_id: string | null;
+  }>(
+    `SELECT d.id,
+            d.poster_user_id,
+            u.full_name AS poster_name,
+            d.title,
+            d.category,
+            d.status,
+            d.scope_summary,
+            d.zip,
+            d.region,
+            d.est_price_min_cents,
+            d.est_price_max_cents,
+            d.created_at,
+            d.claimed_at,
+            d.task_id,
+            d.quote_id
+       FROM task_drafts d
+       JOIN provider_os_relationships r
+         ON r.poster_user_id = d.poster_user_id
+        AND r.provider_user_id = $1
+        AND r.status = 'active'
+       JOIN users u ON u.id = d.poster_user_id
+      WHERE d.poster_user_id IS NOT NULL
+        AND ($2::uuid IS NULL OR d.poster_user_id = $2)
+        AND NOT EXISTS (
+          SELECT 1
+          FROM quotes q
+          WHERE q.task_draft_id = d.id
+            AND q.claimed_by_user_id = $1
+            AND q.status NOT IN ('rejected', 'withdrawn', 'expired', 'superseded')
+        )
+      ORDER BY d.created_at DESC
+      LIMIT 100`,
+    [input.actorId, input.posterUserId ?? null],
+  );
+
+  return {
+    success: true,
+    data: result.rows
+      .filter((row) => isProviderOsEligibleDraft({
+        status: row.status,
+        claimedAt: row.claimed_at,
+        taskId: row.task_id,
+        posterUserId: row.poster_user_id,
+        quoteId: row.quote_id,
+      }))
+      .map((row) => ({
+        id: row.id,
+        posterUserId: row.poster_user_id,
+        posterName: row.poster_name,
+        title: row.title ?? 'Untitled request',
+        category: row.category,
+        status: row.status,
+        scopeSummary: row.scope_summary ?? '',
+        zip: row.zip,
+        region: row.region,
+        estPriceMinCents: row.est_price_min_cents,
+        estPriceMaxCents: row.est_price_max_cents,
+        createdAt: row.created_at.toISOString(),
+      })),
+  };
+}
+
+export async function getProviderOsDraft(input: {
+  actorId: string;
+  draftId: string;
+}): Promise<ServiceResult<ProviderOsDraftDetail>> {
+  const access = await assertProviderOsAccess(input.actorId);
+  if (!access.success) return access;
+
+  const result = await db.query<{
+    id: string;
+    poster_user_id: string;
+    poster_name: string;
+    title: string | null;
+    category: string;
+    status: string;
+    scope_summary: string | null;
+    raw_input: string;
+    zip: string | null;
+    region: string | null;
+    est_price_min_cents: number | null;
+    est_price_max_cents: number | null;
+    created_at: Date;
+    claimed_at: Date | null;
+    task_id: string | null;
+    quote_id: string | null;
+    structured: unknown;
+  }>(
+    `SELECT d.id,
+            d.poster_user_id,
+            u.full_name AS poster_name,
+            d.title,
+            d.category,
+            d.status,
+            d.scope_summary,
+            d.raw_input,
+            d.zip,
+            d.region,
+            d.est_price_min_cents,
+            d.est_price_max_cents,
+            d.created_at,
+            d.claimed_at,
+            d.task_id,
+            d.quote_id,
+            d.structured
+       FROM task_drafts d
+       JOIN provider_os_relationships r
+         ON r.poster_user_id = d.poster_user_id
+        AND r.provider_user_id = $1
+        AND r.status = 'active'
+       JOIN users u ON u.id = d.poster_user_id
+      WHERE d.id = $2`,
+    [input.actorId, input.draftId],
+  );
+
+  const row = result.rows[0];
+  if (!row) return failure('NOT_FOUND', 'That request is not visible in Provider OS.');
+  if (!isProviderOsEligibleDraft({
+    status: row.status,
+    claimedAt: row.claimed_at,
+    taskId: row.task_id,
+    posterUserId: row.poster_user_id,
+    quoteId: row.quote_id,
+  })) {
+    return failure('INVALID_STATE', 'This request is no longer an unclaimed Provider OS draft.');
+  }
+
+  const alreadyQuoted = await db.query<{ id: string }>(
+    `
+    SELECT id
+    FROM quotes
+    WHERE task_draft_id = $1
+      AND claimed_by_user_id = $2
+      AND status NOT IN ('rejected', 'withdrawn', 'expired', 'superseded')
+    LIMIT 1
+    `,
+    [row.id, input.actorId],
+  );
+  if (alreadyQuoted.rows[0]) {
+    return failure('INVALID_STATE', 'This request is no longer an unclaimed Provider OS draft.');
+  }
+
+  const preferredWindow = preferredWindowFromStructured(row.structured);
+  const customerWindow = computePreferredArrivalWindow(preferredWindow);
+
+  return {
+    success: true,
+    data: {
+      id: row.id,
+      posterUserId: row.poster_user_id,
+      posterName: row.poster_name,
+      title: row.title ?? 'Untitled request',
+      category: row.category,
+      status: row.status,
+      scopeSummary: row.scope_summary ?? '',
+      rawInput: row.raw_input,
+      zip: row.zip,
+      region: row.region,
+      estPriceMinCents: row.est_price_min_cents,
+      estPriceMaxCents: row.est_price_max_cents,
+      createdAt: row.created_at.toISOString(),
+      quoteId: row.quote_id,
+      preferredWindow,
+      preferredArrivalWindowStart: customerWindow.arrivalStart.toISOString(),
+      preferredArrivalWindowEnd: customerWindow.arrivalEnd.toISOString(),
+      quoteAction: {
+        kind: 'EXISTING_QUOTE_FLOW',
+        href: `/provider-os/drafts/${row.id}/quote`,
+      },
+    },
+  };
+}
+
+export interface ProviderOsSetQuoteResult {
+  taskDraftId: string;
+  quoteId: string;
+  quoteVersionId: string;
+  customerTotalCents: number;
+  payoutCents: number;
+  platformMarginCents: number;
+  expiresAt: string;
+}
+
+/**
+ * Provider OS entry into the shared business quote path.
+ * Auth = active onboarded-client relationship (not an Ops claim link).
+ */
+export async function setProviderOsDraftQuote(input: {
+  actorId: string;
+  draftId: string;
+  organizationId: string;
+  serviceProfileId: string;
+  businessLocationId: string;
+  proposedCustomerTotalCents: number;
+  proposedPayoutCents: number;
+  arrivalWindowStart: string;
+  arrivalWindowEnd: string;
+}): Promise<ServiceResult<ProviderOsSetQuoteResult>> {
+  const access = await assertProviderOsAccess(input.actorId);
+  if (!access.success) return access;
+
+  if (
+    !Number.isInteger(input.proposedCustomerTotalCents) ||
+    input.proposedCustomerTotalCents <= 0 ||
+    !Number.isInteger(input.proposedPayoutCents) ||
+    input.proposedPayoutCents <= 0 ||
+    input.proposedPayoutCents > input.proposedCustomerTotalCents
+  ) {
+    return failure(
+      'INVALID_PRICING',
+      'Customer price and business payout must be valid integer cents, with payout no greater than customer price.',
+    );
+  }
+
+  try {
+    const quoted = await db.transaction(async (query) => {
+      const draftResult = await query<{
+        id: string;
+        poster_user_id: string | null;
+        category: string;
+        title: string | null;
+        scope_summary: string | null;
+        status: string;
+        quote_id: string | null;
+        claimed_at: Date | null;
+        task_id: string | null;
+      }>(
+        `
+        SELECT id, poster_user_id, category, title, scope_summary,
+               status, quote_id, claimed_at, task_id
+        FROM task_drafts
+        WHERE id = $1
+        FOR UPDATE
+        `,
+        [input.draftId],
+      );
+
+      const draft = draftResult.rows[0];
+      if (!draft) {
+        return failure('NOT_FOUND', 'That request is not visible in Provider OS.');
+      }
+
+      if (!isProviderOsEligibleDraft({
+        status: draft.status,
+        claimedAt: draft.claimed_at,
+        taskId: draft.task_id,
+        posterUserId: draft.poster_user_id,
+        quoteId: draft.quote_id,
+      })) {
+        return failure(
+          'INVALID_STATE',
+          'This request is no longer eligible to quote through Provider OS.',
+        );
+      }
+
+      const relationship = await query<{ id: string }>(
+        `
+        SELECT id
+          FROM provider_os_relationships
+         WHERE provider_user_id = $1
+           AND poster_user_id = $2
+           AND status = 'active'
+         FOR SHARE
+        `,
+        [input.actorId, draft.poster_user_id],
+      );
+
+      if (!relationship.rows[0]) {
+        return failure(
+          'FORBIDDEN',
+          'You can only quote tasks from clients you have onboarded in Provider OS.',
+        );
+      }
+
+      if (!draft.poster_user_id) {
+        return failure('INVALID_STATE', 'This request is no longer eligible to quote through Provider OS.');
+      }
+
+      const businessReady = await validateBusinessQuoteContext(query, {
+        organizationId: input.organizationId,
+        serviceProfileId: input.serviceProfileId,
+        businessLocationId: input.businessLocationId,
+        actorId: input.actorId,
+      });
+      if (!businessReady.success) return businessReady;
+
+      const quoteExpiresAt = new Date(
+        Date.now() + PROVIDER_OS_INVITE_TTL_DAYS * 24 * 60 * 60 * 1000,
+      );
+
+      const quoteWrite = await createBusinessQuoteInTransaction(query, {
+        draft: {
+          id: draft.id,
+          title: draft.title,
+          scope_summary: draft.scope_summary,
+          poster_user_id: draft.poster_user_id,
+        },
+        organizationId: input.organizationId,
+        serviceProfileId: input.serviceProfileId,
+        businessLocationId: input.businessLocationId,
+        actorId: input.actorId,
+        proposedCustomerTotalCents: input.proposedCustomerTotalCents,
+        proposedPayoutCents: input.proposedPayoutCents,
+        arrivalWindowStart: input.arrivalWindowStart,
+        arrivalWindowEnd: input.arrivalWindowEnd,
+        quoteExpiresAt,
+      });
+      if (!quoteWrite.success) {
+        return failure(quoteWrite.error.code, quoteWrite.error.message);
+      }
+
+      await query(
+        `
+        INSERT INTO business_audit_events (
+          organization_id,
+          actor_id,
+          action,
+          object_type,
+          object_id,
+          after_state
+        )
+        VALUES ($1, $2, 'TASK_CLAIMED', 'TASK_DRAFT', $3, $4::jsonb)
+        `,
+        [
+          input.organizationId,
+          input.actorId,
+          draft.id,
+          JSON.stringify({
+            quoteId: quoteWrite.data.quoteId,
+            quoteVersionId: quoteWrite.data.quoteVersionId,
+            customerTotalCents: input.proposedCustomerTotalCents,
+            payoutCents: input.proposedPayoutCents,
+            entry: 'provider_os',
+          }),
+        ],
+      );
+
+      return {
+        success: true as const,
+        data: {
+          taskDraftId: draft.id,
+          quoteId: quoteWrite.data.quoteId,
+          quoteVersionId: quoteWrite.data.quoteVersionId,
+          customerTotalCents: quoteWrite.data.customerTotalCents,
+          payoutCents: quoteWrite.data.payoutCents,
+          platformMarginCents: quoteWrite.data.platformMarginCents,
+          expiresAt: quoteExpiresAt.toISOString(),
+        },
+      };
+    });
+
+    if (!quoted.success) return quoted;
+
+    return {
+      success: true,
+      data: {
+        taskDraftId: quoted.data.taskDraftId,
+        quoteId: quoted.data.quoteId,
+        quoteVersionId: quoted.data.quoteVersionId,
+        customerTotalCents: quoted.data.customerTotalCents,
+        payoutCents: quoted.data.payoutCents,
+        platformMarginCents: quoted.data.platformMarginCents,
+        expiresAt: quoted.data.expiresAt,
+      },
+    };
+  } catch {
+    return failure('PROVIDER_OS_QUOTE_FAILED', 'Unable to set a quote for this Provider OS task.');
+  }
+}

@@ -4,7 +4,11 @@ import { db } from '../db.js';
 import { protectedProcedure, router } from '../trpc.js';
 import { paymentCreationErrorCause } from '../services/NewPaymentCreationGuard.js';
 import { finalizePaidQuote } from '../services/QuotePaymentFinalizationService.js';
-import { StripeService } from '../services/StripeService.js';
+import { StripeService } from "../services/StripeService.js"
+import {
+  notifyProviderOsPaymentConfirmed,
+  notifyProviderOsQuoteApproved,
+} from '../lib/provider-os-notifications.js';
 import {
   evaluateTaskAgainstRegionPolicy,
   resolveRegionPolicy,
@@ -343,6 +347,12 @@ export const quotePaymentRouter = router({
         ],
       );
 
+      // Poster committed to this quote by starting payment — separate from payment confirmation.
+      void notifyProviderOsQuoteApproved({
+        quoteId: input.quoteId,
+        posterUserId: ctx.user.id,
+      });
+
       return {
         quoteId: input.quoteId,
         quoteVersionId: input.quoteVersionId,
@@ -380,6 +390,13 @@ export const quotePaymentRouter = router({
           message: result.error.message,
         });
       }
+
+      void notifyProviderOsPaymentConfirmed({
+        quoteId: input.quoteId,
+        taskId: result.data.taskId,
+        posterUserId: ctx.user.id,
+        replayed: result.data.replayed,
+      });
 
       return result.data;
     }),
