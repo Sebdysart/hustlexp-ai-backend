@@ -659,6 +659,79 @@ export function extractIntakePrefill(
     if (deliveryList) setCandidate(candidates, { key: 'delivery_item', value: deliveryList, confidence: 1.01, evidence: 'Explicit coordinated delivery items.' });
   }
 
+
+  if (activeCategories.has('moving')) {
+    const moveType = enumCandidate(text, 'move_type', [
+      ['loading_unloading', [/\b(?:load|unload|loading|unloading)\b[^.!?]{0,40}\b(?:truck|van|moving truck|container)\b/i]],
+      ['same_building', [/\b(?:upstairs|downstairs|another floor|different floor)\b/i, /\bwithin\s+(?:the\s+)?same\s+building\b/i]],
+      ['within_property', [/\b(?:within|around)\s+(?:the\s+)?(?:house|home|property|yard)\b/i, /\bfrom\s+(?:one\s+)?room\s+to\s+(?:another|another room)\b/i]],
+      ['pickup_only', [/\bpick\s*up\s+only\b/i]],
+      ['dropoff_only', [/\b(?:drop[- ]?off|delivery)\s+only\b/i]],
+      ['local_move', [/\bmove\b[^.!?]{0,60}\bfrom\b[^.!?]{0,60}\bto\b/i, /\bmoving\s+(?:house|home|apartment|apartments)\b/i]],
+    ]);
+    if (moveType) add(candidates, moveType);
+  }
+  if (activeCategories.has('delivery')) {
+    const quantityMatch = text.match(/\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:items?|packages?|boxes?|parcels?|pieces?)\b/i);
+    if (quantityMatch) {
+      const quantity = quantityFromToken(quantityMatch[1]);
+      if (quantity) add(candidates, { key: 'delivery_quantity', value: quantity, confidence: 0.96, evidence: quantityMatch[0] });
+    }
+    const pickupAccess = enumCandidate(text, 'pickup_access', [
+      ['loading_area', [/\bpickup\b[^.!?]{0,50}\b(?:loading dock|loading area)\b/i]],
+      ['elevator', [/\bpickup\b[^.!?]{0,50}\belevator\b/i]],
+      ['stairs', [/\bpickup\b[^.!?]{0,50}\bstairs?\b/i]],
+      ['curbside', [/\bcurbside\s+pickup\b/i]],
+      ['ground_floor', [/\bpickup\b[^.!?]{0,50}\bground floor\b/i]],
+    ]);
+    if (pickupAccess) add(candidates, pickupAccess);
+    const dropoffAccess = enumCandidate(text, 'dropoff_access', [
+      ['loading_area', [/\b(?:drop[- ]?off|delivery)\b[^.!?]{0,50}\b(?:loading dock|loading area)\b/i]],
+      ['elevator', [/\b(?:drop[- ]?off|delivery)\b[^.!?]{0,50}\belevator\b/i]],
+      ['stairs', [/\b(?:drop[- ]?off|delivery)\b[^.!?]{0,50}\bstairs?\b/i]],
+      ['curbside', [/\bcurbside\s+(?:drop[- ]?off|delivery)\b/i]],
+      ['ground_floor', [/\b(?:drop[- ]?off|delivery)\b[^.!?]{0,50}\bground floor\b/i]],
+    ]);
+    if (dropoffAccess) add(candidates, dropoffAccess);
+    if (/\b(?:someone|i|we|customer)\s+(?:will|can)\s+help\s+(?:load|unload)\b/i.test(text)) add(candidates, { key: 'loading_help', value: true, confidence: 0.96, evidence: 'Loading or unloading help explicitly available.' });
+    if (/\b(?:no one|nobody)\s+(?:will|can)\s+help\s+(?:load|unload)\b|\bno\s+help\s+(?:loading|unloading)\b/i.test(text)) setCandidate(candidates, { key: 'loading_help', value: false, confidence: 0.97, evidence: 'No loading or unloading help available.' });
+  }
+  if (activeCategories.has('events')) {
+    const duration = enumCandidate(text, 'event_duration', [
+      ['multiple_days', [/\b(?:multiple|several|two|three|four)\s+days?\b/i]],
+      ['full_day', [/\b(?:full|entire|whole)\s+day\b/i, /\ball[- ]day\b/i]],
+      ['4_8_hours', [/\b(?:4|5|6|7|8)\s+hours?\b/i]],
+      ['2_4_hours', [/\b(?:2|3|4)\s+hours?\b/i]],
+      ['under_2_hours', [/\b(?:30|45|60|90)\s+minutes?\b/i, /\b(?:one|1)\s+hour\b/i]],
+    ]);
+    if (duration) add(candidates, duration);
+    const venue = enumCandidate(text, 'venue_type', [
+      ['outdoor', [/\b(?:outdoor|outside|park|garden|backyard)\b/i]],
+      ['event_venue', [/\b(?:event venue|banquet hall|reception hall|wedding venue)\b/i]],
+      ['office', [/\b(?:office|workplace|corporate event)\b/i]],
+      ['home', [/\b(?:at home|my house|our house|residence)\b/i]],
+    ]);
+    if (venue) add(candidates, venue);
+    if (/\b(?:provider|you)\s+(?:need|needs|should|will need)\s+to\s+(?:bring|supply|provide)\s+(?:event\s+)?(?:equipment|supplies|tables|chairs)\b/i.test(text)) add(candidates, { key: 'equipment_needed', value: true, confidence: 0.95, evidence: 'Provider event equipment responsibility explicitly stated.' });
+  }
+  if (activeCategories.has('pet_care')) {
+    const duration = enumCandidate(text, 'care_duration', [
+      ['multiple_days', [/\b(?:for\s+)?(?:two|three|four|five|several|multiple)\s+days?\b/i, /\bfor\s+the\s+weekend\b/i]],
+      ['overnight', [/\bovernight\b/i, /\bstay\s+the\s+night\b/i]],
+      ['full_day', [/\b(?:full|whole|entire)\s+day\b/i, /\ball[- ]day\b/i]],
+      ['few_hours', [/\b(?:two|three|four|2|3|4)\s+hours?\b/i, /\bfew\s+hours?\b/i]],
+      ['under_1_hour', [/\b(?:30|45)\s+minutes?\b/i, /\b(?:less than|under)\s+(?:an?\s+)?hour\b/i]],
+    ]);
+    if (duration) add(candidates, duration);
+    const frequency = enumCandidate(text, 'care_frequency', [
+      ['multiple_times_per_day', [/\b(?:twice|three times|multiple times)\s+(?:a|per)\s+day\b/i]],
+      ['daily', [/\b(?:once\s+)?daily\b/i, /\bonce\s+(?:a|per)\s+day\b/i]],
+      ['recurring', [/\b(?:every week|weekly|recurring|regularly)\b/i]],
+      ['one_time', [/\b(?:one[- ]time|just once|single visit)\b/i]],
+    ]);
+    if (frequency) add(candidates, frequency);
+  }
+
   const accepted = candidates.filter(
     (candidate) => candidate.confidence >= 0.88 && allowed.has(candidate.key)
   );
