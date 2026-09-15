@@ -3,12 +3,10 @@ import { db } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { notifyProviderOsClientOnboarded } from '../lib/provider-os-notifications.js';
 import {
-  assertBusinessCanQuoteDraft,
-  createBusinessDraftQuote,
-  notifyPosterQuoteReceived,
-  validateBusinessQuotePricing,
+  createBusinessQuoteInTransaction,
+  validateBusinessQuoteContext,
 } from './BusinessClaimService.js';
-import { computePreferredArrivalWindow, preferredWindowFromStructured } from './QuoteTiming.js';
+import { computePreferredArrivalWindow } from './QuoteTiming.js';
 import {
   isProviderOsEligibleDraft,
   isProviderOsInviteToken,
@@ -66,6 +64,21 @@ export interface ProviderOsInvitePreview {
   providerName: string;
   intendedEmail: string | null;
   expiresAt: string;
+}
+
+function preferredWindowFromStructured(structured: unknown): string {
+  const answers =
+    structured &&
+    typeof structured === 'object' &&
+    !Array.isArray(structured) &&
+    'answers' in structured &&
+    structured.answers &&
+    typeof structured.answers === 'object' &&
+    !Array.isArray(structured.answers)
+      ? structured.answers as Record<string, unknown>
+      : {};
+
+  return String(answers.preferred_window ?? 'flexible');
 }
 
 function failure(code: string, message: string): ServiceResult<never> {
@@ -645,11 +658,18 @@ export async function setProviderOsDraftQuote(input: {
   const access = await assertProviderOsAccess(input.actorId);
   if (!access.success) return access;
 
-  const pricing = validateBusinessQuotePricing({
-    proposedCustomerTotalCents: input.proposedCustomerTotalCents,
-    proposedPayoutCents: input.proposedPayoutCents,
-  });
-  if (!pricing.success) return pricing;
+  if (
+    !Number.isInteger(input.proposedCustomerTotalCents) ||
+    input.proposedCustomerTotalCents <= 0 ||
+    !Number.isInteger(input.proposedPayoutCents) ||
+    input.proposedPayoutCents <= 0 ||
+    input.proposedPayoutCents > input.proposedCustomerTotalCents
+  ) {
+    return failure(
+      'INVALID_PRICING',
+      'Customer price and business payout must be valid integer cents, with payout no greater than customer price.',
+    );
+  }
 
   try {
     const quoted = await db.transaction(async (query) => {
@@ -711,7 +731,11 @@ export async function setProviderOsDraftQuote(input: {
         );
       }
 
-      const businessReady = await assertBusinessCanQuoteDraft(query, {
+      if (!draft.poster_user_id) {
+        return failure('INVALID_STATE', 'This request is no longer eligible to quote through Provider OS.');
+      }
+
+      const businessReady = await validateBusinessQuoteContext(query, {
         organizationId: input.organizationId,
         serviceProfileId: input.serviceProfileId,
         businessLocationId: input.businessLocationId,
@@ -723,11 +747,13 @@ export async function setProviderOsDraftQuote(input: {
         Date.now() + PROVIDER_OS_INVITE_TTL_DAYS * 24 * 60 * 60 * 1000,
       );
 
-      const quoteWrite = await createBusinessDraftQuote(query, {
-        draftId: draft.id,
-        draftTitle: draft.title,
-        draftScopeSummary: draft.scope_summary,
-        posterUserId: draft.poster_user_id,
+      const quoteWrite = await createBusinessQuoteInTransaction(query, {
+        draft: {
+          id: draft.id,
+          title: draft.title,
+          scope_summary: draft.scope_summary,
+          poster_user_id: draft.poster_user_id,
+        },
         organizationId: input.organizationId,
         serviceProfileId: input.serviceProfileId,
         businessLocationId: input.businessLocationId,
@@ -737,9 +763,10 @@ export async function setProviderOsDraftQuote(input: {
         arrivalWindowStart: input.arrivalWindowStart,
         arrivalWindowEnd: input.arrivalWindowEnd,
         quoteExpiresAt,
-        scopeExtras: { claim_entry: 'provider_os', provider_os: true },
       });
-      if (!quoteWrite.success) return quoteWrite;
+      if (!quoteWrite.success) {
+        return failure(quoteWrite.error.code, quoteWrite.error.message);
+      }
 
       await query(
         `
@@ -776,19 +803,10 @@ export async function setProviderOsDraftQuote(input: {
           customerTotalCents: quoteWrite.data.customerTotalCents,
           payoutCents: quoteWrite.data.payoutCents,
           platformMarginCents: quoteWrite.data.platformMarginCents,
-          expiresAt: quoteWrite.data.expiresAt,
-          posterUserId: draft.poster_user_id,
+          expiresAt: quoteExpiresAt.toISOString(),
         },
       };
     });
-
-    if (quoted.success && quoted.data.posterUserId) {
-      await notifyPosterQuoteReceived({
-        posterUserId: quoted.data.posterUserId,
-        draftId: quoted.data.taskDraftId,
-        quoteId: quoted.data.quoteId,
-      });
-    }
 
     if (!quoted.success) return quoted;
 
