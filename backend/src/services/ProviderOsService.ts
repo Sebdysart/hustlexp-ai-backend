@@ -795,7 +795,7 @@ export async function setProviderOsDraftQuote(input: {
       );
 
       return {
-        success: true,
+        success: true as const,
         data: {
           taskDraftId: draft.id,
           quoteId: quoteWrite.data.quoteId,
