@@ -6,7 +6,8 @@ import {
   mapQuoteToCreateTaskParams,
   type MapQuoteToTaskParamsInput,
 } from './QuoteTaskParamsMapper.js';
-import { StripeQuotePaymentProvider } from './payment/StripeQuotePaymentProvider.js';
+import { StaxQuotePaymentProvider } from './payment/StaxQuotePaymentProvider.js';
+import { NotificationService } from './NotificationService.js';
 
 interface FinalizePaidQuoteInput {
   quoteId: string;
@@ -90,6 +91,9 @@ interface QuotePaymentRow {
   provider_payment_id: string;
   amount_cents: number;
   status: 'PENDING' | 'SUCCEEDED' | 'FAILED' | 'REFUNDED';
+  platform_fee_cents: number | null;
+  business_organization_id: string | null;
+  provider_merchant_id: string | null;
 }
 
 function fail<T>(
@@ -117,19 +121,44 @@ export async function finalizePaidQuote(
         quote_version_id: string;
         selected_quote_id: string | null;
         total_cents: number;
+        hustler_payout_cents: number;
+        business_organization_id: string | null;
+        provider_payment_id: string | null;
+        payment_amount_cents: number | null;
+        provider_merchant_id: string | null;
+        payment_platform_fee_cents: number | null;
+        assessment_credit_cents: number | null;
+        poster_user_id: string;
       }>(
         `
         SELECT
           q.id AS quote_id,
           qv.id AS quote_version_id,
           d.quote_id AS selected_quote_id,
-          qv.total_cents
+          qv.total_cents,
+          qv.hustler_payout_cents,
+          q.business_organization_id,
+          d.poster_user_id,
+          payment.provider_payment_id,
+          payment.amount_cents AS payment_amount_cents,
+          assessment_payment.amount_cents AS assessment_credit_cents
         FROM quotes q
         JOIN quote_versions qv
           ON qv.id = q.active_version_id
         AND qv.quote_id = q.id
         JOIN task_drafts d
           ON d.id = q.task_draft_id
+        LEFT JOIN quote_payments payment
+          ON payment.quote_id = q.id
+         AND payment.quote_version_id = qv.id
+        LEFT JOIN ops_business_claim_links claim
+          ON claim.quote_id = q.id
+        LEFT JOIN business_assessment_requests assessment
+          ON assessment.claim_link_id = claim.id
+         AND assessment.status = 'COMPLETED'
+        LEFT JOIN assessment_payments assessment_payment
+          ON assessment_payment.assessment_request_id = assessment.id
+         AND assessment_payment.status = 'SUCCEEDED'
         WHERE q.id = $1
           AND qv.id = $2
           AND d.poster_user_id = $3
@@ -154,16 +183,29 @@ export async function finalizePaidQuote(
       );
     }
 
+    if (!context.provider_payment_id || context.payment_amount_cents === null || context.payment_platform_fee_cents === null) {
+      return fail('QUOTE_PAYMENT_CONTEXT_MISSING', 'Quote payment binding is incomplete.');
+    }
+    if (context.provider_payment_id !== input.paymentIntentId) {
+      return fail('QUOTE_PAYMENT_ID_MISMATCH', 'The supplied payment does not match the stored quote payment.');
+    }
+    const assessmentCreditCents = Number(context.assessment_credit_cents ?? 0);
+    const quotePaymentAmountCents = Number(context.payment_amount_cents);
+        const totalCents = Number(context.total_cents);
+    const payoutCents = Number(context.hustler_payout_cents);
+    if (!Number.isInteger(payoutCents) || payoutCents < 0) return fail('QUOTE_PAYOUT_INVALID', 'Quote payout is invalid.');
+    if (assessmentCreditCents + quotePaymentAmountCents !== totalCents) return fail('QUOTE_PAYMENT_TOTAL_MISMATCH', 'Assessment credit and final payment do not equal the quote total.');
+
     /*
      * Verify that the payment actually belongs to this quote.
      */
     const verified =
-      await StripeQuotePaymentProvider.verifySucceededPayment({
-        paymentIntentId: input.paymentIntentId,
+      await StaxQuotePaymentProvider.verifySucceededPayment({
+        transactionId: input.paymentIntentId,
         quoteId: input.quoteId,
         quoteVersionId: input.quoteVersionId,
         posterId: input.posterId,
-        amountCents: Number(context.total_cents),
+        amountCents: quotePaymentAmountCents,
       });
 
     if (!verified.success) {
@@ -274,6 +316,9 @@ export async function finalizePaidQuote(
           provider,
           provider_payment_id,
           amount_cents,
+          platform_fee_cents,
+          business_organization_id,
+          provider_merchant_id,
           status
         FROM quote_payments
         WHERE quote_id = $1
@@ -399,35 +444,11 @@ export async function finalizePaidQuote(
         throw new Error('QUOTE_POSTER_MISMATCH');
       }
 
-      /*
-       * Persist the payment binding before materialization.
-       * If task creation fails, the whole transaction rolls back.
-       */
-      await query(
-        `
-        INSERT INTO quote_payments (
-          quote_id,
-          quote_version_id,
-          provider,
-          provider_payment_id,
-          amount_cents,
-          status
-        )
-        VALUES ($1, $2, 'stripe', $3, $4, 'PENDING')
-        ON CONFLICT (quote_id, quote_version_id)
-        DO UPDATE SET
-          provider_payment_id = EXCLUDED.provider_payment_id,
-          amount_cents = EXCLUDED.amount_cents,
-          updated_at = NOW()
-        `,
-        [
-          input.quoteId,
-          input.quoteVersionId,
-          input.paymentIntentId,
-          version.total_cents,
-        ],
-      );
-
+      if (!existingPayment) throw new Error('QUOTE_PAYMENT_NOT_FOUND');
+      if (existingPayment.provider !== 'stax') throw new Error('QUOTE_PAYMENT_PROVIDER_INVALID');
+      if (existingPayment.provider_payment_id !== input.paymentIntentId) throw new Error('QUOTE_PAYMENT_IDEMPOTENCY_CONFLICT');
+      if (existingPayment.amount_cents !== quotePaymentAmountCents) throw new Error('QUOTE_PAYMENT_AMOUNT_MISMATCH');
+            
       const taskParamsInput: MapQuoteToTaskParamsInput = {
         posterId: input.posterId,
         draft,
@@ -679,6 +700,31 @@ export async function finalizePaidQuote(
       [input.quoteId],
     );
 
+    await db.transaction(async (notificationQuery) => {
+      await NotificationService.createInTransaction(notificationQuery, {
+        userId: context.poster_user_id,
+        type: 'PAYMENT_CONFIRMED',
+        title: 'Payment confirmed',
+        message: 'Your payment was confirmed and the task is ready.',
+        entityType: 'task',
+        entityId: materialized.taskId,
+        actionUrl: `/dashboard/tasks/${materialized.taskId}`,
+        dedupeKey: `quote-paid-poster:${input.quoteId}`,
+      });
+
+      if (context.business_organization_id) {
+        await NotificationService.createForBusinessInTransaction(notificationQuery, context.business_organization_id, {
+          type: 'CUSTOMER_PAYMENT_RECEIVED',
+          title: 'Customer payment confirmed',
+          message: 'The customer completed payment. The task is ready to begin.',
+          entityType: 'task',
+          entityId: materialized.taskId,
+          actionUrl: `/business/tasks/${materialized.taskId}`,
+          dedupeKey: `quote-paid-business:${input.quoteId}`,
+        });
+      }
+    });
+
     return {
       success: true,
       data: {
@@ -787,4 +833,5 @@ export async function finalizePaidQuote(
     );
   }
 }
+
 

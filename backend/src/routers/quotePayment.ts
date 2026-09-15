@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { db } from '../db.js';
 import { protectedProcedure, router } from '../trpc.js';
 import { paymentCreationErrorCause } from '../services/NewPaymentCreationGuard.js';
-import { StripeQuotePaymentProvider } from '../services/payment/StripeQuotePaymentProvider.js';
 import { finalizePaidQuote } from '../services/QuotePaymentFinalizationService.js';
 import { StripeService } from "../services/StripeService.js"
 import {
@@ -15,6 +14,7 @@ import {
   resolveRegionPolicy,
 } from '../services/RegionPolicyService.js';
 import { buildManualTaskPolicyInput } from '../services/ManualTaskPolicy.js';
+import { StaxQuotePaymentProvider } from '../services/payment/StaxQuotePaymentProvider.js';
 
 export const quotePaymentRouter = router({
   createPaymentIntent: protectedProcedure
@@ -22,6 +22,7 @@ export const quotePaymentRouter = router({
       z.object({
         quoteId: z.string().uuid(),
         quoteVersionId: z.string().uuid(),
+        paymentMethodId: z.string().min(1),
       }).strict(),
     )
     .mutation(async ({ ctx, input }) => {
@@ -155,6 +156,19 @@ export const quotePaymentRouter = router({
       if (!Number.isSafeInteger(marginCents) || marginCents < 0) {
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This quote has invalid payment economics.' });
       }
+      const assessmentCreditResult = await db.query<{ amount_cents: number }>(
+        `SELECT payment.amount_cents
+         FROM business_assessment_requests assessment
+         JOIN assessment_payments payment ON payment.assessment_request_id = assessment.id
+         JOIN ops_business_claim_links claim ON claim.id = assessment.claim_link_id
+         WHERE claim.quote_id = $1 AND assessment.business_organization_id = $2
+           AND assessment.status = 'COMPLETED' AND payment.status = 'SUCCEEDED' LIMIT 1`,
+        [input.quoteId, quote.business_organization_id],
+      );
+      const assessmentCreditCents = assessmentCreditResult.rows[0]?.amount_cents ?? 0;
+      const remainingChargeCents = totalCents - assessmentCreditCents;
+      const marketplaceFeeCents = marginCents;
+      if (remainingChargeCents <= 0) throw new TRPCError({ code:'PRECONDITION_FAILED', message:'The remaining quote balance is invalid.' });
       if (
         !quote.region_code ||
         !quote.region_policy_id ||
@@ -281,13 +295,16 @@ export const quotePaymentRouter = router({
         }
       }
 
+      if (!quote.business_organization_id) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'The selected quote is not associated with a Business.' });
+
       const payment =
-        await StripeQuotePaymentProvider.createPaymentIntent({
+        await StaxQuotePaymentProvider.charge({
           quoteId: input.quoteId,
           quoteVersionId: input.quoteVersionId,
           posterId: ctx.user.id,
-          amountCents: totalCents,
-          platformFeeCents: marginCents,
+          paymentMethodId: input.paymentMethodId,
+          amountCents: remainingChargeCents,
+          platformFeeCents: marketplaceFeeCents,
         });
 
       if (!payment.success) {
@@ -308,21 +325,25 @@ export const quotePaymentRouter = router({
           provider,
           provider_payment_id,
           amount_cents,
-          status
+          status,
+          platform_fee_cents
         )
-        VALUES ($1, $2, 'stripe', $3, $4, 'PENDING')
+        VALUES ($1, $2, 'stax', $3, $4, 'SUCCEEDED', $5)
         ON CONFLICT (quote_id, quote_version_id)
         DO UPDATE SET
+          provider = 'stax',
           provider_payment_id = EXCLUDED.provider_payment_id,
           amount_cents = EXCLUDED.amount_cents,
-          status = 'PENDING',
+          status = 'SUCCEEDED',
+          platform_fee_cents = EXCLUDED.platform_fee_cents,
           updated_at = NOW()
         `,
         [
           input.quoteId,
           input.quoteVersionId,
-          payment.data.paymentIntentId,
+          payment.data.transactionId,
           payment.data.amountCents,
+          payment.data.platformFeeCents,
         ],
       );
 
@@ -335,8 +356,8 @@ export const quotePaymentRouter = router({
       return {
         quoteId: input.quoteId,
         quoteVersionId: input.quoteVersionId,
-        paymentIntentId: payment.data.paymentIntentId,
-        clientSecret: payment.data.clientSecret,
+        paymentIntentId: payment.data.transactionId,
+        clientSecret: null,
         amountCents: payment.data.amountCents,
         replayed: false,
       };
@@ -402,3 +423,7 @@ export const quotePaymentRouter = router({
 });
 
 export type QuotePaymentRouter = typeof quotePaymentRouter;
+
+
+
+

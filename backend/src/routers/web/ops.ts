@@ -15,9 +15,19 @@ import { db } from '../../db.js';
 import { logger } from '../../logger.js';
 import { TRPCError } from '@trpc/server';
 import crypto from 'crypto';
+import { config } from '../../config.js';
 import { AutomationLifecycleService } from '../../services/AutomationLifecycleService.js';
+import { ComplianceGuardianService } from '../../services/ComplianceGuardianService.js';
+import { deriveManualTaskRisk } from '../../services/ManualTaskRisk.js';
+import {
+  evaluateTaskAgainstRegionPolicy,
+  resolveRegionPolicy,
+} from '../../services/RegionPolicyService.js';
+import { buildManualTaskPolicyInput } from '../../services/ManualTaskPolicy.js';
+import { NotificationService } from '../../services/NotificationService.js';
 import { getOpsLiquidityPayload } from '../../services/OpsLiquidityService.js';
 import { assertEngineOpsServiceKey, OpsAuthError } from './opsServiceKey.js';
+import { getTaskFactsForDisplay } from '../../services/taskIntake/getTaskFactsForDisplay.js';
 
 const log = logger.child({ router: 'web.ops' });
 
@@ -176,41 +186,28 @@ export const webOpsRouter = router({
       }),
     )
     .query(async ({ input }) => {
-      const result = await db.query(
+      const draftResult = await db.query(
         `
         SELECT
           ${TASK_DRAFT_SAFE_COLS
             .split(',')
-            .map(
-              (c) =>
-                `d.${c.trim()}`,
-            )
+            .map((c) => `d.${c.trim()}`)
             .join(', ')},
 
-          q.id AS quote_id_linked,
-
-          qv.status AS quote_status,
-          qv.total_cents,
-          qv.subtotal_cents,
-          qv.service_fee_cents,
-          qv.materials_cents,
-          qv.discount_cents,
-          qv.customer_description,
-          qv.version_number AS quote_version,
+          poster.full_name AS poster_name,
+          poster.email AS poster_email,
 
           claim.id AS claim_link_id,
           claim.status AS claim_status,
           claim.expires_at AS claim_expires_at,
           claim.claimed_at,
-          claim.claimed_by_organization_id
+          claim.claimed_by_organization_id,
+          claim.created_at AS claim_created_at
 
         FROM task_drafts d
 
-        LEFT JOIN quotes q
-          ON q.task_draft_id = d.id
-
-        LEFT JOIN quote_versions qv
-          ON qv.id = q.active_version_id
+        LEFT JOIN users poster
+          ON poster.id = d.poster_user_id
 
         LEFT JOIN LATERAL (
           SELECT
@@ -218,7 +215,8 @@ export const webOpsRouter = router({
             link.status,
             link.expires_at,
             link.claimed_at,
-            link.claimed_by_organization_id
+            link.claimed_by_organization_id,
+            link.created_at
           FROM ops_business_claim_links link
           WHERE link.task_draft_id = d.id
           ORDER BY link.created_at DESC
@@ -226,18 +224,135 @@ export const webOpsRouter = router({
         ) claim ON TRUE
 
         WHERE d.id = $1
+        LIMIT 1
         `,
         [input.id],
       );
 
-      if (result.rows.length === 0) {
+      if (draftResult.rows.length === 0) {
         throw new TRPCError({
           code: 'NOT_FOUND',
         });
       }
 
+      const quotesResult = await db.query(
+        `
+        SELECT
+          q.id AS quote_id,
+          q.status AS quote_status,
+          q.business_organization_id,
+          q.created_at AS quote_created_at,
+
+          qv.id AS quote_version_id,
+          qv.version_number AS quote_version,
+          qv.status AS quote_version_status,
+          qv.total_cents,
+          qv.subtotal_cents,
+          qv.service_fee_cents,
+          qv.materials_cents,
+          qv.discount_cents,
+          qv.customer_description,
+          qv.arrival_window_start,
+          qv.arrival_window_end,
+          qv.expires_at AS quote_expires_at,
+
+          qv.hustler_payout_cents AS provider_payout_cents,
+
+          CASE
+            WHEN qv.total_cents IS NOT NULL
+              AND qv.hustler_payout_cents IS NOT NULL
+            THEN qv.total_cents - qv.hustler_payout_cents
+            ELSE NULL
+          END AS platform_margin_cents,
+
+          org.legal_name AS business_legal_name,
+          org.display_name AS business_display_name,
+          org.status AS business_status,
+          org.verification_status AS business_verification_status,
+
+          claim.id AS claim_link_id,
+          claim.status AS claim_status,
+          claim.claimed_at,
+          claim.expires_at AS claim_expires_at,
+
+          CASE
+            WHEN d.quote_id = q.id
+            THEN TRUE
+            ELSE FALSE
+          END AS selected
+
+        FROM quotes q
+
+        JOIN task_drafts d
+          ON d.id = q.task_draft_id
+
+        LEFT JOIN quote_versions qv
+          ON qv.id = q.active_version_id
+
+        LEFT JOIN business_organizations org
+          ON org.id = q.business_organization_id
+
+        LEFT JOIN LATERAL (
+          SELECT
+            link.id,
+            link.status,
+            link.claimed_at,
+            link.expires_at
+          FROM ops_business_claim_links link
+          WHERE link.task_draft_id = q.task_draft_id
+            AND (
+              link.quote_id = q.id
+              OR (
+                link.quote_id IS NULL
+                AND link.claimed_by_organization_id =
+                  q.business_organization_id
+              )
+            )
+          ORDER BY link.created_at DESC
+          LIMIT 1
+        ) claim ON TRUE
+
+        WHERE q.task_draft_id = $1
+
+        ORDER BY
+          CASE
+            WHEN d.quote_id = q.id
+            THEN 0
+            ELSE 1
+          END,
+          q.created_at DESC
+        `,
+        [input.id],
+      );
+
+      const assessmentsResult = await db.query(
+        `
+        SELECT
+          assessment.id,
+          assessment.status,
+          assessment.business_message,
+          assessment.customer_message,
+          assessment.proposed_window_start,
+          assessment.proposed_window_end,
+          assessment.scheduled_date,
+          assessment.created_at,
+          assessment.reviewed_at,
+          assessment.customer_selected_at,
+          assessment.completed_at,
+          assessment.business_organization_id,
+          org.display_name AS business_display_name,
+          org.legal_name AS business_legal_name
+        FROM business_assessment_requests assessment
+        JOIN business_organizations org
+          ON org.id = assessment.business_organization_id
+        WHERE assessment.task_draft_id = $1
+        ORDER BY assessment.created_at DESC
+        `,
+        [input.id],
+      );
+
       const draft =
-        result.rows[0] as Record<
+        draftResult.rows[0] as Record<
           string,
           unknown
         >;
@@ -252,12 +367,98 @@ export const webOpsRouter = router({
         }
       }
 
+      draft.taskFacts = getTaskFactsForDisplay({ rawInput: draft.raw_input, category: draft.category, structured: draft.structured });
+
       return {
         ok: true,
         draft,
+        quotes: quotesResult.rows,
+        assessments: assessmentsResult.rows,
       };
     }),
 
+  approveAssessmentRequest: operationsAdminProcedure
+    .input(z.object({
+      assessmentRequestId: z.string().uuid(),
+      customerMessage: z.string().trim().min(1).max(4000),
+      assessmentFeeCents: z.number().int().positive().nullable().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => db.transaction(async (query) => {
+      const assessmentFeeCents = input.assessmentFeeCents ?? null;
+      const context = await query<{ task_draft_id: string; poster_user_id: string }>(
+        `SELECT assessment.task_draft_id, draft.poster_user_id
+         FROM business_assessment_requests assessment
+         JOIN task_drafts draft ON draft.id = assessment.task_draft_id
+         WHERE assessment.id = $1 AND assessment.status = 'PENDING_ADMIN'
+         FOR UPDATE OF assessment`,
+        [input.assessmentRequestId],
+      );
+      const draftContext = context.rows[0];
+      if (!draftContext) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This assessment request is no longer pending review.' });
+      const result = await query<{ id: string }>(
+        `
+        UPDATE business_assessment_requests
+        SET status = 'AWAITING_CUSTOMER', customer_message = $2,
+            reviewed_by_user_id = $3, reviewed_at = NOW(), assessment_fee_cents = $4, updated_at = NOW()
+        WHERE id = $1 AND status = 'PENDING_ADMIN'
+        RETURNING id
+        `,
+        [input.assessmentRequestId, input.customerMessage, ctx.user.id, assessmentFeeCents],
+      );
+      if (!result.rows[0]) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This assessment request is no longer pending review.' });
+      }
+      await NotificationService.createInTransaction(query, {
+        userId: draftContext.poster_user_id,
+        type: 'ASSESSMENT_APPROVED',
+        title: 'Assessment ready',
+        message: assessmentFeeCents && assessmentFeeCents > 0
+          ? 'The onsite assessment was approved. Pay the assessment fee to choose a date.'
+          : 'The onsite assessment was approved. Choose a date for the visit.',
+        entityType: 'assessment',
+        entityId: result.rows[0].id,
+        actionUrl: `/dashboard/drafts/${draftContext.task_draft_id}`,
+        dedupeKey: `assessment-approved:${result.rows[0].id}`,
+      });
+      return { ok: true };
+    })),
+
+  rejectAssessmentRequest: operationsAdminProcedure
+    .input(z.object({ assessmentRequestId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => db.transaction(async (query) => {
+      const context = await query<{ task_draft_id: string; business_organization_id: string }>(
+        `SELECT assessment.task_draft_id, assessment.business_organization_id
+         FROM business_assessment_requests assessment
+         WHERE assessment.id = $1 AND assessment.status = 'PENDING_ADMIN'
+         FOR UPDATE OF assessment`,
+        [input.assessmentRequestId],
+      );
+      const assessmentContext = context.rows[0];
+      if (!assessmentContext) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This assessment request is no longer pending review.' });
+      const result = await query<{ id: string }>(
+        `
+        UPDATE business_assessment_requests
+        SET status = 'ADMIN_REJECTED', reviewed_by_user_id = $2,
+            reviewed_at = NOW(), updated_at = NOW()
+        WHERE id = $1 AND status = 'PENDING_ADMIN'
+        RETURNING id
+        `,
+        [input.assessmentRequestId, ctx.user.id],
+      );
+      if (!result.rows[0]) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This assessment request is no longer pending review.' });
+      }
+      await NotificationService.createForBusinessInTransaction(query, assessmentContext.business_organization_id, {
+        type: 'ASSESSMENT_REJECTED',
+        title: 'Assessment request declined',
+        message: 'HustleXP did not approve the onsite assessment request.',
+        entityType: 'assessment',
+        entityId: result.rows[0].id,
+        actionUrl: `/business/claims/${assessmentContext.task_draft_id}`,
+        dedupeKey: `assessment-rejected:${result.rows[0].id}`,
+      });
+      return { ok: true };
+    })),
   listTasks: operationsAdminProcedure
     .input(
       z.object({
@@ -365,6 +566,49 @@ export const webOpsRouter = router({
       SELECT
         t.*,
 
+        poster.full_name AS poster_name,
+        poster.email AS poster_email,
+
+        d.id AS originating_draft_id,
+        d.status AS originating_draft_status,
+        d.title AS originating_draft_title,
+        d.raw_input AS originating_draft_raw_input,
+        d.category AS originating_draft_category,
+        d.structured AS originating_draft_structured,
+        d.scope_summary AS originating_draft_scope_summary,
+        d.created_at AS originating_draft_created_at,
+        d.quote_send_ready_at AS quote_accepted_at,
+
+        q.id AS accepted_quote_id,
+        q.status AS accepted_quote_status,
+        q.business_organization_id AS quoting_business_organization_id,
+        q.created_at AS accepted_quote_created_at,
+
+        qv.id AS accepted_quote_version_id,
+        qv.version_number AS accepted_quote_version_number,
+        qv.total_cents AS accepted_quote_total_cents,
+        qv.hustler_payout_cents AS accepted_quote_provider_payout_cents,
+        (
+          qv.total_cents - qv.hustler_payout_cents
+        ) AS accepted_quote_platform_margin_cents,
+        qv.arrival_window_start AS accepted_quote_arrival_window_start,
+        qv.arrival_window_end AS accepted_quote_arrival_window_end,
+        qv.expires_at AS accepted_quote_expires_at,
+
+        quoting_org.legal_name AS quoting_business_legal_name,
+        quoting_org.display_name AS quoting_business_display_name,
+        quoting_org.status AS quoting_business_status,
+        quoting_org.verification_status AS quoting_business_verification_status,
+
+        fulfiller_org.legal_name AS fulfilling_business_legal_name,
+        fulfiller_org.display_name AS fulfilling_business_display_name,
+        fulfiller_org.status AS fulfilling_business_status,
+        fulfiller_org.verification_status AS fulfilling_business_verification_status,
+
+        qp.status AS quote_payment_status,
+        qp.provider_payment_id AS quote_payment_intent_id,
+        qp.updated_at AS quote_payment_updated_at,
+
         e.state AS escrow_state,
         e.amount AS escrow_amount_cents,
         e.platform_fee_cents,
@@ -379,17 +623,35 @@ export const webOpsRouter = router({
         e.provider_transfer_id,
         e.stripe_payment_intent_id,
         e.stripe_transfer_id,
-        e.stripe_refund_id,
+        e.stripe_refund_id
 
-        u.email AS poster_email
 
       FROM tasks t
 
+      LEFT JOIN users poster
+        ON poster.id = t.poster_id
+
+      LEFT JOIN task_drafts d
+        ON d.task_id = t.id
+
+      LEFT JOIN quotes q
+        ON q.id = d.quote_id
+
+      LEFT JOIN quote_versions qv
+        ON qv.id = q.active_version_id
+
+      LEFT JOIN business_organizations quoting_org
+        ON quoting_org.id = q.business_organization_id
+
+      LEFT JOIN business_organizations fulfiller_org
+        ON fulfiller_org.id = t.business_fulfiller_organization_id
+
+      LEFT JOIN quote_payments qp
+        ON qp.task_id = t.id
+        AND qp.quote_id = q.id
+
       LEFT JOIN escrows e
         ON e.task_id = t.id
-
-      LEFT JOIN users u
-        ON u.id = t.poster_id
 
       WHERE t.id = $1
       LIMIT 1
@@ -406,7 +668,10 @@ export const webOpsRouter = router({
 
       return {
         ok: true,
-        task: result.rows[0],
+        task: {
+          ...result.rows[0],
+          taskFacts: getTaskFactsForDisplay({ rawInput: result.rows[0].originating_draft_raw_input ?? result.rows[0].request_raw_input, category: result.rows[0].originating_draft_category ?? result.rows[0].category, structured: result.rows[0].originating_draft_structured }),
+        },
       };
     }),
 
@@ -1344,7 +1609,239 @@ export const webOpsRouter = router({
       });
       return { ok: true };
     }),
-    createBusinessClaimLink: operationsAdminProcedure
+  revalidateTaskDraft: operationsAdminProcedure
+    .input(z.object({
+      task_draft_id: z.string().uuid(),
+    }).strict())
+    .mutation(async ({ ctx, input }) => {
+      const draftResult = await db.query<{
+        id: string;
+        poster_user_id: string | null;
+        title: string | null;
+        raw_input: string | null;
+        scope_summary: string | null;
+        category: string;
+        status: string;
+      }>(
+        `
+        SELECT id, poster_user_id, title, raw_input, scope_summary, category, status
+        FROM task_drafts
+        WHERE id = $1
+        LIMIT 1
+        `,
+        [input.task_draft_id],
+      );
+
+      const draft = draftResult.rows[0];
+      if (!draft) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Task draft not found.' });
+      }
+      if (draft.status === 'abandoned') {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Abandoned task drafts cannot be revalidated.',
+        });
+      }
+      if (!draft.poster_user_id) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'This task draft has no poster identity and cannot be safely revalidated.',
+        });
+      }
+
+      const taskText =
+        draft.raw_input?.trim()
+        || draft.scope_summary?.trim()
+        || draft.title?.trim();
+      if (!taskText) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'This task draft does not contain enough task text to revalidate.',
+        });
+      }
+
+      const validatedRiskLevel = deriveManualTaskRisk(taskText);
+      const complianceResult = await ComplianceGuardianService.evaluate({
+        description: taskText,
+        userId: draft.poster_user_id,
+        templateSlug: 'standard_physical',
+      });
+
+      if (complianceResult.tier === 'hard_block') {
+        await recordOpsAudit({
+          actorUserId: ctx.user.id,
+          action: 'task_draft_revalidation_rejected',
+          targetType: 'task_draft',
+          targetId: draft.id,
+          meta: {
+            compliance_tier: complianceResult.tier,
+            compliance_score: complianceResult.score,
+            validated_risk_level: validatedRiskLevel,
+          },
+        });
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'This task cannot be approved under HustleXP safety policy.',
+        });
+      }
+
+      const regionCode = config.launchRegionCode;
+      const regionPolicy = await resolveRegionPolicy(regionCode);
+      if (!regionPolicy) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Task validation is temporarily unavailable because the service-region policy is unavailable.',
+        });
+      }
+
+      const regionEvaluation = evaluateTaskAgainstRegionPolicy(
+        regionPolicy,
+        buildManualTaskPolicyInput({
+          regionCode,
+          category: draft.category,
+          riskLevel: validatedRiskLevel,
+        }),
+        {
+          evaluateEconomics: false,
+          evaluateProductionGates: false,
+        },
+      );
+
+      if (!regionEvaluation.allowed) {
+        log.warn(
+          {
+            taskDraftId: draft.id,
+            regionCode,
+            category: draft.category,
+            validatedRiskLevel,
+            reasons: regionEvaluation.reasons,
+          },
+          'Task draft revalidation rejected by region policy',
+        );
+        await recordOpsAudit({
+          actorUserId: ctx.user.id,
+          action: 'task_draft_revalidation_rejected',
+          targetType: 'task_draft',
+          targetId: draft.id,
+          meta: {
+            region_code: regionCode,
+            validated_risk_level: validatedRiskLevel,
+            policy_reasons: regionEvaluation.reasons,
+          },
+        });
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'This task cannot currently be approved under HustleXP service policy.',
+        });
+      }
+
+      const snapshot = regionEvaluation.snapshot;
+      if (!snapshot?.policyId || !snapshot.policyVersion || !snapshot.policyHash) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Region policy validation did not produce authoritative policy evidence.',
+        });
+      }
+
+      const updated = await db.transaction(async (tx) => {
+        const lockedResult = await tx<{
+          id: string;
+          status: string;
+          poster_user_id: string | null;
+        }>(
+          `SELECT id, status, poster_user_id FROM task_drafts WHERE id = $1 FOR UPDATE`,
+          [draft.id],
+        );
+        const locked = lockedResult.rows[0];
+        if (!locked) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Task draft no longer exists.' });
+        }
+        if (locked.status === 'abandoned') {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Task draft became unavailable during validation.',
+          });
+        }
+        if (locked.poster_user_id !== draft.poster_user_id) {
+          throw new TRPCError({
+            code: 'CONFLICT',
+            message: 'Task draft ownership changed during validation.',
+          });
+        }
+
+        const result = await tx<{
+          id: string;
+          region_code: string;
+          region_policy_id: string;
+          region_policy_version: string;
+          region_policy_hash: string;
+          validated_risk_level: string;
+        }>(
+          `
+          UPDATE task_drafts
+          SET
+            validated_risk_level = $2,
+            compliance_result = $3::jsonb,
+            region_code = $4,
+            region_policy_id = $5,
+            region_policy_version = $6,
+            region_policy_hash = $7,
+            region_policy_snapshot = $8::jsonb,
+            updated_at = NOW()
+          WHERE id = $1
+          RETURNING id, region_code, region_policy_id, region_policy_version,
+                    region_policy_hash, validated_risk_level
+          `,
+          [
+            draft.id,
+            validatedRiskLevel,
+            JSON.stringify(complianceResult),
+            regionCode,
+            snapshot.policyId,
+            snapshot.policyVersion,
+            snapshot.policyHash,
+            JSON.stringify(snapshot),
+          ],
+        );
+        return result.rows[0];
+      });
+
+      if (!updated) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Task draft validation could not be persisted.',
+        });
+      }
+
+      await recordOpsAudit({
+        actorUserId: ctx.user.id,
+        action: 'task_draft_revalidated',
+        targetType: 'task_draft',
+        targetId: draft.id,
+        meta: {
+          region_code: updated.region_code,
+          region_policy_id: updated.region_policy_id,
+          region_policy_version: updated.region_policy_version,
+          region_policy_hash: updated.region_policy_hash,
+          validated_risk_level: updated.validated_risk_level,
+          compliance_tier: complianceResult.tier,
+          compliance_score: complianceResult.score,
+        },
+      });
+
+      return {
+        ok: true,
+        task_draft_id: updated.id,
+        validated_risk_level: updated.validated_risk_level,
+        compliance_tier: complianceResult.tier,
+        region_code: updated.region_code,
+        region_policy_id: updated.region_policy_id,
+        region_policy_version: updated.region_policy_version,
+        region_policy_hash: updated.region_policy_hash,
+      };
+    }),
+
+  createBusinessClaimLink: operationsAdminProcedure
   .input(
     z.object({
       task_draft_id: z.string().uuid(),
@@ -1491,4 +1988,135 @@ export const webOpsRouter = router({
       });
     }
   }),
+
+  createBusinessTaskProposal: operationsAdminProcedure
+    .input(z.object({ task_draft_id: z.string().uuid(), business_organization_id: z.string().uuid(), expires_in_hours: z.number().int().min(1).max(168).default(72) }).strict())
+    .mutation(async ({ ctx, input }) => {
+      const created = await db.transaction(async (tx) => {
+        const draft = (await tx<{ id: string; status: string; title: string | null }>('SELECT id, status, title FROM task_drafts WHERE id = $1 FOR UPDATE', [input.task_draft_id])).rows[0];
+        if (!draft) throw new TRPCError({ code: 'NOT_FOUND', message: 'Task draft not found' });
+        if (draft.status === 'abandoned') throw new TRPCError({ code: 'CONFLICT', message: 'Abandoned task drafts cannot receive business proposals.' });
+        const business = (await tx<{ display_name: string | null; legal_name: string | null; provider_enabled: boolean; verification_status: string; status: string }>('SELECT display_name, legal_name, provider_enabled, verification_status, status FROM business_organizations WHERE id = $1 FOR UPDATE', [input.business_organization_id])).rows[0];
+        if (!business) throw new TRPCError({ code: 'NOT_FOUND', message: 'Business organization not found' });
+        if (business.status !== 'ACTIVE' || !business.provider_enabled || business.verification_status !== 'VERIFIED') throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Only active, verified provider businesses can receive task proposals.' });
+        await tx(`UPDATE business_task_proposals SET status='EXPIRED', responded_at=COALESCE(responded_at,NOW()), updated_at=NOW() WHERE task_draft_id=$1 AND business_organization_id=$2 AND status IN ('PENDING','VIEWED') AND expires_at<=NOW()`, [input.task_draft_id, input.business_organization_id]);
+        const active = (await tx<{ id: string }>(`SELECT id FROM business_task_proposals WHERE task_draft_id=$1 AND business_organization_id=$2 AND status IN ('PENDING','VIEWED') FOR UPDATE`, [input.task_draft_id, input.business_organization_id])).rows[0];
+        if (active) throw new TRPCError({ code: 'CONFLICT', message: 'This business already has an active proposal for the task draft.' });
+        const expiresAt = new Date(Date.now() + input.expires_in_hours * 60 * 60 * 1000);
+        const proposal = (await tx<{ id: string }>(`INSERT INTO business_task_proposals (task_draft_id,business_organization_id,created_by_user_id,status,expires_at) VALUES ($1,$2,$3,'PENDING',$4) RETURNING id`, [input.task_draft_id, input.business_organization_id, ctx.user.id, expiresAt])).rows[0];
+        if (!proposal) throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Could not create business proposal.' });
+        await NotificationService.createForBusinessInTransaction(tx, input.business_organization_id, { type: 'TASK_PROPOSAL_RECEIVED', title: 'New task proposal', message: draft.title ? `HustleXP invited your business to review and quote "${draft.title}".` : 'HustleXP invited your business to review and quote a new task.', entityType: 'business_task_proposal', entityId: proposal.id, actionUrl: `/business/proposals/${proposal.id}`, dedupeKey: `task-proposal-created:${proposal.id}` });
+        return { id: proposal.id, expiresAt, title: draft.title, businessName: business.display_name ?? business.legal_name ?? 'Business' };
+      });
+      await recordOpsAudit({ actorUserId: ctx.user.id, action: 'business_task_proposal_created', targetType: 'task_draft', targetId: input.task_draft_id, meta: { proposal_id: created.id, business_organization_id: input.business_organization_id, expires_at: created.expiresAt.toISOString() } });
+      return { ok: true, proposal_id: created.id, task_draft_id: input.task_draft_id, business_organization_id: input.business_organization_id, business_name: created.businessName, title: created.title, expires_at: created.expiresAt.toISOString() };
+    }),
+
+  cancelBusinessTaskProposal: operationsAdminProcedure
+    .input(z.object({ proposal_id: z.string().uuid() }).strict())
+    .mutation(async ({ ctx, input }) => {
+      const proposal = await db.transaction(async (tx) => {
+        const row = (await tx<{ id: string; task_draft_id: string; business_organization_id: string; status: string }>('SELECT id, task_draft_id, business_organization_id, status FROM business_task_proposals WHERE id = $1 FOR UPDATE', [input.proposal_id])).rows[0];
+        if (!row) throw new TRPCError({ code: 'NOT_FOUND', message: 'Business proposal not found' });
+        if (!['PENDING', 'VIEWED'].includes(row.status)) throw new TRPCError({ code: 'CONFLICT', message: `Proposal is already ${row.status.toLowerCase()}.` });
+        await tx(`UPDATE business_task_proposals SET status='CANCELLED', cancelled_at=NOW(), cancelled_by_user_id=$2, responded_at=COALESCE(responded_at,NOW()), updated_at=NOW() WHERE id=$1`, [row.id, ctx.user.id]);
+        return row;
+      });
+      await recordOpsAudit({ actorUserId: ctx.user.id, action: 'business_task_proposal_cancelled', targetType: 'task_draft', targetId: proposal.task_draft_id, meta: { proposal_id: proposal.id, business_organization_id: proposal.business_organization_id } });
+      return { ok: true, proposal_id: proposal.id };
+    }),
+
+  listSupportThreads: operationsAdminProcedure
+    .input(z.object({ status: z.enum(['OPEN', 'IN_PROGRESS', 'RESOLVED']).optional(), limit: z.number().min(1).max(100).default(50) }))
+    .query(async ({ input }) => {
+      const params: unknown[] = [];
+      const conditions: string[] = [];
+      if (input.status) conditions.push(`st.status = $${params.push(input.status)}`);
+      params.push(input.limit);
+      const result = await db.query(`SELECT st.id, st.status, st.subject, st.context_type, st.task_draft_id, st.task_id, st.proposal_id, st.quote_id, st.business_organization_id, st.created_at, st.updated_at, u.full_name AS opened_by_name, u.email AS opened_by_email, (SELECT sm.body FROM support_messages sm WHERE sm.thread_id = st.id ORDER BY sm.created_at DESC LIMIT 1) AS latest_message FROM support_threads st LEFT JOIN users u ON u.id = st.opened_by_user_id ${conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''} ORDER BY CASE st.status WHEN 'OPEN' THEN 0 WHEN 'IN_PROGRESS' THEN 1 ELSE 2 END, st.updated_at DESC LIMIT $${params.length}`, params);
+      return { ok: true as const, threads: result.rows };
+    }),
+
+  getSupportThread: operationsAdminProcedure
+    .input(z.object({ id: z.string().uuid() }))
+    .query(async ({ input }) => {
+      const threadResult = await db.query(`SELECT st.*, u.full_name AS opened_by_name, u.email AS opened_by_email FROM support_threads st LEFT JOIN users u ON u.id = st.opened_by_user_id WHERE st.id = $1 LIMIT 1`, [input.id]);
+      if (!threadResult.rows[0]) throw new TRPCError({ code: 'NOT_FOUND', message: 'Support request not found.' });
+      const messagesResult = await db.query(`SELECT sm.id, sm.sender_user_id, sm.sender_kind, sm.body, sm.created_at, u.full_name AS sender_name FROM support_messages sm LEFT JOIN users u ON u.id = sm.sender_user_id WHERE sm.thread_id = $1 ORDER BY sm.created_at ASC`, [input.id]);
+      return { ok: true as const, thread: threadResult.rows[0], messages: messagesResult.rows };
+    }),
+
+  replySupportThread: operationsAdminProcedure
+    .input(z.object({ id: z.string().uuid(), message: z.string().trim().min(1).max(4000) }))
+    .mutation(async ({ ctx, input }) => {
+      const existing = await db.query(`SELECT status, opened_by_user_id, business_organization_id, task_draft_id, task_id, proposal_id, quote_id, source_route FROM support_threads WHERE id = $1 LIMIT 1`, [input.id]);
+      if (!existing.rows[0]) throw new TRPCError({ code: 'NOT_FOUND' });
+      if (existing.rows[0].status === 'RESOLVED') throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Resolved support requests cannot be replied to.' });
+      const result = await db.query(
+        `
+        WITH inserted_message AS (
+          INSERT INTO support_messages (
+            thread_id,
+            sender_user_id,
+            sender_kind,
+            body
+          )
+          VALUES ($1, $2, 'OPS', $3)
+          RETURNING id
+        )
+        UPDATE support_threads st
+        SET
+          status = CASE
+            WHEN st.status = 'OPEN' THEN 'IN_PROGRESS'
+            ELSE st.status
+          END,
+          updated_at = NOW()
+        FROM inserted_message im
+        WHERE st.id = $1
+        RETURNING st.id, st.status, im.id AS message_id
+        `,
+        [input.id, ctx.user.id, input.message],
+      );
+      if (!result.rows[0]) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'Support request not found.',
+        });
+      }
+      const thread = existing.rows[0];
+      const messageId = result.rows[0].message_id as string;
+      const actionUrl = `/support/${input.id}`;
+      await NotificationService.createInTransaction(db.query.bind(db), { userId: thread.opened_by_user_id, type: 'SUPPORT_OPS_REPLY', title: 'HustleXP support replied', message: 'HustleXP replied to your support request.', entityType: 'support_thread', entityId: input.id, actionUrl, dedupeKey: `support-ops-reply:${messageId}` });
+      return { ok: true as const };
+    }),
+
+  setSupportThreadStatus: operationsAdminProcedure
+    .input(z.object({ id: z.string().uuid(), status: z.enum(['OPEN', 'IN_PROGRESS', 'RESOLVED']) }))
+    .mutation(async ({ ctx, input }) => {
+      const result = await db.query(
+        `
+        UPDATE support_threads
+        SET
+          status = $2::text,
+          resolved_at = CASE
+            WHEN $2::text = 'RESOLVED' THEN NOW()
+            ELSE NULL
+          END,
+          resolved_by_user_id = CASE
+            WHEN $2::text = 'RESOLVED' THEN $3::uuid
+            ELSE NULL
+          END,
+          updated_at = NOW()
+        WHERE id = $1::uuid
+        RETURNING id, status
+        `,
+        [input.id, input.status, ctx.user.id],
+      );
+      if (!result.rows[0]) throw new TRPCError({ code: 'NOT_FOUND' });
+      return { ok: true as const, thread: result.rows[0] };
+    }),
 });
+
+
+
+

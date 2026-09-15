@@ -18,6 +18,28 @@ import { db } from '../db.js';
 export const DEVICE_TOKEN_CAP = 10;
 
 export const notificationRouter = router({
+  list: protectedProcedure
+    .input(z.object({ limit: z.number().int().min(1).max(50).default(30), unreadOnly: z.boolean().default(false) }).default({}))
+    .query(async ({ input, ctx }) => {
+      const result = await NotificationService.getUserNotifications(ctx.user.id, input.limit, 0, input.unreadOnly);
+      if (!result.success) throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: result.error.message });
+      return result.data.map((row: any) => ({ ...row, type: row.type ?? row.category, message: row.message ?? row.body, entity_type: row.entity_type ?? row.object_type ?? null, entity_id: row.entity_id ?? row.object_id ?? null, action_url: row.action_url ?? row.deep_link ?? null }));
+    }),
+  unreadCount: protectedProcedure.query(async ({ ctx }) => {
+    const result = await NotificationService.getUnreadCount(ctx.user.id);
+    if (!result.success) throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: result.error.message });
+    return { count: result.data };
+  }),
+  markRead: protectedProcedure.input(z.object({ id: Schemas.uuid })).mutation(async ({ input, ctx }) => {
+    const result = await NotificationService.markAsRead(input.id, ctx.user.id);
+    if (!result.success) throw new TRPCError({ code: 'NOT_FOUND', message: result.error.message });
+    return { ok: true };
+  }),
+  markAllRead: protectedProcedure.mutation(async ({ ctx }) => {
+    const result = await NotificationService.markAllAsRead(ctx.user.id);
+    if (!result.success) throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: result.error.message });
+    return { ok: true };
+  }),
   // --------------------------------------------------------------------------
   // READ OPERATIONS
   // --------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { db } from '../db.js';
+import { NotificationService } from '../services/NotificationService.js';
 import { protectedProcedure, router } from '../trpc.js';
 
 const DraftIdSchema = z.object({
@@ -169,6 +170,7 @@ export const quoteDecisionRouter = router({
 
         const quoteResult = await query<{
           id: string;
+          business_organization_id: string;
           active_version_id: string | null;
           status: string;
           arrival_window_start: Date | null;
@@ -177,6 +179,7 @@ export const quoteDecisionRouter = router({
           `
           SELECT
             q.id,
+            q.business_organization_id,
             q.active_version_id,
             q.status,
             qv.arrival_window_start,
@@ -295,6 +298,16 @@ export const quoteDecisionRouter = router({
           [input.taskDraftId, input.quoteId],
         );
 
+        await NotificationService.createForBusinessInTransaction(query, quote.business_organization_id, {
+          type: 'QUOTE_ACCEPTED',
+          title: 'Quote accepted',
+          message: 'The customer accepted your quote.',
+          entityType: 'quote',
+          entityId: input.quoteId,
+          actionUrl: `/business/claims/${input.taskDraftId}`,
+          dedupeKey: `quote-accepted:${input.quoteId}`,
+        });
+
         await query(
           `
           UPDATE quotes
@@ -355,6 +368,10 @@ export const quoteDecisionRouter = router({
           });
         }
 
+        const quoteOwner = await query<{ business_organization_id: string }>(
+          `SELECT business_organization_id FROM quotes WHERE id = $1 AND task_draft_id = $2 FOR UPDATE`,
+          [input.quoteId, input.taskDraftId],
+        );
         const updated = await query<{ id: string }>(
           `
           UPDATE quotes
@@ -372,6 +389,19 @@ export const quoteDecisionRouter = router({
           throw new TRPCError({
             code: 'PRECONDITION_FAILED',
             message: 'Quote is not currently rejectable.',
+          });
+        }
+
+        const organizationId = quoteOwner.rows[0]?.business_organization_id;
+        if (organizationId) {
+          await NotificationService.createForBusinessInTransaction(query, organizationId, {
+            type: 'QUOTE_REJECTED',
+            title: 'Quote declined',
+            message: 'The customer declined your quote.',
+            entityType: 'quote',
+            entityId: input.quoteId,
+            actionUrl: `/business/claims/${input.taskDraftId}`,
+            dedupeKey: `quote-rejected:${input.quoteId}`,
           });
         }
 

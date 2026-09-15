@@ -56,6 +56,46 @@ export interface DeliveryDependencies {
   now?: () => Date;
 }
 
+export type TaskDraftPhotoAccessAuthority =
+  | { kind: 'AUTHENTICATED'; viewerId: string }
+  | { kind: 'CLAIM_PREVIEW'; claimLinkId: string };
+
+export async function issueTaskDraftPhotoAccess(
+  params: {
+    taskDraftId: string;
+    authority: TaskDraftPhotoAccessAuthority;
+    storageKeys: Array<{ photoId: string; storageKey: string }>;
+  },
+  dependencies: Pick<DeliveryDependencies, 'query' | 'signObject' | 'now'> = {},
+): Promise<Map<string, DeliveredPrivateMedia>> {
+  const query = dependencies.query ?? db.query;
+  const signObject = dependencies.signObject ?? backblazeB2.getSignedUrlForObject;
+  const now = dependencies.now ?? (() => new Date());
+  const delivered = new Map<string, DeliveredPrivateMedia>();
+  for (const item of params.storageKeys) {
+    const downloadUrl = await signObject(item.storageKey, PRIVATE_MEDIA_URL_TTL_SECONDS);
+    assertSafeSignedUrl(downloadUrl);
+    delivered.set(item.photoId, {
+      downloadUrl,
+      expiresAt: new Date(now().getTime() + PRIVATE_MEDIA_URL_TTL_SECONDS * 1000).toISOString(),
+    });
+    await query(
+      `INSERT INTO task_draft_media_access_log
+         (task_draft_id, photo_id, viewer_id, access_context, claim_link_id, signed_url_expires_at)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [
+        params.taskDraftId,
+        item.photoId,
+        params.authority.kind === 'AUTHENTICATED' ? params.authority.viewerId : null,
+        params.authority.kind,
+        params.authority.kind === 'CLAIM_PREVIEW' ? params.authority.claimLinkId : null,
+        delivered.get(item.photoId)!.expiresAt,
+      ],
+    );
+  }
+  return delivered;
+}
+
 function referenceIdentity(reference: PrivateMediaReference): string {
   return `${reference.consumerId}\u0000${reference.storageKey}`;
 }

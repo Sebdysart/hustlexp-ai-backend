@@ -1,4 +1,7 @@
 export const REQUIRED_MIGRATION_FILES = [
+  { name: '20260915_support_threads', fileName: '20260915_support_threads.sql' },
+  { name: '20260910_business_task_proposals', fileName: '20260910_business_task_proposals.sql' },
+  { name: '20260910_task_completion_verifications', fileName: '20260910_task_completion_verifications.sql' },
   { name: 'add_missing_tables_v2', fileName: 'add_missing_tables_v2.sql' },
   { name: '20260710_engine_automation_contracts', fileName: '20260710_engine_automation_contracts.sql' },
   { name: '20260711_required_proof_alignment', fileName: '011-proof-alignment.sql' },
@@ -123,4 +126,16 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260907_task_draft_validation_v2', fileName: '20260907_task_draft_validation_v2.sql' },
   { name: '20260907_task_draft_region_validation', fileName: '20260907_task_draft_region_validation.sql' },
   { name: '20260908_business_identifiers', fileName: '20260908_business_identifiers.sql' },
+  { name: '20260909_business_assessment_requests', fileName: '20260909_business_assessment_requests.sql' },
+  { name: '20260910_assessment_payments', fileName: '20260910_assessment_payments.sql' },
+  { name: '20260910_simplify_assessment_credit', fileName: '20260910_simplify_assessment_credit.sql' },
+  { name: '20260910_assessment_payment_global_merchant_compat', fileName: '20260910_assessment_payment_global_merchant_compat.sql' },
+  { name: '20260910_in_app_notifications', fileName: '20260910_in_app_notifications.sql' },
+  { name: '20260909_business_stax_merchant_accounts', fileName: '20260909_business_stax_merchant_accounts.sql' },
+  { name: '20260909_quote_payment_stax_merchant_binding', fileName: '20260909_quote_payment_stax_merchant_binding.sql' },
+  { name: '20260913_task_draft_photos', fileName: '20260913_task_draft_photos.sql' },
+  { name: '20260914_claim_preview_photo_access_audit', fileName: '20260914_claim_preview_photo_access_audit.sql' },
 ] as const;
+
+
+
