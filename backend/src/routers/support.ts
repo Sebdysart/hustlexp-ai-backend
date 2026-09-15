@@ -5,6 +5,10 @@ import { protectedProcedure, router } from '../trpc.js';
 import { NotificationService } from '../services/NotificationService.js';
 import { AnalyticsService } from '../services/AnalyticsService.js';
 
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
 const contextType = z.enum(['GENERAL', 'TASK_DRAFT', 'TASK', 'PROPOSAL', 'QUOTE']);
 const SupportContextLookupSchema = z.object({ contextType, taskDraftId: z.string().uuid().optional(), taskId: z.string().uuid().optional(), proposalId: z.string().uuid().optional(), quoteId: z.string().uuid().optional(), businessOrganizationId: z.string().uuid().optional() }).strict();
 
@@ -111,9 +115,9 @@ export const supportRouter = router({
       const inserted = await db.query(`WITH inserted_message AS (INSERT INTO support_messages (thread_id,sender_user_id,sender_kind,body) VALUES ($1,$2,'USER',$3) RETURNING id) UPDATE support_threads st SET updated_at=NOW() FROM inserted_message im WHERE st.id=$1 RETURNING im.id AS message_id`, [input.threadId, ctx.user.id, input.message]);
       const messageId = inserted.rows[0].message_id as string;
       void AnalyticsService.track({ event_name: 'support_reply_sent', deduplication_key: messageId,
-        task_draft_id: thread.task_draft_id ?? undefined, task_id: thread.task_id ?? undefined,
-        quote_id: thread.quote_id ?? undefined, proposal_id: thread.proposal_id ?? undefined,
-        business_organization_id: thread.business_organization_id ?? undefined,
+        task_draft_id: optionalString(thread.task_draft_id), task_id: optionalString(thread.task_id),
+        quote_id: optionalString(thread.quote_id), proposal_id: optionalString(thread.proposal_id),
+        business_organization_id: optionalString(thread.business_organization_id),
         user_id: ctx.user.id, outcome: 'committed', properties: { thread_id: input.threadId, message_id: messageId } });
       await NotificationService.createForOperationsInTransaction(db.query.bind(db), { type: 'SUPPORT_USER_REPLY', title: 'New support reply', message: 'A user replied to a support conversation.', entityType: 'support_thread', entityId: input.threadId, actionUrl: `/ops/support/${input.threadId}`, dedupeKey: `support-user-reply:${messageId}` });
       return { ok: true as const };
