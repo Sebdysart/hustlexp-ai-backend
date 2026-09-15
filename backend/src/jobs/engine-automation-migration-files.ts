@@ -21,7 +21,6 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260718_zone_category_liquidity_cells', fileName: '20260718_zone_category_liquidity_cells.sql' },
   { name: '20260718_worker_offer_decision_contract', fileName: '20260718_worker_offer_decision_contract.sql' },
   { name: '20260718_worker_screening_rights_contract', fileName: '20260718_worker_screening_rights_contract.sql' },
-  { name: '20260718_region_policy_contract', fileName: '20260718_region_policy_contract.sql' },
   { name: '20260718_completion_retention_contract', fileName: '20260718_completion_retention_contract.sql' },
   { name: '20260718_task_public_clarifications', fileName: '20260718_task_public_clarifications.sql' },
   { name: '20260718_marketplace_reputation_contract', fileName: '20260718_marketplace_reputation_contract.sql' },
@@ -114,4 +113,30 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260825_ops_manual_liquidity_bypass', fileName: '20260825_ops_manual_liquidity_bypass.sql' },
   { name: '20260825_ops_manual_worker_offer_bypass', fileName: '20260825_ops_manual_worker_offer_bypass.sql' },
   { name: '20260826_business_local_test_payout_evidence', fileName: '20260826_business_local_test_payout_evidence.sql' },
+  { name: '20260904_allow_multiple_claim', fileName: '20260904_allow_multiple_claim.sql' },
+  { name: '20260904_add_claim_links_quote_id', fileName: '20260904_add_claim_links_quote_id.sql' },
+  { name: '20260905_scheduled_service_date', fileName: '20260905_scheduled_service_date.sql' },
+  { name: '20260906_region_policy_contract_v2', fileName: '20260906_region_policy_contract_v2.sql' },
+  { name: '20260907_task_draft_validation_v2', fileName: '20260907_task_draft_validation_v2.sql' },
+  { name: '20260907_task_draft_region_validation', fileName: '20260907_task_draft_region_validation.sql' },
+  { name: '20260908_business_identifiers', fileName: '20260908_business_identifiers.sql' },
+  { name: '20260909_business_assessment_requests', fileName: '20260909_business_assessment_requests.sql' },
+  { name: '20260910_assessment_payments', fileName: '20260910_assessment_payments.sql' },
+  { name: '20260910_simplify_assessment_credit', fileName: '20260910_simplify_assessment_credit.sql' },
+  { name: '20260910_assessment_payment_global_merchant_compat', fileName: '20260910_assessment_payment_global_merchant_compat.sql' },
+  { name: '20260910_in_app_notifications', fileName: '20260910_in_app_notifications.sql' },
+  { name: '20260909_business_stax_merchant_accounts', fileName: '20260909_business_stax_merchant_accounts.sql' },
+  { name: '20260909_quote_payment_stax_merchant_binding', fileName: '20260909_quote_payment_stax_merchant_binding.sql' },
+  // These reference users/tasks, business_organizations and (for proposals /
+  // support) task_drafts/quotes. Preserve migration names/checkpoints; only
+  // order their first application after their canonical prerequisites.
+  { name: '20260910_business_task_proposals', fileName: '20260910_business_task_proposals.sql' },
+  { name: '20260910_task_completion_verifications', fileName: '20260910_task_completion_verifications.sql' },
+  { name: '20260915_support_threads', fileName: '20260915_support_threads.sql' },
+  { name: '20260913_task_draft_photos', fileName: '20260913_task_draft_photos.sql' },
+  { name: '20260914_claim_preview_photo_access_audit', fileName: '20260914_claim_preview_photo_access_audit.sql' },
+  { name: '20260916_product_analytics', fileName: '20260916_product_analytics.sql' },
 ] as const;
+
+
+

@@ -133,6 +133,25 @@ type AdminCapability =
 const PRIVILEGED_ADMIN_ROLES = ['admin', 'founder'] as const;
 const VALID_ADMIN_ROLES = ['admin', 'support', 'finance', 'moderator', 'founder'] as const;
 
+export async function canManageOperations(userId: string): Promise<boolean> {
+  const result = await db.query<{ role: string; capability_granted: boolean }>(
+    `SELECT role, COALESCE(can_manage_operations, false) AS capability_granted
+     FROM admin_roles
+     WHERE user_id = $1 AND role = ANY($2::text[])
+     LIMIT 1`,
+    [userId, [...VALID_ADMIN_ROLES]],
+  );
+
+  const row = result.rows[0];
+  if (!row) {
+    return false;
+  }
+
+  return PRIVILEGED_ADMIN_ROLES.includes(
+    row.role as (typeof PRIVILEGED_ADMIN_ROLES)[number],
+  ) || row.capability_granted === true;
+}
+
 /**
  * Require a current administrator role plus an explicit capability for
  * high-impact Operations actions. Admin and founder retain break-glass access;
@@ -148,6 +167,9 @@ function capabilityAdminMiddleware(capability: AdminCapability | null) {
     // time capability-specific database paths.
     if (ctx.user!.is_admin === false) {
       throw new TRPCError({ code: 'FORBIDDEN', message: 'Administrator access required' });
+    }
+    if (capability === 'can_manage_operations' && !(await canManageOperations(ctx.user!.id))) {
+      throw new TRPCError({ code: 'FORBIDDEN', message: 'Required administrator capability missing' });
     }
     const capabilitySelection = capability
       ? `, COALESCE(${capability}, false) AS capability_granted`

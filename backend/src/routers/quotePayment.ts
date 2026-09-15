@@ -1,18 +1,24 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { db } from '../db.js';
-import { posterProcedure, router } from '../trpc.js';
+import { protectedProcedure, router } from '../trpc.js';
 import { paymentCreationErrorCause } from '../services/NewPaymentCreationGuard.js';
-import { StripeQuotePaymentProvider } from '../services/payment/StripeQuotePaymentProvider.js';
 import { finalizePaidQuote } from '../services/QuotePaymentFinalizationService.js';
-import { StripeService } from "../services/StripeService.js"
+import { StripeService } from '../services/StripeService.js';
+import {
+  evaluateTaskAgainstRegionPolicy,
+  resolveRegionPolicy,
+} from '../services/RegionPolicyService.js';
+import { buildManualTaskPolicyInput } from '../services/ManualTaskPolicy.js';
+import { StaxQuotePaymentProvider } from '../services/payment/StaxQuotePaymentProvider.js';
 
 export const quotePaymentRouter = router({
-  createPaymentIntent: posterProcedure
+  createPaymentIntent: protectedProcedure
     .input(
       z.object({
         quoteId: z.string().uuid(),
         quoteVersionId: z.string().uuid(),
+        paymentMethodId: z.string().min(1),
       }).strict(),
     )
     .mutation(async ({ ctx, input }) => {
@@ -23,10 +29,27 @@ export const quotePaymentRouter = router({
         quote_status: string;
         quote_environment: string | null;
         quote_is_test: boolean;
+        selected_quote_id: string | null;
+        business_organization_id: string | null;
+        business_location_id: string | null;
+        provider_service_profile_id: string | null;
         total_cents: number;
+        hustler_payout_cents: number;
+        arrival_window_start: Date | null;
+        arrival_window_end: Date | null;
+        dispatch_expires_at: Date | null;
+        scheduled_service_date: string | null;
+        arrival_start_date: string | null;
+        arrival_end_date: string | null;
+        category: string;
+        region_code: string | null;
+        region_policy_id: string | null;
+        region_policy_version: string | null;
+        region_policy_hash: string | null;
+        region_policy_snapshot: Record<string, unknown> | null;
+        validated_risk_level: 'LOW' | 'MEDIUM' | 'HIGH' | 'IN_HOME' | null;
+        region: string | null;
         expires_at: Date;
-        poster_email: string;
-        lead_email: string;
       }>(
         `
         SELECT
@@ -36,22 +59,38 @@ export const quotePaymentRouter = router({
           q.status AS quote_status,
           q.environment AS quote_environment,
           q.is_test AS quote_is_test,
+          d.quote_id AS selected_quote_id,
+          q.business_organization_id,
+          q.business_location_id,
+          q.provider_service_profile_id,
+          d.scheduled_service_date::text AS scheduled_service_date,
+          d.category,
+          d.region_code,
+          d.region_policy_id,
+          d.region_policy_version,
+          d.region_policy_hash,
+          d.region_policy_snapshot,
+          d.validated_risk_level,
+          d.region,
           qv.total_cents,
-          qv.expires_at,
-          u.email AS poster_email,
-          l.email AS lead_email
+          qv.hustler_payout_cents,
+          qv.arrival_window_start,
+          qv.arrival_window_end,
+          qv.dispatch_expires_at,
+          (qv.arrival_window_start AT TIME ZONE 'America/Los_Angeles')::date::text
+            AS arrival_start_date,
+          (qv.arrival_window_end AT TIME ZONE 'America/Los_Angeles')::date::text
+            AS arrival_end_date,
+          qv.expires_at
         FROM quotes q
         JOIN quote_versions qv
           ON qv.id = q.active_version_id
-         AND qv.quote_id = q.id
+        AND qv.quote_id = q.id
         JOIN task_drafts d
           ON d.id = q.task_draft_id
-        JOIN leads l
-          ON l.id = d.lead_id
-        JOIN users u
-          ON u.id = $3
         WHERE q.id = $1
           AND q.active_version_id = $2
+          AND d.poster_user_id = $3
         LIMIT 1
         `,
         [input.quoteId, input.quoteVersionId, ctx.user.id],
@@ -65,16 +104,13 @@ export const quotePaymentRouter = router({
           message: 'Quote not found.',
         });
       }
-
-      if (
-        quote.poster_email.trim().toLowerCase()
-        !== quote.lead_email.trim().toLowerCase()
-      ) {
+      
+      if (quote.selected_quote_id !== input.quoteId) {
         throw new TRPCError({
-          code: 'FORBIDDEN',
-          message: 'This quote does not belong to the authenticated poster.',
+          code: 'PRECONDITION_FAILED',
+          message: 'This quote has not been accepted by the poster.',
         });
-      }
+      } 
 
       if (quote.expires_at <= new Date()) {
         throw new TRPCError({
@@ -91,6 +127,128 @@ export const quotePaymentRouter = router({
           code: 'PRECONDITION_FAILED',
           message: `Quote cannot currently be paid (status: ${quote.quote_status}).`,
         });
+      }
+
+      // Validate before creating OR returning an existing intent. Finalization
+      // retains its consistency checks because quote state can change afterward.
+      if (quote.business_organization_id && (
+        !quote.business_location_id || !quote.provider_service_profile_id
+      )) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Business quote is missing its organization, location, or service profile binding.',
+        });
+      }
+
+      const totalCents = Number(quote.total_cents);
+      const payoutCents = Number(quote.hustler_payout_cents);
+      const marginCents = totalCents - payoutCents;
+      if (!Number.isSafeInteger(totalCents) || totalCents <= 0) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This quote has an invalid total.' });
+      }
+      if (!Number.isSafeInteger(payoutCents) || payoutCents <= 0) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This quote has an invalid provider payout.' });
+      }
+      if (!Number.isSafeInteger(marginCents) || marginCents < 0) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This quote has invalid payment economics.' });
+      }
+      const assessmentCreditResult = await db.query<{ amount_cents: number }>(
+        `SELECT payment.amount_cents
+         FROM business_assessment_requests assessment
+         JOIN assessment_payments payment ON payment.assessment_request_id = assessment.id
+         JOIN ops_business_claim_links claim ON claim.id = assessment.claim_link_id
+         WHERE claim.quote_id = $1 AND assessment.business_organization_id = $2
+           AND assessment.status = 'COMPLETED' AND payment.status = 'SUCCEEDED' LIMIT 1`,
+        [input.quoteId, quote.business_organization_id],
+      );
+      const assessmentCreditCents = assessmentCreditResult.rows[0]?.amount_cents ?? 0;
+      const remainingChargeCents = totalCents - assessmentCreditCents;
+      const marketplaceFeeCents = marginCents;
+      if (remainingChargeCents <= 0) throw new TRPCError({ code:'PRECONDITION_FAILED', message:'The remaining quote balance is invalid.' });
+      if (
+        !quote.region_code ||
+        !quote.region_policy_id ||
+        !quote.region_policy_version ||
+        !quote.region_policy_hash ||
+        !quote.region_policy_snapshot ||
+        !quote.validated_risk_level
+      ) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'This task is missing authoritative policy validation and cannot be paid yet.',
+        });
+      }
+
+      const regionPolicy = await resolveRegionPolicy(quote.region_code);
+
+      if (!regionPolicy) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Payment is temporarily unavailable because the service-region policy is unavailable.',
+        });
+      }
+
+      const regionEvaluation = evaluateTaskAgainstRegionPolicy(
+        regionPolicy,
+        buildManualTaskPolicyInput({
+          regionCode: quote.region_code,
+          category: quote.category,
+          riskLevel: quote.validated_risk_level,
+          customerTotalCents: totalCents,
+          payoutCents,
+          platformMarginCents: marginCents,
+        }),
+        {
+          evaluateEconomics: true,
+          evaluateProductionGates: false,
+        },
+      );
+
+      if (!regionEvaluation.allowed) {
+        console.warn(
+          '[quotePayment] region policy rejected payment',
+          {
+            quoteId: input.quoteId,
+            quoteVersionId: input.quoteVersionId,
+            reasons: regionEvaluation.reasons,
+          },
+        );
+
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message:
+            'This quote cannot currently be paid under HustleXP service policy.',
+        });
+      }
+
+      if (!quote.scheduled_service_date) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Choose a service date before paying for this quote.',
+        });
+      }
+      const arrivalStart = quote.arrival_window_start?.getTime();
+      const arrivalEnd = quote.arrival_window_end?.getTime();
+      if (
+        arrivalStart === undefined || arrivalEnd === undefined ||
+        !Number.isFinite(arrivalStart) || !Number.isFinite(arrivalEnd) ||
+        arrivalEnd <= arrivalStart || !quote.arrival_start_date || !quote.arrival_end_date
+      ) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This quote has an invalid arrival window.' });
+      }
+      if (
+        quote.scheduled_service_date < quote.arrival_start_date ||
+        quote.scheduled_service_date > quote.arrival_end_date
+      ) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'The selected service date is outside the provider availability window.',
+        });
+      }
+      const dispatchExpiry = quote.dispatch_expires_at?.getTime();
+      // Past dispatch expiry is not a payment policy for manually assigned work.
+      if (dispatchExpiry === undefined || !Number.isFinite(dispatchExpiry) || dispatchExpiry > arrivalStart) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This quote has an invalid dispatch window.' });
       }
 
       const existingPayment = await db.query<{
@@ -133,12 +291,17 @@ export const quotePaymentRouter = router({
         }
       }
 
-      const payment = await StripeQuotePaymentProvider.createPaymentIntent({
-        quoteId: input.quoteId,
-        quoteVersionId: input.quoteVersionId,
-        posterId: ctx.user.id,
-        amountCents: Number(quote.total_cents),
-      });
+      if (!quote.business_organization_id) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'The selected quote is not associated with a Business.' });
+
+      const payment =
+        await StaxQuotePaymentProvider.charge({
+          quoteId: input.quoteId,
+          quoteVersionId: input.quoteVersionId,
+          posterId: ctx.user.id,
+          paymentMethodId: input.paymentMethodId,
+          amountCents: remainingChargeCents,
+          platformFeeCents: marketplaceFeeCents,
+        });
 
       if (!payment.success) {
         const cause = paymentCreationErrorCause(payment.error.code);
@@ -158,35 +321,39 @@ export const quotePaymentRouter = router({
           provider,
           provider_payment_id,
           amount_cents,
-          status
+          status,
+          platform_fee_cents
         )
-        VALUES ($1, $2, 'stripe', $3, $4, 'PENDING')
+        VALUES ($1, $2, 'stax', $3, $4, 'SUCCEEDED', $5)
         ON CONFLICT (quote_id, quote_version_id)
         DO UPDATE SET
+          provider = 'stax',
           provider_payment_id = EXCLUDED.provider_payment_id,
           amount_cents = EXCLUDED.amount_cents,
-          status = 'PENDING',
+          status = 'SUCCEEDED',
+          platform_fee_cents = EXCLUDED.platform_fee_cents,
           updated_at = NOW()
         `,
         [
           input.quoteId,
           input.quoteVersionId,
-          payment.data.paymentIntentId,
+          payment.data.transactionId,
           payment.data.amountCents,
+          payment.data.platformFeeCents,
         ],
       );
 
       return {
         quoteId: input.quoteId,
         quoteVersionId: input.quoteVersionId,
-        paymentIntentId: payment.data.paymentIntentId,
-        clientSecret: payment.data.clientSecret,
+        paymentIntentId: payment.data.transactionId,
+        clientSecret: null,
         amountCents: payment.data.amountCents,
         replayed: false,
       };
     }),
 
-  finalize: posterProcedure
+  finalize: protectedProcedure
     .input(
       z.object({
         quoteId: z.string().uuid(),
@@ -216,7 +383,7 @@ export const quotePaymentRouter = router({
 
       return result.data;
     }),
-  confirmTestPayment: posterProcedure
+  confirmTestPayment: protectedProcedure
   .input(
     z.object({
       paymentIntentId: z.string().min(10).max(255),
@@ -239,3 +406,7 @@ export const quotePaymentRouter = router({
 });
 
 export type QuotePaymentRouter = typeof quotePaymentRouter;
+
+
+
+

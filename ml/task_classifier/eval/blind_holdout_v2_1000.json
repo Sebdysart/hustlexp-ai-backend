@@ -1,0 +1,6022 @@
+{
+  "name": "HustleXP classifier blind holdout v2 \u2014 1000 cases",
+  "purpose": "One-shot final evaluation after classifier-autotune v2. Do not inspect or tune against individual examples before evaluation.",
+  "policy": {
+    "trainingAllowed": false,
+    "inspectDuringTuning": false,
+    "runOnlyAtFinalEvaluation": true,
+    "postEvaluationTuningAgainstThisSet": false,
+    "expectedNullMeans": "abstain / needsClarification"
+  },
+  "composition": {
+    "total": 1000,
+    "core": 520,
+    "boundary": 180,
+    "multi_intent": 100,
+    "vague": 80,
+    "noisy_short": 80,
+    "override_traps": 40
+  },
+  "cases": [
+    {
+      "id": "blind2_0001",
+      "raw": "Mow the lawn tomorrow.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0002",
+      "raw": "Rake the leaves tomorrow please.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0003",
+      "raw": "Trim the hedges tomorrow and bring basic tools.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0004",
+      "raw": "Pull weeds from the garden tomorrow; that is the main task.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0005",
+      "raw": "Clear branches from the yard tomorrow.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0006",
+      "raw": "Mow the lawn this weekend please.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0007",
+      "raw": "Rake the leaves this weekend and bring basic tools.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0008",
+      "raw": "Trim the hedges this weekend; that is the main task.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0009",
+      "raw": "Pull weeds from the garden this weekend.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0010",
+      "raw": "Clear branches from the yard this weekend please.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0011",
+      "raw": "Mow the lawn before noon and bring basic tools.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0012",
+      "raw": "Rake the leaves before noon; that is the main task.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0013",
+      "raw": "Trim the hedges before noon.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0014",
+      "raw": "Pull weeds from the garden before noon please.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0015",
+      "raw": "Clear branches from the yard before noon and bring basic tools.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0016",
+      "raw": "Mow the lawn as soon as possible; that is the main task.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0017",
+      "raw": "Rake the leaves as soon as possible.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0018",
+      "raw": "Trim the hedges as soon as possible please.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0019",
+      "raw": "Pull weeds from the garden as soon as possible and bring basic tools.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0020",
+      "raw": "Clear branches from the yard as soon as possible; that is the main task.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0021",
+      "raw": "Mow the lawn before guests arrive.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0022",
+      "raw": "Rake the leaves before guests arrive please.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0023",
+      "raw": "Trim the hedges before guests arrive and bring basic tools.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0024",
+      "raw": "Pull weeds from the garden before guests arrive; that is the main task.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0025",
+      "raw": "Clear branches from the yard before guests arrive.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0026",
+      "raw": "Mow the lawn in my small apartment please.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0027",
+      "raw": "Rake the leaves in my small apartment and bring basic tools.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0028",
+      "raw": "Trim the hedges in my small apartment; that is the main task.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0029",
+      "raw": "Pull weeds from the garden in my small apartment.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0030",
+      "raw": "Clear branches from the yard in my small apartment please.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0031",
+      "raw": "Mow the lawn in the upstairs room and bring basic tools.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0032",
+      "raw": "Rake the leaves in the upstairs room; that is the main task.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0033",
+      "raw": "Trim the hedges in the upstairs room.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0034",
+      "raw": "Pull weeds from the garden in the upstairs room please.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0035",
+      "raw": "Clear branches from the yard in the upstairs room and bring basic tools.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0036",
+      "raw": "Mow the lawn at my house; that is the main task.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0037",
+      "raw": "Rake the leaves at my house.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0038",
+      "raw": "Trim the hedges at my house please.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0039",
+      "raw": "Pull weeds from the garden at my house and bring basic tools.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0040",
+      "raw": "Clear branches from the yard at my house; that is the main task.",
+      "expectedCategory": "yard",
+      "group": "core_yard"
+    },
+    {
+      "id": "blind2_0041",
+      "raw": "Deep clean the apartment tomorrow.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0042",
+      "raw": "Clean the kitchen and bathroom tomorrow please.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0043",
+      "raw": "Vacuum and mop the rooms tomorrow and bring basic tools.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0044",
+      "raw": "Do a move-out clean tomorrow; that is the main task.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0045",
+      "raw": "Clean pet hair from the floor tomorrow.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0046",
+      "raw": "Deep clean the apartment this weekend please.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0047",
+      "raw": "Clean the kitchen and bathroom this weekend and bring basic tools.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0048",
+      "raw": "Vacuum and mop the rooms this weekend; that is the main task.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0049",
+      "raw": "Do a move-out clean this weekend.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0050",
+      "raw": "Clean pet hair from the floor this weekend please.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0051",
+      "raw": "Deep clean the apartment before noon and bring basic tools.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0052",
+      "raw": "Clean the kitchen and bathroom before noon; that is the main task.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0053",
+      "raw": "Vacuum and mop the rooms before noon.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0054",
+      "raw": "Do a move-out clean before noon please.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0055",
+      "raw": "Clean pet hair from the floor before noon and bring basic tools.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0056",
+      "raw": "Deep clean the apartment as soon as possible; that is the main task.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0057",
+      "raw": "Clean the kitchen and bathroom as soon as possible.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0058",
+      "raw": "Vacuum and mop the rooms as soon as possible please.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0059",
+      "raw": "Do a move-out clean as soon as possible and bring basic tools.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0060",
+      "raw": "Clean pet hair from the floor as soon as possible; that is the main task.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0061",
+      "raw": "Deep clean the apartment before guests arrive.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0062",
+      "raw": "Clean the kitchen and bathroom before guests arrive please.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0063",
+      "raw": "Vacuum and mop the rooms before guests arrive and bring basic tools.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0064",
+      "raw": "Do a move-out clean before guests arrive; that is the main task.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0065",
+      "raw": "Clean pet hair from the floor before guests arrive.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0066",
+      "raw": "Deep clean the apartment in my small apartment please.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0067",
+      "raw": "Clean the kitchen and bathroom in my small apartment and bring basic tools.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0068",
+      "raw": "Vacuum and mop the rooms in my small apartment; that is the main task.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0069",
+      "raw": "Do a move-out clean in my small apartment.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0070",
+      "raw": "Clean pet hair from the floor in my small apartment please.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0071",
+      "raw": "Deep clean the apartment in the upstairs room and bring basic tools.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0072",
+      "raw": "Clean the kitchen and bathroom in the upstairs room; that is the main task.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0073",
+      "raw": "Vacuum and mop the rooms in the upstairs room.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0074",
+      "raw": "Do a move-out clean in the upstairs room please.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0075",
+      "raw": "Clean pet hair from the floor in the upstairs room and bring basic tools.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0076",
+      "raw": "Deep clean the apartment at my house; that is the main task.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0077",
+      "raw": "Clean the kitchen and bathroom at my house.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0078",
+      "raw": "Vacuum and mop the rooms at my house please.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0079",
+      "raw": "Do a move-out clean at my house and bring basic tools.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0080",
+      "raw": "Clean pet hair from the floor at my house; that is the main task.",
+      "expectedCategory": "cleaning",
+      "group": "core_cleaning"
+    },
+    {
+      "id": "blind2_0081",
+      "raw": "Move the couch upstairs tomorrow.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0082",
+      "raw": "Carry boxes into the apartment tomorrow please.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0083",
+      "raw": "Load furniture into the moving van tomorrow and bring basic tools.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0084",
+      "raw": "Unload furniture from the truck tomorrow; that is the main task.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0085",
+      "raw": "Move the dresser to another room tomorrow.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0086",
+      "raw": "Move the couch upstairs this weekend please.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0087",
+      "raw": "Carry boxes into the apartment this weekend and bring basic tools.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0088",
+      "raw": "Load furniture into the moving van this weekend; that is the main task.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0089",
+      "raw": "Unload furniture from the truck this weekend.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0090",
+      "raw": "Move the dresser to another room this weekend please.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0091",
+      "raw": "Move the couch upstairs before noon and bring basic tools.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0092",
+      "raw": "Carry boxes into the apartment before noon; that is the main task.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0093",
+      "raw": "Load furniture into the moving van before noon.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0094",
+      "raw": "Unload furniture from the truck before noon please.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0095",
+      "raw": "Move the dresser to another room before noon and bring basic tools.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0096",
+      "raw": "Move the couch upstairs as soon as possible; that is the main task.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0097",
+      "raw": "Carry boxes into the apartment as soon as possible.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0098",
+      "raw": "Load furniture into the moving van as soon as possible please.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0099",
+      "raw": "Unload furniture from the truck as soon as possible and bring basic tools.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0100",
+      "raw": "Move the dresser to another room as soon as possible; that is the main task.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0101",
+      "raw": "Move the couch upstairs before guests arrive.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0102",
+      "raw": "Carry boxes into the apartment before guests arrive please.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0103",
+      "raw": "Load furniture into the moving van before guests arrive and bring basic tools.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0104",
+      "raw": "Unload furniture from the truck before guests arrive; that is the main task.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0105",
+      "raw": "Move the dresser to another room before guests arrive.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0106",
+      "raw": "Move the couch upstairs in my small apartment please.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0107",
+      "raw": "Carry boxes into the apartment in my small apartment and bring basic tools.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0108",
+      "raw": "Load furniture into the moving van in my small apartment; that is the main task.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0109",
+      "raw": "Unload furniture from the truck in my small apartment.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0110",
+      "raw": "Move the dresser to another room in my small apartment please.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0111",
+      "raw": "Move the couch upstairs in the upstairs room and bring basic tools.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0112",
+      "raw": "Carry boxes into the apartment in the upstairs room; that is the main task.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0113",
+      "raw": "Load furniture into the moving van in the upstairs room.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0114",
+      "raw": "Unload furniture from the truck in the upstairs room please.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0115",
+      "raw": "Move the dresser to another room in the upstairs room and bring basic tools.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0116",
+      "raw": "Move the couch upstairs at my house; that is the main task.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0117",
+      "raw": "Carry boxes into the apartment at my house.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0118",
+      "raw": "Load furniture into the moving van at my house please.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0119",
+      "raw": "Unload furniture from the truck at my house and bring basic tools.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0120",
+      "raw": "Move the dresser to another room at my house; that is the main task.",
+      "expectedCategory": "moving",
+      "group": "core_moving"
+    },
+    {
+      "id": "blind2_0121",
+      "raw": "Assemble the desk tomorrow.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0122",
+      "raw": "Put together the bed frame tomorrow please.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0123",
+      "raw": "Build the flat-pack wardrobe tomorrow and bring basic tools.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0124",
+      "raw": "Assemble two bookshelves tomorrow; that is the main task.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0125",
+      "raw": "Put together the dining table tomorrow.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0126",
+      "raw": "Assemble the desk this weekend please.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0127",
+      "raw": "Put together the bed frame this weekend and bring basic tools.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0128",
+      "raw": "Build the flat-pack wardrobe this weekend; that is the main task.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0129",
+      "raw": "Assemble two bookshelves this weekend.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0130",
+      "raw": "Put together the dining table this weekend please.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0131",
+      "raw": "Assemble the desk before noon and bring basic tools.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0132",
+      "raw": "Put together the bed frame before noon; that is the main task.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0133",
+      "raw": "Build the flat-pack wardrobe before noon.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0134",
+      "raw": "Assemble two bookshelves before noon please.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0135",
+      "raw": "Put together the dining table before noon and bring basic tools.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0136",
+      "raw": "Assemble the desk as soon as possible; that is the main task.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0137",
+      "raw": "Put together the bed frame as soon as possible.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0138",
+      "raw": "Build the flat-pack wardrobe as soon as possible please.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0139",
+      "raw": "Assemble two bookshelves as soon as possible and bring basic tools.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0140",
+      "raw": "Put together the dining table as soon as possible; that is the main task.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0141",
+      "raw": "Assemble the desk before guests arrive.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0142",
+      "raw": "Put together the bed frame before guests arrive please.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0143",
+      "raw": "Build the flat-pack wardrobe before guests arrive and bring basic tools.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0144",
+      "raw": "Assemble two bookshelves before guests arrive; that is the main task.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0145",
+      "raw": "Put together the dining table before guests arrive.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0146",
+      "raw": "Assemble the desk in my small apartment please.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0147",
+      "raw": "Put together the bed frame in my small apartment and bring basic tools.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0148",
+      "raw": "Build the flat-pack wardrobe in my small apartment; that is the main task.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0149",
+      "raw": "Assemble two bookshelves in my small apartment.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0150",
+      "raw": "Put together the dining table in my small apartment please.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0151",
+      "raw": "Assemble the desk in the upstairs room and bring basic tools.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0152",
+      "raw": "Put together the bed frame in the upstairs room; that is the main task.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0153",
+      "raw": "Build the flat-pack wardrobe in the upstairs room.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0154",
+      "raw": "Assemble two bookshelves in the upstairs room please.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0155",
+      "raw": "Put together the dining table in the upstairs room and bring basic tools.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0156",
+      "raw": "Assemble the desk at my house; that is the main task.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0157",
+      "raw": "Put together the bed frame at my house.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0158",
+      "raw": "Build the flat-pack wardrobe at my house please.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0159",
+      "raw": "Assemble two bookshelves at my house and bring basic tools.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0160",
+      "raw": "Put together the dining table at my house; that is the main task.",
+      "expectedCategory": "assembly",
+      "group": "core_assembly"
+    },
+    {
+      "id": "blind2_0161",
+      "raw": "Pick up a package and deliver it tomorrow.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0162",
+      "raw": "Collect groceries and bring them to me tomorrow please.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0163",
+      "raw": "Pick up a chair from the seller and drop it here tomorrow and bring basic tools.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0164",
+      "raw": "Courier an envelope across town tomorrow; that is the main task.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0165",
+      "raw": "Collect a boxed monitor and deliver it tomorrow.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0166",
+      "raw": "Pick up a package and deliver it this weekend please.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0167",
+      "raw": "Collect groceries and bring them to me this weekend and bring basic tools.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0168",
+      "raw": "Pick up a chair from the seller and drop it here this weekend; that is the main task.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0169",
+      "raw": "Courier an envelope across town this weekend.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0170",
+      "raw": "Collect a boxed monitor and deliver it this weekend please.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0171",
+      "raw": "Pick up a package and deliver it before noon and bring basic tools.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0172",
+      "raw": "Collect groceries and bring them to me before noon; that is the main task.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0173",
+      "raw": "Pick up a chair from the seller and drop it here before noon.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0174",
+      "raw": "Courier an envelope across town before noon please.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0175",
+      "raw": "Collect a boxed monitor and deliver it before noon and bring basic tools.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0176",
+      "raw": "Pick up a package and deliver it as soon as possible; that is the main task.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0177",
+      "raw": "Collect groceries and bring them to me as soon as possible.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0178",
+      "raw": "Pick up a chair from the seller and drop it here as soon as possible please.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0179",
+      "raw": "Courier an envelope across town as soon as possible and bring basic tools.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0180",
+      "raw": "Collect a boxed monitor and deliver it as soon as possible; that is the main task.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0181",
+      "raw": "Pick up a package and deliver it before guests arrive.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0182",
+      "raw": "Collect groceries and bring them to me before guests arrive please.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0183",
+      "raw": "Pick up a chair from the seller and drop it here before guests arrive and bring basic tools.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0184",
+      "raw": "Courier an envelope across town before guests arrive; that is the main task.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0185",
+      "raw": "Collect a boxed monitor and deliver it before guests arrive.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0186",
+      "raw": "Pick up a package and deliver it in my small apartment please.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0187",
+      "raw": "Collect groceries and bring them to me in my small apartment and bring basic tools.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0188",
+      "raw": "Pick up a chair from the seller and drop it here in my small apartment; that is the main task.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0189",
+      "raw": "Courier an envelope across town in my small apartment.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0190",
+      "raw": "Collect a boxed monitor and deliver it in my small apartment please.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0191",
+      "raw": "Pick up a package and deliver it in the upstairs room and bring basic tools.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0192",
+      "raw": "Collect groceries and bring them to me in the upstairs room; that is the main task.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0193",
+      "raw": "Pick up a chair from the seller and drop it here in the upstairs room.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0194",
+      "raw": "Courier an envelope across town in the upstairs room please.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0195",
+      "raw": "Collect a boxed monitor and deliver it in the upstairs room and bring basic tools.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0196",
+      "raw": "Pick up a package and deliver it at my house; that is the main task.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0197",
+      "raw": "Collect groceries and bring them to me at my house.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0198",
+      "raw": "Pick up a chair from the seller and drop it here at my house please.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0199",
+      "raw": "Courier an envelope across town at my house and bring basic tools.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0200",
+      "raw": "Collect a boxed monitor and deliver it at my house; that is the main task.",
+      "expectedCategory": "delivery",
+      "group": "core_delivery"
+    },
+    {
+      "id": "blind2_0201",
+      "raw": "Repair the broken garden gate tomorrow.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0202",
+      "raw": "Fix the loose cabinet hinge tomorrow please.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0203",
+      "raw": "Patch a small drywall hole tomorrow and bring basic tools.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0204",
+      "raw": "Mount a mirror on the wall tomorrow; that is the main task.",
+      "expectedCategory": "assembly",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0205",
+      "raw": "Install a towel rack tomorrow.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0206",
+      "raw": "Repair the broken garden gate this weekend please.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0207",
+      "raw": "Fix the loose cabinet hinge this weekend and bring basic tools.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0208",
+      "raw": "Patch a small drywall hole this weekend; that is the main task.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0209",
+      "raw": "Mount a mirror on the wall this weekend.",
+      "expectedCategory": "assembly",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0210",
+      "raw": "Install a towel rack this weekend please.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0211",
+      "raw": "Repair the broken garden gate before noon and bring basic tools.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0212",
+      "raw": "Fix the loose cabinet hinge before noon; that is the main task.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0213",
+      "raw": "Patch a small drywall hole before noon.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0214",
+      "raw": "Mount a mirror on the wall before noon please.",
+      "expectedCategory": "assembly",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0215",
+      "raw": "Install a towel rack before noon and bring basic tools.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0216",
+      "raw": "Repair the broken garden gate as soon as possible; that is the main task.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0217",
+      "raw": "Fix the loose cabinet hinge as soon as possible.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0218",
+      "raw": "Patch a small drywall hole as soon as possible please.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0219",
+      "raw": "Mount a mirror on the wall as soon as possible and bring basic tools.",
+      "expectedCategory": "assembly",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0220",
+      "raw": "Install a towel rack as soon as possible; that is the main task.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0221",
+      "raw": "Repair the broken garden gate before guests arrive.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0222",
+      "raw": "Fix the loose cabinet hinge before guests arrive please.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0223",
+      "raw": "Patch a small drywall hole before guests arrive and bring basic tools.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0224",
+      "raw": "Mount a mirror on the wall before guests arrive; that is the main task.",
+      "expectedCategory": "assembly",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0225",
+      "raw": "Install a towel rack before guests arrive.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0226",
+      "raw": "Repair the broken garden gate in my small apartment please.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0227",
+      "raw": "Fix the loose cabinet hinge in my small apartment and bring basic tools.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0228",
+      "raw": "Patch a small drywall hole in my small apartment; that is the main task.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0229",
+      "raw": "Mount a mirror on the wall in my small apartment.",
+      "expectedCategory": "assembly",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0230",
+      "raw": "Install a towel rack in my small apartment please.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0231",
+      "raw": "Repair the broken garden gate in the upstairs room and bring basic tools.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0232",
+      "raw": "Fix the loose cabinet hinge in the upstairs room; that is the main task.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0233",
+      "raw": "Patch a small drywall hole in the upstairs room.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0234",
+      "raw": "Mount a mirror on the wall in the upstairs room please.",
+      "expectedCategory": "assembly",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0235",
+      "raw": "Install a towel rack in the upstairs room and bring basic tools.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0236",
+      "raw": "Repair the broken garden gate at my house; that is the main task.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0237",
+      "raw": "Fix the loose cabinet hinge at my house.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0238",
+      "raw": "Patch a small drywall hole at my house please.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0239",
+      "raw": "Mount a mirror on the wall at my house and bring basic tools.",
+      "expectedCategory": "assembly",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0240",
+      "raw": "Install a towel rack at my house; that is the main task.",
+      "expectedCategory": "handyman",
+      "group": "core_handyman"
+    },
+    {
+      "id": "blind2_0241",
+      "raw": "Inspect water damage on the ceiling tomorrow.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0242",
+      "raw": "Assess moisture damage around the window tomorrow please.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0243",
+      "raw": "Check a soft damaged wall section tomorrow and bring basic tools.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0244",
+      "raw": "Inspect a swollen ceiling patch tomorrow; that is the main task.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0245",
+      "raw": "Assess cracked plaster after moisture tomorrow.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0246",
+      "raw": "Inspect water damage on the ceiling this weekend please.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0247",
+      "raw": "Assess moisture damage around the window this weekend and bring basic tools.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0248",
+      "raw": "Check a soft damaged wall section this weekend; that is the main task.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0249",
+      "raw": "Inspect a swollen ceiling patch this weekend.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0250",
+      "raw": "Assess cracked plaster after moisture this weekend please.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0251",
+      "raw": "Inspect water damage on the ceiling before noon and bring basic tools.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0252",
+      "raw": "Assess moisture damage around the window before noon; that is the main task.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0253",
+      "raw": "Check a soft damaged wall section before noon.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0254",
+      "raw": "Inspect a swollen ceiling patch before noon please.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0255",
+      "raw": "Assess cracked plaster after moisture before noon and bring basic tools.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0256",
+      "raw": "Inspect water damage on the ceiling as soon as possible; that is the main task.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0257",
+      "raw": "Assess moisture damage around the window as soon as possible.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0258",
+      "raw": "Check a soft damaged wall section as soon as possible please.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0259",
+      "raw": "Inspect a swollen ceiling patch as soon as possible and bring basic tools.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0260",
+      "raw": "Assess cracked plaster after moisture as soon as possible; that is the main task.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0261",
+      "raw": "Inspect water damage on the ceiling before guests arrive.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0262",
+      "raw": "Assess moisture damage around the window before guests arrive please.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0263",
+      "raw": "Check a soft damaged wall section before guests arrive and bring basic tools.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0264",
+      "raw": "Inspect a swollen ceiling patch before guests arrive; that is the main task.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0265",
+      "raw": "Assess cracked plaster after moisture before guests arrive.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0266",
+      "raw": "Inspect water damage on the ceiling in my small apartment please.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0267",
+      "raw": "Assess moisture damage around the window in my small apartment and bring basic tools.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0268",
+      "raw": "Check a soft damaged wall section in my small apartment; that is the main task.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0269",
+      "raw": "Inspect a swollen ceiling patch in my small apartment.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0270",
+      "raw": "Assess cracked plaster after moisture in my small apartment please.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0271",
+      "raw": "Inspect water damage on the ceiling in the upstairs room and bring basic tools.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0272",
+      "raw": "Assess moisture damage around the window in the upstairs room; that is the main task.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0273",
+      "raw": "Check a soft damaged wall section in the upstairs room.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0274",
+      "raw": "Inspect a swollen ceiling patch in the upstairs room please.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0275",
+      "raw": "Assess cracked plaster after moisture in the upstairs room and bring basic tools.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0276",
+      "raw": "Inspect water damage on the ceiling at my house; that is the main task.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0277",
+      "raw": "Assess moisture damage around the window at my house.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0278",
+      "raw": "Check a soft damaged wall section at my house please.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0279",
+      "raw": "Inspect a swollen ceiling patch at my house and bring basic tools.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0280",
+      "raw": "Assess cracked plaster after moisture at my house; that is the main task.",
+      "expectedCategory": "home_services",
+      "group": "core_home_services"
+    },
+    {
+      "id": "blind2_0281",
+      "raw": "Change the oil in my car tomorrow.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0282",
+      "raw": "Replace the car battery tomorrow please.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0283",
+      "raw": "Check squealing brakes tomorrow and bring basic tools.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0284",
+      "raw": "Change a flat tire tomorrow; that is the main task.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0285",
+      "raw": "Diagnose the check-engine light tomorrow.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0286",
+      "raw": "Change the oil in my car this weekend please.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0287",
+      "raw": "Replace the car battery this weekend and bring basic tools.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0288",
+      "raw": "Check squealing brakes this weekend; that is the main task.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0289",
+      "raw": "Change a flat tire this weekend.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0290",
+      "raw": "Diagnose the check-engine light this weekend please.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0291",
+      "raw": "Change the oil in my car before noon and bring basic tools.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0292",
+      "raw": "Replace the car battery before noon; that is the main task.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0293",
+      "raw": "Check squealing brakes before noon.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0294",
+      "raw": "Change a flat tire before noon please.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0295",
+      "raw": "Diagnose the check-engine light before noon and bring basic tools.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0296",
+      "raw": "Change the oil in my car as soon as possible; that is the main task.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0297",
+      "raw": "Replace the car battery as soon as possible.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0298",
+      "raw": "Check squealing brakes as soon as possible please.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0299",
+      "raw": "Change a flat tire as soon as possible and bring basic tools.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0300",
+      "raw": "Diagnose the check-engine light as soon as possible; that is the main task.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0301",
+      "raw": "Change the oil in my car before guests arrive.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0302",
+      "raw": "Replace the car battery before guests arrive please.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0303",
+      "raw": "Check squealing brakes before guests arrive and bring basic tools.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0304",
+      "raw": "Change a flat tire before guests arrive; that is the main task.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0305",
+      "raw": "Diagnose the check-engine light before guests arrive.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0306",
+      "raw": "Change the oil in my car in my small apartment please.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0307",
+      "raw": "Replace the car battery in my small apartment and bring basic tools.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0308",
+      "raw": "Check squealing brakes in my small apartment; that is the main task.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0309",
+      "raw": "Change a flat tire in my small apartment.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0310",
+      "raw": "Diagnose the check-engine light in my small apartment please.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0311",
+      "raw": "Change the oil in my car in the upstairs room and bring basic tools.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0312",
+      "raw": "Replace the car battery in the upstairs room; that is the main task.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0313",
+      "raw": "Check squealing brakes in the upstairs room.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0314",
+      "raw": "Change a flat tire in the upstairs room please.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0315",
+      "raw": "Diagnose the check-engine light in the upstairs room and bring basic tools.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0316",
+      "raw": "Change the oil in my car at my house; that is the main task.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0317",
+      "raw": "Replace the car battery at my house.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0318",
+      "raw": "Check squealing brakes at my house please.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0319",
+      "raw": "Change a flat tire at my house and bring basic tools.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0320",
+      "raw": "Diagnose the check-engine light at my house; that is the main task.",
+      "expectedCategory": "auto",
+      "group": "core_auto"
+    },
+    {
+      "id": "blind2_0321",
+      "raw": "Set up tables for a birthday party tomorrow.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0322",
+      "raw": "Help serve food at an anniversary dinner tomorrow please.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0323",
+      "raw": "Clean up after a graduation party tomorrow and bring basic tools.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0324",
+      "raw": "Arrange decorations for a baby shower tomorrow; that is the main task.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0325",
+      "raw": "Provide setup help for a wedding reception tomorrow.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0326",
+      "raw": "Set up tables for a birthday party this weekend please.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0327",
+      "raw": "Help serve food at an anniversary dinner this weekend and bring basic tools.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0328",
+      "raw": "Clean up after a graduation party this weekend; that is the main task.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0329",
+      "raw": "Arrange decorations for a baby shower this weekend.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0330",
+      "raw": "Provide setup help for a wedding reception this weekend please.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0331",
+      "raw": "Set up tables for a birthday party before noon and bring basic tools.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0332",
+      "raw": "Help serve food at an anniversary dinner before noon; that is the main task.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0333",
+      "raw": "Clean up after a graduation party before noon.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0334",
+      "raw": "Arrange decorations for a baby shower before noon please.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0335",
+      "raw": "Provide setup help for a wedding reception before noon and bring basic tools.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0336",
+      "raw": "Set up tables for a birthday party as soon as possible; that is the main task.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0337",
+      "raw": "Help serve food at an anniversary dinner as soon as possible.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0338",
+      "raw": "Clean up after a graduation party as soon as possible please.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0339",
+      "raw": "Arrange decorations for a baby shower as soon as possible and bring basic tools.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0340",
+      "raw": "Provide setup help for a wedding reception as soon as possible; that is the main task.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0341",
+      "raw": "Set up tables for a birthday party before guests arrive.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0342",
+      "raw": "Help serve food at an anniversary dinner before guests arrive please.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0343",
+      "raw": "Clean up after a graduation party before guests arrive and bring basic tools.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0344",
+      "raw": "Arrange decorations for a baby shower before guests arrive; that is the main task.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0345",
+      "raw": "Provide setup help for a wedding reception before guests arrive.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0346",
+      "raw": "Set up tables for a birthday party in my small apartment please.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0347",
+      "raw": "Help serve food at an anniversary dinner in my small apartment and bring basic tools.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0348",
+      "raw": "Clean up after a graduation party in my small apartment; that is the main task.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0349",
+      "raw": "Arrange decorations for a baby shower in my small apartment.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0350",
+      "raw": "Provide setup help for a wedding reception in my small apartment please.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0351",
+      "raw": "Set up tables for a birthday party in the upstairs room and bring basic tools.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0352",
+      "raw": "Help serve food at an anniversary dinner in the upstairs room; that is the main task.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0353",
+      "raw": "Clean up after a graduation party in the upstairs room.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0354",
+      "raw": "Arrange decorations for a baby shower in the upstairs room please.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0355",
+      "raw": "Provide setup help for a wedding reception in the upstairs room and bring basic tools.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0356",
+      "raw": "Set up tables for a birthday party at my house; that is the main task.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0357",
+      "raw": "Help serve food at an anniversary dinner at my house.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0358",
+      "raw": "Clean up after a graduation party at my house please.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0359",
+      "raw": "Arrange decorations for a baby shower at my house and bring basic tools.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0360",
+      "raw": "Provide setup help for a wedding reception at my house; that is the main task.",
+      "expectedCategory": "events",
+      "group": "core_events"
+    },
+    {
+      "id": "blind2_0361",
+      "raw": "Walk my dog tomorrow.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0362",
+      "raw": "Feed my cat and clean the litter box tomorrow please.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0363",
+      "raw": "Watch my puppy for a few hours tomorrow and bring basic tools.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0364",
+      "raw": "Check on my rabbit and feed it tomorrow; that is the main task.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0365",
+      "raw": "Pet sit my two dogs tomorrow.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0366",
+      "raw": "Walk my dog this weekend please.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0367",
+      "raw": "Feed my cat and clean the litter box this weekend and bring basic tools.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0368",
+      "raw": "Watch my puppy for a few hours this weekend; that is the main task.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0369",
+      "raw": "Check on my rabbit and feed it this weekend.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0370",
+      "raw": "Pet sit my two dogs this weekend please.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0371",
+      "raw": "Walk my dog before noon and bring basic tools.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0372",
+      "raw": "Feed my cat and clean the litter box before noon; that is the main task.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0373",
+      "raw": "Watch my puppy for a few hours before noon.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0374",
+      "raw": "Check on my rabbit and feed it before noon please.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0375",
+      "raw": "Pet sit my two dogs before noon and bring basic tools.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0376",
+      "raw": "Walk my dog as soon as possible; that is the main task.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0377",
+      "raw": "Feed my cat and clean the litter box as soon as possible.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0378",
+      "raw": "Watch my puppy for a few hours as soon as possible please.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0379",
+      "raw": "Check on my rabbit and feed it as soon as possible and bring basic tools.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0380",
+      "raw": "Pet sit my two dogs as soon as possible; that is the main task.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0381",
+      "raw": "Walk my dog before guests arrive.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0382",
+      "raw": "Feed my cat and clean the litter box before guests arrive please.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0383",
+      "raw": "Watch my puppy for a few hours before guests arrive and bring basic tools.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0384",
+      "raw": "Check on my rabbit and feed it before guests arrive; that is the main task.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0385",
+      "raw": "Pet sit my two dogs before guests arrive.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0386",
+      "raw": "Walk my dog in my small apartment please.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0387",
+      "raw": "Feed my cat and clean the litter box in my small apartment and bring basic tools.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0388",
+      "raw": "Watch my puppy for a few hours in my small apartment; that is the main task.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0389",
+      "raw": "Check on my rabbit and feed it in my small apartment.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0390",
+      "raw": "Pet sit my two dogs in my small apartment please.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0391",
+      "raw": "Walk my dog in the upstairs room and bring basic tools.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0392",
+      "raw": "Feed my cat and clean the litter box in the upstairs room; that is the main task.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0393",
+      "raw": "Watch my puppy for a few hours in the upstairs room.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0394",
+      "raw": "Check on my rabbit and feed it in the upstairs room please.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0395",
+      "raw": "Pet sit my two dogs in the upstairs room and bring basic tools.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0396",
+      "raw": "Walk my dog at my house; that is the main task.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0397",
+      "raw": "Feed my cat and clean the litter box at my house.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0398",
+      "raw": "Watch my puppy for a few hours at my house please.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0399",
+      "raw": "Check on my rabbit and feed it at my house and bring basic tools.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0400",
+      "raw": "Pet sit my two dogs at my house; that is the main task.",
+      "expectedCategory": "pet_care",
+      "group": "core_pet_care"
+    },
+    {
+      "id": "blind2_0401",
+      "raw": "Paint the bedroom walls tomorrow.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0402",
+      "raw": "Repaint the front door tomorrow please.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0403",
+      "raw": "Paint the fence tomorrow and bring basic tools.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0404",
+      "raw": "Apply two coats to the living room wall tomorrow; that is the main task.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0405",
+      "raw": "Paint the ceiling after patching tomorrow.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0406",
+      "raw": "Paint the bedroom walls this weekend please.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0407",
+      "raw": "Repaint the front door this weekend and bring basic tools.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0408",
+      "raw": "Paint the fence this weekend; that is the main task.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0409",
+      "raw": "Apply two coats to the living room wall this weekend.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0410",
+      "raw": "Paint the ceiling after patching this weekend please.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0411",
+      "raw": "Paint the bedroom walls before noon and bring basic tools.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0412",
+      "raw": "Repaint the front door before noon; that is the main task.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0413",
+      "raw": "Paint the fence before noon.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0414",
+      "raw": "Apply two coats to the living room wall before noon please.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0415",
+      "raw": "Paint the ceiling after patching before noon and bring basic tools.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0416",
+      "raw": "Paint the bedroom walls as soon as possible; that is the main task.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0417",
+      "raw": "Repaint the front door as soon as possible.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0418",
+      "raw": "Paint the fence as soon as possible please.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0419",
+      "raw": "Apply two coats to the living room wall as soon as possible and bring basic tools.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0420",
+      "raw": "Paint the ceiling after patching as soon as possible; that is the main task.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0421",
+      "raw": "Paint the bedroom walls before guests arrive.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0422",
+      "raw": "Repaint the front door before guests arrive please.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0423",
+      "raw": "Paint the fence before guests arrive and bring basic tools.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0424",
+      "raw": "Apply two coats to the living room wall before guests arrive; that is the main task.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0425",
+      "raw": "Paint the ceiling after patching before guests arrive.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0426",
+      "raw": "Paint the bedroom walls in my small apartment please.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0427",
+      "raw": "Repaint the front door in my small apartment and bring basic tools.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0428",
+      "raw": "Paint the fence in my small apartment; that is the main task.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0429",
+      "raw": "Apply two coats to the living room wall in my small apartment.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0430",
+      "raw": "Paint the ceiling after patching in my small apartment please.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0431",
+      "raw": "Paint the bedroom walls in the upstairs room and bring basic tools.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0432",
+      "raw": "Repaint the front door in the upstairs room; that is the main task.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0433",
+      "raw": "Paint the fence in the upstairs room.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0434",
+      "raw": "Apply two coats to the living room wall in the upstairs room please.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0435",
+      "raw": "Paint the ceiling after patching in the upstairs room and bring basic tools.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0436",
+      "raw": "Paint the bedroom walls at my house; that is the main task.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0437",
+      "raw": "Repaint the front door at my house.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0438",
+      "raw": "Paint the fence at my house please.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0439",
+      "raw": "Apply two coats to the living room wall at my house and bring basic tools.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0440",
+      "raw": "Paint the ceiling after patching at my house; that is the main task.",
+      "expectedCategory": "painting",
+      "group": "core_painting"
+    },
+    {
+      "id": "blind2_0441",
+      "raw": "Fix the leaking faucet tomorrow.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0442",
+      "raw": "Clear the clogged sink drain tomorrow please.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0443",
+      "raw": "Repair the running toilet tomorrow and bring basic tools.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0444",
+      "raw": "Replace the pipe under the sink tomorrow; that is the main task.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0445",
+      "raw": "Check low water pressure in the shower tomorrow.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0446",
+      "raw": "Fix the leaking faucet this weekend please.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0447",
+      "raw": "Clear the clogged sink drain this weekend and bring basic tools.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0448",
+      "raw": "Repair the running toilet this weekend; that is the main task.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0449",
+      "raw": "Replace the pipe under the sink this weekend.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0450",
+      "raw": "Check low water pressure in the shower this weekend please.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0451",
+      "raw": "Fix the leaking faucet before noon and bring basic tools.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0452",
+      "raw": "Clear the clogged sink drain before noon; that is the main task.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0453",
+      "raw": "Repair the running toilet before noon.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0454",
+      "raw": "Replace the pipe under the sink before noon please.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0455",
+      "raw": "Check low water pressure in the shower before noon and bring basic tools.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0456",
+      "raw": "Fix the leaking faucet as soon as possible; that is the main task.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0457",
+      "raw": "Clear the clogged sink drain as soon as possible.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0458",
+      "raw": "Repair the running toilet as soon as possible please.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0459",
+      "raw": "Replace the pipe under the sink as soon as possible and bring basic tools.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0460",
+      "raw": "Check low water pressure in the shower as soon as possible; that is the main task.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0461",
+      "raw": "Fix the leaking faucet before guests arrive.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0462",
+      "raw": "Clear the clogged sink drain before guests arrive please.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0463",
+      "raw": "Repair the running toilet before guests arrive and bring basic tools.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0464",
+      "raw": "Replace the pipe under the sink before guests arrive; that is the main task.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0465",
+      "raw": "Check low water pressure in the shower before guests arrive.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0466",
+      "raw": "Fix the leaking faucet in my small apartment please.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0467",
+      "raw": "Clear the clogged sink drain in my small apartment and bring basic tools.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0468",
+      "raw": "Repair the running toilet in my small apartment; that is the main task.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0469",
+      "raw": "Replace the pipe under the sink in my small apartment.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0470",
+      "raw": "Check low water pressure in the shower in my small apartment please.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0471",
+      "raw": "Fix the leaking faucet in the upstairs room and bring basic tools.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0472",
+      "raw": "Clear the clogged sink drain in the upstairs room; that is the main task.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0473",
+      "raw": "Repair the running toilet in the upstairs room.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0474",
+      "raw": "Replace the pipe under the sink in the upstairs room please.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0475",
+      "raw": "Check low water pressure in the shower in the upstairs room and bring basic tools.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0476",
+      "raw": "Fix the leaking faucet at my house; that is the main task.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0477",
+      "raw": "Clear the clogged sink drain at my house.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0478",
+      "raw": "Repair the running toilet at my house please.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0479",
+      "raw": "Replace the pipe under the sink at my house and bring basic tools.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0480",
+      "raw": "Check low water pressure in the shower at my house; that is the main task.",
+      "expectedCategory": "plumbing",
+      "group": "core_plumbing"
+    },
+    {
+      "id": "blind2_0481",
+      "raw": "Replace the broken light switch tomorrow.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0482",
+      "raw": "Repair the dead outlet tomorrow please.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0483",
+      "raw": "Install a ceiling fan tomorrow and bring basic tools.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0484",
+      "raw": "Fix a flickering light tomorrow; that is the main task.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0485",
+      "raw": "Check the breaker that keeps tripping tomorrow.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0486",
+      "raw": "Replace the broken light switch this weekend please.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0487",
+      "raw": "Repair the dead outlet this weekend and bring basic tools.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0488",
+      "raw": "Install a ceiling fan this weekend; that is the main task.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0489",
+      "raw": "Fix a flickering light this weekend.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0490",
+      "raw": "Check the breaker that keeps tripping this weekend please.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0491",
+      "raw": "Replace the broken light switch before noon and bring basic tools.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0492",
+      "raw": "Repair the dead outlet before noon; that is the main task.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0493",
+      "raw": "Install a ceiling fan before noon.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0494",
+      "raw": "Fix a flickering light before noon please.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0495",
+      "raw": "Check the breaker that keeps tripping before noon and bring basic tools.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0496",
+      "raw": "Replace the broken light switch as soon as possible; that is the main task.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0497",
+      "raw": "Repair the dead outlet as soon as possible.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0498",
+      "raw": "Install a ceiling fan as soon as possible please.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0499",
+      "raw": "Fix a flickering light as soon as possible and bring basic tools.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0500",
+      "raw": "Check the breaker that keeps tripping as soon as possible; that is the main task.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0501",
+      "raw": "Replace the broken light switch before guests arrive.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0502",
+      "raw": "Repair the dead outlet before guests arrive please.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0503",
+      "raw": "Install a ceiling fan before guests arrive and bring basic tools.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0504",
+      "raw": "Fix a flickering light before guests arrive; that is the main task.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0505",
+      "raw": "Check the breaker that keeps tripping before guests arrive.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0506",
+      "raw": "Replace the broken light switch in my small apartment please.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0507",
+      "raw": "Repair the dead outlet in my small apartment and bring basic tools.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0508",
+      "raw": "Install a ceiling fan in my small apartment; that is the main task.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0509",
+      "raw": "Fix a flickering light in my small apartment.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0510",
+      "raw": "Check the breaker that keeps tripping in my small apartment please.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0511",
+      "raw": "Replace the broken light switch in the upstairs room and bring basic tools.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0512",
+      "raw": "Repair the dead outlet in the upstairs room; that is the main task.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0513",
+      "raw": "Install a ceiling fan in the upstairs room.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0514",
+      "raw": "Fix a flickering light in the upstairs room please.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0515",
+      "raw": "Check the breaker that keeps tripping in the upstairs room and bring basic tools.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0516",
+      "raw": "Replace the broken light switch at my house; that is the main task.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0517",
+      "raw": "Repair the dead outlet at my house.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0518",
+      "raw": "Install a ceiling fan at my house please.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0519",
+      "raw": "Fix a flickering light at my house and bring basic tools.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0520",
+      "raw": "Check the breaker that keeps tripping at my house; that is the main task.",
+      "expectedCategory": "electrical",
+      "group": "core_electrical"
+    },
+    {
+      "id": "blind2_0521",
+      "raw": "Carry my dresser from the garage upstairs to the bedroom.",
+      "expectedCategory": "moving",
+      "group": "moving_delivery"
+    },
+    {
+      "id": "blind2_0522",
+      "raw": "Carry my dresser from the garage upstairs to the bedroom. Please focus only on that.",
+      "expectedCategory": "moving",
+      "group": "moving_delivery"
+    },
+    {
+      "id": "blind2_0523",
+      "raw": "Carry my dresser from the garage upstairs to the bedroom. That is the main task.",
+      "expectedCategory": "moving",
+      "group": "moving_delivery"
+    },
+    {
+      "id": "blind2_0524",
+      "raw": "Carry my dresser from the garage upstairs to the bedroom. No other service is needed.",
+      "expectedCategory": "moving",
+      "group": "moving_delivery"
+    },
+    {
+      "id": "blind2_0525",
+      "raw": "Carry my dresser from the garage upstairs to the bedroom. Need this done tomorrow.",
+      "expectedCategory": "moving",
+      "group": "moving_delivery"
+    },
+    {
+      "id": "blind2_0526",
+      "raw": "Carry my dresser from the garage upstairs to the bedroom. This is the only issue.",
+      "expectedCategory": "moving",
+      "group": "moving_delivery"
+    },
+    {
+      "id": "blind2_0527",
+      "raw": "Pick up a dresser from a seller and deliver it to my apartment.",
+      "expectedCategory": "delivery",
+      "group": "moving_delivery"
+    },
+    {
+      "id": "blind2_0528",
+      "raw": "Pick up a dresser from a seller and deliver it to my apartment. Please focus only on that.",
+      "expectedCategory": "delivery",
+      "group": "moving_delivery"
+    },
+    {
+      "id": "blind2_0529",
+      "raw": "Pick up a dresser from a seller and deliver it to my apartment. That is the main task.",
+      "expectedCategory": "delivery",
+      "group": "moving_delivery"
+    },
+    {
+      "id": "blind2_0530",
+      "raw": "Pick up a dresser from a seller and deliver it to my apartment. No other service is needed.",
+      "expectedCategory": "delivery",
+      "group": "moving_delivery"
+    },
+    {
+      "id": "blind2_0531",
+      "raw": "Pick up a dresser from a seller and deliver it to my apartment. Need this done tomorrow.",
+      "expectedCategory": "delivery",
+      "group": "moving_delivery"
+    },
+    {
+      "id": "blind2_0532",
+      "raw": "Pick up a dresser from a seller and deliver it to my apartment. This is the only issue.",
+      "expectedCategory": "delivery",
+      "group": "moving_delivery"
+    },
+    {
+      "id": "blind2_0533",
+      "raw": "Load my household boxes into the moving truck.",
+      "expectedCategory": "moving",
+      "group": "moving_delivery"
+    },
+    {
+      "id": "blind2_0534",
+      "raw": "Load my household boxes into the moving truck. Please focus only on that.",
+      "expectedCategory": "moving",
+      "group": "moving_delivery"
+    },
+    {
+      "id": "blind2_0535",
+      "raw": "Load my household boxes into the moving truck. That is the main task.",
+      "expectedCategory": "moving",
+      "group": "moving_delivery"
+    },
+    {
+      "id": "blind2_0536",
+      "raw": "Load my household boxes into the moving truck. No other service is needed.",
+      "expectedCategory": "moving",
+      "group": "moving_delivery"
+    },
+    {
+      "id": "blind2_0537",
+      "raw": "Load my household boxes into the moving truck. Need this done tomorrow.",
+      "expectedCategory": "moving",
+      "group": "moving_delivery"
+    },
+    {
+      "id": "blind2_0538",
+      "raw": "Load my household boxes into the moving truck. This is the only issue.",
+      "expectedCategory": "moving",
+      "group": "moving_delivery"
+    },
+    {
+      "id": "blind2_0539",
+      "raw": "Collect sealed boxes from a warehouse and deliver them to my office.",
+      "expectedCategory": "delivery",
+      "group": "moving_delivery"
+    },
+    {
+      "id": "blind2_0540",
+      "raw": "Collect sealed boxes from a warehouse and deliver them to my office. Please focus only on that.",
+      "expectedCategory": "delivery",
+      "group": "moving_delivery"
+    },
+    {
+      "id": "blind2_0541",
+      "raw": "Collect sealed boxes from a warehouse and deliver them to my office. That is the main task.",
+      "expectedCategory": "delivery",
+      "group": "moving_delivery"
+    },
+    {
+      "id": "blind2_0542",
+      "raw": "Collect sealed boxes from a warehouse and deliver them to my office. No other service is needed.",
+      "expectedCategory": "delivery",
+      "group": "moving_delivery"
+    },
+    {
+      "id": "blind2_0543",
+      "raw": "Collect sealed boxes from a warehouse and deliver them to my office. Need this done tomorrow.",
+      "expectedCategory": "delivery",
+      "group": "moving_delivery"
+    },
+    {
+      "id": "blind2_0544",
+      "raw": "Collect sealed boxes from a warehouse and deliver them to my office. This is the only issue.",
+      "expectedCategory": "delivery",
+      "group": "moving_delivery"
+    },
+    {
+      "id": "blind2_0545",
+      "raw": "Patch the wall behind the sink; the plumbing is fine.",
+      "expectedCategory": "handyman",
+      "group": "handyman_plumbing"
+    },
+    {
+      "id": "blind2_0546",
+      "raw": "Patch the wall behind the sink; the plumbing is fine. Please focus only on that.",
+      "expectedCategory": "handyman",
+      "group": "handyman_plumbing"
+    },
+    {
+      "id": "blind2_0547",
+      "raw": "Patch the wall behind the sink; the plumbing is fine. That is the main task.",
+      "expectedCategory": "handyman",
+      "group": "handyman_plumbing"
+    },
+    {
+      "id": "blind2_0548",
+      "raw": "Patch the wall behind the sink; the plumbing is fine. No other service is needed.",
+      "expectedCategory": "handyman",
+      "group": "handyman_plumbing"
+    },
+    {
+      "id": "blind2_0549",
+      "raw": "Patch the wall behind the sink; the plumbing is fine. Need this done tomorrow.",
+      "expectedCategory": "handyman",
+      "group": "handyman_plumbing"
+    },
+    {
+      "id": "blind2_0550",
+      "raw": "Patch the wall behind the sink; the plumbing is fine. This is the only issue.",
+      "expectedCategory": "handyman",
+      "group": "handyman_plumbing"
+    },
+    {
+      "id": "blind2_0551",
+      "raw": "The pipe behind the cabinet is leaking and needs repair.",
+      "expectedCategory": "plumbing",
+      "group": "handyman_plumbing"
+    },
+    {
+      "id": "blind2_0552",
+      "raw": "The pipe behind the cabinet is leaking and needs repair. Please focus only on that.",
+      "expectedCategory": "plumbing",
+      "group": "handyman_plumbing"
+    },
+    {
+      "id": "blind2_0553",
+      "raw": "The pipe behind the cabinet is leaking and needs repair. That is the main task.",
+      "expectedCategory": "plumbing",
+      "group": "handyman_plumbing"
+    },
+    {
+      "id": "blind2_0554",
+      "raw": "The pipe behind the cabinet is leaking and needs repair. No other service is needed.",
+      "expectedCategory": "plumbing",
+      "group": "handyman_plumbing"
+    },
+    {
+      "id": "blind2_0555",
+      "raw": "The pipe behind the cabinet is leaking and needs repair. Need this done tomorrow.",
+      "expectedCategory": "plumbing",
+      "group": "handyman_plumbing"
+    },
+    {
+      "id": "blind2_0556",
+      "raw": "The pipe behind the cabinet is leaking and needs repair. This is the only issue.",
+      "expectedCategory": "plumbing",
+      "group": "handyman_plumbing"
+    },
+    {
+      "id": "blind2_0557",
+      "raw": "Mount a mirror above the bathroom sink.",
+      "expectedCategory": "assembly",
+      "group": "handyman_plumbing"
+    },
+    {
+      "id": "blind2_0558",
+      "raw": "Mount a mirror above the bathroom sink. Please focus only on that.",
+      "expectedCategory": "assembly",
+      "group": "handyman_plumbing"
+    },
+    {
+      "id": "blind2_0559",
+      "raw": "Mount a mirror above the bathroom sink. That is the main task.",
+      "expectedCategory": "assembly",
+      "group": "handyman_plumbing"
+    },
+    {
+      "id": "blind2_0560",
+      "raw": "Mount a mirror above the bathroom sink. No other service is needed.",
+      "expectedCategory": "assembly",
+      "group": "handyman_plumbing"
+    },
+    {
+      "id": "blind2_0561",
+      "raw": "Mount a mirror above the bathroom sink. Need this done tomorrow.",
+      "expectedCategory": "assembly",
+      "group": "handyman_plumbing"
+    },
+    {
+      "id": "blind2_0562",
+      "raw": "Mount a mirror above the bathroom sink. This is the only issue.",
+      "expectedCategory": "assembly",
+      "group": "handyman_plumbing"
+    },
+    {
+      "id": "blind2_0563",
+      "raw": "Replace the faucet mounted on the sink.",
+      "expectedCategory": "plumbing",
+      "group": "handyman_plumbing"
+    },
+    {
+      "id": "blind2_0564",
+      "raw": "Replace the faucet mounted on the sink. Please focus only on that.",
+      "expectedCategory": "plumbing",
+      "group": "handyman_plumbing"
+    },
+    {
+      "id": "blind2_0565",
+      "raw": "Replace the faucet mounted on the sink. That is the main task.",
+      "expectedCategory": "plumbing",
+      "group": "handyman_plumbing"
+    },
+    {
+      "id": "blind2_0566",
+      "raw": "Replace the faucet mounted on the sink. No other service is needed.",
+      "expectedCategory": "plumbing",
+      "group": "handyman_plumbing"
+    },
+    {
+      "id": "blind2_0567",
+      "raw": "Replace the faucet mounted on the sink. Need this done tomorrow.",
+      "expectedCategory": "plumbing",
+      "group": "handyman_plumbing"
+    },
+    {
+      "id": "blind2_0568",
+      "raw": "Replace the faucet mounted on the sink. This is the only issue.",
+      "expectedCategory": "plumbing",
+      "group": "handyman_plumbing"
+    },
+    {
+      "id": "blind2_0569",
+      "raw": "Patch the wall beside the electrical panel; do not touch the wiring.",
+      "expectedCategory": "handyman",
+      "group": "handyman_electrical"
+    },
+    {
+      "id": "blind2_0570",
+      "raw": "Patch the wall beside the electrical panel; do not touch the wiring. Please focus only on that.",
+      "expectedCategory": "handyman",
+      "group": "handyman_electrical"
+    },
+    {
+      "id": "blind2_0571",
+      "raw": "Patch the wall beside the electrical panel; do not touch the wiring. That is the main task.",
+      "expectedCategory": "handyman",
+      "group": "handyman_electrical"
+    },
+    {
+      "id": "blind2_0572",
+      "raw": "Patch the wall beside the electrical panel; do not touch the wiring. No other service is needed.",
+      "expectedCategory": "handyman",
+      "group": "handyman_electrical"
+    },
+    {
+      "id": "blind2_0573",
+      "raw": "Patch the wall beside the electrical panel; do not touch the wiring. Need this done tomorrow.",
+      "expectedCategory": "handyman",
+      "group": "handyman_electrical"
+    },
+    {
+      "id": "blind2_0574",
+      "raw": "Patch the wall beside the electrical panel; do not touch the wiring. This is the only issue.",
+      "expectedCategory": "handyman",
+      "group": "handyman_electrical"
+    },
+    {
+      "id": "blind2_0575",
+      "raw": "Replace the breaker inside the electrical panel.",
+      "expectedCategory": "electrical",
+      "group": "handyman_electrical"
+    },
+    {
+      "id": "blind2_0576",
+      "raw": "Replace the breaker inside the electrical panel. Please focus only on that.",
+      "expectedCategory": "electrical",
+      "group": "handyman_electrical"
+    },
+    {
+      "id": "blind2_0577",
+      "raw": "Replace the breaker inside the electrical panel. That is the main task.",
+      "expectedCategory": "electrical",
+      "group": "handyman_electrical"
+    },
+    {
+      "id": "blind2_0578",
+      "raw": "Replace the breaker inside the electrical panel. No other service is needed.",
+      "expectedCategory": "electrical",
+      "group": "handyman_electrical"
+    },
+    {
+      "id": "blind2_0579",
+      "raw": "Replace the breaker inside the electrical panel. Need this done tomorrow.",
+      "expectedCategory": "electrical",
+      "group": "handyman_electrical"
+    },
+    {
+      "id": "blind2_0580",
+      "raw": "Replace the breaker inside the electrical panel. This is the only issue.",
+      "expectedCategory": "electrical",
+      "group": "handyman_electrical"
+    },
+    {
+      "id": "blind2_0581",
+      "raw": "Repair the ceiling around the fan; the fan works fine.",
+      "expectedCategory": "handyman",
+      "group": "handyman_electrical"
+    },
+    {
+      "id": "blind2_0582",
+      "raw": "Repair the ceiling around the fan; the fan works fine. Please focus only on that.",
+      "expectedCategory": "handyman",
+      "group": "handyman_electrical"
+    },
+    {
+      "id": "blind2_0583",
+      "raw": "Repair the ceiling around the fan; the fan works fine. That is the main task.",
+      "expectedCategory": "handyman",
+      "group": "handyman_electrical"
+    },
+    {
+      "id": "blind2_0584",
+      "raw": "Repair the ceiling around the fan; the fan works fine. No other service is needed.",
+      "expectedCategory": "handyman",
+      "group": "handyman_electrical"
+    },
+    {
+      "id": "blind2_0585",
+      "raw": "Repair the ceiling around the fan; the fan works fine. Need this done tomorrow.",
+      "expectedCategory": "handyman",
+      "group": "handyman_electrical"
+    },
+    {
+      "id": "blind2_0586",
+      "raw": "Repair the ceiling around the fan; the fan works fine. This is the only issue.",
+      "expectedCategory": "handyman",
+      "group": "handyman_electrical"
+    },
+    {
+      "id": "blind2_0587",
+      "raw": "Repair the ceiling fan because it will not spin.",
+      "expectedCategory": "electrical",
+      "group": "handyman_electrical"
+    },
+    {
+      "id": "blind2_0588",
+      "raw": "Repair the ceiling fan because it will not spin. Please focus only on that.",
+      "expectedCategory": "electrical",
+      "group": "handyman_electrical"
+    },
+    {
+      "id": "blind2_0589",
+      "raw": "Repair the ceiling fan because it will not spin. That is the main task.",
+      "expectedCategory": "electrical",
+      "group": "handyman_electrical"
+    },
+    {
+      "id": "blind2_0590",
+      "raw": "Repair the ceiling fan because it will not spin. No other service is needed.",
+      "expectedCategory": "electrical",
+      "group": "handyman_electrical"
+    },
+    {
+      "id": "blind2_0591",
+      "raw": "Repair the ceiling fan because it will not spin. Need this done tomorrow.",
+      "expectedCategory": "electrical",
+      "group": "handyman_electrical"
+    },
+    {
+      "id": "blind2_0592",
+      "raw": "Repair the ceiling fan because it will not spin. This is the only issue.",
+      "expectedCategory": "electrical",
+      "group": "handyman_electrical"
+    },
+    {
+      "id": "blind2_0593",
+      "raw": "Patch two holes and leave the wall unpainted.",
+      "expectedCategory": "handyman",
+      "group": "handyman_painting"
+    },
+    {
+      "id": "blind2_0594",
+      "raw": "Patch two holes and leave the wall unpainted. Please focus only on that.",
+      "expectedCategory": "handyman",
+      "group": "handyman_painting"
+    },
+    {
+      "id": "blind2_0595",
+      "raw": "Patch two holes and leave the wall unpainted. That is the main task.",
+      "expectedCategory": "handyman",
+      "group": "handyman_painting"
+    },
+    {
+      "id": "blind2_0596",
+      "raw": "Patch two holes and leave the wall unpainted. No other service is needed.",
+      "expectedCategory": "handyman",
+      "group": "handyman_painting"
+    },
+    {
+      "id": "blind2_0597",
+      "raw": "Patch two holes and leave the wall unpainted. Need this done tomorrow.",
+      "expectedCategory": "handyman",
+      "group": "handyman_painting"
+    },
+    {
+      "id": "blind2_0598",
+      "raw": "Patch two holes and leave the wall unpainted. This is the only issue.",
+      "expectedCategory": "handyman",
+      "group": "handyman_painting"
+    },
+    {
+      "id": "blind2_0599",
+      "raw": "Patch two holes and repaint the whole wall.",
+      "expectedCategory": "painting",
+      "group": "handyman_painting"
+    },
+    {
+      "id": "blind2_0600",
+      "raw": "Patch two holes and repaint the whole wall. Please focus only on that.",
+      "expectedCategory": "painting",
+      "group": "handyman_painting"
+    },
+    {
+      "id": "blind2_0601",
+      "raw": "Patch two holes and repaint the whole wall. That is the main task.",
+      "expectedCategory": "painting",
+      "group": "handyman_painting"
+    },
+    {
+      "id": "blind2_0602",
+      "raw": "Patch two holes and repaint the whole wall. No other service is needed.",
+      "expectedCategory": "painting",
+      "group": "handyman_painting"
+    },
+    {
+      "id": "blind2_0603",
+      "raw": "Patch two holes and repaint the whole wall. Need this done tomorrow.",
+      "expectedCategory": "painting",
+      "group": "handyman_painting"
+    },
+    {
+      "id": "blind2_0604",
+      "raw": "Patch two holes and repaint the whole wall. This is the only issue.",
+      "expectedCategory": "painting",
+      "group": "handyman_painting"
+    },
+    {
+      "id": "blind2_0605",
+      "raw": "Assemble the bookshelf and leave it freestanding.",
+      "expectedCategory": "assembly",
+      "group": "assembly_handyman"
+    },
+    {
+      "id": "blind2_0606",
+      "raw": "Assemble the bookshelf and leave it freestanding. Please focus only on that.",
+      "expectedCategory": "assembly",
+      "group": "assembly_handyman"
+    },
+    {
+      "id": "blind2_0607",
+      "raw": "Assemble the bookshelf and leave it freestanding. That is the main task.",
+      "expectedCategory": "assembly",
+      "group": "assembly_handyman"
+    },
+    {
+      "id": "blind2_0608",
+      "raw": "Assemble the bookshelf and leave it freestanding. No other service is needed.",
+      "expectedCategory": "assembly",
+      "group": "assembly_handyman"
+    },
+    {
+      "id": "blind2_0609",
+      "raw": "Assemble the bookshelf and leave it freestanding. Need this done tomorrow.",
+      "expectedCategory": "assembly",
+      "group": "assembly_handyman"
+    },
+    {
+      "id": "blind2_0610",
+      "raw": "Assemble the bookshelf and leave it freestanding. This is the only issue.",
+      "expectedCategory": "assembly",
+      "group": "assembly_handyman"
+    },
+    {
+      "id": "blind2_0611",
+      "raw": "Mount an already assembled bookshelf to the wall.",
+      "expectedCategory": "assembly",
+      "group": "assembly_handyman"
+    },
+    {
+      "id": "blind2_0612",
+      "raw": "Mount an already assembled bookshelf to the wall. Please focus only on that.",
+      "expectedCategory": "assembly",
+      "group": "assembly_handyman"
+    },
+    {
+      "id": "blind2_0613",
+      "raw": "Mount an already assembled bookshelf to the wall. That is the main task.",
+      "expectedCategory": "assembly",
+      "group": "assembly_handyman"
+    },
+    {
+      "id": "blind2_0614",
+      "raw": "Mount an already assembled bookshelf to the wall. No other service is needed.",
+      "expectedCategory": "assembly",
+      "group": "assembly_handyman"
+    },
+    {
+      "id": "blind2_0615",
+      "raw": "Mount an already assembled bookshelf to the wall. Need this done tomorrow.",
+      "expectedCategory": "assembly",
+      "group": "assembly_handyman"
+    },
+    {
+      "id": "blind2_0616",
+      "raw": "Mount an already assembled bookshelf to the wall. This is the only issue.",
+      "expectedCategory": "assembly",
+      "group": "assembly_handyman"
+    },
+    {
+      "id": "blind2_0617",
+      "raw": "Clean the wall around the old water stain; it is dry now.",
+      "expectedCategory": "cleaning",
+      "group": "cleaning_home"
+    },
+    {
+      "id": "blind2_0618",
+      "raw": "Clean the wall around the old water stain; it is dry now. Please focus only on that.",
+      "expectedCategory": "cleaning",
+      "group": "cleaning_home"
+    },
+    {
+      "id": "blind2_0619",
+      "raw": "Clean the wall around the old water stain; it is dry now. That is the main task.",
+      "expectedCategory": "cleaning",
+      "group": "cleaning_home"
+    },
+    {
+      "id": "blind2_0620",
+      "raw": "Clean the wall around the old water stain; it is dry now. No other service is needed.",
+      "expectedCategory": "cleaning",
+      "group": "cleaning_home"
+    },
+    {
+      "id": "blind2_0621",
+      "raw": "Clean the wall around the old water stain; it is dry now. Need this done tomorrow.",
+      "expectedCategory": "cleaning",
+      "group": "cleaning_home"
+    },
+    {
+      "id": "blind2_0622",
+      "raw": "Clean the wall around the old water stain; it is dry now. This is the only issue.",
+      "expectedCategory": "cleaning",
+      "group": "cleaning_home"
+    },
+    {
+      "id": "blind2_0623",
+      "raw": "Inspect the wall because the water stain is spreading and soft.",
+      "expectedCategory": "home_services",
+      "group": "cleaning_home"
+    },
+    {
+      "id": "blind2_0624",
+      "raw": "Inspect the wall because the water stain is spreading and soft. Please focus only on that.",
+      "expectedCategory": "home_services",
+      "group": "cleaning_home"
+    },
+    {
+      "id": "blind2_0625",
+      "raw": "Inspect the wall because the water stain is spreading and soft. That is the main task.",
+      "expectedCategory": "home_services",
+      "group": "cleaning_home"
+    },
+    {
+      "id": "blind2_0626",
+      "raw": "Inspect the wall because the water stain is spreading and soft. No other service is needed.",
+      "expectedCategory": "home_services",
+      "group": "cleaning_home"
+    },
+    {
+      "id": "blind2_0627",
+      "raw": "Inspect the wall because the water stain is spreading and soft. Need this done tomorrow.",
+      "expectedCategory": "home_services",
+      "group": "cleaning_home"
+    },
+    {
+      "id": "blind2_0628",
+      "raw": "Inspect the wall because the water stain is spreading and soft. This is the only issue.",
+      "expectedCategory": "home_services",
+      "group": "cleaning_home"
+    },
+    {
+      "id": "blind2_0629",
+      "raw": "Anniversary dinner for 24 guests needs setup and serving help.",
+      "expectedCategory": "events",
+      "group": "events_vague"
+    },
+    {
+      "id": "blind2_0630",
+      "raw": "Anniversary dinner for 24 guests needs setup and serving help. Please focus only on that.",
+      "expectedCategory": "events",
+      "group": "events_vague"
+    },
+    {
+      "id": "blind2_0631",
+      "raw": "Anniversary dinner for 24 guests needs setup and serving help. That is the main task.",
+      "expectedCategory": "events",
+      "group": "events_vague"
+    },
+    {
+      "id": "blind2_0632",
+      "raw": "Anniversary dinner for 24 guests needs setup and serving help. No other service is needed.",
+      "expectedCategory": "events",
+      "group": "events_vague"
+    },
+    {
+      "id": "blind2_0633",
+      "raw": "Anniversary dinner for 24 guests needs setup and serving help. Need this done tomorrow.",
+      "expectedCategory": "events",
+      "group": "events_vague"
+    },
+    {
+      "id": "blind2_0634",
+      "raw": "Anniversary dinner for 24 guests needs setup and serving help. This is the only issue.",
+      "expectedCategory": "events",
+      "group": "events_vague"
+    },
+    {
+      "id": "blind2_0635",
+      "raw": "Anniversary dinner with my spouse at home.",
+      "expectedCategory": null,
+      "group": "events_vague"
+    },
+    {
+      "id": "blind2_0636",
+      "raw": "Anniversary dinner with my spouse at home. Please focus only on that.",
+      "expectedCategory": null,
+      "group": "events_vague"
+    },
+    {
+      "id": "blind2_0637",
+      "raw": "Anniversary dinner with my spouse at home. That is the main task.",
+      "expectedCategory": null,
+      "group": "events_vague"
+    },
+    {
+      "id": "blind2_0638",
+      "raw": "Anniversary dinner with my spouse at home. No other service is needed.",
+      "expectedCategory": null,
+      "group": "events_vague"
+    },
+    {
+      "id": "blind2_0639",
+      "raw": "Anniversary dinner with my spouse at home. Need this done tomorrow.",
+      "expectedCategory": null,
+      "group": "events_vague"
+    },
+    {
+      "id": "blind2_0640",
+      "raw": "Anniversary dinner with my spouse at home. This is the only issue.",
+      "expectedCategory": null,
+      "group": "events_vague"
+    },
+    {
+      "id": "blind2_0641",
+      "raw": "Feed my cat and clean its litter box.",
+      "expectedCategory": "pet_care",
+      "group": "pet_clean"
+    },
+    {
+      "id": "blind2_0642",
+      "raw": "Feed my cat and clean its litter box. Please focus only on that.",
+      "expectedCategory": "pet_care",
+      "group": "pet_clean"
+    },
+    {
+      "id": "blind2_0643",
+      "raw": "Feed my cat and clean its litter box. That is the main task.",
+      "expectedCategory": "pet_care",
+      "group": "pet_clean"
+    },
+    {
+      "id": "blind2_0644",
+      "raw": "Feed my cat and clean its litter box. No other service is needed.",
+      "expectedCategory": "pet_care",
+      "group": "pet_clean"
+    },
+    {
+      "id": "blind2_0645",
+      "raw": "Feed my cat and clean its litter box. Need this done tomorrow.",
+      "expectedCategory": "pet_care",
+      "group": "pet_clean"
+    },
+    {
+      "id": "blind2_0646",
+      "raw": "Feed my cat and clean its litter box. This is the only issue.",
+      "expectedCategory": "pet_care",
+      "group": "pet_clean"
+    },
+    {
+      "id": "blind2_0647",
+      "raw": "Deep clean the room where the cat litter box sits.",
+      "expectedCategory": "cleaning",
+      "group": "pet_clean"
+    },
+    {
+      "id": "blind2_0648",
+      "raw": "Deep clean the room where the cat litter box sits. Please focus only on that.",
+      "expectedCategory": "cleaning",
+      "group": "pet_clean"
+    },
+    {
+      "id": "blind2_0649",
+      "raw": "Deep clean the room where the cat litter box sits. That is the main task.",
+      "expectedCategory": "cleaning",
+      "group": "pet_clean"
+    },
+    {
+      "id": "blind2_0650",
+      "raw": "Deep clean the room where the cat litter box sits. No other service is needed.",
+      "expectedCategory": "cleaning",
+      "group": "pet_clean"
+    },
+    {
+      "id": "blind2_0651",
+      "raw": "Deep clean the room where the cat litter box sits. Need this done tomorrow.",
+      "expectedCategory": "cleaning",
+      "group": "pet_clean"
+    },
+    {
+      "id": "blind2_0652",
+      "raw": "Deep clean the room where the cat litter box sits. This is the only issue.",
+      "expectedCategory": "cleaning",
+      "group": "pet_clean"
+    },
+    {
+      "id": "blind2_0653",
+      "raw": "Ceiling fan will not turn on; need it repaired.",
+      "expectedCategory": "electrical",
+      "group": "fan_traps"
+    },
+    {
+      "id": "blind2_0654",
+      "raw": "Ceiling fan will not turn on; need it repaired. Please focus only on that.",
+      "expectedCategory": "electrical",
+      "group": "fan_traps"
+    },
+    {
+      "id": "blind2_0655",
+      "raw": "Ceiling fan will not turn on; need it repaired. That is the main task.",
+      "expectedCategory": "electrical",
+      "group": "fan_traps"
+    },
+    {
+      "id": "blind2_0656",
+      "raw": "Ceiling fan will not turn on; need it repaired. No other service is needed.",
+      "expectedCategory": "electrical",
+      "group": "fan_traps"
+    },
+    {
+      "id": "blind2_0657",
+      "raw": "Ceiling fan will not turn on; need it repaired. Need this done tomorrow.",
+      "expectedCategory": "electrical",
+      "group": "fan_traps"
+    },
+    {
+      "id": "blind2_0658",
+      "raw": "Ceiling fan will not turn on; need it repaired. This is the only issue.",
+      "expectedCategory": "electrical",
+      "group": "fan_traps"
+    },
+    {
+      "id": "blind2_0659",
+      "raw": "Clean dust from the ceiling fan blades; it works normally.",
+      "expectedCategory": "cleaning",
+      "group": "fan_traps"
+    },
+    {
+      "id": "blind2_0660",
+      "raw": "Clean dust from the ceiling fan blades; it works normally. Please focus only on that.",
+      "expectedCategory": "cleaning",
+      "group": "fan_traps"
+    },
+    {
+      "id": "blind2_0661",
+      "raw": "Clean dust from the ceiling fan blades; it works normally. That is the main task.",
+      "expectedCategory": "cleaning",
+      "group": "fan_traps"
+    },
+    {
+      "id": "blind2_0662",
+      "raw": "Clean dust from the ceiling fan blades; it works normally. No other service is needed.",
+      "expectedCategory": "cleaning",
+      "group": "fan_traps"
+    },
+    {
+      "id": "blind2_0663",
+      "raw": "Clean dust from the ceiling fan blades; it works normally. Need this done tomorrow.",
+      "expectedCategory": "cleaning",
+      "group": "fan_traps"
+    },
+    {
+      "id": "blind2_0664",
+      "raw": "Clean dust from the ceiling fan blades; it works normally. This is the only issue.",
+      "expectedCategory": "cleaning",
+      "group": "fan_traps"
+    },
+    {
+      "id": "blind2_0665",
+      "raw": "Low water pressure only at the kitchen faucet.",
+      "expectedCategory": "plumbing",
+      "group": "pressure_traps"
+    },
+    {
+      "id": "blind2_0666",
+      "raw": "Low water pressure only at the kitchen faucet. Please focus only on that.",
+      "expectedCategory": "plumbing",
+      "group": "pressure_traps"
+    },
+    {
+      "id": "blind2_0667",
+      "raw": "Low water pressure only at the kitchen faucet. That is the main task.",
+      "expectedCategory": "plumbing",
+      "group": "pressure_traps"
+    },
+    {
+      "id": "blind2_0668",
+      "raw": "Low water pressure only at the kitchen faucet. No other service is needed.",
+      "expectedCategory": "plumbing",
+      "group": "pressure_traps"
+    },
+    {
+      "id": "blind2_0669",
+      "raw": "Low water pressure only at the kitchen faucet. Need this done tomorrow.",
+      "expectedCategory": "plumbing",
+      "group": "pressure_traps"
+    },
+    {
+      "id": "blind2_0670",
+      "raw": "Low water pressure only at the kitchen faucet. This is the only issue.",
+      "expectedCategory": "plumbing",
+      "group": "pressure_traps"
+    },
+    {
+      "id": "blind2_0671",
+      "raw": "Low tire pressure warning on my car.",
+      "expectedCategory": "auto",
+      "group": "pressure_traps"
+    },
+    {
+      "id": "blind2_0672",
+      "raw": "Low tire pressure warning on my car. Please focus only on that.",
+      "expectedCategory": "auto",
+      "group": "pressure_traps"
+    },
+    {
+      "id": "blind2_0673",
+      "raw": "Low tire pressure warning on my car. That is the main task.",
+      "expectedCategory": "auto",
+      "group": "pressure_traps"
+    },
+    {
+      "id": "blind2_0674",
+      "raw": "Low tire pressure warning on my car. No other service is needed.",
+      "expectedCategory": "auto",
+      "group": "pressure_traps"
+    },
+    {
+      "id": "blind2_0675",
+      "raw": "Low tire pressure warning on my car. Need this done tomorrow.",
+      "expectedCategory": "auto",
+      "group": "pressure_traps"
+    },
+    {
+      "id": "blind2_0676",
+      "raw": "Low tire pressure warning on my car. This is the only issue.",
+      "expectedCategory": "auto",
+      "group": "pressure_traps"
+    },
+    {
+      "id": "blind2_0677",
+      "raw": "Apply two coats of paint to the bedroom wall.",
+      "expectedCategory": "painting",
+      "group": "coat_traps"
+    },
+    {
+      "id": "blind2_0678",
+      "raw": "Apply two coats of paint to the bedroom wall. Please focus only on that.",
+      "expectedCategory": "painting",
+      "group": "coat_traps"
+    },
+    {
+      "id": "blind2_0679",
+      "raw": "Apply two coats of paint to the bedroom wall. That is the main task.",
+      "expectedCategory": "painting",
+      "group": "coat_traps"
+    },
+    {
+      "id": "blind2_0680",
+      "raw": "Apply two coats of paint to the bedroom wall. No other service is needed.",
+      "expectedCategory": "painting",
+      "group": "coat_traps"
+    },
+    {
+      "id": "blind2_0681",
+      "raw": "Apply two coats of paint to the bedroom wall. Need this done tomorrow.",
+      "expectedCategory": "painting",
+      "group": "coat_traps"
+    },
+    {
+      "id": "blind2_0682",
+      "raw": "Apply two coats of paint to the bedroom wall. This is the only issue.",
+      "expectedCategory": "painting",
+      "group": "coat_traps"
+    },
+    {
+      "id": "blind2_0683",
+      "raw": "Coat hook is loose and needs mounting.",
+      "expectedCategory": "handyman",
+      "group": "coat_traps"
+    },
+    {
+      "id": "blind2_0684",
+      "raw": "Coat hook is loose and needs mounting. Please focus only on that.",
+      "expectedCategory": "handyman",
+      "group": "coat_traps"
+    },
+    {
+      "id": "blind2_0685",
+      "raw": "Coat hook is loose and needs mounting. That is the main task.",
+      "expectedCategory": "handyman",
+      "group": "coat_traps"
+    },
+    {
+      "id": "blind2_0686",
+      "raw": "Coat hook is loose and needs mounting. No other service is needed.",
+      "expectedCategory": "handyman",
+      "group": "coat_traps"
+    },
+    {
+      "id": "blind2_0687",
+      "raw": "Coat hook is loose and needs mounting. Need this done tomorrow.",
+      "expectedCategory": "handyman",
+      "group": "coat_traps"
+    },
+    {
+      "id": "blind2_0688",
+      "raw": "Coat hook is loose and needs mounting. This is the only issue.",
+      "expectedCategory": "handyman",
+      "group": "coat_traps"
+    },
+    {
+      "id": "blind2_0689",
+      "raw": "Bag and remove leaves from the backyard.",
+      "expectedCategory": "yard",
+      "group": "yard_debris"
+    },
+    {
+      "id": "blind2_0690",
+      "raw": "Bag and remove leaves from the backyard. Please focus only on that.",
+      "expectedCategory": "yard",
+      "group": "yard_debris"
+    },
+    {
+      "id": "blind2_0691",
+      "raw": "Bag and remove leaves from the backyard. That is the main task.",
+      "expectedCategory": "yard",
+      "group": "yard_debris"
+    },
+    {
+      "id": "blind2_0692",
+      "raw": "Bag and remove leaves from the backyard. No other service is needed.",
+      "expectedCategory": "yard",
+      "group": "yard_debris"
+    },
+    {
+      "id": "blind2_0693",
+      "raw": "Bag and remove leaves from the backyard. Need this done tomorrow.",
+      "expectedCategory": "yard",
+      "group": "yard_debris"
+    },
+    {
+      "id": "blind2_0694",
+      "raw": "Bag and remove leaves from the backyard. This is the only issue.",
+      "expectedCategory": "yard",
+      "group": "yard_debris"
+    },
+    {
+      "id": "blind2_0695",
+      "raw": "Remove crumbs and debris from the kitchen floor.",
+      "expectedCategory": "cleaning",
+      "group": "yard_debris"
+    },
+    {
+      "id": "blind2_0696",
+      "raw": "Remove crumbs and debris from the kitchen floor. Please focus only on that.",
+      "expectedCategory": "cleaning",
+      "group": "yard_debris"
+    },
+    {
+      "id": "blind2_0697",
+      "raw": "Remove crumbs and debris from the kitchen floor. That is the main task.",
+      "expectedCategory": "cleaning",
+      "group": "yard_debris"
+    },
+    {
+      "id": "blind2_0698",
+      "raw": "Remove crumbs and debris from the kitchen floor. No other service is needed.",
+      "expectedCategory": "cleaning",
+      "group": "yard_debris"
+    },
+    {
+      "id": "blind2_0699",
+      "raw": "Remove crumbs and debris from the kitchen floor. Need this done tomorrow.",
+      "expectedCategory": "cleaning",
+      "group": "yard_debris"
+    },
+    {
+      "id": "blind2_0700",
+      "raw": "Remove crumbs and debris from the kitchen floor. This is the only issue.",
+      "expectedCategory": "cleaning",
+      "group": "yard_debris"
+    },
+    {
+      "id": "blind2_0701",
+      "raw": "Fix the leaking faucet, then wipe the cabinet under it.",
+      "expectedCategory": "plumbing",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0702",
+      "raw": "Clean the kitchen; the loose faucet can be ignored.",
+      "expectedCategory": "cleaning",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0703",
+      "raw": "Move the dresser upstairs, then assemble the new chair.",
+      "expectedCategory": "moving",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0704",
+      "raw": "Assemble the bed frame, then help shift it against the wall.",
+      "expectedCategory": "assembly",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0705",
+      "raw": "Paint the bedroom after patching two small holes.",
+      "expectedCategory": "painting",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0706",
+      "raw": "Patch the wall; painting is not needed.",
+      "expectedCategory": "handyman",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0707",
+      "raw": "Replace the dead outlet, then patch around the wall plate if needed.",
+      "expectedCategory": "electrical",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0708",
+      "raw": "Patch the drywall near the outlet; the outlet itself works.",
+      "expectedCategory": "handyman",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0709",
+      "raw": "Mow the lawn and carry the bagged leaves to the curb.",
+      "expectedCategory": "yard",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0710",
+      "raw": "Pick up the mower from the store and deliver it to my house.",
+      "expectedCategory": "delivery",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0711",
+      "raw": "Walk my dog, then wipe the muddy paws before coming inside.",
+      "expectedCategory": "pet_care",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0712",
+      "raw": "Clean the muddy paw prints from the hallway; no pet care needed.",
+      "expectedCategory": "cleaning",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0713",
+      "raw": "Set up tables for the party, then help clean afterward.",
+      "expectedCategory": "events",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0714",
+      "raw": "Clean the house after the party; no event help is needed.",
+      "expectedCategory": "cleaning",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0715",
+      "raw": "Replace the car battery and wipe down the terminals.",
+      "expectedCategory": "auto",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0716",
+      "raw": "Pick up the replacement car battery from the store and deliver it.",
+      "expectedCategory": "delivery",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0717",
+      "raw": "Inspect the damaged ceiling, then advise what repair is needed.",
+      "expectedCategory": "home_services",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0718",
+      "raw": "Repaint the ceiling after the damage has already been repaired.",
+      "expectedCategory": "painting",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0719",
+      "raw": "Carry the boxed shelf upstairs; do not assemble it.",
+      "expectedCategory": "moving",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0720",
+      "raw": "Assemble the boxed shelf; no moving help needed.",
+      "expectedCategory": "assembly",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0721",
+      "raw": "Fix the leaking faucet, then wipe the cabinet under it. The first part is the priority.",
+      "expectedCategory": "plumbing",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0722",
+      "raw": "Clean the kitchen; the loose faucet can be ignored. The first part is the priority.",
+      "expectedCategory": "cleaning",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0723",
+      "raw": "Move the dresser upstairs, then assemble the new chair. The first part is the priority.",
+      "expectedCategory": "moving",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0724",
+      "raw": "Assemble the bed frame, then help shift it against the wall. The first part is the priority.",
+      "expectedCategory": "assembly",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0725",
+      "raw": "Paint the bedroom after patching two small holes. The first part is the priority.",
+      "expectedCategory": "painting",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0726",
+      "raw": "Patch the wall; painting is not needed. The first part is the priority.",
+      "expectedCategory": "handyman",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0727",
+      "raw": "Replace the dead outlet, then patch around the wall plate if needed. The first part is the priority.",
+      "expectedCategory": "electrical",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0728",
+      "raw": "Patch the drywall near the outlet; the outlet itself works. The first part is the priority.",
+      "expectedCategory": "handyman",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0729",
+      "raw": "Mow the lawn and carry the bagged leaves to the curb. The first part is the priority.",
+      "expectedCategory": "yard",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0730",
+      "raw": "Pick up the mower from the store and deliver it to my house. The first part is the priority.",
+      "expectedCategory": "delivery",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0731",
+      "raw": "Walk my dog, then wipe the muddy paws before coming inside. The first part is the priority.",
+      "expectedCategory": "pet_care",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0732",
+      "raw": "Clean the muddy paw prints from the hallway; no pet care needed. The first part is the priority.",
+      "expectedCategory": "cleaning",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0733",
+      "raw": "Set up tables for the party, then help clean afterward. The first part is the priority.",
+      "expectedCategory": "events",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0734",
+      "raw": "Clean the house after the party; no event help is needed. The first part is the priority.",
+      "expectedCategory": "cleaning",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0735",
+      "raw": "Replace the car battery and wipe down the terminals. The first part is the priority.",
+      "expectedCategory": "auto",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0736",
+      "raw": "Pick up the replacement car battery from the store and deliver it. The first part is the priority.",
+      "expectedCategory": "delivery",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0737",
+      "raw": "Inspect the damaged ceiling, then advise what repair is needed. The first part is the priority.",
+      "expectedCategory": "home_services",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0738",
+      "raw": "Repaint the ceiling after the damage has already been repaired. The first part is the priority.",
+      "expectedCategory": "painting",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0739",
+      "raw": "Carry the boxed shelf upstairs; do not assemble it. The first part is the priority.",
+      "expectedCategory": "moving",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0740",
+      "raw": "Assemble the boxed shelf; no moving help needed. The first part is the priority.",
+      "expectedCategory": "assembly",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0741",
+      "raw": "Fix the leaking faucet, then wipe the cabinet under it. Everything else is secondary.",
+      "expectedCategory": "plumbing",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0742",
+      "raw": "Clean the kitchen; the loose faucet can be ignored. Everything else is secondary.",
+      "expectedCategory": "cleaning",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0743",
+      "raw": "Move the dresser upstairs, then assemble the new chair. Everything else is secondary.",
+      "expectedCategory": "moving",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0744",
+      "raw": "Assemble the bed frame, then help shift it against the wall. Everything else is secondary.",
+      "expectedCategory": "assembly",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0745",
+      "raw": "Paint the bedroom after patching two small holes. Everything else is secondary.",
+      "expectedCategory": "painting",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0746",
+      "raw": "Patch the wall; painting is not needed. Everything else is secondary.",
+      "expectedCategory": "handyman",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0747",
+      "raw": "Replace the dead outlet, then patch around the wall plate if needed. Everything else is secondary.",
+      "expectedCategory": "electrical",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0748",
+      "raw": "Patch the drywall near the outlet; the outlet itself works. Everything else is secondary.",
+      "expectedCategory": "handyman",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0749",
+      "raw": "Mow the lawn and carry the bagged leaves to the curb. Everything else is secondary.",
+      "expectedCategory": "yard",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0750",
+      "raw": "Pick up the mower from the store and deliver it to my house. Everything else is secondary.",
+      "expectedCategory": "delivery",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0751",
+      "raw": "Walk my dog, then wipe the muddy paws before coming inside. Everything else is secondary.",
+      "expectedCategory": "pet_care",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0752",
+      "raw": "Clean the muddy paw prints from the hallway; no pet care needed. Everything else is secondary.",
+      "expectedCategory": "cleaning",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0753",
+      "raw": "Set up tables for the party, then help clean afterward. Everything else is secondary.",
+      "expectedCategory": "events",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0754",
+      "raw": "Clean the house after the party; no event help is needed. Everything else is secondary.",
+      "expectedCategory": "cleaning",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0755",
+      "raw": "Replace the car battery and wipe down the terminals. Everything else is secondary.",
+      "expectedCategory": "auto",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0756",
+      "raw": "Pick up the replacement car battery from the store and deliver it. Everything else is secondary.",
+      "expectedCategory": "delivery",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0757",
+      "raw": "Inspect the damaged ceiling, then advise what repair is needed. Everything else is secondary.",
+      "expectedCategory": "home_services",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0758",
+      "raw": "Repaint the ceiling after the damage has already been repaired. Everything else is secondary.",
+      "expectedCategory": "painting",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0759",
+      "raw": "Carry the boxed shelf upstairs; do not assemble it. Everything else is secondary.",
+      "expectedCategory": "moving",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0760",
+      "raw": "Assemble the boxed shelf; no moving help needed. Everything else is secondary.",
+      "expectedCategory": "assembly",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0761",
+      "raw": "Fix the leaking faucet, then wipe the cabinet under it. Keep the job focused on the main request.",
+      "expectedCategory": "plumbing",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0762",
+      "raw": "Clean the kitchen; the loose faucet can be ignored. Keep the job focused on the main request.",
+      "expectedCategory": "cleaning",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0763",
+      "raw": "Move the dresser upstairs, then assemble the new chair. Keep the job focused on the main request.",
+      "expectedCategory": "moving",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0764",
+      "raw": "Assemble the bed frame, then help shift it against the wall. Keep the job focused on the main request.",
+      "expectedCategory": "assembly",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0765",
+      "raw": "Paint the bedroom after patching two small holes. Keep the job focused on the main request.",
+      "expectedCategory": "painting",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0766",
+      "raw": "Patch the wall; painting is not needed. Keep the job focused on the main request.",
+      "expectedCategory": "handyman",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0767",
+      "raw": "Replace the dead outlet, then patch around the wall plate if needed. Keep the job focused on the main request.",
+      "expectedCategory": "electrical",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0768",
+      "raw": "Patch the drywall near the outlet; the outlet itself works. Keep the job focused on the main request.",
+      "expectedCategory": "handyman",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0769",
+      "raw": "Mow the lawn and carry the bagged leaves to the curb. Keep the job focused on the main request.",
+      "expectedCategory": "yard",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0770",
+      "raw": "Pick up the mower from the store and deliver it to my house. Keep the job focused on the main request.",
+      "expectedCategory": "delivery",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0771",
+      "raw": "Walk my dog, then wipe the muddy paws before coming inside. Keep the job focused on the main request.",
+      "expectedCategory": "pet_care",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0772",
+      "raw": "Clean the muddy paw prints from the hallway; no pet care needed. Keep the job focused on the main request.",
+      "expectedCategory": "cleaning",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0773",
+      "raw": "Set up tables for the party, then help clean afterward. Keep the job focused on the main request.",
+      "expectedCategory": "events",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0774",
+      "raw": "Clean the house after the party; no event help is needed. Keep the job focused on the main request.",
+      "expectedCategory": "cleaning",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0775",
+      "raw": "Replace the car battery and wipe down the terminals. Keep the job focused on the main request.",
+      "expectedCategory": "auto",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0776",
+      "raw": "Pick up the replacement car battery from the store and deliver it. Keep the job focused on the main request.",
+      "expectedCategory": "delivery",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0777",
+      "raw": "Inspect the damaged ceiling, then advise what repair is needed. Keep the job focused on the main request.",
+      "expectedCategory": "home_services",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0778",
+      "raw": "Repaint the ceiling after the damage has already been repaired. Keep the job focused on the main request.",
+      "expectedCategory": "painting",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0779",
+      "raw": "Carry the boxed shelf upstairs; do not assemble it. Keep the job focused on the main request.",
+      "expectedCategory": "moving",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0780",
+      "raw": "Assemble the boxed shelf; no moving help needed. Keep the job focused on the main request.",
+      "expectedCategory": "assembly",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0781",
+      "raw": "Fix the leaking faucet, then wipe the cabinet under it. That main task is what I care about.",
+      "expectedCategory": "plumbing",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0782",
+      "raw": "Clean the kitchen; the loose faucet can be ignored. That main task is what I care about.",
+      "expectedCategory": "cleaning",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0783",
+      "raw": "Move the dresser upstairs, then assemble the new chair. That main task is what I care about.",
+      "expectedCategory": "moving",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0784",
+      "raw": "Assemble the bed frame, then help shift it against the wall. That main task is what I care about.",
+      "expectedCategory": "assembly",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0785",
+      "raw": "Paint the bedroom after patching two small holes. That main task is what I care about.",
+      "expectedCategory": "painting",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0786",
+      "raw": "Patch the wall; painting is not needed. That main task is what I care about.",
+      "expectedCategory": "handyman",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0787",
+      "raw": "Replace the dead outlet, then patch around the wall plate if needed. That main task is what I care about.",
+      "expectedCategory": "electrical",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0788",
+      "raw": "Patch the drywall near the outlet; the outlet itself works. That main task is what I care about.",
+      "expectedCategory": "handyman",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0789",
+      "raw": "Mow the lawn and carry the bagged leaves to the curb. That main task is what I care about.",
+      "expectedCategory": "yard",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0790",
+      "raw": "Pick up the mower from the store and deliver it to my house. That main task is what I care about.",
+      "expectedCategory": "delivery",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0791",
+      "raw": "Walk my dog, then wipe the muddy paws before coming inside. That main task is what I care about.",
+      "expectedCategory": "pet_care",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0792",
+      "raw": "Clean the muddy paw prints from the hallway; no pet care needed. That main task is what I care about.",
+      "expectedCategory": "cleaning",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0793",
+      "raw": "Set up tables for the party, then help clean afterward. That main task is what I care about.",
+      "expectedCategory": "events",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0794",
+      "raw": "Clean the house after the party; no event help is needed. That main task is what I care about.",
+      "expectedCategory": "cleaning",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0795",
+      "raw": "Replace the car battery and wipe down the terminals. That main task is what I care about.",
+      "expectedCategory": "auto",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0796",
+      "raw": "Pick up the replacement car battery from the store and deliver it. That main task is what I care about.",
+      "expectedCategory": "delivery",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0797",
+      "raw": "Inspect the damaged ceiling, then advise what repair is needed. That main task is what I care about.",
+      "expectedCategory": "home_services",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0798",
+      "raw": "Repaint the ceiling after the damage has already been repaired. That main task is what I care about.",
+      "expectedCategory": "painting",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0799",
+      "raw": "Carry the boxed shelf upstairs; do not assemble it. That main task is what I care about.",
+      "expectedCategory": "moving",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0800",
+      "raw": "Assemble the boxed shelf; no moving help needed. That main task is what I care about.",
+      "expectedCategory": "assembly",
+      "group": "multi_intent"
+    },
+    {
+      "id": "blind2_0801",
+      "raw": "Need some help around the house.",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0802",
+      "raw": "Can someone come by and help me out? Details later.",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0803",
+      "raw": "I have a few things that need doing. Not sure what service this is.",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0804",
+      "raw": "Need someone ASAP. I can explain when you arrive.",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0805",
+      "raw": "Looking for help this weekend.",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0806",
+      "raw": "Can anyone handle a small job for me? Details later.",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0807",
+      "raw": "Need a person for about an hour. Not sure what service this is.",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0808",
+      "raw": "Something at home needs attention. I can explain when you arrive.",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0809",
+      "raw": "I need help with a thing in my apartment.",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0810",
+      "raw": "Small job, should not take long. Details later.",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0811",
+      "raw": "Need somebody local to help tomorrow. Not sure what service this is.",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0812",
+      "raw": "Looking for someone handy. I can explain when you arrive.",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0813",
+      "raw": "Can someone take care of this for me?",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0814",
+      "raw": "I have a quick task. Details later.",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0815",
+      "raw": "Need help at my place. Not sure what service this is.",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0816",
+      "raw": "Looking for general assistance. I can explain when you arrive.",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0817",
+      "raw": "Can somebody help with a home project?",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0818",
+      "raw": "Need a reliable person for a small task. Details later.",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0819",
+      "raw": "I have something that needs fixing or sorting out. Not sure what service this is.",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0820",
+      "raw": "Need help with an issue at home. I can explain when you arrive.",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0821",
+      "raw": "Need some help around the house (request 2).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0822",
+      "raw": "Can someone come by and help me out? Details later (request 2).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0823",
+      "raw": "I have a few things that need doing. Not sure what service this is (request 2).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0824",
+      "raw": "Need someone ASAP. I can explain when you arrive (request 2).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0825",
+      "raw": "Looking for help this weekend (request 2).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0826",
+      "raw": "Can anyone handle a small job for me? Details later (request 2).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0827",
+      "raw": "Need a person for about an hour. Not sure what service this is (request 2).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0828",
+      "raw": "Something at home needs attention. I can explain when you arrive (request 2).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0829",
+      "raw": "I need help with a thing in my apartment (request 2).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0830",
+      "raw": "Small job, should not take long. Details later (request 2).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0831",
+      "raw": "Need somebody local to help tomorrow. Not sure what service this is (request 2).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0832",
+      "raw": "Looking for someone handy. I can explain when you arrive (request 2).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0833",
+      "raw": "Can someone take care of this for me? (request 2).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0834",
+      "raw": "I have a quick task. Details later (request 2).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0835",
+      "raw": "Need help at my place. Not sure what service this is (request 2).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0836",
+      "raw": "Looking for general assistance. I can explain when you arrive (request 2).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0837",
+      "raw": "Can somebody help with a home project? (request 2).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0838",
+      "raw": "Need a reliable person for a small task. Details later (request 2).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0839",
+      "raw": "I have something that needs fixing or sorting out. Not sure what service this is (request 2).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0840",
+      "raw": "Need help with an issue at home. I can explain when you arrive (request 2).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0841",
+      "raw": "Need some help around the house (request 3).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0842",
+      "raw": "Can someone come by and help me out? Details later (request 3).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0843",
+      "raw": "I have a few things that need doing. Not sure what service this is (request 3).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0844",
+      "raw": "Need someone ASAP. I can explain when you arrive (request 3).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0845",
+      "raw": "Looking for help this weekend (request 3).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0846",
+      "raw": "Can anyone handle a small job for me? Details later (request 3).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0847",
+      "raw": "Need a person for about an hour. Not sure what service this is (request 3).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0848",
+      "raw": "Something at home needs attention. I can explain when you arrive (request 3).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0849",
+      "raw": "I need help with a thing in my apartment (request 3).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0850",
+      "raw": "Small job, should not take long. Details later (request 3).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0851",
+      "raw": "Need somebody local to help tomorrow. Not sure what service this is (request 3).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0852",
+      "raw": "Looking for someone handy. I can explain when you arrive (request 3).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0853",
+      "raw": "Can someone take care of this for me? (request 3).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0854",
+      "raw": "I have a quick task. Details later (request 3).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0855",
+      "raw": "Need help at my place. Not sure what service this is (request 3).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0856",
+      "raw": "Looking for general assistance. I can explain when you arrive (request 3).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0857",
+      "raw": "Can somebody help with a home project? (request 3).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0858",
+      "raw": "Need a reliable person for a small task. Details later (request 3).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0859",
+      "raw": "I have something that needs fixing or sorting out. Not sure what service this is (request 3).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0860",
+      "raw": "Need help with an issue at home. I can explain when you arrive (request 3).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0861",
+      "raw": "Need some help around the house (request 4).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0862",
+      "raw": "Can someone come by and help me out? Details later (request 4).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0863",
+      "raw": "I have a few things that need doing. Not sure what service this is (request 4).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0864",
+      "raw": "Need someone ASAP. I can explain when you arrive (request 4).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0865",
+      "raw": "Looking for help this weekend (request 4).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0866",
+      "raw": "Can anyone handle a small job for me? Details later (request 4).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0867",
+      "raw": "Need a person for about an hour. Not sure what service this is (request 4).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0868",
+      "raw": "Something at home needs attention. I can explain when you arrive (request 4).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0869",
+      "raw": "I need help with a thing in my apartment (request 4).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0870",
+      "raw": "Small job, should not take long. Details later (request 4).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0871",
+      "raw": "Need somebody local to help tomorrow. Not sure what service this is (request 4).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0872",
+      "raw": "Looking for someone handy. I can explain when you arrive (request 4).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0873",
+      "raw": "Can someone take care of this for me? (request 4).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0874",
+      "raw": "I have a quick task. Details later (request 4).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0875",
+      "raw": "Need help at my place. Not sure what service this is (request 4).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0876",
+      "raw": "Looking for general assistance. I can explain when you arrive (request 4).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0877",
+      "raw": "Can somebody help with a home project? (request 4).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0878",
+      "raw": "Need a reliable person for a small task. Details later (request 4).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0879",
+      "raw": "I have something that needs fixing or sorting out. Not sure what service this is (request 4).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0880",
+      "raw": "Need help with an issue at home. I can explain when you arrive (request 4).",
+      "expectedCategory": null,
+      "group": "vague"
+    },
+    {
+      "id": "blind2_0881",
+      "raw": "sink faucet leaking bad need fix",
+      "expectedCategory": "plumbing",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0882",
+      "raw": "bedroom outlet dead pls fix asap",
+      "expectedCategory": "electrical",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0883",
+      "raw": "need lawn mowed n weeds pulled tomorrow",
+      "expectedCategory": "yard",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0884",
+      "raw": "deep clean 2 bed apt pls thx",
+      "expectedCategory": "cleaning",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0885",
+      "raw": "need couch carried upstairs",
+      "expectedCategory": "moving",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0886",
+      "raw": "pickup package frm store n bring here asap",
+      "expectedCategory": "delivery",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0887",
+      "raw": "need ikea desk put together tomorrow",
+      "expectedCategory": "assembly",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0888",
+      "raw": "cabinet hinge loose can u fix thx",
+      "expectedCategory": "handyman",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0889",
+      "raw": "car battery dead need new one",
+      "expectedCategory": "auto",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0890",
+      "raw": "bday party 25 ppl need setup help asap",
+      "expectedCategory": "events",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0891",
+      "raw": "need dog walked around 6pm tomorrow",
+      "expectedCategory": "pet_care",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0892",
+      "raw": "paint bedroom walls 2 coats thx",
+      "expectedCategory": "painting",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0893",
+      "raw": "ceiling water damage need someone to inspect",
+      "expectedCategory": "home_services",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0894",
+      "raw": "sink faucet leaking bad need fix asap",
+      "expectedCategory": "plumbing",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0895",
+      "raw": "bedroom outlet dead pls fix tomorrow",
+      "expectedCategory": "electrical",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0896",
+      "raw": "need lawn mowed n weeds pulled thx",
+      "expectedCategory": "yard",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0897",
+      "raw": "deep clean 2 bed apt pls",
+      "expectedCategory": "cleaning",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0898",
+      "raw": "need couch carried upstairs asap",
+      "expectedCategory": "moving",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0899",
+      "raw": "pickup package frm store n bring here tomorrow",
+      "expectedCategory": "delivery",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0900",
+      "raw": "need ikea desk put together thx",
+      "expectedCategory": "assembly",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0901",
+      "raw": "cabinet hinge loose can u fix",
+      "expectedCategory": "handyman",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0902",
+      "raw": "car battery dead need new one asap",
+      "expectedCategory": "auto",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0903",
+      "raw": "bday party 25 ppl need setup help tomorrow",
+      "expectedCategory": "events",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0904",
+      "raw": "need dog walked around 6pm thx",
+      "expectedCategory": "pet_care",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0905",
+      "raw": "paint bedroom walls 2 coats",
+      "expectedCategory": "painting",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0906",
+      "raw": "ceiling water damage need someone to inspect asap",
+      "expectedCategory": "home_services",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0907",
+      "raw": "sink faucet leaking bad need fix tomorrow",
+      "expectedCategory": "plumbing",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0908",
+      "raw": "bedroom outlet dead pls fix thx",
+      "expectedCategory": "electrical",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0909",
+      "raw": "need lawn mowed n weeds pulled",
+      "expectedCategory": "yard",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0910",
+      "raw": "deep clean 2 bed apt pls asap",
+      "expectedCategory": "cleaning",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0911",
+      "raw": "need couch carried upstairs tomorrow",
+      "expectedCategory": "moving",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0912",
+      "raw": "pickup package frm store n bring here thx",
+      "expectedCategory": "delivery",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0913",
+      "raw": "need ikea desk put together",
+      "expectedCategory": "assembly",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0914",
+      "raw": "cabinet hinge loose can u fix asap",
+      "expectedCategory": "handyman",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0915",
+      "raw": "car battery dead need new one tomorrow",
+      "expectedCategory": "auto",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0916",
+      "raw": "bday party 25 ppl need setup help thx",
+      "expectedCategory": "events",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0917",
+      "raw": "need dog walked around 6pm",
+      "expectedCategory": "pet_care",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0918",
+      "raw": "paint bedroom walls 2 coats asap",
+      "expectedCategory": "painting",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0919",
+      "raw": "ceiling water damage need someone to inspect tomorrow",
+      "expectedCategory": "home_services",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0920",
+      "raw": "sink faucet leaking bad need fix thx",
+      "expectedCategory": "plumbing",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0921",
+      "raw": "bedroom outlet dead pls fix",
+      "expectedCategory": "electrical",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0922",
+      "raw": "need lawn mowed n weeds pulled asap",
+      "expectedCategory": "yard",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0923",
+      "raw": "deep clean 2 bed apt pls tomorrow",
+      "expectedCategory": "cleaning",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0924",
+      "raw": "need couch carried upstairs thx",
+      "expectedCategory": "moving",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0925",
+      "raw": "pickup package frm store n bring here",
+      "expectedCategory": "delivery",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0926",
+      "raw": "need ikea desk put together asap",
+      "expectedCategory": "assembly",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0927",
+      "raw": "cabinet hinge loose can u fix tomorrow",
+      "expectedCategory": "handyman",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0928",
+      "raw": "car battery dead need new one thx",
+      "expectedCategory": "auto",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0929",
+      "raw": "bday party 25 ppl need setup help",
+      "expectedCategory": "events",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0930",
+      "raw": "need dog walked around 6pm asap",
+      "expectedCategory": "pet_care",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0931",
+      "raw": "paint bedroom walls 2 coats tomorrow",
+      "expectedCategory": "painting",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0932",
+      "raw": "ceiling water damage need someone to inspect thx",
+      "expectedCategory": "home_services",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0933",
+      "raw": "sink faucet leaking bad need fix (request 2).",
+      "expectedCategory": "plumbing",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0934",
+      "raw": "bedroom outlet dead pls fix asap (request 2).",
+      "expectedCategory": "electrical",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0935",
+      "raw": "need lawn mowed n weeds pulled tomorrow (request 2).",
+      "expectedCategory": "yard",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0936",
+      "raw": "deep clean 2 bed apt pls thx (request 2).",
+      "expectedCategory": "cleaning",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0937",
+      "raw": "need couch carried upstairs (request 2).",
+      "expectedCategory": "moving",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0938",
+      "raw": "pickup package frm store n bring here asap (request 2).",
+      "expectedCategory": "delivery",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0939",
+      "raw": "need ikea desk put together tomorrow (request 2).",
+      "expectedCategory": "assembly",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0940",
+      "raw": "cabinet hinge loose can u fix thx (request 2).",
+      "expectedCategory": "handyman",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0941",
+      "raw": "car battery dead need new one (request 2).",
+      "expectedCategory": "auto",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0942",
+      "raw": "bday party 25 ppl need setup help asap (request 2).",
+      "expectedCategory": "events",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0943",
+      "raw": "need dog walked around 6pm tomorrow (request 2).",
+      "expectedCategory": "pet_care",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0944",
+      "raw": "paint bedroom walls 2 coats thx (request 2).",
+      "expectedCategory": "painting",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0945",
+      "raw": "ceiling water damage need someone to inspect (request 2).",
+      "expectedCategory": "home_services",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0946",
+      "raw": "sink faucet leaking bad need fix asap (request 2).",
+      "expectedCategory": "plumbing",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0947",
+      "raw": "bedroom outlet dead pls fix tomorrow (request 2).",
+      "expectedCategory": "electrical",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0948",
+      "raw": "need lawn mowed n weeds pulled thx (request 2).",
+      "expectedCategory": "yard",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0949",
+      "raw": "deep clean 2 bed apt pls (request 2).",
+      "expectedCategory": "cleaning",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0950",
+      "raw": "need couch carried upstairs asap (request 2).",
+      "expectedCategory": "moving",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0951",
+      "raw": "pickup package frm store n bring here tomorrow (request 2).",
+      "expectedCategory": "delivery",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0952",
+      "raw": "need ikea desk put together thx (request 2).",
+      "expectedCategory": "assembly",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0953",
+      "raw": "cabinet hinge loose can u fix (request 2).",
+      "expectedCategory": "handyman",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0954",
+      "raw": "car battery dead need new one asap (request 2).",
+      "expectedCategory": "auto",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0955",
+      "raw": "bday party 25 ppl need setup help tomorrow (request 2).",
+      "expectedCategory": "events",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0956",
+      "raw": "need dog walked around 6pm thx (request 2).",
+      "expectedCategory": "pet_care",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0957",
+      "raw": "paint bedroom walls 2 coats (request 2).",
+      "expectedCategory": "painting",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0958",
+      "raw": "ceiling water damage need someone to inspect asap (request 2).",
+      "expectedCategory": "home_services",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0959",
+      "raw": "sink faucet leaking bad need fix tomorrow (request 2).",
+      "expectedCategory": "plumbing",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0960",
+      "raw": "bedroom outlet dead pls fix thx (request 2).",
+      "expectedCategory": "electrical",
+      "group": "noisy_short"
+    },
+    {
+      "id": "blind2_0961",
+      "raw": "Clean the ceiling fan blades; the fan works fine.",
+      "expectedCategory": "cleaning",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0962",
+      "raw": "Patch the wall beside the sink; no plumbing work. That is all.",
+      "expectedCategory": "handyman",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0963",
+      "raw": "Paint around the electrical panel without touching it.",
+      "expectedCategory": "painting",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0964",
+      "raw": "Clear leaves around the outdoor faucet; do not repair the faucet. That is all.",
+      "expectedCategory": "yard",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0965",
+      "raw": "Clean the car interior; no auto repair needed.",
+      "expectedCategory": "cleaning",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0966",
+      "raw": "Deliver a boxed ceiling fan from the store. That is all.",
+      "expectedCategory": "delivery",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0967",
+      "raw": "Carry the assembled shelf upstairs.",
+      "expectedCategory": "moving",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0968",
+      "raw": "Assemble the cabinet; do not mount it. That is all.",
+      "expectedCategory": "assembly",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0969",
+      "raw": "Feed the dog and wash its bowl.",
+      "expectedCategory": "pet_care",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0970",
+      "raw": "Wash the dog bowls and mop the kitchen. That is all.",
+      "expectedCategory": "cleaning",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0971",
+      "raw": "Inspect water damage near the toilet; the toilet works.",
+      "expectedCategory": "home_services",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0972",
+      "raw": "Repair the vanity cabinet under the sink. That is all.",
+      "expectedCategory": "handyman",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0973",
+      "raw": "Replace the outlet near the bookshelf.",
+      "expectedCategory": "electrical",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0974",
+      "raw": "Repair the bookshelf beside the outlet. That is all.",
+      "expectedCategory": "handyman",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0975",
+      "raw": "Paint the wall behind the couch.",
+      "expectedCategory": "painting",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0976",
+      "raw": "Move the couch away from the wall. That is all.",
+      "expectedCategory": "moving",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0977",
+      "raw": "Deliver paint cans from the hardware store.",
+      "expectedCategory": "delivery",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0978",
+      "raw": "Use the delivered paint to repaint the room. That is all.",
+      "expectedCategory": "painting",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0979",
+      "raw": "Replace the car battery.",
+      "expectedCategory": "auto",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0980",
+      "raw": "Deliver a car battery from the shop. That is all.",
+      "expectedCategory": "delivery",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0981",
+      "raw": "Clean the ceiling fan blades; the fan works fine (request 2).",
+      "expectedCategory": "cleaning",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0982",
+      "raw": "Patch the wall beside the sink; no plumbing work. That is all (request 2).",
+      "expectedCategory": "handyman",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0983",
+      "raw": "Paint around the electrical panel without touching it (request 2).",
+      "expectedCategory": "painting",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0984",
+      "raw": "Clear leaves around the outdoor faucet; do not repair the faucet. That is all (request 2).",
+      "expectedCategory": "yard",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0985",
+      "raw": "Clean the car interior; no auto repair needed (request 2).",
+      "expectedCategory": "cleaning",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0986",
+      "raw": "Deliver a boxed ceiling fan from the store. That is all (request 2).",
+      "expectedCategory": "delivery",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0987",
+      "raw": "Carry the assembled shelf upstairs (request 2).",
+      "expectedCategory": "moving",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0988",
+      "raw": "Assemble the cabinet; do not mount it. That is all (request 2).",
+      "expectedCategory": "assembly",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0989",
+      "raw": "Feed the dog and wash its bowl (request 2).",
+      "expectedCategory": "pet_care",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0990",
+      "raw": "Wash the dog bowls and mop the kitchen. That is all (request 2).",
+      "expectedCategory": "cleaning",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0991",
+      "raw": "Inspect water damage near the toilet; the toilet works (request 2).",
+      "expectedCategory": "home_services",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0992",
+      "raw": "Repair the vanity cabinet under the sink. That is all (request 2).",
+      "expectedCategory": "handyman",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0993",
+      "raw": "Replace the outlet near the bookshelf (request 2).",
+      "expectedCategory": "electrical",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0994",
+      "raw": "Repair the bookshelf beside the outlet. That is all (request 2).",
+      "expectedCategory": "handyman",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0995",
+      "raw": "Paint the wall behind the couch (request 2).",
+      "expectedCategory": "painting",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0996",
+      "raw": "Move the couch away from the wall. That is all (request 2).",
+      "expectedCategory": "moving",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0997",
+      "raw": "Deliver paint cans from the hardware store (request 2).",
+      "expectedCategory": "delivery",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0998",
+      "raw": "Use the delivered paint to repaint the room. That is all (request 2).",
+      "expectedCategory": "painting",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_0999",
+      "raw": "Replace the car battery (request 2).",
+      "expectedCategory": "auto",
+      "group": "override_traps"
+    },
+    {
+      "id": "blind2_1000",
+      "raw": "Deliver a car battery from the shop. That is all (request 2).",
+      "expectedCategory": "delivery",
+      "group": "override_traps"
+    }
+  ]
+}

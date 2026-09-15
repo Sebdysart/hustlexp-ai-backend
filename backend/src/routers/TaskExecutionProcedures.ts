@@ -136,7 +136,7 @@ getProof: protectedProcedure
         })) : [],
       };
     }),
-submitProof: hustlerProcedure
+submitProof: protectedProcedure
     .input(z.object({
       taskId: z.string().uuid(),
       description: z.string().trim().max(2000).optional(),

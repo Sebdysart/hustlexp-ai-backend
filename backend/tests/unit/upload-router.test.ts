@@ -33,6 +33,15 @@ vi.mock('../../src/logger', () => ({
 
 vi.mock('../../src/config', () => ({
   config: {
+    backblaze: {
+      b2: {
+        endpoint: '',
+        region: '',
+        keyId: '',
+        applicationKey: '',
+        bucketName: 'test-bucket',
+      },
+    },
     cloudflare: {
       r2: {
         accountId: '',
@@ -89,7 +98,7 @@ function mockParticipantCheck(userId = 'test-uid') {
 
 function insertedQuarantineKey(): string {
   const call = mockDb.query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO media_upload_receipts'));
-  return String(call?.[1]?.[4] ?? '');
+  return String(call?.[1]?.[5] ?? '');
 }
 
 describe('upload.getPresignedUrl', () => {
@@ -284,5 +293,15 @@ describe('upload.getPresignedUrl', () => {
         fileSize: 1024,
       })
     ).rejects.toThrow('Task not found');
+  });
+});
+
+describe('upload.listTaskDraftPhotos', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('remains unavailable to unauthenticated callers', async () => {
+    const unauthenticated = uploadRouter.createCaller({ user: null, firebaseUid: null } as any);
+    await expect(unauthenticated.listTaskDraftPhotos({ taskDraftId: TEST_UUID })).rejects.toThrow();
+    expect(mockDb.query).not.toHaveBeenCalled();
   });
 });

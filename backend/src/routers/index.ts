@@ -101,6 +101,12 @@ import { quotePaymentRouter } from './quotePayment.js';
 import { testPayoutRouter } from './testPayout.js';
 
 import { businessClaimRouter } from './businessClaim.js';
+import { supportRouter } from './support.js';
+
+import { quoteDecisionRouter } from './quoteDecision.js';
+import { businessAssessmentRouter } from './businessAssessment.js';
+import { businessProposalRouter } from './businessProposal.js';
+import { completionVerificationRouter } from './completionVerification.js';
 
 
 // ============================================================================
@@ -184,6 +190,12 @@ export const appRouter = router({
   testPayout: testPayoutRouter,
   
   businessClaim: businessClaimRouter,
+  support: supportRouter,
+
+  quoteDecision: quoteDecisionRouter,
+  businessAssessment: businessAssessmentRouter,
+  businessProposal: businessProposalRouter,
+  completionVerification: completionVerificationRouter,
   
   // ── Web Platform Domain ─────────────────────────────────────────────────
   // Replaces Supabase edge functions for the website and ops cockpit.

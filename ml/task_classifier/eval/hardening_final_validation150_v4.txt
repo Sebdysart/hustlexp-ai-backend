@@ -1,0 +1,147 @@
+Validation 150 cases: 150
+Category mismatches: 0
+Expected-answer mismatches: 28
+Cases passed: 125
+Cases failed: 25
+
+Validation failures: 28
+
+1. Input: "Small lawn needs mowing; leave the clippings here."
+Mismatch type: expected answer (debris)
+Expected: false
+Actual: undefined
+
+2. Input: "Large backyard needs leaf cleanup and haul-away."
+Mismatch type: expected answer (debris_type)
+Expected: ["leaves"]
+Actual: undefined
+
+3. Input: "Tiny lawn needs leaves bagged and taken away."
+Mismatch type: expected answer (debris)
+Expected: true
+Actual: undefined
+
+4. Input: "Medium lawn needs mowing; bring your own equipment."
+Mismatch type: expected answer (equipment_provided)
+Expected: false
+Actual: undefined
+
+5. Input: "Deep clean two rooms in my apartment; supplies are here."
+Mismatch type: expected answer (cleaning_type)
+Expected: "deep"
+Actual: undefined
+
+6. Input: "Deep clean two rooms in my apartment; supplies are here."
+Mismatch type: expected answer (supplies_provided)
+Expected: true
+Actual: undefined
+
+7. Input: "Standard cleaning for four rooms in a house, no stairs."
+Mismatch type: expected answer (cleaning_type)
+Expected: "standard"
+Actual: undefined
+
+8. Input: "Need a move-out clean for the apartment."
+Mismatch type: expected answer (cleaning_type)
+Expected: "move_out"
+Actual: undefined
+
+9. Input: "Clean the kitchen and bathroom; I have the products."
+Mismatch type: expected answer (supplies_provided)
+Expected: true
+Actual: undefined
+
+10. Input: "Clean five rooms and bring all cleaning supplies."
+Mismatch type: expected answer (supplies_provided)
+Expected: false
+Actual: undefined
+
+11. Input: "Regular condo cleaning; there are no stairs."
+Mismatch type: expected answer (cleaning_type)
+Expected: "standard"
+Actual: undefined
+
+12. Input: "Deep clean two rooms on the upper floor."
+Mismatch type: expected answer (cleaning_type)
+Expected: "deep"
+Actual: undefined
+
+13. Input: "Clean the apartment; I don't have any supplies."
+Mismatch type: expected answer (supplies_provided)
+Expected: false
+Actual: undefined
+
+14. Input: "Move five chairs; no van required."
+Mismatch type: expected answer (vehicle_required)
+Expected: false
+Actual: true
+
+15. Input: "Assemble two bookshelves and mount them on drywall."
+Mismatch type: expected answer (assembly_count)
+Expected: 2
+Actual: undefined
+
+16. Input: "Assemble two bookshelves and mount them on drywall."
+Mismatch type: expected answer (wall_mounting)
+Expected: true
+Actual: undefined
+
+17. Input: "Mount one TV bracket on concrete."
+Mismatch type: expected answer (assembly_count)
+Expected: 1
+Actual: undefined
+
+18. Input: "Mount one TV bracket on concrete."
+Mismatch type: expected answer (assembly_type)
+Expected: "tv bracket"
+Actual: undefined
+
+19. Input: "Mount two racks on drywall and assemble one bench."
+Mismatch type: expected answer (wall_mounting)
+Expected: true
+Actual: undefined
+
+20. Input: "I need a small cabinet put together."
+Mismatch type: expected answer (assembly_type)
+Expected: "cabinet"
+Actual: undefined
+
+21. Input: "Deliver the artwork carefully; it's fragile."
+Mismatch type: expected answer (delivery_item)
+Expected: "artwork"
+Actual: "artwork carefully it's"
+
+22. Input: "Paint the nursery walls; you'll need to supply the paint."
+Mismatch type: expected answer (paint_provided)
+Expected: false
+Actual: undefined
+
+23. Input: "The pipe under the sink is leaking; I can reach the shutoff valve."
+Mismatch type: expected answer (water_shutoff_available)
+Expected: true
+Actual: undefined
+
+24. Input: "Need a new shower installed; provider must bring the parts."
+Mismatch type: expected answer (parts_provided)
+Expected: false
+Actual: undefined
+
+25. Input: "Replace a leaking pipe; the replacement pipe is on site."
+Mismatch type: expected answer (parts_provided)
+Expected: true
+Actual: undefined
+
+26. Input: "Install a new outlet; this wall already has wiring."
+Mismatch type: expected answer (existing_wiring)
+Expected: true
+Actual: undefined
+
+27. Input: "Replace a breaker inside the panel."
+Mismatch type: expected answer (panel_involved)
+Expected: true
+Actual: undefined
+
+28. Input: "The outlet has no power."
+Mismatch type: expected answer (electrical_issue)
+Expected: "not_working"
+Actual: undefined

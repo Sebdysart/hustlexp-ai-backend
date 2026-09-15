@@ -12,6 +12,7 @@ import {
 } from './ProofPolicy.js';
 import type { SubmitProofParams } from './ProofTypes.js';
 import { consumeFinalizedMediaReceipt } from './MediaUploadReceiptService.js';
+import { assertVerifiedProvider } from './BusinessWorkspacePolicy.js';
 
 interface ProofTaskRow {
   worker_id: string | null;
@@ -145,6 +146,34 @@ async function assertSubmitter(
 
   // Business-fulfilled task
   if (task.business_fulfiller_organization_id) {
+    const organizationResult = await query<{
+      status: string;
+      verification_status: string;
+      provider_enabled: boolean;
+    }>(
+      `SELECT status, verification_status, provider_enabled
+       FROM business_organizations
+       WHERE id = $1
+       FOR SHARE`,
+      [task.business_fulfiller_organization_id],
+    );
+    const organization = organizationResult.rows[0];
+    if (!organization) {
+      throw new TRPCError({ code: 'FORBIDDEN', message: 'The fulfilling Business is unavailable.' });
+    }
+    try {
+      assertVerifiedProvider({
+        status: organization.status,
+        verificationStatus: organization.verification_status,
+        providerEnabled: organization.provider_enabled,
+      });
+    } catch (error) {
+      throw new TRPCError({
+        code: 'FORBIDDEN',
+        message: error instanceof Error ? error.message : 'The fulfilling Business is not eligible for proof submission.',
+      });
+    }
+
     const result = await query<{ allowed: boolean }>(
       `SELECT EXISTS (
          SELECT 1

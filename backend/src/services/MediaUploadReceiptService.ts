@@ -39,6 +39,9 @@ export async function consumeFinalizedMediaReceipt(
     consumerId: string;
   },
 ): Promise<ConsumedPrivateMedia> {
+  if (params.purpose === 'TASK_DRAFT_PHOTO') {
+    throw new TRPCError({ code: 'BAD_REQUEST', message: 'Draft photos use draft attachment consumption.' });
+  }
   const result = await query<{
     canonical_key: string;
     canonical_content_type: SanitizedImageContentType;
@@ -91,6 +94,9 @@ export async function consumeFinalizedMediaReceiptById(
     consumerId: string;
   },
 ): Promise<ConsumedPrivateMedia> {
+  if (params.purpose === 'TASK_DRAFT_PHOTO') {
+    throw new TRPCError({ code: 'BAD_REQUEST', message: 'Draft photos use draft attachment consumption.' });
+  }
   const result = await query<{
     canonical_key: string;
     canonical_content_type: SanitizedImageContentType;

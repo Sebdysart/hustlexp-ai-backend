@@ -14,6 +14,8 @@
 import { db, isInvariantViolation, getErrorMessage } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { GDPRService } from './GDPRService.js';
+import { collectBehaviorEvent, trackProductEvent, recordAnalyticsHealth, observeAnalyticsOutbox } from './analytics/store.js';
+import { getProductAnalytics } from './analytics/metrics.js';
 
 // ============================================================================
 // TYPES
@@ -91,6 +93,12 @@ export interface CohortAnalysis {
 // ============================================================================
 
 export const AnalyticsService = {
+  // Product analytics V1 uses a validated contract and the same append-only store.
+  track: trackProductEvent,
+  collect: collectBehaviorEvent,
+  recordHealth: recordAnalyticsHealth,
+  productDashboard: getProductAnalytics,
+  observeOutbox: observeAnalyticsOutbox,
   // --------------------------------------------------------------------------
   // EVENT TRACKING
   // --------------------------------------------------------------------------

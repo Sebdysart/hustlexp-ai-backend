@@ -1,0 +1,210 @@
+{
+  "dataset": "C:\\Users\\Tester\\Documents\\Codex\\2026-09-07\\hello\\work\\hustlexp-backend\\ml\\task_classifier\\eval\\blind_holdout_v2_1000.curated.json",
+  "configuration": {},
+  "results": [
+    {
+      "policy": "production-0.50",
+      "metrics": {
+        "total": 1000,
+        "concrete": 914,
+        "vague": 86,
+        "correctEmitted": 653,
+        "incorrectEmitted": 70,
+        "unnecessaryAbstentions": 191,
+        "correctAbstentions": 81,
+        "falseConcreteOnVague": 5,
+        "emittedPrecision": 0.896978021978022,
+        "concreteAccuracy": 0.7144420131291028,
+        "concreteCoverage": 0.7910284463894968,
+        "overrideCausedErrors": 28
+      }
+    },
+    {
+      "policy": "without-bring-override",
+      "metrics": {
+        "total": 1000,
+        "concrete": 914,
+        "vague": 86,
+        "correctEmitted": 659,
+        "incorrectEmitted": 60,
+        "unnecessaryAbstentions": 195,
+        "correctAbstentions": 81,
+        "falseConcreteOnVague": 5,
+        "emittedPrecision": 0.9102209944751382,
+        "concreteAccuracy": 0.7210065645514223,
+        "concreteCoverage": 0.7866520787746171,
+        "overrideCausedErrors": 18
+      }
+    },
+    {
+      "policy": "without-pet-cleaning",
+      "metrics": {
+        "total": 1000,
+        "concrete": 914,
+        "vague": 86,
+        "correctEmitted": 663,
+        "incorrectEmitted": 60,
+        "unnecessaryAbstentions": 191,
+        "correctAbstentions": 81,
+        "falseConcreteOnVague": 5,
+        "emittedPrecision": 0.9107142857142857,
+        "concreteAccuracy": 0.725382932166302,
+        "concreteCoverage": 0.7910284463894968,
+        "overrideCausedErrors": 18
+      }
+    },
+    {
+      "policy": "without-bring-or-pet-cleaning",
+      "metrics": {
+        "total": 1000,
+        "concrete": 914,
+        "vague": 86,
+        "correctEmitted": 669,
+        "incorrectEmitted": 50,
+        "unnecessaryAbstentions": 195,
+        "correctAbstentions": 81,
+        "falseConcreteOnVague": 5,
+        "emittedPrecision": 0.9240331491712708,
+        "concreteAccuracy": 0.7319474835886215,
+        "concreteCoverage": 0.7866520787746171,
+        "overrideCausedErrors": 8
+      }
+    },
+    {
+      "policy": "model-only-0.50",
+      "metrics": {
+        "total": 1000,
+        "concrete": 914,
+        "vague": 86,
+        "correctEmitted": 597,
+        "incorrectEmitted": 43,
+        "unnecessaryAbstentions": 274,
+        "correctAbstentions": 81,
+        "falseConcreteOnVague": 5,
+        "emittedPrecision": 0.9255813953488372,
+        "concreteAccuracy": 0.6531728665207878,
+        "concreteCoverage": 0.700218818380744,
+        "overrideCausedErrors": 0
+      }
+    },
+    {
+      "policy": "production-0.45",
+      "metrics": {
+        "total": 1000,
+        "concrete": 914,
+        "vague": 86,
+        "correctEmitted": 662,
+        "incorrectEmitted": 74,
+        "unnecessaryAbstentions": 178,
+        "correctAbstentions": 80,
+        "falseConcreteOnVague": 6,
+        "emittedPrecision": 0.8921832884097035,
+        "concreteAccuracy": 0.7242888402625821,
+        "concreteCoverage": 0.8052516411378556,
+        "overrideCausedErrors": 28
+      }
+    },
+    {
+      "policy": "production-0.55",
+      "metrics": {
+        "total": 1000,
+        "concrete": 914,
+        "vague": 86,
+        "correctEmitted": 646,
+        "incorrectEmitted": 67,
+        "unnecessaryAbstentions": 201,
+        "correctAbstentions": 81,
+        "falseConcreteOnVague": 5,
+        "emittedPrecision": 0.8997214484679665,
+        "concreteAccuracy": 0.7067833698030634,
+        "concreteCoverage": 0.7800875273522976,
+        "overrideCausedErrors": 28
+      }
+    },
+    {
+      "policy": "production-0.60",
+      "metrics": {
+        "total": 1000,
+        "concrete": 914,
+        "vague": 86,
+        "correctEmitted": 640,
+        "incorrectEmitted": 64,
+        "unnecessaryAbstentions": 210,
+        "correctAbstentions": 81,
+        "falseConcreteOnVague": 5,
+        "emittedPrecision": 0.9026798307475318,
+        "concreteAccuracy": 0.700218818380744,
+        "concreteCoverage": 0.7702407002188184,
+        "overrideCausedErrors": 28
+      }
+    },
+    {
+      "policy": "production-0.65",
+      "metrics": {
+        "total": 1000,
+        "concrete": 914,
+        "vague": 86,
+        "correctEmitted": 629,
+        "incorrectEmitted": 64,
+        "unnecessaryAbstentions": 221,
+        "correctAbstentions": 81,
+        "falseConcreteOnVague": 5,
+        "emittedPrecision": 0.9011461318051576,
+        "concreteAccuracy": 0.688183807439825,
+        "concreteCoverage": 0.7582056892778993,
+        "overrideCausedErrors": 28
+      }
+    },
+    {
+      "policy": "production-0.70",
+      "metrics": {
+        "total": 1000,
+        "concrete": 914,
+        "vague": 86,
+        "correctEmitted": 618,
+        "incorrectEmitted": 60,
+        "unnecessaryAbstentions": 236,
+        "correctAbstentions": 81,
+        "falseConcreteOnVague": 5,
+        "emittedPrecision": 0.9048316251830161,
+        "concreteAccuracy": 0.6761487964989059,
+        "concreteCoverage": 0.7417943107221007,
+        "overrideCausedErrors": 28
+      }
+    },
+    {
+      "policy": "production-0.75",
+      "metrics": {
+        "total": 1000,
+        "concrete": 914,
+        "vague": 86,
+        "correctEmitted": 611,
+        "incorrectEmitted": 56,
+        "unnecessaryAbstentions": 247,
+        "correctAbstentions": 81,
+        "falseConcreteOnVague": 5,
+        "emittedPrecision": 0.9092261904761905,
+        "concreteAccuracy": 0.6684901531728665,
+        "concreteCoverage": 0.7297592997811816,
+        "overrideCausedErrors": 31
+      }
+    },
+    {
+      "policy": "production-0.80",
+      "metrics": {
+        "total": 1000,
+        "concrete": 914,
+        "vague": 86,
+        "correctEmitted": 604,
+        "incorrectEmitted": 55,
+        "unnecessaryAbstentions": 255,
+        "correctAbstentions": 81,
+        "falseConcreteOnVague": 5,
+        "emittedPrecision": 0.9096385542168675,
+        "concreteAccuracy": 0.6608315098468271,
+        "concreteCoverage": 0.7210065645514223,
+        "overrideCausedErrors": 34
+      }
+    }
+  ]
+}
