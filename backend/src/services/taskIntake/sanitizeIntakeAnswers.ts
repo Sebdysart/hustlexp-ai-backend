@@ -15,6 +15,7 @@ export function sanitizeIntakeAnswers(
   }
   if (sanitized.stairs !== true) delete sanitized.stair_flights;
   if (sanitized.large_items !== true) delete sanitized.large_item_details;
+  if (sanitized.prep_needed !== true) delete sanitized.prep_details;
   delete sanitized.intake_profile;
   return sanitized;
 }

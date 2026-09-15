@@ -2086,7 +2086,7 @@ export const webOpsRouter = router({
       const thread = existing.rows[0];
       const messageId = result.rows[0].message_id as string;
       const actionUrl = `/support/${input.id}`;
-      await NotificationService.createInTransaction(db.query.bind(db), { userId: thread.opened_by_user_id, type: 'SUPPORT_OPS_REPLY', title: 'HustleXP support replied', message: 'HustleXP replied to your support request.', entityType: 'support_thread', entityId: input.id, actionUrl, dedupeKey: `support-ops-reply:${messageId}` });
+      await NotificationService.createInTransaction(db.query.bind(db), { userId: thread.opened_by_user_id as string, type: 'SUPPORT_OPS_REPLY', title: 'HustleXP support replied', message: 'HustleXP replied to your support request.', entityType: 'support_thread', entityId: input.id as string, actionUrl, dedupeKey: `support-ops-reply:${messageId}` });
       return { ok: true as const };
     }),
 
