@@ -8,6 +8,7 @@ import {
 } from './QuoteTaskParamsMapper.js';
 import { StaxQuotePaymentProvider } from './payment/StaxQuotePaymentProvider.js';
 import { NotificationService } from './NotificationService.js';
+import { AnalyticsService } from './AnalyticsService.js';
 
 interface FinalizePaidQuoteInput {
   quoteId: string;
@@ -725,6 +726,9 @@ export async function finalizePaidQuote(
       }
     });
 
+    void AnalyticsService.track({ event_name: 'payment_succeeded', deduplication_key: input.quoteVersionId,
+      user_id: context.poster_user_id, task_id: materialized.taskId, quote_id: input.quoteId,
+      business_organization_id: context.business_organization_id || undefined, outcome: 'committed' });
     return {
       success: true,
       data: {

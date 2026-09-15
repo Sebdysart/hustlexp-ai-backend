@@ -20,8 +20,11 @@ import { extractIntakePrefill } from '../../services/taskIntake/extractPrefill.j
 import { buildTaskFacts } from '../../services/taskIntake/buildTaskFacts.js';
 import { resolveIntakeProfile } from '../../services/taskIntake/resolveIntakeProfile.js';
 import { sanitizeIntakeAnswers } from '../../services/taskIntake/sanitizeIntakeAnswers.js';
+import { AnalyticsService } from '../../services/AnalyticsService.js';
+import { optionalCausalitySchema } from '../../services/analytics/contract.js';
 
 const PostTaskSchema = z.object({
+  analytics: optionalCausalitySchema,
   lead: z.object({
     submission_id: z.string().uuid(),
     lead_type: z.enum(['poster', 'hustler', 'business', 'founder']),
@@ -356,11 +359,14 @@ async function handlePostTask({
             record: true,
         },
         ); */
-        return {
-            ok: true,
-            ...result,
-            correlation_id: correlationId,
-        };
+        if (!result.replayed) void AnalyticsService.track({
+          event_name: 'task_draft_created', deduplication_key: result.taskDraftId, user_id: posterUserId,
+          ...input.analytics, correlation_id: input.analytics?.correlation_id || correlationId,
+          task_draft_id: result.taskDraftId, category: input.task.category,
+          intake_profile: typeof input.task.structured.intake_profile === 'string' ? input.task.structured.intake_profile : undefined,
+          outcome: 'committed', properties: { intake_attempt_id: input.analytics?.intake_attempt_id },
+        });
+        return { ok: true, ...result, correlation_id: correlationId };
         } catch (error) {
             console.error('[webPostTask.start] DB/transaction failure:', error);
             throw error;

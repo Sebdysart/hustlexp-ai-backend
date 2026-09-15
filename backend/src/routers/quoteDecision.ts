@@ -3,6 +3,9 @@ import { z } from 'zod';
 import { db } from '../db.js';
 import { NotificationService } from '../services/NotificationService.js';
 import { protectedProcedure, router } from '../trpc.js';
+import { AnalyticsService } from '../services/AnalyticsService.js';
+import { optionalCausalitySchema } from '../services/analytics/contract.js';
+import { randomUUID } from 'node:crypto';
 
 const DraftIdSchema = z.object({
   taskDraftId: z.string().uuid(),
@@ -15,6 +18,7 @@ const QuoteDecisionSchema = z.object({
 
 const AcceptQuoteDecisionSchema =
   QuoteDecisionSchema.extend({
+    analytics: optionalCausalitySchema,
     scheduledServiceDate: z
       .string()
       .regex(
@@ -104,7 +108,12 @@ export const quoteDecisionRouter = router({
   accept: protectedProcedure
     .input(AcceptQuoteDecisionSchema)
     .mutation(async ({ ctx, input }) => {
-      return db.transaction(async (query) => {
+      const correlationId = input.analytics?.correlation_id || randomUUID();
+      const attemptId = input.analytics?.action_attempt_id || randomUUID();
+      void AnalyticsService.track({ event_name: 'quote_approval_requested', ...input.analytics,
+        correlation_id: correlationId, action_attempt_id: attemptId, user_id: ctx.user.id,
+        task_draft_id: input.taskDraftId, quote_id: input.quoteId, outcome: 'requested' });
+      const accepted = await db.transaction(async (query) => {
         const draftResult = await query<{
           id: string;
           quote_id: string | null;
@@ -337,6 +346,10 @@ export const quoteDecisionRouter = router({
           replayed: false,
         };
       });
+      if (!accepted.replayed) void AnalyticsService.track({ event_name: 'quote_approved', ...input.analytics,
+        deduplication_key: input.quoteId, correlation_id: correlationId, action_attempt_id: attemptId,
+        user_id: ctx.user.id, task_draft_id: input.taskDraftId, quote_id: input.quoteId, outcome: 'committed' });
+      return accepted;
     }),
 
   reject: protectedProcedure

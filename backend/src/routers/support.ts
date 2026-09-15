@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { db } from '../db.js';
 import { protectedProcedure, router } from '../trpc.js';
 import { NotificationService } from '../services/NotificationService.js';
+import { AnalyticsService } from '../services/AnalyticsService.js';
 
 const contextType = z.enum(['GENERAL', 'TASK_DRAFT', 'TASK', 'PROPOSAL', 'QUOTE']);
 const SupportContextLookupSchema = z.object({ contextType, taskDraftId: z.string().uuid().optional(), taskId: z.string().uuid().optional(), proposalId: z.string().uuid().optional(), quoteId: z.string().uuid().optional(), businessOrganizationId: z.string().uuid().optional() }).strict();
@@ -21,6 +22,10 @@ export const supportRouter = router({
       if (existingThread) return { ok: true as const, threadId: existingThread.id as string, reused: true as const };
       const result = await db.query(`WITH inserted_thread AS (INSERT INTO support_threads (opened_by_user_id,business_organization_id,status,subject,context_type,task_draft_id,task_id,proposal_id,quote_id,source_route) VALUES ($1,$2,'OPEN',$3,$4,$5,$6,$7,$8,$9) RETURNING id) INSERT INTO support_messages (thread_id,sender_user_id,sender_kind,body) SELECT id,$1,'USER',$10 FROM inserted_thread RETURNING thread_id`, [ctx.user.id, input.businessOrganizationId ?? null, input.subject, input.contextType, input.taskDraftId ?? null, input.taskId ?? null, input.proposalId ?? null, input.quoteId ?? null, input.sourceRoute ?? null, input.message]);
       const threadId = result.rows[0].thread_id as string;
+      void AnalyticsService.track({ event_name: 'support_thread_created', deduplication_key: threadId,
+        user_id: ctx.user.id, task_draft_id: input.taskDraftId, task_id: input.taskId, quote_id: input.quoteId,
+        proposal_id: input.proposalId, business_organization_id: input.businessOrganizationId,
+        outcome: 'committed', properties: { thread_id: threadId } });
       await NotificationService.createForOperationsInTransaction(db.query.bind(db), { type: 'SUPPORT_REQUEST_CREATED', title: 'New support request', message: input.subject, entityType: 'support_thread', entityId: threadId, actionUrl: `/ops/support/${threadId}`, dedupeKey: `support-created:${threadId}` });
       return { ok: true as const, threadId, reused: false as const };
     }),
@@ -95,7 +100,7 @@ export const supportRouter = router({
   reply: protectedProcedure
     .input(z.object({ threadId: z.string().uuid(), message: z.string().trim().min(1).max(4000) }).strict())
     .mutation(async ({ ctx, input }) => {
-      const result = await db.query(`SELECT opened_by_user_id,business_organization_id,status FROM support_threads WHERE id=$1 LIMIT 1`, [input.threadId]);
+      const result = await db.query(`SELECT opened_by_user_id,business_organization_id,status,task_draft_id,task_id,quote_id,proposal_id FROM support_threads WHERE id=$1 LIMIT 1`, [input.threadId]);
       if (!result.rows[0]) throw new TRPCError({ code: 'NOT_FOUND' });
       const thread = result.rows[0];
       if (thread.opened_by_user_id !== ctx.user.id) {
@@ -105,6 +110,11 @@ export const supportRouter = router({
       if (thread.status === 'RESOLVED') throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This support request has already been resolved.' });
       const inserted = await db.query(`WITH inserted_message AS (INSERT INTO support_messages (thread_id,sender_user_id,sender_kind,body) VALUES ($1,$2,'USER',$3) RETURNING id) UPDATE support_threads st SET updated_at=NOW() FROM inserted_message im WHERE st.id=$1 RETURNING im.id AS message_id`, [input.threadId, ctx.user.id, input.message]);
       const messageId = inserted.rows[0].message_id as string;
+      void AnalyticsService.track({ event_name: 'support_reply_sent', deduplication_key: messageId,
+        task_draft_id: thread.task_draft_id ?? undefined, task_id: thread.task_id ?? undefined,
+        quote_id: thread.quote_id ?? undefined, proposal_id: thread.proposal_id ?? undefined,
+        business_organization_id: thread.business_organization_id ?? undefined,
+        user_id: ctx.user.id, outcome: 'committed', properties: { thread_id: input.threadId, message_id: messageId } });
       await NotificationService.createForOperationsInTransaction(db.query.bind(db), { type: 'SUPPORT_USER_REPLY', title: 'New support reply', message: 'A user replied to a support conversation.', entityType: 'support_thread', entityId: input.threadId, actionUrl: `/ops/support/${input.threadId}`, dedupeKey: `support-user-reply:${messageId}` });
       return { ok: true as const };
     }),

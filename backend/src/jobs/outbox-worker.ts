@@ -23,6 +23,7 @@ import { enqueueJob, signJobPayload, type QueueName } from './queues.js';
 import { getClient as getRedisClient } from '../cache/redis.js';
 import { workerLogger } from '../logger.js';
 import { config } from '../config.js';
+import { AnalyticsService } from '../services/AnalyticsService.js';
 const log = workerLogger.child({ worker: 'outbox' });
 
 // Maximum delivery attempts before an outbox event is permanently failed.
@@ -145,6 +146,7 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
     });
 
     for (const event of claimedEvents) {
+      void AnalyticsService.observeOutbox(event);
       try {
         // Sign financial job payloads to prevent Redis injection (Attack 12)
         let jobPayload: Record<string, unknown> = event.payload;
