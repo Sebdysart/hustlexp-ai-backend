@@ -1660,7 +1660,9 @@ export const webOpsRouter = router({
         });
       }
 
-      const validatedRiskLevel = deriveManualTaskRisk(taskText);
+      const validatedRiskLevel = deriveManualTaskRisk(taskText, {
+        category: draft.category,
+      });
       const complianceResult = await ComplianceGuardianService.evaluate({
         description: taskText,
         userId: draft.poster_user_id,

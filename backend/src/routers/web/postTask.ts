@@ -213,7 +213,9 @@ async function handlePostTask({
               category_rules_version: 'category_rules_v1',
             };
 
-            const validatedRiskLevel = deriveManualTaskRisk(taskText);
+            const validatedRiskLevel = deriveManualTaskRisk(taskText, {
+              category,
+            });
             const complianceResult =
               await ComplianceGuardianService.evaluate({
                 description: taskText,
