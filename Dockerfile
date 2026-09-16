@@ -29,6 +29,7 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 COPY . .
+RUN node scripts/cache-task-classifier-model.mjs
 RUN npm run compile
 
 
@@ -47,7 +48,7 @@ COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/Procfile ./Procfile
 COPY --from=builder /app/backend/database/constitutional-schema.sql ./backend/database/constitutional-schema.sql
 COPY --from=builder /app/backend/database/migrations ./backend/database/migrations
-COPY --from=builder /app/backend/models/task-classifier.json ./backend/models/task-classifier.json
+COPY --from=builder /app/backend/models ./backend/models
 
 RUN chown -R hustlexp:nodejs /app
 

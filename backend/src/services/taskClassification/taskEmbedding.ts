@@ -1,5 +1,11 @@
-import { pipeline } from '@huggingface/transformers';
+import path from 'node:path';
+import { env, pipeline } from '@huggingface/transformers';
 import { getTaskClassifierModel } from './modelLoader.js';
+
+const transformerCachePath = path.resolve(process.cwd(), 'backend', 'models', 'transformers-cache');
+env.cacheDir = transformerCachePath;
+env.useFSCache = true;
+if (process.env.NODE_ENV === 'production') env.allowRemoteModels = false;
 type FeatureExtractor = Awaited<ReturnType<typeof pipeline>>;
 let extractorPromise: Promise<FeatureExtractor> | null = null;
 async function getExtractor(): Promise<FeatureExtractor> { extractorPromise ??= getTaskClassifierModel().then((model) => pipeline('feature-extraction', model.runtime_embedding_model)); return extractorPromise; }
