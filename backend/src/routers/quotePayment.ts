@@ -2,23 +2,53 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { db } from '../db.js';
 import { protectedProcedure, router } from '../trpc.js';
-import { paymentCreationErrorCause } from '../services/NewPaymentCreationGuard.js';
+import {
+  newPaymentCreationFailure,
+  paymentCreationErrorCause,
+} from '../services/NewPaymentCreationGuard.js';
 import { finalizePaidQuote } from '../services/QuotePaymentFinalizationService.js';
-import { StripeService } from '../services/StripeService.js';
 import {
   evaluateTaskAgainstRegionPolicy,
   resolveRegionPolicy,
 } from '../services/RegionPolicyService.js';
 import { buildManualTaskPolicyInput } from '../services/ManualTaskPolicy.js';
-import { StaxQuotePaymentProvider } from '../services/payment/StaxQuotePaymentProvider.js';
+import {
+  controlledTestQuotePaymentEnabled,
+  controlledTestQuotePaymentReference,
+} from '../services/ControlledTestQuotePaymentService.js';
+
+async function finalizeControlledTestQuote(input: {
+  quoteId: string;
+  quoteVersionId: string;
+  posterId: string;
+  paymentIntentId: string;
+}) {
+  const result = await finalizePaidQuote({
+    ...input,
+    paymentMode: 'controlled_test',
+  });
+
+  if (!result.success) {
+    throw new TRPCError({
+      code:
+        result.error.code === 'QUOTE_NOT_FOUND'
+          ? 'NOT_FOUND'
+          : result.error.code.includes('MISMATCH')
+            ? 'FORBIDDEN'
+            : 'PRECONDITION_FAILED',
+      message: result.error.message,
+    });
+  }
+
+  return result.data;
+}
 
 export const quotePaymentRouter = router({
-  createPaymentIntent: protectedProcedure
+  completeControlledTestPayment: protectedProcedure
     .input(
       z.object({
         quoteId: z.string().uuid(),
         quoteVersionId: z.string().uuid(),
-        paymentMethodId: z.string().min(1),
       }).strict(),
     )
     .mutation(async ({ ctx, input }) => {
@@ -112,6 +142,61 @@ export const quotePaymentRouter = router({
         });
       } 
 
+      if (
+        !controlledTestQuotePaymentEnabled()
+        || quote.quote_environment !== 'TEST'
+        || quote.quote_is_test !== true
+      ) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Controlled-test quote payment is not authorized.',
+        });
+      }
+
+      const existingPayment = await db.query<{
+        provider: string;
+        provider_payment_id: string;
+        amount_cents: number;
+        platform_fee_cents: number | null;
+        status: string;
+      }>(
+        `
+        SELECT
+          provider,
+          provider_payment_id,
+          amount_cents,
+          platform_fee_cents,
+          status
+        FROM quote_payments
+        WHERE quote_id = $1
+          AND quote_version_id = $2
+        LIMIT 1
+        `,
+        [input.quoteId, input.quoteVersionId],
+      );
+
+      if (quote.quote_status === 'paid') {
+        const payment = existingPayment.rows[0];
+
+        if (
+          !payment
+          || payment.provider !== 'local_test'
+          || payment.status !== 'SUCCEEDED'
+        ) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'This quote payment cannot be replayed.',
+          });
+        }
+
+        return finalizeControlledTestQuote({
+          quoteId: input.quoteId,
+          quoteVersionId: input.quoteVersionId,
+          posterId: ctx.user.id,
+          paymentIntentId: payment.provider_payment_id,
+        });
+      }
+
       if (quote.expires_at <= new Date()) {
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
@@ -162,6 +247,13 @@ export const quotePaymentRouter = router({
         [input.quoteId, quote.business_organization_id],
       );
       const assessmentCreditCents = assessmentCreditResult.rows[0]?.amount_cents ?? 0;
+
+      if (assessmentCreditCents !== 0) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Controlled-test quote payment does not support assessment credits.',
+        });
+      }
       const remainingChargeCents = totalCents - assessmentCreditCents;
       const marketplaceFeeCents = marginCents;
       if (remainingChargeCents <= 0) throw new TRPCError({ code:'PRECONDITION_FAILED', message:'The remaining quote balance is invalid.' });
@@ -251,67 +343,47 @@ export const quotePaymentRouter = router({
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This quote has an invalid dispatch window.' });
       }
 
-      const existingPayment = await db.query<{
-        provider_payment_id: string;
-        amount_cents: number;
-        status: string;
-      }>(
-        `
-        SELECT
-          provider_payment_id,
-          amount_cents,
-          status
-        FROM quote_payments
-        WHERE quote_id = $1
-          AND quote_version_id = $2
-        LIMIT 1
-        `,
-        [input.quoteId, input.quoteVersionId],
-      );
-
       if (existingPayment.rows[0]) {
         const payment = existingPayment.rows[0];
 
-        if (payment.status === 'PENDING') {
-          return {
-            quoteId: input.quoteId,
-            quoteVersionId: input.quoteVersionId,
-            paymentIntentId: payment.provider_payment_id,
-            clientSecret: null,
-            amountCents: payment.amount_cents,
-            replayed: true,
-          };
-        }
-
-        if (payment.status === 'SUCCEEDED') {
+        if (
+          payment.provider !== 'local_test'
+          || payment.amount_cents !== remainingChargeCents
+          || payment.platform_fee_cents !== marketplaceFeeCents
+          || !['PENDING', 'SUCCEEDED'].includes(payment.status)
+        ) {
           throw new TRPCError({
             code: 'PRECONDITION_FAILED',
-            message: 'This quote has already been paid.',
+            message: 'This quote is already bound to a different payment.',
           });
         }
+
+        return finalizeControlledTestQuote({
+          quoteId: input.quoteId,
+          quoteVersionId: input.quoteVersionId,
+          posterId: ctx.user.id,
+          paymentIntentId: payment.provider_payment_id,
+        });
       }
 
       if (!quote.business_organization_id) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'The selected quote is not associated with a Business.' });
 
-      const payment =
-        await StaxQuotePaymentProvider.charge({
-          quoteId: input.quoteId,
-          quoteVersionId: input.quoteVersionId,
-          posterId: ctx.user.id,
-          paymentMethodId: input.paymentMethodId,
-          amountCents: remainingChargeCents,
-          platformFeeCents: marketplaceFeeCents,
-        });
+      const frozen = newPaymentCreationFailure('escrow_funding');
 
-      if (!payment.success) {
-        const cause = paymentCreationErrorCause(payment.error.code);
+      if (frozen) {
+        const cause = paymentCreationErrorCause(frozen.error.code);
 
         throw new TRPCError({
-          code: cause ? 'PRECONDITION_FAILED' : 'INTERNAL_SERVER_ERROR',
-          message: payment.error.message,
+          code: 'PRECONDITION_FAILED',
+          message: frozen.error.message,
           ...(cause ? { cause } : {}),
         });
       }
+
+      const paymentReference = controlledTestQuotePaymentReference(
+        input.quoteId,
+        input.quoteVersionId,
+      );
 
       await db.query(
         `
@@ -324,33 +396,62 @@ export const quotePaymentRouter = router({
           status,
           platform_fee_cents
         )
-        VALUES ($1, $2, 'stax', $3, $4, 'SUCCEEDED', $5)
+        VALUES ($1, $2, 'local_test', $3, $4, 'PENDING', $5)
         ON CONFLICT (quote_id, quote_version_id)
-        DO UPDATE SET
-          provider = 'stax',
-          provider_payment_id = EXCLUDED.provider_payment_id,
-          amount_cents = EXCLUDED.amount_cents,
-          status = 'SUCCEEDED',
-          platform_fee_cents = EXCLUDED.platform_fee_cents,
-          updated_at = NOW()
+        DO NOTHING
         `,
         [
           input.quoteId,
           input.quoteVersionId,
-          payment.data.transactionId,
-          payment.data.amountCents,
-          payment.data.platformFeeCents,
+          paymentReference,
+          remainingChargeCents,
+          marketplaceFeeCents,
         ],
       );
 
-      return {
+      const boundPayment = await db.query<{
+        provider: string;
+        provider_payment_id: string;
+        amount_cents: number;
+        platform_fee_cents: number | null;
+        status: string;
+      }>(
+        `
+        SELECT
+          provider,
+          provider_payment_id,
+          amount_cents,
+          platform_fee_cents,
+          status
+        FROM quote_payments
+        WHERE quote_id = $1
+          AND quote_version_id = $2
+        LIMIT 1
+        `,
+        [input.quoteId, input.quoteVersionId],
+      );
+
+      const payment = boundPayment.rows[0];
+
+      if (
+        !payment
+        || payment.provider !== 'local_test'
+        || payment.amount_cents !== remainingChargeCents
+        || payment.platform_fee_cents !== marketplaceFeeCents
+        || !['PENDING', 'SUCCEEDED'].includes(payment.status)
+      ) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'This quote is already bound to a different payment.',
+        });
+      }
+
+      return finalizeControlledTestQuote({
         quoteId: input.quoteId,
         quoteVersionId: input.quoteVersionId,
-        paymentIntentId: payment.data.transactionId,
-        clientSecret: null,
-        amountCents: payment.data.amountCents,
-        replayed: false,
-      };
+        posterId: ctx.user.id,
+        paymentIntentId: payment.provider_payment_id,
+      });
     }),
 
   finalize: protectedProcedure
@@ -367,6 +468,7 @@ export const quotePaymentRouter = router({
         quoteVersionId: input.quoteVersionId,
         posterId: ctx.user.id,
         paymentIntentId: input.paymentIntentId,
+        paymentMode: 'stax',
       });
 
       if (!result.success) {
@@ -383,26 +485,6 @@ export const quotePaymentRouter = router({
 
       return result.data;
     }),
-  confirmTestPayment: protectedProcedure
-  .input(
-    z.object({
-      paymentIntentId: z.string().min(10).max(255),
-    }).strict(),
-  )
-  .mutation(async ({ input }) => {
-    const result = await StripeService.confirmTestPaymentIntent(
-      input.paymentIntentId,
-    );
-
-    if (!result.success) {
-      throw new TRPCError({
-        code: 'PRECONDITION_FAILED',
-        message: result.error.message,
-      });
-    }
-
-    return result.data;
-  }),
 });
 
 export type QuotePaymentRouter = typeof quotePaymentRouter;
