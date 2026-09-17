@@ -136,6 +136,7 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260913_task_draft_photos', fileName: '20260913_task_draft_photos.sql' },
   { name: '20260914_claim_preview_photo_access_audit', fileName: '20260914_claim_preview_photo_access_audit.sql' },
   { name: '20260916_product_analytics', fileName: '20260916_product_analytics.sql' },
+  { name: '20260918_ai_agent_decisions_judge_type', fileName: '20260918_ai_agent_decisions_judge_type.sql' },
 ] as const;
 
 
