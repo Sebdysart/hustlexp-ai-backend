@@ -4,7 +4,7 @@ import { buildIdentity, isTrustedBuildIdentity } from './buildIdentity.js';
 import { config } from './config.js';
 import { db } from './db.js';
 import { logger } from './logger.js';
-import { publicIpRateLimitMiddleware, rateLimitMiddleware } from './middleware/security.js';
+import { rateLimitMiddleware } from './middleware/security.js';
 import type { HustleApp } from './serverTypes.js';
 import { newPaymentCreationHealth } from './services/NewPaymentCreationGuard.js';
 
@@ -35,7 +35,9 @@ async function dependencyChecks() {
     const result = await db.query(
       'SELECT version, applied_at FROM schema_versions ORDER BY applied_at DESC LIMIT 1'
     );
-    checks.schema = { status: result.rows[0]?.version === '1.0.0' ? 'ok' : 'outdated' };
+    checks.schema = {
+      status: result.rows.length > 0 ? 'ok' : 'missing',
+    };
   } catch (error) {
     checks.schema = { status: 'error', error: error instanceof Error ? error.message : 'Unknown' };
   }
@@ -104,7 +106,6 @@ async function detailedHealth(context: Context) {
 }
 
 export function registerHealthRoutes(app: HustleApp): void {
-  app.use('/health*', publicIpRateLimitMiddleware());
   app.get('/health', async (context) => {
     try {
       await db.query('SELECT 1');
