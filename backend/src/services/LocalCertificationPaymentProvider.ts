@@ -59,8 +59,14 @@ function equalHex(left: string, right: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-export function localCertificationPaymentEnabled(env: Environment = process.env): boolean {
-  return env.NODE_ENV !== 'production'
+export function localCertificationPaymentEnabled(
+  env: Environment = process.env,
+): boolean {
+  const environmentAllowed =
+    env.NODE_ENV !== 'production' ||
+    env.HXOS_ALLOW_LOCAL_TEST_PAYMENT_IN_PRODUCTION === 'true';
+
+  return environmentAllowed
     && env.HXOS_ALLOW_LOCAL_TEST_PAYMENT === 'true'
     && env.ENGINE_API_MODE === 'test'
     && env.STRIPE_MODE === 'test'
