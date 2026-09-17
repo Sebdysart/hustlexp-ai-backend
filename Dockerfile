@@ -29,8 +29,12 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 COPY . .
+
 RUN node scripts/cache-task-classifier-model.mjs
-RUN npm run compile
+
+RUN npm run compile \
+    && mkdir -p dist/public \
+    && cp -R public/. dist/public/
 
 
 FROM node:22-bookworm-slim AS runner

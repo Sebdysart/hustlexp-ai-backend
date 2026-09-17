@@ -54,11 +54,36 @@ app.use('/webhooks/*', rateLimitMiddleware('general'));
 registerWebhookRoutes(app);
 registerErrorHandlers(app);
 
-startServer().catch((error) => logger.fatal({ err: error }, 'Failed to start server'));
+async function main(): Promise<void> {
+  try {
+    await startServer();
 
-export default { port: config.app.port, fetch: app.fetch };
+    const server = serve({
+      fetch: app.fetch,
+      port: config.app.port,
+    });
 
-const server = serve({ fetch: app.fetch, port: config.app.port });
-installProcessHandlers(server);
+    installProcessHandlers(server);
+
+    logger.info(
+      { port: config.app.port },
+      'HustleXP backend HTTP server started',
+    );
+  } catch (error) {
+    logger.fatal(
+      { err: error },
+      'Failed to initialize HustleXP backend',
+    );
+
+    process.exit(1);
+  }
+}
+
+void main();
+
+export default {
+  port: config.app.port,
+  fetch: app.fetch,
+};
 
 export { app };
