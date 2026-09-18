@@ -11,7 +11,6 @@ export interface ProviderOsProduct {
 }
 export function providerOsControlledPurchaseEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return (
-    env.NODE_ENV !== 'production' &&
     env.PAYMENT_PROVIDER === 'local_test' &&
     localCertificationPaymentEnabled(env) &&
     env.PROVIDER_OS_TEST_PURCHASE_ENABLED === 'true'

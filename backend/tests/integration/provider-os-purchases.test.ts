@@ -264,12 +264,23 @@ describe.skipIf(!databaseUrl)(
         (await query('SELECT status FROM hxos_local_test_product_intents')).rows[0].status
       ).toBe('requires_confirmation');
     });
-    it('production override cannot create or confirm product payments', async () => {
-      const p = await purchase();
+    it('creates, confirms and verifies a controlled purchase in production with the existing override', async () => {
       vi.stubEnv('NODE_ENV', 'production');
       vi.stubEnv('HXOS_ALLOW_LOCAL_TEST_PAYMENT_IN_PRODUCTION', 'true');
+      const p = await purchase();
+      expect((await getProviderOsPurchaseState(org, actor)).product?.provider).toBe('local_test');
+      await completeControlledProviderOsPurchase(org, actor, p.id);
+      expect((await row()).status).toBe('succeeded');
+      expect((await entitlement()).source_purchase_id).toBe(p.id);
+    });
+    it.each(['false', undefined])('rejects production creation, confirmation and verification without override (%s)', async (override) => {
+      const p = await purchase();
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('HXOS_ALLOW_LOCAL_TEST_PAYMENT_IN_PRODUCTION', override);
+      expect((await getProviderOsPurchaseState(org, actor)).product).toBeNull();
       await expect(completeControlledProviderOsPurchase(org, actor, p.id)).rejects.toThrow();
       await expect(createProviderOsPurchase(org, actor)).rejects.toThrow();
+      await expect(LocalCertificationPaymentProvider.verifyProductIntent(await row())).rejects.toThrow('disabled');
       expect(await entitlement()).toBeUndefined();
     });
     it('payment is durable if the entitlement transaction fails and recovers without a second confirmation', async () => {

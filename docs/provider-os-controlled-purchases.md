@@ -1,6 +1,6 @@
 # Provider OS controlled product purchases
 
-This stage implements only the existing controlled/local-test adapter, per the revised request. It does not integrate Stripe or any external rail, charge real money, or establish approved production pricing. Production purchasing remains unavailable.
+This stage implements only the existing controlled/local-test adapter, per the revised request. It does not integrate Stripe or any external rail, charge real money, or establish approved production pricing. Production-shaped controlled certification is available only with the existing `HXOS_ALLOW_LOCAL_TEST_PAYMENT_IN_PRODUCTION=true` override and all normal controlled-test gates. Real-money production purchasing remains unavailable.
 
 ## Architecture and payment reconnaissance
 
@@ -23,7 +23,7 @@ Only one pending purchase per organization; provider intent and transaction iden
 
 No default price or duration. All of the following are required:
 
-- `NODE_ENV` must not be `production` (the older local-payment production override cannot enable this product path).
+- `NODE_ENV=production` additionally requires `HXOS_ALLOW_LOCAL_TEST_PAYMENT_IN_PRODUCTION=true`. Missing/false rejects purchasing. Outside production this override is not required. Both the catalog and provider execution reuse the existing `localCertificationPaymentEnabled` helper; no new environment variable or boolean parser is introduced.
 - `PAYMENT_PROVIDER=local_test`
 - Existing gate: `HXOS_ALLOW_LOCAL_TEST_PAYMENT=true`, `ENGINE_API_MODE=test`, `STRIPE_MODE=test`, and `HXOS_LOCAL_TEST_PAYMENT_SECRET` at least 32 trimmed characters. `STRIPE_MODE` is an existing safety sentinel only; no Stripe client or credentials are used.
 - `PROVIDER_OS_TEST_PURCHASE_ENABLED=true`
@@ -95,3 +95,9 @@ This is a certification path, not production monetization. Remaining work: appro
 - Broader backend validation reproduced eight baseline failures: three engine migration fixtures (stale full-list/count and Docker path assumptions), one local-payment Docker-copy fixture, four Operations router authority mocks missing current authorization query results. These eight also reproduce with the pre-change feature-branch migration manifest; the implementation manifest was restored after that comparison.
 - `git diff --check`: passed in both repositories.
 - No live external charge, production migration, browser integration or full production schema rehearsal was performed. Database tests used a disposable schema in an isolated local PostgreSQL instance, with no task-payment tables required for product purchases.
+
+## Production-shaped controlled certification gate correction
+
+Removed only the two unconditional production rejections from the Provider OS catalog gate and standalone provider guard. The unchanged `localCertificationPaymentEnabled` helper now decides the environment allowance in both paths, including exact-string `HXOS_ALLOW_LOCAL_TEST_PAYMENT_IN_PRODUCTION=true`. All other catalog, provider, test-mode, secret, purchase-enablement and payment-creation gates remain required. No frontend change, entitlement change, new environment variable, or task-payment behavior change.
+
+Focused validation for this correction: 74 tests passed across configuration, existing local-payment provider, Provider OS router and isolated PostgreSQL purchase tests. Coverage includes non-production, production override true/false/missing, invalid companion gates, successful production-shaped create/confirm/verify/grant, and unchanged task-payment gate behavior. Backend build/typecheck and compile, frontend build, scoped production-file lint and diff checks passed. The existing frontend bundle-size warning remains. No live charge or production database migration was performed.

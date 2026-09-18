@@ -25,15 +25,38 @@ describe('Provider OS controlled test catalog', () => {
     for (const key of Object.keys(testEnv).filter((k) => k !== 'NODE_ENV'))
       expect(providerOsProduct({ ...testEnv, [key]: '' })).toBeNull();
   });
-  it('has no production purchase path even with the legacy production override', () => {
-    expect(providerOsProduct({ NODE_ENV: 'production' })).toBeNull();
-    expect(
-      providerOsProduct({
-        ...testEnv,
-        NODE_ENV: 'production',
-        HXOS_ALLOW_LOCAL_TEST_PAYMENT_IN_PRODUCTION: 'true',
-      })
-    ).toBeNull();
+  const productionEnv = {
+    ...testEnv,
+    NODE_ENV: 'production',
+    HX_PAYMENT_CREATION_MODE: 'enabled',
+    HXOS_ALLOW_LOCAL_TEST_PAYMENT_IN_PRODUCTION: 'true',
+  };
+  it('allows production-shaped certification through the existing production override', () => {
+    expect(providerOsProduct(productionEnv)).toMatchObject({ provider: 'local_test', testMode: true });
+  });
+  it.each(['false', undefined, 'TRUE'])('requires the exact existing production override: %s', (override) => {
+    expect(providerOsProduct({ ...productionEnv, HXOS_ALLOW_LOCAL_TEST_PAYMENT_IN_PRODUCTION: override })).toBeNull();
+  });
+  it.each([
+    { PAYMENT_PROVIDER: 'stripe' },
+    { HXOS_ALLOW_LOCAL_TEST_PAYMENT: 'false' },
+    { ENGINE_API_MODE: 'live' },
+    { STRIPE_MODE: 'live' },
+    { HXOS_LOCAL_TEST_PAYMENT_SECRET: 'invalid' },
+    { PROVIDER_OS_TEST_PURCHASE_ENABLED: 'false' },
+    { PROVIDER_OS_TEST_AMOUNT_CENTS: '' },
+    { PROVIDER_OS_TEST_CURRENCY: '' },
+    { PROVIDER_OS_TEST_PERIOD_DAYS: '' },
+    { HX_PAYMENT_CREATION_MODE: 'frozen' },
+    { HX_PAYMENT_CREATION_MODE: undefined },
+  ])('production override does not bypass another gate: %j', (invalid) => {
+    expect(providerOsProduct({ ...productionEnv, ...invalid })).toBeNull();
+  });
+  it('production override alone is insufficient', () => {
+    expect(providerOsProduct({ NODE_ENV: 'production', HXOS_ALLOW_LOCAL_TEST_PAYMENT_IN_PRODUCTION: 'true' })).toBeNull();
+  });
+  it('does not require the production override outside production', () => {
+    expect(providerOsProduct({ ...testEnv, HXOS_ALLOW_LOCAL_TEST_PAYMENT_IN_PRODUCTION: 'false' })).not.toBeNull();
   });
   it('respects global payment freeze', () =>
     expect(providerOsProduct({ ...testEnv, HX_PAYMENT_CREATION_MODE: 'frozen' })).toBeNull());

@@ -313,7 +313,6 @@ interface ProductIntentRow {
 }
 function assertControlledProductEnabled(): void {
   if (
-    process.env.NODE_ENV === 'production' ||
     process.env.PAYMENT_PROVIDER !== 'local_test' ||
     process.env.PROVIDER_OS_TEST_PURCHASE_ENABLED !== 'true' ||
     !localCertificationPaymentEnabled()
