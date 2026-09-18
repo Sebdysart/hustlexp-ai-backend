@@ -227,6 +227,8 @@ getQuoteVersionByQuoteId: posterProcedure
          qv.quote_id,
          qv.status
        FROM quote_versions qv
+       JOIN quotes q ON q.id = qv.quote_id
+         AND q.status IN ('quote_ready', 'quote_send_ready', 'paid')
        JOIN task_drafts td
          ON td.quote_id = qv.quote_id
        WHERE qv.quote_id = $1

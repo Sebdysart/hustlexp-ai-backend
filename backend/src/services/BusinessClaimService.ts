@@ -2,13 +2,13 @@ import crypto from 'node:crypto';
 import { db, type QueryFn } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { assertVerifiedProvider } from './BusinessWorkspacePolicy.js';
-import { NotificationService } from './NotificationService.js';
+import { PENDING_BUSINESS_VERIFICATION, publishBusinessQuoteInTransaction } from './BusinessQuoteActivationService.js';
 
 interface ClaimInput {
   token: string;
   organizationId: string;
-  serviceProfileId: string;
-  businessLocationId: string;
+  serviceProfileId?: string;
+  businessLocationId?: string;
 
   proposedCustomerTotalCents: number;
   proposedPayoutCents: number;
@@ -20,6 +20,7 @@ interface ClaimInput {
 }
 
 interface ClaimResult {
+  quoteStatus: 'submitted' | typeof PENDING_BUSINESS_VERIFICATION;
   claimLinkId: string;
   taskDraftId: string;
   quoteId: string;
@@ -45,8 +46,9 @@ type CreateBusinessQuoteInput = {
   draft: { id: string; title: string | null; scope_summary: string | null; poster_user_id: string };
   organizationId: string;
   actorId: string;
-  serviceProfileId: string;
-  businessLocationId: string;
+  serviceProfileId?: string;
+  businessLocationId?: string;
+  pendingBusinessVerification?: boolean;
   proposedCustomerTotalCents: number;
   proposedPayoutCents: number;
   arrivalWindowStart: string;
@@ -57,14 +59,14 @@ type CreateBusinessQuoteInput = {
 type ValidateBusinessQuoteContextInput = {
   organizationId: string;
   actorId: string;
-  serviceProfileId: string;
-  businessLocationId: string;
+  serviceProfileId?: string;
+  businessLocationId?: string;
+  allowPendingVerification?: boolean;
 };
 
 type ValidatedBusinessQuoteContext = {
   organizationId: string;
-  serviceProfileId: string;
-  businessLocationId: string;
+  pendingBusinessVerification: boolean;
 };
 
 export async function validateBusinessQuoteContext(
@@ -72,30 +74,29 @@ export async function validateBusinessQuoteContext(
   input: ValidateBusinessQuoteContextInput,
 ): Promise<ServiceResult<ValidatedBusinessQuoteContext>> {
   await query(`SELECT business_require_action($1, $2, 'ASSIGN_CREW')`, [input.organizationId, input.actorId]);
-  const orgResult = await query<{ id: string; status: string; provider_enabled: boolean; verification_status: string }>(
-    `SELECT id, status, provider_enabled, verification_status FROM business_organizations WHERE id = $1 FOR SHARE`,
+  const orgResult = await query<{ id: string; status: string; provider_enabled: boolean; verification_status: string; legal_name: string; display_name: string; washington_ubi: string | null; federal_ein: string | null }>(
+    `SELECT id, status, provider_enabled, verification_status, legal_name, display_name, washington_ubi, federal_ein
+     FROM business_organizations WHERE id = $1 FOR SHARE`,
     [input.organizationId],
   );
   const org = orgResult.rows[0];
   if (!org) return failure('BUSINESS_NOT_READY', 'The business organization is not currently eligible to claim work.');
   try {
-    assertVerifiedProvider({ status: org.status, verificationStatus: org.verification_status, providerEnabled: org.provider_enabled });
+    if (input.allowPendingVerification && ['UNVERIFIED', 'PENDING'].includes(org.verification_status)) {
+      if (org.status !== 'ACTIVE' || !org.provider_enabled || !org.legal_name?.trim() || !org.display_name?.trim()
+          || !/^\d{9}$/.test(org.washington_ubi ?? '') || !/^\d{9}$/.test(org.federal_ein ?? '')) {
+        return failure('BUSINESS_NOT_READY', 'Complete your business identity information before submitting a quote.');
+      }
+    } else {
+      assertVerifiedProvider({ status: org.status, verificationStatus: org.verification_status, providerEnabled: org.provider_enabled });
+    }
   } catch {
     return failure('BUSINESS_NOT_READY', 'The business organization is not currently eligible to claim work.');
   }
-  const profileResult = await query<{ id: string; organization_id: string; service_code: string; status: string }>(
-    `SELECT id, organization_id, service_code, status FROM business_service_profiles WHERE id = $1 AND organization_id = $2 FOR SHARE`,
-    [input.serviceProfileId, input.organizationId],
-  );
-  const profile = profileResult.rows[0];
-  if (!profile || !['DRAFT', 'ACTIVE'].includes(profile.status)) return failure('SERVICE_PROFILE_UNAVAILABLE', 'The selected service profile is not available.');
-  const locationResult = await query<{ id: string; organization_id: string; status: string }>(
-    `SELECT id, organization_id, status FROM business_locations WHERE id = $1 AND organization_id = $2 FOR SHARE`,
-    [input.businessLocationId, input.organizationId],
-  );
-  const location = locationResult.rows[0];
-  if (!location || location.status !== 'ACTIVE') return failure('BUSINESS_LOCATION_INVALID', 'The selected business location is not active.');
-  return { success: true, data: { organizationId: input.organizationId, serviceProfileId: profile.id, businessLocationId: location.id } };
+  // Service profiles and business locations are dormant for launch. Legacy
+  // clients may still send their IDs, but they neither grant authority nor bind
+  // new marketplace quotes to dormant configuration.
+  return { success: true, data: { organizationId: input.organizationId, pendingBusinessVerification: org.verification_status !== 'VERIFIED' } };
 }
 
 export async function createBusinessQuoteInTransaction(
@@ -135,9 +136,10 @@ export async function createBusinessQuoteInTransaction(
        task_draft_id, title, status, environment, is_test,
        business_organization_id, business_location_id,
        provider_service_profile_id, claimed_by_user_id
-     ) VALUES ($1, $2, 'submitted', 'TEST', TRUE, $3, $4, $5, $6)
+     ) VALUES ($1, $2, $5, 'TEST', TRUE, $3, NULL, NULL, $4)
      RETURNING id`,
-    [input.draft.id, input.draft.title ?? 'Business Quote', input.organizationId, input.businessLocationId, input.serviceProfileId, input.actorId],
+    [input.draft.id, input.draft.title ?? 'Business Quote', input.organizationId, input.actorId,
+      input.pendingBusinessVerification ? PENDING_BUSINESS_VERIFICATION : 'draft'],
   );
   const quoteId = quoteResult.rows[0]?.id;
   if (!quoteId) return { success: false as const, error: { code: 'QUOTE_CREATE_FAILED', message: 'Unable to create the business quote.' } };
@@ -157,7 +159,7 @@ export async function createBusinessQuoteInTransaction(
       input.draft.scope_summary ?? input.draft.title ?? 'Task',
       input.proposedCustomerTotalCents,
       input.proposedPayoutCents,
-      JSON.stringify({ business_claim: true, business_organization_id: input.organizationId, business_service_profile_id: input.serviceProfileId, business_location_id: input.businessLocationId, platform_margin_cents: platformMarginCents }),
+      JSON.stringify({ business_claim: true, business_organization_id: input.organizationId, platform_margin_cents: platformMarginCents }),
       payToken,
       arrivalWindowStart,
       arrivalWindowEnd,
@@ -169,44 +171,14 @@ export async function createBusinessQuoteInTransaction(
   if (!quoteVersionId) return { success: false as const, error: { code: 'QUOTE_VERSION_CREATE_FAILED', message: 'Unable to create business quote version.' } };
 
   await query(`UPDATE quotes SET active_version_id = $1, updated_at = NOW() WHERE id = $2`, [quoteVersionId, quoteId]);
-  console.log('[QUOTE_NOTIFICATION_DEBUG]', {
-    posterUserId: input.draft.poster_user_id,
-    draftId: input.draft.id,
-    quoteId,
-    organizationId: input.organizationId,
-  });
-  try {
-    await NotificationService.createInTransaction(
-      query,
-      {
-        userId: input.draft.poster_user_id,
-        type: 'QUOTE_RECEIVED',
-        title: 'New quote received',
-        message: 'A business sent you a quote.',
-        entityType: 'quote',
-        entityId: quoteId,
-        actionUrl:
-          `/dashboard/drafts/${input.draft.id}`,
-        dedupeKey:
-          `quote-created:${quoteId}`,
-      },
-    );
-  } catch (error) {
-    console.error(
-      '[QUOTE_NOTIFICATION_FAILED]',
-      {
-        error,
-        posterUserId:
-          input.draft.poster_user_id,
-        draftId:
-          input.draft.id,
-        quoteId,
-      },
-    );
-
-    throw error;
+  if (!input.pendingBusinessVerification) {
+    const published = await publishBusinessQuoteInTransaction(query, {
+      quoteId, taskDraftId: input.draft.id, posterUserId: input.draft.poster_user_id, fromStatus: 'draft',
+    });
+    if (!published) throw new Error('BUSINESS_QUOTE_ACTIVATION_FAILED');
   }
-  return { success: true as const, data: { quoteId, quoteVersionId, customerTotalCents: input.proposedCustomerTotalCents, payoutCents: input.proposedPayoutCents, platformMarginCents } };
+  const quoteStatus = input.pendingBusinessVerification ? PENDING_BUSINESS_VERIFICATION : 'submitted' as const;
+  return { success: true as const, data: { quoteId, quoteVersionId, quoteStatus, customerTotalCents: input.proposedCustomerTotalCents, payoutCents: input.proposedPayoutCents, platformMarginCents } };
 }
 
 export async function claimBusinessTask(
@@ -229,6 +201,11 @@ export async function claimBusinessTask(
 
   try {
     return await db.transaction(async (query) => {
+      // Lock the organization before the link/draft, matching verification release.
+      const businessContext = await validateBusinessQuoteContext(query, {
+        organizationId: input.organizationId, actorId: input.actorId, allowPendingVerification: true,
+      });
+      if (!businessContext.success) return businessContext;
       const linkResult = await query<{
         id: string;
         task_draft_id: string;
@@ -277,9 +254,10 @@ export async function claimBusinessTask(
         poster_user_id: string;
         status: string;
         quote_id: string | null;
+        task_id: string | null;
       }>(
         `
-        SELECT id, category, title, scope_summary, status, quote_id, poster_user_id
+        SELECT id, category, title, scope_summary, status, quote_id, poster_user_id, task_id
         FROM task_drafts
         WHERE id = $1
         FOR UPDATE
@@ -294,26 +272,13 @@ export async function claimBusinessTask(
       }
 
 
-      if (draft.status === 'abandoned') {
+      if (draft.status === 'abandoned' || draft.quote_id || draft.task_id) {
         return failure(
           'TASK_DRAFT_UNAVAILABLE',
           'This task is no longer available.',
         );
       }
 
-      const businessContext = await validateBusinessQuoteContext(
-        query,
-        {
-          organizationId: input.organizationId,
-          actorId: input.actorId,
-          serviceProfileId: input.serviceProfileId,
-          businessLocationId: input.businessLocationId,
-        },
-      );
-
-      if (!businessContext.success) {
-        return businessContext;
-      }
       const quoteCreateResult = await createBusinessQuoteInTransaction(query, {
         draft,
         organizationId: input.organizationId,
@@ -325,6 +290,7 @@ export async function claimBusinessTask(
         arrivalWindowStart: input.arrivalWindowStart,
         arrivalWindowEnd: input.arrivalWindowEnd,
         quoteExpiresAt: link.expires_at,
+        pendingBusinessVerification: businessContext.data.pendingBusinessVerification,
       });
 
       if (!quoteCreateResult.success) {
@@ -362,8 +328,8 @@ export async function claimBusinessTask(
           link.id,
           input.organizationId,
           input.actorId,
-          input.serviceProfileId,
-          input.businessLocationId,
+          null,
+          null,
           customerTotalCents,
           payoutCents,
           quoteId,
@@ -406,6 +372,7 @@ export async function claimBusinessTask(
           taskDraftId: draft.id,
           quoteId,
           quoteVersionId,
+          quoteStatus: quoteCreateResult.data.quoteStatus,
           customerTotalCents,
           payoutCents,
           platformMarginCents,
@@ -432,8 +399,8 @@ export async function quoteAfterAssessment(input: {
   assessmentRequestId: string;
   organizationId: string;
   actorId: string;
-  serviceProfileId: string;
-  businessLocationId: string;
+  serviceProfileId?: string;
+  businessLocationId?: string;
   proposedCustomerTotalCents: number;
   proposedPayoutCents: number;
   arrivalWindowStart: string;
@@ -450,7 +417,7 @@ export async function quoteAfterAssessment(input: {
         assessment_credit_cents: number | null;
       }>(
         `SELECT assessment.id, assessment.task_draft_id, assessment.business_organization_id, assessment.claim_link_id, assessment.status,
-                payment.amount_cents AS assessment_credit_cents,
+                payment.amount_cents AS assessment_credit_cents
                 
          FROM business_assessment_requests assessment
          LEFT JOIN assessment_payments payment ON payment.assessment_request_id = assessment.id AND payment.status = 'SUCCEEDED'
@@ -498,22 +465,6 @@ export async function quoteAfterAssessment(input: {
       if (claim.claimed_by_organization_id !== input.organizationId) return failure('CLAIM_WRONG_BUSINESS', 'This claim belongs to another business.');
       if (claim.quote_id) return failure('CLAIM_ALREADY_QUOTED', 'A quote has already been submitted for this claim.');
 
-      const profileResult = await query<{ id: string; status: string }>(
-        `SELECT id, status FROM business_service_profiles
-         WHERE id = $1 AND organization_id = $2 FOR SHARE`,
-        [input.serviceProfileId, input.organizationId],
-      );
-      const profile = profileResult.rows[0];
-      if (!profile || !['DRAFT', 'ACTIVE'].includes(profile.status)) return failure('SERVICE_PROFILE_UNAVAILABLE', 'The selected service profile is not available.');
-
-      const locationResult = await query<{ id: string; status: string }>(
-        `SELECT id, status FROM business_locations
-         WHERE id = $1 AND organization_id = $2 FOR SHARE`,
-        [input.businessLocationId, input.organizationId],
-      );
-      const location = locationResult.rows[0];
-      if (!location || location.status !== 'ACTIVE') return failure('BUSINESS_LOCATION_INVALID', 'The selected business location is not active.');
-
       const arrivalStart = new Date(input.arrivalWindowStart);
       const arrivalEnd = new Date(input.arrivalWindowEnd);
       if (!Number.isFinite(arrivalStart.getTime()) || !Number.isFinite(arrivalEnd.getTime()) || arrivalEnd <= arrivalStart) {
@@ -545,7 +496,7 @@ export async function quoteAfterAssessment(input: {
              proposed_customer_total_cents = $4, proposed_payout_cents = $5,
              quote_id = $6, updated_at = NOW()
          WHERE id = $1 AND status = 'CLAIMED' AND quote_id IS NULL RETURNING id`,
-        [claim.id, input.serviceProfileId, input.businessLocationId, customerTotalCents, payoutCents, quoteId],
+        [claim.id, null, null, customerTotalCents, payoutCents, quoteId],
       );
       if (!claimUpdated.rows[0]) throw new Error('POST_ASSESSMENT_QUOTE_RACE_LOST');
 

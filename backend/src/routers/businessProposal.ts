@@ -64,8 +64,8 @@ export const businessProposalRouter = router({
     }),
   quote: protectedProcedure.input(z.object({
     proposalId: z.string().uuid(),
-    serviceProfileId: z.string().uuid(),
-    businessLocationId: z.string().uuid(),
+    serviceProfileId: z.string().uuid().optional(),
+    businessLocationId: z.string().uuid().optional(),
     proposedCustomerTotalCents: z.number().int().positive(),
     proposedPayoutCents: z.number().int().positive(),
     arrivalWindowStart: z.string().datetime(),

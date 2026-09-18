@@ -232,8 +232,8 @@ export const businessClaimRouter = router({
       z.object({
         assessmentRequestId: z.string().uuid(),
         organizationId: z.string().uuid(),
-        serviceProfileId: z.string().uuid(),
-        businessLocationId: z.string().uuid(),
+        serviceProfileId: z.string().uuid().optional(),
+        businessLocationId: z.string().uuid().optional(),
         proposedCustomerTotalCents: z.number().int(),
         proposedPayoutCents: z.number().int(),
         arrivalWindowStart: z.string(),
@@ -473,8 +473,8 @@ listClaimedDrafts: protectedProcedure
       z.object({
         token: z.string().regex(/^[0-9a-f]{64}$/i),
         organizationId: z.string().uuid(),
-        serviceProfileId: z.string().uuid(),
-        businessLocationId: z.string().uuid(),
+        serviceProfileId: z.string().uuid().optional(),
+        businessLocationId: z.string().uuid().optional(),
         proposedCustomerTotalCents: z.number().int().positive(),
         proposedPayoutCents: z.number().int().positive(),
 

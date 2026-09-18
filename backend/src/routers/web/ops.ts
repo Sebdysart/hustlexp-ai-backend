@@ -14,6 +14,7 @@ import { router, publicProcedure, operationsAdminProcedure } from '../../trpc.js
 import { db } from '../../db.js';
 import { logger } from '../../logger.js';
 import { TRPCError } from '@trpc/server';
+import { activatePendingBusinessQuotesInTransaction } from '../../services/BusinessQuoteActivationService.js';
 import crypto from 'crypto';
 import { config } from '../../config.js';
 import { AutomationLifecycleService } from '../../services/AutomationLifecycleService.js';
@@ -940,35 +941,41 @@ export const webOpsRouter = router({
         }).strict(),
       )
       .mutation(async ({ ctx, input }) => {
-        const result = await db.query<{
-          id: string;
-          verification_status: string;
-        }>(
-          `
-          UPDATE business_organizations
-          SET
-            verification_status = $2,
-            updated_at = NOW()
-          WHERE id = $1
-          RETURNING
-            id,
-            verification_status
-          `,
-          [
-            input.organization_id,
-            input.verification_status,
-          ],
-        );
+        const business = await db.transaction(async (query) => {
+          const result = await query<{
+            id: string;
+            verification_status: string;
+          }>(
+            `
+            UPDATE business_organizations
+            SET
+              verification_status = $2,
+              updated_at = NOW()
+            WHERE id = $1
+            RETURNING
+              id,
+              verification_status
+            `,
+            [
+              input.organization_id,
+              input.verification_status,
+            ],
+          );
 
-        const business =
-          result.rows[0];
+          const business = result.rows[0];
 
-        if (!business) {
-          throw new TRPCError({
-            code: 'NOT_FOUND',
-            message: 'Business not found',
-          });
-        }
+          if (!business) {
+            throw new TRPCError({
+              code: 'NOT_FOUND',
+              message: 'Business not found',
+            });
+          }
+
+          if (business.verification_status === 'VERIFIED') {
+            await activatePendingBusinessQuotesInTransaction(query, business.id);
+          }
+          return business;
+        });
 
         await recordOpsAudit({
           actorUserId: ctx.user.id,
@@ -1292,9 +1299,16 @@ export const webOpsRouter = router({
 
           const result = await tx<{ id: string; status: string }>(
             `UPDATE quotes SET status = 'quote_send_ready', updated_at = now()
-             WHERE task_draft_id = $1
+             WHERE task_draft_id = $1 AND id = $2
+               AND status IN ('quote_ready', 'quote_send_ready')
+               AND (business_organization_id IS NULL OR EXISTS (
+                 SELECT 1 FROM business_organizations org
+                 WHERE org.id = quotes.business_organization_id
+                   AND org.status = 'ACTIVE' AND org.provider_enabled
+                   AND org.verification_status = 'VERIFIED'
+               ))
              RETURNING id, status`,
-            [input.task_draft_id],
+            [input.task_draft_id, draft.rows[0].quote_id],
           );
           if (result.rows.length === 0) {
             quoteEligibilityError('not_found', 'No quote for this draft');

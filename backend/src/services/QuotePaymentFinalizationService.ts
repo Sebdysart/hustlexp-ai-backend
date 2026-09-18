@@ -1,4 +1,5 @@
 import { db } from '../db.js';
+import { isBusinessQuoteProviderVerified } from './BusinessQuoteActivationService.js';
 import type { ServiceResult } from '../types.js';
 import { EscrowService } from './EscrowService.js';
 import { TaskCreateService } from './TaskCreateService.js';
@@ -124,6 +125,7 @@ export async function finalizePaidQuote(
      */
       const quoteContext = await db.query<{
         quote_id: string;
+        quote_status: string;
         quote_version_id: string;
         selected_quote_id: string | null;
         total_cents: number;
@@ -143,6 +145,7 @@ export async function finalizePaidQuote(
         `
         SELECT
           q.id AS quote_id,
+          q.status AS quote_status,
           qv.id AS quote_version_id,
           d.quote_id AS selected_quote_id,
           qv.total_cents,
@@ -204,6 +207,10 @@ export async function finalizePaidQuote(
     }
     if (context.provider_payment_id !== input.paymentIntentId) {
       return fail('QUOTE_PAYMENT_ID_MISMATCH', 'The supplied payment does not match the stored quote payment.');
+    }
+
+    if (!['quote_ready', 'quote_send_ready', 'paid'].includes(context.quote_status)) {
+      return fail('QUOTE_NOT_PAYABLE', 'This quote is not available for payment.');
     }
     const expectedProvider = input.paymentMode === 'controlled_test'
       ? 'local_test'
@@ -296,16 +303,10 @@ export async function finalizePaidQuote(
     throw new Error('QUOTE_NOT_ACCEPTED');
   }
 
-	const hasBusinessClaim = Boolean(quote.business_organization_id);
-
-	if (hasBusinessClaim) {
-	  if (
-	    !quote.business_location_id ||
-	    !quote.provider_service_profile_id
-	  ) {
-	    throw new Error('BUSINESS_CLAIM_BINDING_INCOMPLETE');
-	  }
-	}
+	if (quote.business_organization_id && quote.status !== 'paid'
+      && !await isBusinessQuoteProviderVerified(query, quote.business_organization_id)) {
+    throw new Error('BUSINESS_NOT_VERIFIED');
+  }
 
 	if (quote.active_version_id !== input.quoteVersionId) {
 	  throw new Error('QUOTE_VERSION_NOT_ACTIVE');

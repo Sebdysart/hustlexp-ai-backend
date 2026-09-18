@@ -1,6 +1,7 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { db } from '../db.js';
+import { isBusinessQuoteProviderVerified } from '../services/BusinessQuoteActivationService.js';
 import { protectedProcedure, router } from '../trpc.js';
 import {
   newPaymentCreationFailure,
@@ -216,12 +217,10 @@ export const quotePaymentRouter = router({
 
       // Validate before creating OR returning an existing intent. Finalization
       // retains its consistency checks because quote state can change afterward.
-      if (quote.business_organization_id && (
-        !quote.business_location_id || !quote.provider_service_profile_id
-      )) {
+      if (quote.business_organization_id && !await isBusinessQuoteProviderVerified(db.query.bind(db), quote.business_organization_id)) {
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
-          message: 'Business quote is missing its organization, location, or service profile binding.',
+          message: 'This business is not currently eligible to accept payment.',
         });
       }
 
