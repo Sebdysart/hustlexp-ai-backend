@@ -35,6 +35,10 @@ vi.mock('../../src/jobs/queues.js', () => ({
   signJobPayload: vi.fn(() => 'mock-signature'),
 }));
 
+vi.mock('../../src/services/analytics/database.js', () => ({
+  analyticsQuery: vi.fn(), AnalyticsCapacityError: class extends Error {},
+}));
+
 vi.mock('../../src/logger.js', () => {
   const base = {
     error: vi.fn(),
@@ -55,6 +59,7 @@ vi.mock('../../src/logger.js', () => {
 
 import { db } from '../../src/db.js';
 import { processOutboxEvents } from '../../src/jobs/outbox-worker.js';
+import { analyticsQuery } from '../../src/services/analytics/database.js';
 
 const mockDb = vi.mocked(db);
 
@@ -125,6 +130,37 @@ describe('processOutboxEvents', () => {
   // ──────────────────────────────────────────────────────────────────────────
 
   describe('successful enqueue', () => {
+    it('does not await a pending analytics lookup before queue delivery or bookkeeping', async () => {
+      const taskId = '11111111-1111-4111-8111-111111111111';
+      const event = makeEvent({ event_type: 'escrow.completion_release_requested', payload: { task_id: taskId } });
+      let release!: () => void;
+      vi.mocked(analyticsQuery).mockImplementationOnce(() => new Promise((resolve) => {
+        release = () => resolve({ rows: [], rowCount: 0 });
+      }));
+      setupTransactionWithRows([event]);
+      mockQueueAdd.mockResolvedValueOnce({ id: 'job-with-pending-observation' });
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+      try {
+        expect(await processOutboxEvents(10)).toEqual({ processed: 1, failed: 0, errors: [] });
+        expect(analyticsQuery).toHaveBeenCalledWith(expect.stringContaining("state='COMPLETED'"), [taskId]);
+        expect(mockDb.query).toHaveBeenCalledTimes(1);
+        expect(mockDb.query.mock.calls[0][0]).toContain('bullmq_job_id');
+      } finally { release?.(); }
+    });
+
+    it('keeps queue failure retry bookkeeping independent of analytics failure', async () => {
+      const event = makeEvent({ event_type: 'escrow.completion_release_requested', payload: { task_id: 'task-1' } });
+      vi.mocked(analyticsQuery).mockRejectedValueOnce(new Error('analytics deadline'));
+      setupTransactionWithRows([event]);
+      mockQueueAdd.mockRejectedValueOnce(new Error('queue unavailable'));
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as any);
+      const result = await processOutboxEvents(10);
+      expect(result).toEqual({ processed: 0, failed: 1, errors: [{ eventId: event.id, error: 'queue unavailable' }] });
+      expect(mockDb.query).toHaveBeenCalledTimes(1);
+      expect(mockDb.query.mock.calls[0][0]).toContain('CASE WHEN attempts <');
+      expect(mockDb.query.mock.calls[0][1]).toEqual([5, 'queue unavailable', event.id]);
+    });
+
     it("claims event inside the transaction, then persists bullmq_job_id outside", async () => {
       const event = makeEvent({ attempts: 0 });
 

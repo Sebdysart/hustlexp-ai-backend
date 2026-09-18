@@ -32,6 +32,9 @@ vi.mock('../../src/logger', () => ({
 
 vi.mock('../../src/services/AnalyticsService', () => ({
   AnalyticsService: {
+    collect: vi.fn(),
+    recordHealth: vi.fn(),
+    productDashboard: vi.fn(),
     trackEvent: vi.fn(),
     trackBatch: vi.fn(),
     getUserEvents: vi.fn(),
@@ -50,6 +53,7 @@ vi.mock('../../src/services/AnalyticsService', () => ({
 import { db } from '../../src/db';
 import { analyticsRouter } from '../../src/routers/analytics';
 import { AnalyticsService } from '../../src/services/AnalyticsService';
+import * as analyticsRateLimit from '../../src/cache/redis';
 
 const mockDb = vi.mocked(db);
 const mockAnalytics = vi.mocked(AnalyticsService);
@@ -67,6 +71,7 @@ function makePublicCaller() {
   return analyticsRouter.createCaller({
     user: null as any,
     firebaseUid: undefined as any,
+    ip: null,
   });
 }
 
@@ -74,6 +79,7 @@ function makeProtectedCaller() {
   return analyticsRouter.createCaller({
     user: { id: UUID1, email: 'user@test.com', full_name: 'User', firebase_uid: 'fb-1' } as any,
     firebaseUid: 'fb-1',
+    ip: null,
   });
 }
 
@@ -82,6 +88,7 @@ function makeAdminCaller() {
   return analyticsRouter.createCaller({
     user: { id: UUID1, email: 'admin@test.com', full_name: 'Admin', role: 'admin', firebase_uid: 'fb-admin' } as any,
     firebaseUid: 'fb-admin',
+    ip: null,
   });
 }
 
@@ -100,6 +107,65 @@ const BASE_EVENT = {
 describe('analytics router', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  describe('product analytics V1', () => {
+    const behavior = () => ({ id: UUID2, event_name: 'page_viewed' as const, event_version: 1 as const,
+      occurred_at: new Date().toISOString(), anonymous_id: DEVICE_ID, session_id: SESSION_ID, properties: {} });
+    beforeEach(() => {
+      vi.spyOn(analyticsRateLimit, 'checkRateLimit').mockResolvedValue({ allowed: true, remaining: 29 });
+      mockAnalytics.collect.mockResolvedValue({ accepted: true, duplicate: false });
+    });
+    it('accepts anonymous behavioral telemetry with no claimed user identity', async () => {
+      expect((await makePublicCaller().collect({ events: [behavior()] })).accepted).toBe(1);
+      expect(mockAnalytics.collect).toHaveBeenCalledWith(expect.anything(), { userId: undefined, internal: false });
+    });
+    it('uses the authenticated identity, not an event user_id', async () => {
+      await makeProtectedCaller().collect({ events: [behavior()] });
+      expect(mockAnalytics.collect).toHaveBeenCalledWith(expect.anything(), { userId: UUID1, internal: false });
+      await expect(makeProtectedCaller().collect({ events: [{ ...behavior(), user_id: UUID2 }] })).rejects.toThrow('Invalid analytics batch');
+    });
+    it('rejects browser success claims and oversized batches', async () => {
+      await expect(makePublicCaller().collect({ events: [{ ...behavior(), event_name: 'payment_succeeded' }] })).rejects.toThrow();
+      await expect(makePublicCaller().collect({ events: Array.from({ length: 21 }, behavior) })).rejects.toThrow();
+      expect(mockAnalytics.collect).not.toHaveBeenCalled();
+    });
+    it('drops rate-limited traffic without calling the collector', async () => {
+      vi.mocked(analyticsRateLimit.checkRateLimit).mockResolvedValue({ allowed: false, remaining: 0 });
+      expect(await makePublicCaller().collect({ events: [behavior()] })).toEqual({ accepted: 0, available: false });
+      expect(mockAnalytics.collect).not.toHaveBeenCalled();
+    });
+    it('does not expose analytics reads to anonymous or ordinary users', async () => {
+      await expect(makePublicCaller().productDashboard({ days: 30 })).rejects.toThrow();
+      const ordinary = analyticsRouter.createCaller({ user: { id: UUID1, is_admin: false } as any, firebaseUid: 'fb-1', ip: null });
+      await expect(ordinary.productDashboard({ days: 30 })).rejects.toThrow();
+      expect(mockAnalytics.productDashboard).not.toHaveBeenCalled();
+    });
+    it('degrades safely when ingestion is unavailable', async () => {
+      mockAnalytics.collect.mockRejectedValue(new Error('unavailable'));
+      expect(await makePublicCaller().collect({ events: [behavior()] })).toEqual({ accepted: 0, available: false });
+    });
+    it('processes a batch sequentially instead of exhausting its own analytics budget', async () => {
+      let release!: (value: { accepted: boolean; duplicate: boolean }) => void;
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => { entered = resolve; });
+      mockAnalytics.collect.mockImplementationOnce(() => {
+        entered();
+        return new Promise((resolve) => { release = resolve; });
+      });
+      const pending = makePublicCaller().collect({ events: [behavior(), behavior()] });
+      await started;
+      expect(mockAnalytics.collect).toHaveBeenCalledTimes(1);
+      release({ accepted: true, duplicate: false });
+      expect(await pending).toEqual({ accepted: 2, available: true });
+      expect(mockAnalytics.collect).toHaveBeenCalledTimes(2);
+    });
+    it('acknowledges a partial batch as unavailable when the shared budget drops an event', async () => {
+      mockAnalytics.collect.mockResolvedValueOnce({ accepted: true, duplicate: false })
+        .mockResolvedValueOnce({ accepted: false, reason: 'capacity' });
+      expect(await makePublicCaller().collect({ events: [behavior(), behavior()] }))
+        .toEqual({ accepted: 1, available: false });
+    });
   });
 
   // =========================================================================

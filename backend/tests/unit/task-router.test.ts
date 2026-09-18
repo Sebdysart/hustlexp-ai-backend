@@ -1137,6 +1137,14 @@ describe('task.getProof', () => {
     expect(result).toHaveProperty('videos');
   });
 
+  it('reports media lookup failures rather than pretending there are no proof images', async () => {
+    mockDb.query.mockResolvedValueOnce({ rows: [makeProofRow()], rowCount: 1 } as any);
+    mockProofService.getPhotos.mockResolvedValueOnce({ success: false, error: { code: 'DB_ERROR', message: 'internal storage detail' } } as any);
+    await expect(makeCaller().getProof({ taskId: TASK_ID })).rejects.toMatchObject({
+      code: 'INTERNAL_SERVER_ERROR', message: 'Unable to load completion proof media. Please try again.',
+    });
+  });
+
   it('throws NOT_FOUND when no proof exists', async () => {
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 

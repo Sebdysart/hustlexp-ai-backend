@@ -374,6 +374,88 @@ export const userRouter = router({
       // Normalize role: iOS sends "hustler" but DB stores "worker"
       const dbMode = normalizeRole(input.defaultMode);
 
+      // Complete registration for a token-owned row that already exists. This
+      // covers lazy-provisioned users, legacy email-linked users, and an
+      // incomplete row created by a concurrent request. Onboarding completion
+      // is represented canonically by onboarding_completed_at, not by the
+      // incidental value of is_minor.
+      const completeExistingRegistration = async (candidate: User): Promise<User> => {
+        let user = candidate;
+
+        if (!user.firebase_uid && decodedToken.email) {
+          const linked = await db.query<User>(
+            `UPDATE users
+                SET firebase_uid = $2,
+                    updated_at = NOW()
+              WHERE id = $1
+                AND firebase_uid IS NULL
+              RETURNING *`,
+            [user.id, input.firebaseUid],
+          );
+
+          user = linked.rows[0] ?? user;
+        }
+
+        if (user.firebase_uid !== input.firebaseUid) {
+          throw new TRPCError({
+            code: 'FORBIDDEN',
+            message: 'This email is already associated with another Firebase identity.',
+          });
+        }
+
+        if (user.onboarding_completed_at == null) {
+          const completed = await db.query<User>(
+            `UPDATE users
+                SET full_name = $2,
+                    phone = $3,
+                    date_of_birth = $4,
+                    is_minor = $5,
+                    default_mode = $6,
+                    onboarding_completed_at = NOW(),
+                    updated_at = NOW()
+              WHERE id = $1
+                AND firebase_uid = $7
+              RETURNING *`,
+            [
+              user.id,
+              input.fullName,
+              input.phone || null,
+              input.dateOfBirth,
+              age < 18,
+              dbMode,
+              input.firebaseUid,
+            ],
+          );
+
+          const completedUser = completed.rows[0];
+          if (!completedUser?.onboarding_completed_at) {
+            throw new TRPCError({
+              code: 'INTERNAL_SERVER_ERROR',
+              message: 'Account registration did not persist onboarding completion.',
+            });
+          }
+          user = completedUser;
+        } else if (user.default_mode !== dbMode) {
+          const updated = await db.query<User>(
+            `UPDATE users
+                SET default_mode = $2,
+                    updated_at = NOW()
+              WHERE id = $1
+                AND firebase_uid = $3
+              RETURNING *`,
+            [user.id, dbMode, input.firebaseUid],
+          );
+
+          user = updated.rows[0] ?? user;
+        }
+
+        // user.me is built from ctx.user, which may be held in the five-minute
+        // auth cache. Evict it without creating a revocation marker so the next
+        // authenticated request reloads the completed row from the database.
+        await invalidateAuthCacheForUser(user.id, input.firebaseUid, false);
+        return user;
+      };
+
       // A64-1 FIX: When decodedToken.email is absent (anonymous, phone, or
       // Sign-in-with-Apple auth), the email guard above was skipped. To prevent
       // IDOR — an attacker supplying a victim's email with their own valid token —
@@ -419,93 +501,8 @@ export const userRouter = router({
         }
 
         if (existingUser) {
-          // Lazy Firebase provisioning deliberately marks age as unverified/minor.
-          // Once the same token-owned Firebase identity supplies an adult DOB,
-          // replace that fail-closed state before returning the account.
-          if (
-            existingUser.is_minor === true &&
-            existingUser.firebase_uid === input.firebaseUid
-          ) {
-            const verified = await db.query<User>(
-              `UPDATE users
-                  SET full_name = $2,
-                      phone = $3,
-                      date_of_birth = $4,
-                      is_minor = $5,
-                      default_mode = $6,
-                      onboarding_completed_at = NOW(),
-                      updated_at = NOW()
-                WHERE id = $1
-                  AND firebase_uid = $7
-                RETURNING *`,
-              [
-                existingUser.id,
-                input.fullName,
-                input.phone || null,
-                input.dateOfBirth,
-                age < 18,
-                dbMode,
-                input.firebaseUid,
-              ],
-            );
-
-            existingUser =
-              verified.rows[0] ?? existingUser;
-          }
-          if (
-            !existingUser.firebase_uid &&
-            decodedToken.email
-          ) {
-            const linked = await db.query<User>(
-              `UPDATE users
-                  SET firebase_uid = $2,
-                      updated_at = NOW()
-                WHERE id = $1
-                  AND firebase_uid IS NULL
-                RETURNING *`,
-              [
-                existingUser.id,
-                input.firebaseUid,
-              ],
-            );
-
-            existingUser =
-              linked.rows[0] ?? existingUser;
-          }
-          if (
-            existingUser.firebase_uid &&
-            existingUser.firebase_uid !== input.firebaseUid
-          ) {
-            throw new TRPCError({
-              code: 'FORBIDDEN',
-              message:
-                'This email is already associated with another Firebase identity.',
-            });
-          }
-          // Keep the user's requested/default mode in sync.
-          if (
-            existingUser.default_mode !== dbMode &&
-            existingUser.firebase_uid === input.firebaseUid
-          ) {
-            const updated = await db.query<User>(
-              `UPDATE users
-                  SET default_mode = $2,
-                      updated_at = NOW()
-                WHERE id = $1
-                  AND firebase_uid = $3
-                RETURNING *`,
-              [
-                existingUser.id,
-                dbMode,
-                input.firebaseUid,
-              ],
-            );
-
-            existingUser =
-              updated.rows[0] ?? existingUser;
-          }
-
-          return await toMobileUser(existingUser);
+          const completedUser = await completeExistingRegistration(existingUser);
+          return await toMobileUser(completedUser);
         }
       }  
       // Phone-less registrations start at trust_tier=0 (UNVERIFIED) to restrict
@@ -564,10 +561,13 @@ export const userRouter = router({
         if (winner.account_status === 'DELETED') {
           throw new TRPCError({ code: 'FORBIDDEN', message: 'Account has been deleted' });
         }
-        return await toMobileUser(winner);
+        const completedWinner = await completeExistingRegistration(winner);
+        return await toMobileUser(completedWinner);
       }
 
-      return await toMobileUser(result.rows[0]);
+      const newUser = result.rows[0];
+      await invalidateAuthCacheForUser(newUser.id, input.firebaseUid, false);
+      return await toMobileUser(newUser);
       } catch (error) {
         log.error(
           {

@@ -127,6 +127,15 @@ function applyCompoundItemFacts(text: string, candidates: Candidate[]): void {
 
 function extractYardFacts(text: string): Candidate[] {
   const candidates: Candidate[] = [];
+  const yardWorkTypes: string[] = [];
+  if (/\b(?:mow|mowing|cut\s+(?:the\s+)?grass|cut\s+(?:the\s+)?lawn)\b/i.test(text)) yardWorkTypes.push('mowing');
+  if (/\b(?:trim|trimming|edge|edging|hedge trimming)\b/i.test(text)) yardWorkTypes.push('trimming');
+  if (/\b(?:weed|weeding|pull weeds?)\b/i.test(text)) yardWorkTypes.push('weeding');
+  if (/\b(?:leaf cleanup|clean up leaves|rake leaves|remove leaves|leaf piles?)\b/i.test(text)) yardWorkTypes.push('leaf_cleanup');
+  if (/\b(?:branch cleanup|clean up branches|remove branches|fallen branches?|tree limbs?)\b/i.test(text)) yardWorkTypes.push('branch_cleanup');
+  if (/\b(?:plant|planting)\b[^.!?]{0,35}\b(?:flowers?|plants?|shrubs?|bushes?|trees?)\b/i.test(text)) yardWorkTypes.push('planting');
+  if (/\b(?:general yard cleanup|yard cleanup|clean up (?:the\s+)?yard|tidy (?:the\s+)?yard)\b/i.test(text)) yardWorkTypes.push('general_cleanup');
+  if (yardWorkTypes.length) add(candidates, { key: 'yard_work_type', value: [...new Set(yardWorkTypes)], confidence: 0.97, evidence: 'Explicit yard-work actions.' });
   const yardSize = enumCandidate(text, 'yard_size', [
     ['small', [/\bsmall\b/i, /\btiny\b/i]],
     ['medium', [/\bmedium\b/i, /\baverage[- ]sized\b/i]],
@@ -234,12 +243,15 @@ function classifyLeakState(text: string): LeakState {
 function extractExpandedCategoryFacts(text: string, activeCategories: ReadonlySet<TaskCategory>): Candidate[] {
   const candidates: Candidate[] = [];
   if (activeCategories.has('painting')) {
-    const surface = enumCandidate(text, 'painting_surface', [
-      ['exterior_walls', [/\b(?:exterior|outside)\b[^.!?]{0,30}\b(?:walls?|house)\b/i]],
-      ['interior_walls', [/\b(?:interior|inside|living room|bedroom|kitchen|bathroom|hallway|lounge|guest room|dining room|garage|office|nursery)\s+walls?\b/i, /\b(?:paint|repaint|painting|painted|patch)\b[^.!?]{0,50}\bwalls?\b/i, /\bwall\b[^.!?]{0,30}\b(?:patch|paint|repaint)\b/i]],
-      ['ceiling', [/\bceilings?\b/i]], ['trim', [/\b(?:trim|baseboards?|moulding|molding)\b/i]],
-      ['doors', [/\b(?:front\s+)?doors?\b/i]], ['fence', [/\bfence\b/i]], ['deck', [/\bdeck\b/i]],
-    ]); if (surface && !(/\bdon['â€™]?t\s+paint\b[^.!?]*\b(?:walls?|ceiling|trim|doors?|fence|deck)\b/i.test(text) && surface.value === 'doors')) add(candidates, surface);
+    const paintingSurfaces: string[] = [];
+    if (/\b(?:exterior|outside)\b[^.!?]{0,30}\b(?:walls?|house)\b/i.test(text)) paintingSurfaces.push('exterior_walls');
+    if (/\b(?:interior|inside|living room|bedroom|kitchen|bathroom|hallway|lounge|guest room|dining room|garage|office|nursery)\s+walls?\b/i.test(text) || /\b(?:paint|repaint|painting|painted|patch)\b[^.!?]{0,50}\bwalls?\b/i.test(text) || /\bwall\b[^.!?]{0,30}\b(?:patch|paint|repaint)\b/i.test(text)) paintingSurfaces.push('interior_walls');
+    if (/\bceilings?\b/i.test(text)) paintingSurfaces.push('ceiling');
+    if (/\b(?:trim|baseboards?|moulding|molding)\b/i.test(text)) paintingSurfaces.push('trim');
+    if (/\b(?:front\s+)?doors?\b/i.test(text) && !/\bdon['’]?t\s+paint\b[^.!?]*\bdoors?\b/i.test(text)) paintingSurfaces.push('doors');
+    if (/\bfence\b/i.test(text)) paintingSurfaces.push('fence');
+    if (/\bdeck\b/i.test(text)) paintingSurfaces.push('deck');
+    if (paintingSurfaces.length) add(candidates, { key: 'painting_surface', value: [...new Set(paintingSurfaces)], confidence: 0.97, evidence: 'Explicit painting surfaces.' });
     const area = text.match(/\b(living room|bedroom|kitchen|bathroom|hallway|lounge|guest room|dining room|garage|office|nursery|front door|back fence|deck)\b/i); if (area) add(candidates, { key: 'painting_area', value: area[1].toLowerCase(), confidence: 0.95, evidence: area[0] });
     const paintingSize = enumCandidate(text, 'painting_size', [['whole_property', [/\b(?:whole|entire)\s+(?:house|home|property|building)\b/i, /\b(?:all|every)\s+(?:the\s+)?(?:walls?|rooms?)\b/i]], ['several_rooms', [/\b(?:several|multiple|a few)\s+rooms?\b/i, /\b(?:two|three|four|five|six|2|3|4|5|6)\s+rooms?\b/i]], ['one_room', [/\b(?:one|1|single)\s+room\b/i, /\b(?:paint|repaint)\s+(?:the\s+)?(?:bedroom|kitchen|bathroom|living room|office|garage)\b/i]], ['small_feature', [/\b(?:one|single)\s+(?:door|wall|fence panel|small area|section)\b/i, /\bsmall\s+(?:area|section|patch)\b/i]]]); if (paintingSize) add(candidates, paintingSize);
     const surfaceCondition = enumCandidate(text, 'surface_condition', [['damaged', [/\b(?:water[- ]damaged|badly damaged|damaged drywall|damaged wall|surface damage)\b/i]], ['peeling_or_cracked', [/\b(?:peeling|flaking|cracked|cracks)\b/i]], ['minor_wear', [/\b(?:minor wear|scuffs?|small marks?|light wear)\b/i]], ['good', [/\b(?:surface|walls?)\s+(?:is|are)\s+(?:in\s+)?good condition\b/i, /\bclean\s+(?:and\s+)?(?:undamaged\s+)?walls?\b/i]]]); if (surfaceCondition) add(candidates, surfaceCondition);
@@ -297,6 +309,12 @@ function extractExpandedCategoryFacts(text: string, activeCategories: ReadonlySe
     if (requestedOperation && (!issue || issue.value === 'repair')) issue = { key: 'plumbing_issue', value: requestedOperation, confidence: 0.98, evidence: 'Explicit requested plumbing operation.' };
     if (!issue && (leakState === 'CURRENT_POSITIVE' || leakState === 'HISTORICAL_STOPPED')) issue = { key: 'plumbing_issue', value: 'leak', confidence: 0.97, evidence: 'Explicit leak-related plumbing issue.' };
     if (issue) add(candidates, issue);
+    const plumbingScope = enumCandidate(text, 'issue_scope', [
+      ['whole_property', [/\b(?:whole|entire)\s+(?:house|home|property)\b[^.!?]{0,40}\b(?:plumbing|water|pressure|pipes?|drains?)\b/i, /\b(?:every|all)\s+(?:faucets?|fixtures?|drains?)\b/i]],
+      ['multiple_fixtures', [/\b(?:multiple|several|two|three|four)\s+(?:fixtures?|faucets?|toilets?|sinks?|drains?|areas?)\b/i]],
+      ['single_fixture', [/\b(?:one|single)\s+(?:fixture|faucet|toilet|sink|shower|drain|pipe)\b/i]],
+    ]);
+    if (plumbingScope) add(candidates, plumbingScope);
     if (/\b(?:can|able to)\s+(?:access|get to)\s+(?:the\s+)?(?:water\s+)?shutoff(?: valve)?\b/i.test(text)) setCandidate(candidates, { key: 'water_shutoff_available', value: true, confidence: 1.0, evidence: 'Accessible water shutoff.' });
     if (leakState === 'HISTORICAL_STOPPED' || leakState === 'CURRENT_NEGATED') add(candidates, { key: 'active_leak', value: false, confidence: 0.99, evidence: 'Leak explicitly inactive.' });
     else if (leakState === 'CURRENT_POSITIVE') add(candidates, { key: 'active_leak', value: true, confidence: 0.98, evidence: 'Current leak reported.' });
@@ -318,6 +336,13 @@ function extractExpandedCategoryFacts(text: string, activeCategories: ReadonlySe
     if (!requestedElectricalOperation && /\bneed(?:s)?\s+(?:a|an)\s+new\s+(?:ceiling\s+fan|fan|outlet|light|doorbell|switch|fixture)\b/i.test(text)) issue = { key: 'electrical_issue', value: 'installation', confidence: 0.98, evidence: 'New electrical fixture requested.' };
     if (/\b(?:provider|you)\b[^.!?]{0,30}\b(?:bring|supply|provide)\b[^.!?]{0,20}\b(?:them|it|fixture|light|outlet|switch|fan)\b/i.test(text)) add(candidates, { key: 'parts_provided', value: false, confidence: 0.98, evidence: 'Provider must supply electrical parts.' });
     if (issue) add(candidates, issue);
+    const electricalScope = enumCandidate(text, 'issue_scope', [
+      ['whole_property', [/\b(?:whole|entire)\s+(?:house|home|property)\b[^.!?]{0,40}\b(?:power|electrical|electricity|lights?|outlets?)\b/i, /\b(?:all|every)\s+(?:outlets?|lights?|switches?)\b/i]],
+      ['multiple_fixtures', [/\b(?:multiple|several|two|three|four)\s+(?:outlets?|lights?|switches?|fixtures?|breakers?)\b/i]],
+      ['room_or_area', [/\b(?:one|single|the)\s+(?:room|bedroom|kitchen|bathroom|garage|office|area)\b[^.!?]{0,40}\b(?:power|lights?|outlets?|electrical)\b/i]],
+      ['single_fixture', [/\b(?:one|single)\s+(?:outlet|light|switch|fixture|breaker|fan|doorbell)\b/i]],
+    ]);
+    if (electricalScope) add(candidates, electricalScope);
     if (/\b(?:has power|still has power|power is still on)\b/i.test(text)) setCandidate(candidates, { key: 'power_available', value: true, confidence: 1.0, evidence: 'Explicit power availability.' });
     if (/\b(?:already bought it|i bought it already|have the replacement|already have the replacement|replacement is already here)\b/i.test(text) && /\b(?:fan|light|switch|outlet|fixture|doorbell)\b/i.test(text)) setCandidate(candidates, { key: 'parts_provided', value: true, confidence: 1.0, evidence: 'Customer has the named electrical part.' });
     if (/\b(?:power is on|there is power|circuit has power|power available)\b/i.test(text)) add(candidates, { key: 'power_available', value: true, confidence: 0.98, evidence: 'Explicit power availability.' }); else if (/\b(?:no power|power is off|no electricity)\b/i.test(text)) add(candidates, { key: 'power_available', value: false, confidence: 0.98, evidence: 'Explicit lack of power.' });
@@ -594,6 +619,14 @@ export function extractIntakePrefill(
 
   const mountedCabinet = /\bmount\b[^.!?]{0,40}\b(?:a|an|one)?\s*cabinet\b/i.test(text); if (activeCategories.has('assembly') && mountedCabinet) { setCandidate(candidates, { key: 'assembly_type', value: 'cabinet', confidence: 0.97, evidence: 'Explicit mounted cabinet.' }); setCandidate(candidates, { key: 'assembly_count', value: 1, confidence: 0.99, evidence: 'Explicit single mounted cabinet.' }); }
   if (activeCategories.has('assembly')) {
+    const assemblyState = enumCandidate(text, 'assembly_state', [
+      ['boxed_new', [/\b(?:new|brand[- ]new)\b[^.!?]{0,40}\b(?:boxed|in the box|still boxed|flat[- ]packed|flat pack)\b/i, /\bstill\s+(?:in\s+)?(?:the\s+)?box\b/i]],
+      ['partially_assembled', [/\b(?:partially|half|partly)\s+assembled\b/i, /\bassembly\s+(?:was\s+)?started\b/i]],
+      ['disassembled', [/\b(?:disassembled|taken apart|dismantled)\b/i, /\bpreviously assembled\b[^.!?]{0,40}\b(?:taken apart|disassembled)\b/i]],
+    ]);
+    if (assemblyState) add(candidates, assemblyState);
+    if (/\b(?:instructions?|manual)\s+(?:are|is)\s+(?:available|included|here)\b|\b(?:have|got)\s+(?:the\s+)?(?:instructions?|manual)\b/i.test(text)) add(candidates, { key: 'instructions_available', value: true, confidence: 0.97, evidence: 'Assembly instructions explicitly available.' });
+    if (/\b(?:no|without)\s+(?:instructions?|manual)\b|\b(?:instructions?|manual)\s+(?:are|is)\s+(?:missing|lost|unavailable)\b/i.test(text)) setCandidate(candidates, { key: 'instructions_available', value: false, confidence: 0.98, evidence: 'Assembly instructions explicitly unavailable.' });
     const passiveAssembly = text.match(/\b(?:need|want|have)\s+(?:a|an|one)\s+([a-z][\w'-]*)\s+(?:assembled|put together)\b/i);
     if (passiveAssembly) {
       setCandidate(candidates, { key: 'assembly_type', value: passiveAssembly[1].toLowerCase(), confidence: 0.99, evidence: passiveAssembly[0] });

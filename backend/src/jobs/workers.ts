@@ -30,6 +30,7 @@ import {
   type WorkerHealthServer,
 } from './worker-health-server.js';
 import { runEngineAutomationMigration } from "./engine-automation-migration.js";
+import { verifyQueueRedisConnection } from './queues.js';
 
 // Track all registered workers and outbox interval handles for graceful shutdown
 const activeWorkers: Worker[] = [];
@@ -72,6 +73,7 @@ async function startWorkers(): Promise<void> {
   try {
     log.info('Starting HustleXP Worker Runtime...');
     await runEngineAutomationMigration();
+    await verifyQueueRedisConnection();
     // Register all BullMQ workers
     registerWorkers();
 

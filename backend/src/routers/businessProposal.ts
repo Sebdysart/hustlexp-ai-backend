@@ -1,4 +1,5 @@
 import { TRPCError } from '@trpc/server';
+import { AnalyticsService } from '../services/AnalyticsService.js';
 import { z } from 'zod';
 import { db } from '../db.js';
 import { protectedProcedure, router } from '../trpc.js';
@@ -63,13 +64,14 @@ export const businessProposalRouter = router({
     }),
   quote: protectedProcedure.input(z.object({
     proposalId: z.string().uuid(),
-    serviceProfileId: z.string().uuid(),
-    businessLocationId: z.string().uuid(),
+    serviceProfileId: z.string().uuid().optional(),
+    businessLocationId: z.string().uuid().optional(),
     proposedCustomerTotalCents: z.number().int().positive(),
     proposedPayoutCents: z.number().int().positive(),
     arrivalWindowStart: z.string().datetime(),
     arrivalWindowEnd: z.string().datetime(),
-  }).strict()).mutation(async ({ ctx, input }) => db.transaction(async (query) => {
+  }).strict()).mutation(async ({ ctx, input }) => {
+    const committed = await db.transaction(async (query) => {
     const proposalResult = await query<{ id: string; task_draft_id: string; business_organization_id: string; status: string; expires_at: Date; quote_id: string | null }>(
       `SELECT id, task_draft_id, business_organization_id, status, expires_at, quote_id
        FROM business_task_proposals WHERE id = $1 FOR UPDATE`,
@@ -123,6 +125,14 @@ export const businessProposalRouter = router({
     const quoteId = quoteResult.data.quoteId;
     await query(`UPDATE business_task_proposals SET status = 'QUOTED', quote_id = $2, responded_at = NOW(), updated_at = NOW() WHERE id = $1`, [proposal.id, quoteId]);
     return { ok: true as const, proposal_id: proposal.id, quote_id: quoteId, replayed: false as const };
-  })),
+    });
+    if (!committed.replayed) {
+      void AnalyticsService.track({ event_name: 'quote_created', deduplication_key: committed.quote_id,
+        user_id: ctx.user.id, quote_id: committed.quote_id, proposal_id: committed.proposal_id, outcome: 'committed' });
+      void AnalyticsService.track({ event_name: 'quote_submitted', deduplication_key: committed.quote_id,
+        user_id: ctx.user.id, quote_id: committed.quote_id, proposal_id: committed.proposal_id, outcome: 'committed' });
+    }
+    return committed;
+  }),
 });
 export type BusinessProposalRouter = typeof businessProposalRouter;

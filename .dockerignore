@@ -37,9 +37,10 @@ vitest.config.ts
 !README.md
 LICENSE
 
-# Scripts (dev only); retain the production provenance generator.
+# Scripts (dev only); retain production build scripts.
 scripts/*
 !scripts/write-build-identity.mjs
+!scripts/cache-task-classifier-model.mjs
 
 # Migrations (run separately, not in container)
 migrations

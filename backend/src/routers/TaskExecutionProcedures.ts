@@ -109,14 +109,15 @@ getProof: protectedProcedure
         ProofService.getPhotos(proof.id),
         ProofService.getVideos(proof.id),
       ]);
-      const photos = photosRes.success
-        ? await projectProofPhotosForViewer({
-          taskId: input.taskId,
-          proofId: proof.id,
-          viewerId: ctx.user.id,
-          photos: photosRes.data,
-        })
-        : [];
+      if (!photosRes.success || !videosRes.success) {
+        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Unable to load completion proof media. Please try again.' });
+      }
+      const photos = await projectProofPhotosForViewer({
+        taskId: input.taskId,
+        proofId: proof.id,
+        viewerId: ctx.user.id,
+        photos: photosRes.data,
+      });
       return {
         ...proof,
         photos,

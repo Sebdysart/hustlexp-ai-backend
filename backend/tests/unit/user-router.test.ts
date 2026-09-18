@@ -705,7 +705,9 @@ describe('user.register', () => {
     it('returns existing user instead of creating a duplicate', async () => {
       const existingUser = makeFakeUser({
         id: 'existing-user-id',
+        firebase_uid: validInput.firebaseUid,
         email: 'newuser@hustlexp.com',
+        onboarding_completed_at: new Date('2025-07-01T00:00:00Z'),
       });
 
       // Email ban check → not banned
@@ -728,6 +730,7 @@ describe('user.register', () => {
         is_minor: true,
       });
       const verifiedAdult = { ...lazyUser, date_of_birth: validInput.dateOfBirth, is_minor: false };
+      verifiedAdult.onboarding_completed_at = new Date('2025-07-02T00:00:00Z');
 
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockDb.query.mockResolvedValueOnce({ rows: [lazyUser], rowCount: 1 } as any);
@@ -737,9 +740,53 @@ describe('user.register', () => {
       const result = await makePublicCaller().register(validInput);
 
       expect(result).toHaveProperty('id', 'lazy-user-id');
+      expect(result).toHaveProperty('hasCompletedOnboarding', true);
       expect(mockDb.query).toHaveBeenCalledWith(
-        expect.stringContaining('SET date_of_birth = $2, is_minor = false'),
-        ['lazy-user-id', validInput.dateOfBirth, validInput.firebaseUid],
+        expect.stringContaining('onboarding_completed_at = NOW()'),
+        [
+          'lazy-user-id',
+          validInput.fullName,
+          null,
+          validInput.dateOfBirth,
+          false,
+          'worker',
+          validInput.firebaseUid,
+        ],
+      );
+      expect(invalidateAuthCacheForUser).toHaveBeenCalledWith(
+        'lazy-user-id',
+        validInput.firebaseUid,
+        false,
+      );
+    });
+
+    it('completes an incomplete adult row even when is_minor is already false', async () => {
+      const incompleteAdult = makeFakeUser({
+        id: 'incomplete-adult-id',
+        firebase_uid: validInput.firebaseUid,
+        email: validInput.email,
+        is_minor: false,
+        onboarding_completed_at: null,
+      });
+      const completedAdult = {
+        ...incompleteAdult,
+        full_name: validInput.fullName,
+        date_of_birth: validInput.dateOfBirth,
+        default_mode: 'worker' as const,
+        onboarding_completed_at: new Date('2025-07-03T00:00:00Z'),
+      };
+
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows: [incompleteAdult], rowCount: 1 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows: [completedAdult], rowCount: 1 } as any);
+      setupStatsQuery();
+
+      const result = await makePublicCaller().register(validInput);
+
+      expect(result).toHaveProperty('hasCompletedOnboarding', true);
+      expect(mockDb.query).toHaveBeenCalledWith(
+        expect.stringContaining('onboarding_completed_at = NOW()'),
+        expect.arrayContaining(['incomplete-adult-id', validInput.firebaseUid]),
       );
     });
 
@@ -864,6 +911,7 @@ describe('user.register', () => {
         firebase_uid: 'fb-new-user',
         is_banned: false,
         account_status: 'ACTIVE',
+        onboarding_completed_at: new Date('2025-07-01T00:00:00Z'),
       });
 
       // Email ban check → clear

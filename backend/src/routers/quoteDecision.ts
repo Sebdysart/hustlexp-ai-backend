@@ -1,8 +1,12 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { db } from '../db.js';
+import { isBusinessQuoteProviderVerified } from '../services/BusinessQuoteActivationService.js';
 import { NotificationService } from '../services/NotificationService.js';
 import { protectedProcedure, router } from '../trpc.js';
+import { AnalyticsService } from '../services/AnalyticsService.js';
+import { optionalCausalitySchema } from '../services/analytics/contract.js';
+import { randomUUID } from 'node:crypto';
 
 const DraftIdSchema = z.object({
   taskDraftId: z.string().uuid(),
@@ -15,6 +19,7 @@ const QuoteDecisionSchema = z.object({
 
 const AcceptQuoteDecisionSchema =
   QuoteDecisionSchema.extend({
+    analytics: optionalCausalitySchema,
     scheduledServiceDate: z
       .string()
       .regex(
@@ -78,6 +83,9 @@ export const quoteDecisionRouter = router({
         JOIN business_organizations org
           ON org.id = q.business_organization_id
         WHERE q.task_draft_id = $1
+          AND q.status NOT IN ('draft', 'pending_business_verification')
+          AND (q.status IN ('quote_ready', 'quote_send_ready', 'paid')
+               OR (org.status = 'ACTIVE' AND org.provider_enabled AND org.verification_status = 'VERIFIED'))
         ORDER BY q.created_at ASC
         `,
         [input.taskDraftId],
@@ -104,7 +112,12 @@ export const quoteDecisionRouter = router({
   accept: protectedProcedure
     .input(AcceptQuoteDecisionSchema)
     .mutation(async ({ ctx, input }) => {
-      return db.transaction(async (query) => {
+      const correlationId = input.analytics?.correlation_id || randomUUID();
+      const attemptId = input.analytics?.action_attempt_id || randomUUID();
+      void AnalyticsService.track({ event_name: 'quote_approval_requested', ...input.analytics,
+        correlation_id: correlationId, action_attempt_id: attemptId, user_id: ctx.user.id,
+        task_draft_id: input.taskDraftId, quote_id: input.quoteId, outcome: 'requested' });
+      const accepted = await db.transaction(async (query) => {
         const draftResult = await query<{
           id: string;
           quote_id: string | null;
@@ -217,6 +230,10 @@ export const quoteDecisionRouter = router({
           });
         }
 
+        if (!await isBusinessQuoteProviderVerified(query, quote.business_organization_id)) {
+          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This business quote is not currently available.' });
+        }
+
         if (
           !quote.arrival_window_start ||
           !quote.arrival_window_end
@@ -293,7 +310,7 @@ export const quoteDecisionRouter = router({
               updated_at = NOW()
           WHERE task_draft_id = $1
             AND id <> $2
-            AND status = 'submitted'
+            AND status IN ('submitted', 'pending_business_verification')
           `,
           [input.taskDraftId, input.quoteId],
         );
@@ -337,6 +354,10 @@ export const quoteDecisionRouter = router({
           replayed: false,
         };
       });
+      if (!accepted.replayed) void AnalyticsService.track({ event_name: 'quote_approved', ...input.analytics,
+        deduplication_key: input.quoteId, correlation_id: correlationId, action_attempt_id: attemptId,
+        user_id: ctx.user.id, task_draft_id: input.taskDraftId, quote_id: input.quoteId, outcome: 'committed' });
+      return accepted;
     }),
 
   reject: protectedProcedure

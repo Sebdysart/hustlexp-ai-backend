@@ -66,6 +66,24 @@ function createRedisConnection(): Redis {
   return redis;
 }
 
+export async function verifyQueueRedisConnection(): Promise<void> {
+  const connection = createRedisConnection();
+
+  try {
+    await connection.connect();
+
+    const result = await connection.ping();
+
+    if (result !== 'PONG') {
+      throw new Error(
+        `Unexpected Redis PING response: ${String(result)}`,
+      );
+    }
+  } finally {
+    connection.disconnect();
+  }
+}
+
 // ============================================================================
 // QUEUE DEFINITIONS
 // ============================================================================

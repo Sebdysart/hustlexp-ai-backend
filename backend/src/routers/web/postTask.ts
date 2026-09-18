@@ -2,9 +2,8 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import crypto from 'node:crypto';
 import { config } from '../../config.js';
-import { protectedProcedure, router } from '../../trpc.js';
+import { protectedProcedure, publicProcedure, router } from '../../trpc.js';
 import { db } from '../../db.js';
-import { notifyProviderOsProvidersOfNewDraft } from '../../lib/provider-os-notifications.js';
 import { ComplianceGuardianService } from '../../services/ComplianceGuardianService.js';
 import { deriveManualTaskRisk } from '../../services/ManualTaskRisk.js';
 import {
@@ -21,8 +20,11 @@ import { extractIntakePrefill } from '../../services/taskIntake/extractPrefill.j
 import { buildTaskFacts } from '../../services/taskIntake/buildTaskFacts.js';
 import { resolveIntakeProfile } from '../../services/taskIntake/resolveIntakeProfile.js';
 import { sanitizeIntakeAnswers } from '../../services/taskIntake/sanitizeIntakeAnswers.js';
+import { AnalyticsService } from '../../services/AnalyticsService.js';
+import { optionalCausalitySchema } from '../../services/analytics/contract.js';
 
 const PostTaskSchema = z.object({
+  analytics: optionalCausalitySchema,
   lead: z.object({
     submission_id: z.string().uuid(),
     lead_type: z.enum(['poster', 'hustler', 'business', 'founder']),
@@ -211,7 +213,9 @@ async function handlePostTask({
               category_rules_version: 'category_rules_v1',
             };
 
-            const validatedRiskLevel = deriveManualTaskRisk(taskText);
+            const validatedRiskLevel = deriveManualTaskRisk(taskText, {
+              category,
+            });
             const complianceResult =
               await ComplianceGuardianService.evaluate({
                 description: taskText,
@@ -357,19 +361,14 @@ async function handlePostTask({
             record: true,
         },
         ); */
-
-        if (!result.replayed) {
-          void notifyProviderOsProvidersOfNewDraft({
-            posterUserId,
-            draftId: result.taskDraftId,
-          });
-        }
-
-        return {
-            ok: true,
-            ...result,
-            correlation_id: correlationId,
-        };
+        if (!result.replayed) void AnalyticsService.track({
+          event_name: 'task_draft_created', deduplication_key: result.taskDraftId, user_id: posterUserId,
+          ...input.analytics, correlation_id: input.analytics?.correlation_id || correlationId,
+          task_draft_id: result.taskDraftId, category: input.task.category,
+          intake_profile: typeof input.task.structured.intake_profile === 'string' ? input.task.structured.intake_profile : undefined,
+          outcome: 'committed', properties: { intake_attempt_id: input.analytics?.intake_attempt_id },
+        });
+        return { ok: true, ...result, correlation_id: correlationId };
         } catch (error) {
             console.error('[webPostTask.start] DB/transaction failure:', error);
             throw error;
@@ -377,7 +376,7 @@ async function handlePostTask({
 }
 
 export const webPostTaskRouter = router({
-  classifyIntake: protectedProcedure
+  classifyIntake: publicProcedure
     .input(ClassifyIntakeSchema)
     .mutation(async ({ input }) => {
       const result = await classifyTask(input.raw);

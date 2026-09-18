@@ -5,34 +5,75 @@ import { Sentry } from './sentry.js';
 
 let shutdownInProgress = false;
 
-async function gracefulShutdown(server: ServerType, signal: string): Promise<void> {
+function closeHttpServer(server: ServerType): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve();
+    });
+  });
+}
+
+async function gracefulShutdown(
+  server: ServerType,
+  signal: string,
+): Promise<void> {
   if (shutdownInProgress) {
     logger.warn('Shutdown already in progress, forcing exit...');
     process.exit(1);
   }
+
   shutdownInProgress = true;
-  logger.info({ signal }, `Received ${signal}, shutting down gracefully...`);
-  server.close((error) => {
-    if (error) logger.error({ err: error }, 'Error closing HTTP server');
-    else logger.info('HTTP server closed — no new connections');
-  });
-  const drainTimeout = setTimeout(() => {
-    logger.warn('Drain timeout reached (10s), forcing shutdown...');
+
+  logger.info(
+    { signal },
+    `Received ${signal}, shutting down gracefully...`,
+  );
+
+  const forceExitTimeout = setTimeout(() => {
+    logger.fatal(
+      'Graceful shutdown timeout reached (10s), forcing exit...',
+    );
+    process.exit(1);
   }, 10_000);
+
+  forceExitTimeout.unref();
+
+  try {
+    await closeHttpServer(server);
+    logger.info('HTTP server closed — active requests drained');
+  } catch (error) {
+    logger.error(
+      { err: error },
+      'Error closing HTTP server',
+    );
+  }
+
   try {
     await db.close();
     logger.info('Database pool closed');
   } catch (error) {
     logger.error({ err: error }, 'Error closing database pool');
   }
-  clearTimeout(drainTimeout);
+
+  clearTimeout(forceExitTimeout);
   logger.info('Graceful shutdown complete');
   process.exit(0);
 }
 
 export function installProcessHandlers(server: ServerType): void {
-  process.on('SIGINT', () => gracefulShutdown(server, 'SIGINT'));
-  process.on('SIGTERM', () => gracefulShutdown(server, 'SIGTERM'));
+  process.on('SIGINT', () => {
+    void gracefulShutdown(server, 'SIGINT');
+  });
+
+  process.on('SIGTERM', () => {
+    void gracefulShutdown(server, 'SIGTERM');
+  });
+
   process.on('unhandledRejection', (reason) => {
     logger.error({ reason }, 'Unhandled promise rejection');
     Sentry.captureException(reason);

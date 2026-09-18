@@ -1,19 +1,27 @@
 import { db } from '../db.js';
+import { isBusinessQuoteProviderVerified } from './BusinessQuoteActivationService.js';
 import type { ServiceResult } from '../types.js';
 import { EscrowService } from './EscrowService.js';
 import { TaskCreateService } from './TaskCreateService.js';
+import { consumeQuoteServiceAddress, readQuoteServiceLocation } from './QuoteServiceAddressService.js';
 import {
   mapQuoteToCreateTaskParams,
   type MapQuoteToTaskParamsInput,
 } from './QuoteTaskParamsMapper.js';
 import { StaxQuotePaymentProvider } from './payment/StaxQuotePaymentProvider.js';
 import { NotificationService } from './NotificationService.js';
+import { AnalyticsService } from './AnalyticsService.js';
+import {
+  controlledTestQuotePaymentEnabled,
+  settleControlledTestQuotePayment,
+} from './ControlledTestQuotePaymentService.js';
 
 interface FinalizePaidQuoteInput {
   quoteId: string;
   quoteVersionId: string;
   posterId: string;
   paymentIntentId: string;
+  paymentMode: 'stax' | 'controlled_test';
 }
 
 interface FinalizePaidQuoteResult {
@@ -118,29 +126,41 @@ export async function finalizePaidQuote(
      */
       const quoteContext = await db.query<{
         quote_id: string;
+        quote_status: string;
         quote_version_id: string;
         selected_quote_id: string | null;
         total_cents: number;
         hustler_payout_cents: number;
         business_organization_id: string | null;
         provider_payment_id: string | null;
+        payment_provider: string | null;
+        payment_task_id: string | null;
         payment_amount_cents: number | null;
         provider_merchant_id: string | null;
         payment_platform_fee_cents: number | null;
         assessment_credit_cents: number | null;
         poster_user_id: string;
+        quote_environment: string | null;
+        quote_is_test: boolean;
       }>(
         `
         SELECT
           q.id AS quote_id,
+          q.status AS quote_status,
           qv.id AS quote_version_id,
           d.quote_id AS selected_quote_id,
           qv.total_cents,
           qv.hustler_payout_cents,
           q.business_organization_id,
+          q.environment AS quote_environment,
+          q.is_test AS quote_is_test,
           d.poster_user_id,
+          payment.provider AS payment_provider,
           payment.provider_payment_id,
+          payment.task_id AS payment_task_id,
           payment.amount_cents AS payment_amount_cents,
+          payment.platform_fee_cents AS payment_platform_fee_cents,
+          payment.provider_merchant_id,
           assessment_payment.amount_cents AS assessment_credit_cents
         FROM quotes q
         JOIN quote_versions qv
@@ -189,6 +209,33 @@ export async function finalizePaidQuote(
     if (context.provider_payment_id !== input.paymentIntentId) {
       return fail('QUOTE_PAYMENT_ID_MISMATCH', 'The supplied payment does not match the stored quote payment.');
     }
+
+    if (!['quote_ready', 'quote_send_ready', 'paid'].includes(context.quote_status)) {
+      return fail('QUOTE_NOT_PAYABLE', 'This quote is not available for payment.');
+    }
+    const expectedProvider = input.paymentMode === 'controlled_test'
+      ? 'local_test'
+      : 'stax';
+
+    if (context.payment_provider !== expectedProvider) {
+      return fail(
+        'QUOTE_PAYMENT_PROVIDER_INVALID',
+        'The quote payment provider does not match this payment flow.',
+      );
+    }
+
+    if (input.paymentMode === 'controlled_test') {
+      if (
+        !controlledTestQuotePaymentEnabled()
+        || context.quote_environment !== 'TEST'
+        || context.quote_is_test !== true
+      ) {
+        return fail(
+          'CONTROLLED_TEST_PAYMENT_DISABLED',
+          'Controlled-test quote payment is not authorized for this quote.',
+        );
+      }
+    }
     const assessmentCreditCents = Number(context.assessment_credit_cents ?? 0);
     const quotePaymentAmountCents = Number(context.payment_amount_cents);
         const totalCents = Number(context.total_cents);
@@ -199,20 +246,22 @@ export async function finalizePaidQuote(
     /*
      * Verify that the payment actually belongs to this quote.
      */
-    const verified =
-      await StaxQuotePaymentProvider.verifySucceededPayment({
+    if (input.paymentMode === 'stax') {
+      const verified =
+        await StaxQuotePaymentProvider.verifySucceededPayment({
         transactionId: input.paymentIntentId,
         quoteId: input.quoteId,
         quoteVersionId: input.quoteVersionId,
         posterId: input.posterId,
         amountCents: quotePaymentAmountCents,
-      });
+        });
 
-    if (!verified.success) {
-      return {
-        success: false,
-        error: verified.error,
-      };
+      if (!verified.success) {
+        return {
+          success: false,
+          error: verified.error,
+        };
+      }
     }
 
     /*
@@ -255,23 +304,10 @@ export async function finalizePaidQuote(
     throw new Error('QUOTE_NOT_ACCEPTED');
   }
 
-  if (
-    quote.status !== 'quote_send_ready' &&
-    quote.status !== 'quote_ready'
-  ) {
-    throw new Error('QUOTE_NOT_PAYABLE');
+	if (quote.business_organization_id && quote.status !== 'paid'
+      && !await isBusinessQuoteProviderVerified(query, quote.business_organization_id)) {
+    throw new Error('BUSINESS_NOT_VERIFIED');
   }
-  
-	const hasBusinessClaim = Boolean(quote.business_organization_id);
-
-	if (hasBusinessClaim) {
-	  if (
-	    !quote.business_location_id ||
-	    !quote.provider_service_profile_id
-	  ) {
-	    throw new Error('BUSINESS_CLAIM_BINDING_INCOMPLETE');
-	  }
-	}
 
 	if (quote.active_version_id !== input.quoteVersionId) {
 	  throw new Error('QUOTE_VERSION_NOT_ACTIVE');
@@ -330,6 +366,18 @@ export async function finalizePaidQuote(
 
       const existingPayment = paymentResult.rows[0];
 
+      if (!existingPayment) {
+        throw new Error('QUOTE_PAYMENT_NOT_FOUND');
+      }
+
+      if (existingPayment.provider !== expectedProvider) {
+        throw new Error('QUOTE_PAYMENT_PROVIDER_INVALID');
+      }
+
+      if (existingPayment.provider_payment_id !== input.paymentIntentId) {
+        throw new Error('QUOTE_PAYMENT_IDEMPOTENCY_CONFLICT');
+      }
+
       if (existingPayment?.status === 'SUCCEEDED' && existingPayment.task_id) {
         const escrowResult = await query<{ id: string }>(
           `
@@ -353,6 +401,13 @@ export async function finalizePaidQuote(
           escrowId: escrow.id,
           replayed: true,
         };
+      }
+
+      if (
+        quote.status !== 'quote_send_ready' &&
+        quote.status !== 'quote_ready'
+      ) {
+        throw new Error('QUOTE_NOT_PAYABLE');
       }
 
       if (
@@ -444,9 +499,6 @@ export async function finalizePaidQuote(
         throw new Error('QUOTE_POSTER_MISMATCH');
       }
 
-      if (!existingPayment) throw new Error('QUOTE_PAYMENT_NOT_FOUND');
-      if (existingPayment.provider !== 'stax') throw new Error('QUOTE_PAYMENT_PROVIDER_INVALID');
-      if (existingPayment.provider_payment_id !== input.paymentIntentId) throw new Error('QUOTE_PAYMENT_IDEMPOTENCY_CONFLICT');
       if (existingPayment.amount_cents !== quotePaymentAmountCents) throw new Error('QUOTE_PAYMENT_AMOUNT_MISMATCH');
             
       const taskParamsInput: MapQuoteToTaskParamsInput = {
@@ -468,6 +520,10 @@ export async function finalizePaidQuote(
       const taskParams =
         mapQuoteToCreateTaskParams(taskParamsInput);
 
+      // Durable checkout payload enters the existing encrypted task vault in the
+      // same transaction as task creation, before funding/assignment can proceed.
+      taskParams.location = await readQuoteServiceLocation(query, input.quoteVersionId, input.posterId);
+
       const taskResult =
         await TaskCreateService.materializeQuotedTaskInTransaction(
           query,
@@ -481,6 +537,8 @@ export async function finalizePaidQuote(
       }
 
       const taskId = taskResult.data.id;
+
+      await consumeQuoteServiceAddress(query, input.quoteVersionId, input.posterId, taskId);
 
       /*
        * TaskCreateService already created the pending escrow.
@@ -564,6 +622,50 @@ export async function finalizePaidQuote(
       };
     });
 
+    let finalPaymentIntentId = input.paymentIntentId;
+
+    if (input.paymentMode === 'controlled_test') {
+      const settled = await settleControlledTestQuotePayment({
+        taskId: materialized.taskId,
+        escrowId: materialized.escrowId,
+        posterId: input.posterId,
+        amountCents: quotePaymentAmountCents,
+      });
+
+      if (!settled.success) {
+        return settled;
+      }
+
+      finalPaymentIntentId = settled.data.paymentIntentId;
+
+      const rebound = await db.query(
+        `
+        UPDATE quote_payments
+        SET
+          provider_payment_id = $1,
+          updated_at = NOW()
+        WHERE quote_id = $2
+          AND quote_version_id = $3
+          AND provider = 'local_test'
+          AND provider_payment_id IN ($1, $4)
+        RETURNING id
+        `,
+        [
+          finalPaymentIntentId,
+          input.quoteId,
+          input.quoteVersionId,
+          input.paymentIntentId,
+        ],
+      );
+
+      if (!rebound.rows[0]) {
+        return fail(
+          'QUOTE_PAYMENT_IDEMPOTENCY_CONFLICT',
+          'This quote is already bound to a different payment.',
+        );
+      }
+    }
+
     /*
     * Step 3:
     * Fund the escrow.
@@ -597,7 +699,7 @@ export async function finalizePaidQuote(
     if (currentEscrowState === 'PENDING') {
       const funded = await EscrowService.fund({
         escrowId: materialized.escrowId,
-        stripePaymentIntentId: input.paymentIntentId,
+        stripePaymentIntentId: finalPaymentIntentId,
       });
 
       if (!funded.success) {
@@ -670,7 +772,7 @@ export async function finalizePaidQuote(
       [
         input.quoteId,
         input.quoteVersionId,
-        input.paymentIntentId,
+        finalPaymentIntentId,
         materialized.taskId,
       ],
     );
@@ -725,6 +827,9 @@ export async function finalizePaidQuote(
       }
     });
 
+    void AnalyticsService.track({ event_name: 'payment_succeeded', deduplication_key: input.quoteVersionId,
+      user_id: context.poster_user_id, task_id: materialized.taskId, quote_id: input.quoteId,
+      business_organization_id: context.business_organization_id || undefined, outcome: 'committed' });
     return {
       success: true,
       data: {
@@ -732,7 +837,7 @@ export async function finalizePaidQuote(
         escrowId: materialized.escrowId,
         quoteId: input.quoteId,
         quoteVersionId: input.quoteVersionId,
-        paymentIntentId: input.paymentIntentId,
+        paymentIntentId: finalPaymentIntentId,
         replayed: materialized.replayed,
       },
     };
@@ -740,6 +845,8 @@ export async function finalizePaidQuote(
     const message = err instanceof Error ? err.message : String(err);
 
     const errors: Record<string, [string, string]> = {
+      SERVICE_ADDRESS_REQUIRED: ['SERVICE_ADDRESS_REQUIRED', 'Confirm your service address on the payment page, then retry completion.'],
+      SERVICE_ADDRESS_UNAVAILABLE: ['SERVICE_ADDRESS_UNAVAILABLE', 'Your service address could not be loaded. Contact support before retrying payment.'],
       QUOTE_NOT_FOUND: [
         'QUOTE_NOT_FOUND',
         'Quote not found.',

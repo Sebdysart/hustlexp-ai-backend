@@ -1,3 +1,4 @@
+import { db } from '../../src/db';
 /**
  * Notification Router Unit Tests — notification.getList offset-based pagination
  *
@@ -278,5 +279,28 @@ describe('notification.getList — offset-based pagination (returns array)', () 
         makeUserCaller().getList({ limit: 20, offset: 0, unreadOnly: false })
       ).rejects.toThrow('Database connection lost');
     });
+  });
+});
+
+
+describe('notification.list web projection', () => {
+  beforeEach(() => vi.clearAllMocks());
+  const taskId = '10000000-0000-4000-8000-000000000001';
+  it('resolves task destinations from participant authority, not default mode', async () => {
+    mockNotificationService.getUserNotifications.mockResolvedValueOnce({ success: true, data: [
+      { ...makeNotification(), deep_link: `/tasks/${taskId}/proof` },
+    ] } as any);
+    vi.mocked(db.query).mockResolvedValueOnce({ rows: [{ id: taskId, poster_id: 'user-abc', worker_id: 'other', business_member: false }] } as any);
+    const result = await makeUserCaller().list({ limit: 20, unreadOnly: false });
+    expect(result[0].action_url).toBe(`/dashboard/tasks/${taskId}`);
+    expect(db.query).toHaveBeenCalledWith(expect.stringContaining("m.status = 'ACTIVE'"), [[taskId], 'user-abc']);
+  });
+  it('omits a legacy task action if the recipient is not a participant', async () => {
+    mockNotificationService.getUserNotifications.mockResolvedValueOnce({ success: true, data: [
+      { ...makeNotification(), deep_link: `/tasks/${taskId}` },
+    ] } as any);
+    vi.mocked(db.query).mockResolvedValueOnce({ rows: [{ id: taskId, poster_id: 'other', worker_id: 'another', business_member: false }] } as any);
+    const result = await makeUserCaller().list({ limit: 20, unreadOnly: false });
+    expect(result[0].action_url).toBeNull();
   });
 });
