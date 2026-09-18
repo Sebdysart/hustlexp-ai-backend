@@ -119,6 +119,17 @@ export async function processSMSJob(job: Job<SMSJobData>): Promise<void> {
 
       const smsRecord = smsResult.rows[0];
 
+      // Old Provider OS jobs lack organization/entitlement/recipient provenance.
+      // Fail closed at delivery as well as enqueue until the notification pass.
+      if (smsRecord.idempotency_key?.startsWith('provider_os:')) {
+        await txQuery(`UPDATE sms_outbox SET status = 'suppressed',
+          error_message = 'Provider OS notification delivery disabled pending organization provenance',
+          updated_at = NOW() WHERE id = $1 AND status IN ('pending', 'failed', 'sending')`, [smsId]);
+        return { smsRecord, claimed: false, shouldReturn: true,
+          outboxKey: smsRecord.idempotency_key } satisfies SmsClaimResult;
+      }
+
+
       // Structured log: job started
       log.info({ smsId, jobId: job.id, idempotencyKey: smsRecord.idempotency_key, currentStatus: smsRecord.status, retryCount: smsRecord.retry_count }, 'SMS job started');
 

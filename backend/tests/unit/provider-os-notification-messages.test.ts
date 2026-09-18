@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildProviderOsMessage,
+  emitProviderOsNotification,
   PROVIDER_OS_NOTIFICATION_EVENTS,
 } from '../../src/services/ProviderOsNotificationService.js';
 
@@ -53,4 +54,8 @@ describe('ProviderOsNotificationService messages', () => {
       taskTitle: null,
     })).toContain('"a new task"');
   });
+});
+
+it('fails closed for legacy user-owned premium SMS enqueue', async () => {
+  await expect(emitProviderOsNotification({ eventType: 'CLIENT_TASK_CREATED', providerUserId: 'old-member', entityType: 'task_draft', entityId: 'draft', messageBody: 'Request' })).resolves.toEqual({ emitted: false, reason: 'disabled' });
 });
