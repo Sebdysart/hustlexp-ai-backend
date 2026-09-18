@@ -38,6 +38,9 @@ export function registerTrpcRoutes(app: HustleApp): void {
   app.use('/trpc/*', async (context, next) => {
     const trpcPath = context.req.path.replace(/^\/trpc\//, '');
     const operationCount = trpcPath.split(',').length;
+    if (trpcPath.split(',').includes('task.getBusinessServiceAddress')) {
+      context.header('Cache-Control', 'private, no-store');
+    }
     if (operationCount > TRPC_MAX_BATCH_SIZE) {
       return context.json({
         error: 'Batch Too Large',
