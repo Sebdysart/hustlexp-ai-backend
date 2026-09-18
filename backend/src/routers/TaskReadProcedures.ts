@@ -225,9 +225,11 @@ getQuoteVersionByQuoteId: posterProcedure
          qv.total_cents,
          qv.id,
          qv.quote_id,
-         qv.status
+         qv.status,
+         q.status AS payment_status
        FROM quote_versions qv
        JOIN quotes q ON q.id = qv.quote_id
+         AND q.active_version_id = qv.id
          AND q.status IN ('quote_ready', 'quote_send_ready', 'paid')
        JOIN task_drafts td
          ON td.quote_id = qv.quote_id

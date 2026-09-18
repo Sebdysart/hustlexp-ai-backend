@@ -8,6 +8,7 @@ import {
   paymentCreationErrorCause,
 } from '../services/NewPaymentCreationGuard.js';
 import { finalizePaidQuote } from '../services/QuotePaymentFinalizationService.js';
+import { lockQuoteAddressForPayment } from '../services/QuoteServiceAddressService.js';
 import {
   evaluateTaskAgainstRegionPolicy,
   resolveRegionPolicy,
@@ -343,6 +344,7 @@ export const quotePaymentRouter = router({
       }
 
       if (existingPayment.rows[0]) {
+        await lockQuoteAddressForPayment(input.quoteId, input.quoteVersionId, ctx.user.id);
         const payment = existingPayment.rows[0];
 
         if (
@@ -383,6 +385,8 @@ export const quotePaymentRouter = router({
         input.quoteId,
         input.quoteVersionId,
       );
+
+      await lockQuoteAddressForPayment(input.quoteId, input.quoteVersionId, ctx.user.id);
 
       await db.query(
         `

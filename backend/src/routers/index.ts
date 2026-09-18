@@ -97,6 +97,7 @@ import { alphaTelemetryRouter } from './alphaTelemetry.js';
 import { webPostTaskRouter } from './web/postTask.js';
 
 import { quotePaymentRouter } from './quotePayment.js';
+import { customerAddressRouter } from './customerAddress.js';
 
 import { testPayoutRouter } from './testPayout.js';
 
@@ -186,6 +187,7 @@ export const appRouter = router({
   webPostTask: webPostTaskRouter,
 
   quotePayment: quotePaymentRouter,
+  customerAddress: customerAddressRouter,
 
   testPayout: testPayoutRouter,
   

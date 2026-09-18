@@ -3,6 +3,7 @@ import { isBusinessQuoteProviderVerified } from './BusinessQuoteActivationServic
 import type { ServiceResult } from '../types.js';
 import { EscrowService } from './EscrowService.js';
 import { TaskCreateService } from './TaskCreateService.js';
+import { consumeQuoteServiceAddress, readQuoteServiceLocation } from './QuoteServiceAddressService.js';
 import {
   mapQuoteToCreateTaskParams,
   type MapQuoteToTaskParamsInput,
@@ -519,6 +520,10 @@ export async function finalizePaidQuote(
       const taskParams =
         mapQuoteToCreateTaskParams(taskParamsInput);
 
+      // Durable checkout payload enters the existing encrypted task vault in the
+      // same transaction as task creation, before funding/assignment can proceed.
+      taskParams.location = await readQuoteServiceLocation(query, input.quoteVersionId, input.posterId);
+
       const taskResult =
         await TaskCreateService.materializeQuotedTaskInTransaction(
           query,
@@ -532,6 +537,8 @@ export async function finalizePaidQuote(
       }
 
       const taskId = taskResult.data.id;
+
+      await consumeQuoteServiceAddress(query, input.quoteVersionId, input.posterId, taskId);
 
       /*
        * TaskCreateService already created the pending escrow.
@@ -838,6 +845,8 @@ export async function finalizePaidQuote(
     const message = err instanceof Error ? err.message : String(err);
 
     const errors: Record<string, [string, string]> = {
+      SERVICE_ADDRESS_REQUIRED: ['SERVICE_ADDRESS_REQUIRED', 'Confirm your service address on the payment page, then retry completion.'],
+      SERVICE_ADDRESS_UNAVAILABLE: ['SERVICE_ADDRESS_UNAVAILABLE', 'Your service address could not be loaded. Contact support before retrying payment.'],
       QUOTE_NOT_FOUND: [
         'QUOTE_NOT_FOUND',
         'Quote not found.',
