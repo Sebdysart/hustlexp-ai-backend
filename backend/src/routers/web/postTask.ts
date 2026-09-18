@@ -2,7 +2,7 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import crypto from 'node:crypto';
 import { config } from '../../config.js';
-import { protectedProcedure, router } from '../../trpc.js';
+import { protectedProcedure, publicProcedure, router } from '../../trpc.js';
 import { db } from '../../db.js';
 import { ComplianceGuardianService } from '../../services/ComplianceGuardianService.js';
 import { deriveManualTaskRisk } from '../../services/ManualTaskRisk.js';
@@ -376,7 +376,7 @@ async function handlePostTask({
 }
 
 export const webPostTaskRouter = router({
-  classifyIntake: protectedProcedure
+  classifyIntake: publicProcedure
     .input(ClassifyIntakeSchema)
     .mutation(async ({ input }) => {
       const result = await classifyTask(input.raw);
