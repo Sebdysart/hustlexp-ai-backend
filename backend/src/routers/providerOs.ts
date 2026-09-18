@@ -1,3 +1,5 @@
+import { writeProviderOsEntitlement } from '../services/ProviderOsEntitlementService.js';
+import { createProviderOsPurchase, getProviderOsPurchaseState, refreshProviderOsPurchase, inspectProviderOsPurchases, completeControlledProviderOsPurchase } from '../services/ProviderOsPurchaseService.js';
 import { listProviderOsQuotes, getProviderOsQuote } from '../services/ProviderOsQuoteHistory.js';
 import { db } from '../db.js';
 import { getProviderOsAccessStatus } from '../services/ProviderOsAccess.js';
@@ -31,6 +33,22 @@ function unwrap<T>(result: ServiceResult<T>): T {
 }
 
 export const providerOsRouter = router({
+  purchaseStatus: protectedProcedure
+    .input(z.object({ organizationId: z.string().uuid() }).strict())
+    .query(({ ctx, input }) => getProviderOsPurchaseState(input.organizationId, ctx.user.id)),
+  createPurchase: protectedProcedure
+    .input(z.object({ organizationId: z.string().uuid() }).strict())
+    .mutation(({ ctx, input }) => createProviderOsPurchase(input.organizationId, ctx.user.id)),
+  refreshPurchase: protectedProcedure
+    .input(z.object({ organizationId: z.string().uuid(), purchaseId: z.string().uuid() }).strict())
+    .mutation(({ ctx, input }) => refreshProviderOsPurchase(input.organizationId, ctx.user.id, input.purchaseId)),
+  completeControlledPurchase: protectedProcedure
+    .input(z.object({ organizationId: z.string().uuid(), purchaseId: z.string().uuid() }).strict())
+    .mutation(({ ctx, input }) => completeControlledProviderOsPurchase(input.organizationId, ctx.user.id, input.purchaseId)),
+  inspectPurchases: operationsAdminProcedure
+    .input(z.object({ organizationId: z.string().uuid() }).strict())
+    .query(({ input }) => inspectProviderOsPurchases(input.organizationId)),
+
   accessStatus: protectedProcedure
     .input(z.object({ organizationId: z.string().uuid() }).strict())
     .query(({ ctx, input }) => getProviderOsAccessStatus({ ...input, actorId: ctx.user.id })),
@@ -61,27 +79,7 @@ export const providerOsRouter = router({
         if (input.status === 'active' && (org.rows[0].status !== 'ACTIVE' || !org.rows[0].provider_enabled)) {
           throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Business must be active and provider-enabled.' });
         }
-        const before = await query(`SELECT * FROM provider_os_entitlements WHERE organization_id = $1`, [input.organizationId]);
-        const result = await query(`INSERT INTO provider_os_entitlements
-          (organization_id, status, starts_at, expires_at, granted_by_user_id, granted_at,
-           changed_by_user_id, suspended_at, revoked_at, reason)
-          VALUES ($1, $2::text, NOW(), $3::timestamptz,
-            CASE WHEN $2::text = 'active' THEN $4::uuid ELSE NULL END,
-            CASE WHEN $2::text = 'active' THEN NOW() ELSE NULL END, $4,
-            CASE WHEN $2::text = 'suspended' THEN NOW() ELSE NULL END,
-            CASE WHEN $2::text = 'revoked' THEN NOW() ELSE NULL END, $5)
-          ON CONFLICT (organization_id) DO UPDATE SET status = EXCLUDED.status,
-            starts_at = CASE WHEN EXCLUDED.status = 'active' THEN NOW() ELSE provider_os_entitlements.starts_at END,
-            expires_at = CASE WHEN EXCLUDED.status = 'active' THEN EXCLUDED.expires_at ELSE provider_os_entitlements.expires_at END,
-            granted_by_user_id = COALESCE(EXCLUDED.granted_by_user_id, provider_os_entitlements.granted_by_user_id),
-            granted_at = COALESCE(EXCLUDED.granted_at, provider_os_entitlements.granted_at),
-            changed_by_user_id = EXCLUDED.changed_by_user_id, suspended_at = EXCLUDED.suspended_at,
-            revoked_at = EXCLUDED.revoked_at, reason = EXCLUDED.reason, updated_at = NOW()
-          RETURNING *`, [input.organizationId, input.status, input.status === 'active' ? input.expiresAt ?? null : null, ctx.user.id, input.reason]);
-        await query(`INSERT INTO ops_action_audit (actor_user_id, actor_label, action, target_type, target_id, meta)
-          VALUES ($1, 'ops', 'PROVIDER_OS_ENTITLEMENT_CHANGED', 'business_organization', $2, $3::jsonb)`,
-          [ctx.user.id, input.organizationId, JSON.stringify({ before: before.rows[0] ?? null, after: result.rows[0] })]);
-        return { entitlement: result.rows[0] };
+        return writeProviderOsEntitlement(query, { ...input, actorId: ctx.user.id });
       });
     }),
 

@@ -1,5 +1,6 @@
+import type { StandaloneProductPurchase, ProductPaymentVerification } from './payment/StandaloneProductPaymentProvider.js';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { db } from '../db.js';
+import { db, type QueryFn } from '../db.js';
 import type { ServiceResult } from '../types.js';
 
 const INTENT_RE = /^pi_hxos_test_[a-f0-9]{32}$/;
@@ -232,4 +233,116 @@ export const LocalCertificationPaymentProvider = {
     }
     return { success: true, data: { status: 'succeeded', amountCents: result.rows[0].amount_cents } };
   },
+
+  /** Standalone controlled product lane. Uses the existing secret/gate, never task or escrow rows. */
+  createProductIntent: async (purchase: StandaloneProductPurchase): Promise<{ id: string }> => {
+    assertControlledProductEnabled();
+    const id = `pi_hxos_product_test_${hmac(`product-intent:${purchase.id}`).slice(0, 32)}`;
+    const secretHash = digest(hmac(`product-confirm:${purchase.id}`));
+    return db.transaction(async (query) => {
+      await query(
+        `INSERT INTO hxos_local_test_product_intents
+        (id,purchase_id,organization_id,purchaser_user_id,product_code,amount_cents,currency,period_days,client_secret_hash)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (purchase_id) DO NOTHING`,
+        [
+          id,
+          purchase.id,
+          purchase.organization_id,
+          purchase.purchaser_user_id,
+          purchase.product_code,
+          purchase.amount_cents,
+          purchase.currency,
+          purchase.period_days,
+          secretHash,
+        ]
+      );
+      const intent = await readProductIntent(query, { ...purchase, provider_payment_id: id });
+      if (!equalHex(intent.client_secret_hash, secretHash))
+        throw new Error('Controlled product secret mismatch');
+      await query(
+        `INSERT INTO hxos_local_test_product_events(payment_intent_id,event_type,idempotency_key)
+        VALUES($1,'intent_created',$2) ON CONFLICT(idempotency_key) DO NOTHING`,
+        [id, `product-created:${id}`]
+      );
+      return { id };
+    });
+  },
+  confirmProductIntent: async (
+    purchase: StandaloneProductPurchase,
+    query: QueryFn
+  ): Promise<void> => {
+    assertControlledProductEnabled();
+    const intent = await readProductIntent(query, purchase, true);
+    if (!equalHex(intent.client_secret_hash, digest(hmac(`product-confirm:${purchase.id}`))))
+      throw new Error('Controlled product secret mismatch');
+    if (intent.status === 'succeeded') return;
+    if (intent.status !== 'requires_confirmation')
+      throw new Error('Controlled product payment is not confirmable');
+    await query(
+      "UPDATE hxos_local_test_product_intents SET status='succeeded',succeeded_at=NOW() WHERE id=$1",
+      [intent.id]
+    );
+    await query(
+      `INSERT INTO hxos_local_test_product_events(payment_intent_id,event_type,idempotency_key)
+      VALUES($1,'intent_succeeded',$2) ON CONFLICT(idempotency_key) DO NOTHING`,
+      [intent.id, `product-succeeded:${intent.id}`]
+    );
+  },
+  verifyProductIntent: async (
+    purchase: StandaloneProductPurchase
+  ): Promise<ProductPaymentVerification> => {
+    assertControlledProductEnabled();
+    const intent = await readProductIntent(db.query.bind(db), purchase);
+    if (intent.status === 'succeeded') return { state: 'paid', transactionId: intent.id };
+    return { state: intent.status === 'requires_confirmation' ? 'pending' : intent.status };
+  },
 };
+
+interface ProductIntentRow {
+  id: string;
+  purchase_id: string;
+  organization_id: string;
+  purchaser_user_id: string | null;
+  product_code: string;
+  amount_cents: number;
+  currency: string;
+  period_days: number;
+  is_test: boolean;
+  client_secret_hash: string;
+  status: 'requires_confirmation' | 'succeeded' | 'failed' | 'canceled';
+}
+function assertControlledProductEnabled(): void {
+  if (
+    process.env.NODE_ENV === 'production' ||
+    process.env.PAYMENT_PROVIDER !== 'local_test' ||
+    process.env.PROVIDER_OS_TEST_PURCHASE_ENABLED !== 'true' ||
+    !localCertificationPaymentEnabled()
+  ) {
+    throw new Error('Controlled product payments are disabled');
+  }
+}
+async function readProductIntent(
+  query: QueryFn,
+  p: StandaloneProductPurchase,
+  lock = false
+): Promise<ProductIntentRow> {
+  const result = await query<ProductIntentRow>(
+    `SELECT * FROM hxos_local_test_product_intents WHERE id=$1 ${lock ? 'FOR UPDATE' : ''}`,
+    [p.provider_payment_id]
+  );
+  const r = result.rows[0];
+  if (
+    !r ||
+    r.purchase_id !== p.id ||
+    r.organization_id !== p.organization_id ||
+    r.purchaser_user_id !== p.purchaser_user_id ||
+    r.product_code !== p.product_code ||
+    r.amount_cents !== p.amount_cents ||
+    r.currency !== p.currency ||
+    r.period_days !== p.period_days ||
+    !r.is_test ||
+    !p.test_mode
+  )
+    throw new Error('Controlled product payment binding mismatch');
+  return r;
+}

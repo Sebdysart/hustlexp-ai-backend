@@ -197,3 +197,10 @@ it('requires explicit organization context and rejects client origin on acquisit
     acquisitionOrigin: 'claim_link',
   } as never)).rejects.toThrow();
 });
+
+it.each(['amountCents','periodDays','productCode','providerPaymentId','status'])('rejects client-controlled purchase field %s',async field=> {
+  await expect(caller.createPurchase({organizationId:ORG,[field]:'untrusted'} as never)).rejects.toThrow();
+});
+it('rejects client status and payment IDs on controlled completion',async()=> {
+  await expect(caller.completeControlledPurchase({organizationId:ORG,purchaseId:DRAFT,status:'succeeded'} as never)).rejects.toThrow();
+});
