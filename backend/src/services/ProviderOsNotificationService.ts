@@ -1,5 +1,5 @@
-/** Provider OS SMS is deliberately disabled during the organization migration.
- * Message templates remain for the later durable organization notification pass. */
+/** Legacy user-owned API retained only as a permanently disabled compatibility stub.
+ * New organization-owned delivery uses ProviderOsPremiumEvents and database triggers. */
 
 export const PROVIDER_OS_NOTIFICATION_EVENTS = [
   'CLIENT_ONBOARDED',
@@ -32,8 +32,7 @@ export interface ProviderOsNotificationEmitResult {
   eventId?: string;
 }
 
-/** Disabled until organization ownership, recipient membership, preferences and
- * durable event provenance are carried end-to-end. Never enqueue user-owned SMS. */
+/** Never enqueue user-owned SMS. Legacy callers cannot opt into the v2 event path. */
 export async function emitProviderOsNotification(
   _input: ProviderOsNotificationEmitInput,
 ): Promise<ProviderOsNotificationEmitResult> {

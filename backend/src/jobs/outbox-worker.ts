@@ -166,7 +166,10 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
             outbox_idempotency_key: event.idempotency_key,
             payload: jobPayload,
           },
-          { jobId: bullMqJobId(event.idempotency_key) }
+          { jobId: bullMqJobId(event.idempotency_key),
+            ...(event.idempotency_key.startsWith('provider_os:v2:')
+              ? { removeOnComplete: true, removeOnFail: true } : {}),
+          }
         );
 
         // Persist the BullMQ job ID now that we have it (row already 'enqueued').
@@ -272,6 +275,25 @@ export interface OutboxWorkerHandles {
   trustTierInterval: NodeJS.Timeout;
 }
 
+async function pollOutbox() {
+  try {
+    // Recover only v2 premium dispatch leases, in bounded lock-skipping batches.
+    // Their DB ledgers remain authoritative; terminal queue jobs are removable.
+    await db.query(`WITH expired AS (
+      SELECT id FROM outbox_events
+      WHERE left(idempotency_key, 15) = 'provider_os:v2:' AND status = 'enqueued'
+        AND enqueued_at < NOW() - INTERVAL '10 minutes'
+      ORDER BY enqueued_at LIMIT 100 FOR UPDATE SKIP LOCKED
+    ) UPDATE outbox_events event SET
+      status = CASE WHEN event.attempts < $1 THEN 'pending' ELSE 'failed' END,
+      error_message = 'premium_dispatch_lease_expired'
+      FROM expired WHERE event.id = expired.id`, [MAX_OUTBOX_ATTEMPTS]);
+  } catch (error) {
+    log.error({ err: error }, 'Premium dispatch recovery failed; ordinary outbox continues');
+  }
+  return processOutboxEvents(100);
+}
+
 /**
  * Start outbox worker loop
  * Continuously polls outbox_events table and enqueues BullMQ jobs
@@ -287,7 +309,7 @@ export function startOutboxWorker(intervalMs: number = 5000): OutboxWorkerHandle
   log.info({ intervalMs }, 'Starting outbox worker loop');
 
   // Initial poll (immediate)
-  processOutboxEvents(100).catch(error => {
+  pollOutbox().catch(error => {
     log.error({ err: error }, 'Outbox worker initial poll error');
   });
 
@@ -409,7 +431,7 @@ export function startOutboxWorker(intervalMs: number = 5000): OutboxWorkerHandle
 
   const outboxInterval = setInterval(async () => {
     try {
-      const result = await processOutboxEvents(100);
+      const result = await pollOutbox();
       if (result.processed > 0 || result.failed > 0) {
         log.info({ processed: result.processed, failed: result.failed }, 'Outbox poll complete');
       }

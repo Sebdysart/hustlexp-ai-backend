@@ -82,6 +82,9 @@ async function notifyTransferFailed(job: Job): Promise<void> {
 }
 
 const notificationHandlers: Record<string, JobHandler> = {
+  'provider_os.premium_event': async (job) => {
+    await (await import('../services/ProviderOsPremiumEvents.js')).processProviderOsPremiumEvent(job.data.aggregate_id);
+  },
   'email.send_requested': processEmailJob,
   'push.send_requested': async (job) => (await import('./push-worker.js')).processPushJob(job),
   'sms.send_requested': async (job) => (await import('./sms-worker.js')).processSMSJob(job),

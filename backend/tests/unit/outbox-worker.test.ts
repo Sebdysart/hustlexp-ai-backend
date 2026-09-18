@@ -35,6 +35,9 @@ vi.mock('../../src/jobs/queues.js', () => ({
   signJobPayload: vi.fn(() => 'mock-signature'),
 }));
 
+// This worker test does not exercise account deletion or payment services.
+vi.mock('../../src/services/GDPRService.js', () => ({ GDPRService: {} }));
+
 vi.mock('../../src/services/analytics/database.js', () => ({
   analyticsQuery: vi.fn(), AnalyticsCapacityError: class extends Error {},
 }));
@@ -383,6 +386,16 @@ describe('processOutboxEvents', () => {
       expect(result.failed).toBe(1);
       expect(result.errors[0].eventId).toBe('event-fail');
     });
+  });
+
+  it('removes terminal v2 queue jobs so durable retries can reuse their job ID', async () => {
+    const event = makeEvent({ event_type: 'provider_os.premium_event', queue_name: 'user_notifications',
+      idempotency_key: 'provider_os:v2:event:event-1' });
+    setupTransactionWithRows([event]);
+    mockQueueAdd.mockResolvedValue({ id: 'premium-job' });
+    mockDb.query.mockResolvedValue({ rows: [], rowCount: 1 } as never);
+    await processOutboxEvents(10);
+    expect(mockQueueAdd.mock.calls[0][3]).toMatchObject({ removeOnComplete: true, removeOnFail: true });
   });
 
   // ──────────────────────────────────────────────────────────────────────────
