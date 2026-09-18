@@ -184,6 +184,7 @@ export const quoteDecisionRouter = router({
         const quoteResult = await query<{
           id: string;
           business_organization_id: string;
+          acquisition_origin: string | null;
           active_version_id: string | null;
           status: string;
           arrival_window_start: Date | null;
@@ -193,6 +194,7 @@ export const quoteDecisionRouter = router({
           SELECT
             q.id,
             q.business_organization_id,
+            q.acquisition_origin,
             q.active_version_id,
             q.status,
             qv.arrival_window_start,
@@ -321,7 +323,9 @@ export const quoteDecisionRouter = router({
           message: 'The customer accepted your quote.',
           entityType: 'quote',
           entityId: input.quoteId,
-          actionUrl: `/business/claims/${input.taskDraftId}`,
+          actionUrl: quote.acquisition_origin === 'provider_os'
+            ? `/provider-os/quotes/${input.quoteId}?organizationId=${quote.business_organization_id}`
+            : `/business/claims/${input.taskDraftId}`,
           dedupeKey: `quote-accepted:${input.quoteId}`,
         });
 
@@ -389,8 +393,8 @@ export const quoteDecisionRouter = router({
           });
         }
 
-        const quoteOwner = await query<{ business_organization_id: string }>(
-          `SELECT business_organization_id FROM quotes WHERE id = $1 AND task_draft_id = $2 FOR UPDATE`,
+        const quoteOwner = await query<{ business_organization_id: string; acquisition_origin: string | null }>(
+          `SELECT business_organization_id, acquisition_origin FROM quotes WHERE id = $1 AND task_draft_id = $2 FOR UPDATE`,
           [input.quoteId, input.taskDraftId],
         );
         const updated = await query<{ id: string }>(
@@ -421,7 +425,9 @@ export const quoteDecisionRouter = router({
             message: 'The customer declined your quote.',
             entityType: 'quote',
             entityId: input.quoteId,
-            actionUrl: `/business/claims/${input.taskDraftId}`,
+            actionUrl: quoteOwner.rows[0]?.acquisition_origin === 'provider_os'
+              ? `/provider-os/quotes/${input.quoteId}?organizationId=${organizationId}`
+              : `/business/claims/${input.taskDraftId}`,
             dedupeKey: `quote-rejected:${input.quoteId}`,
           });
         }

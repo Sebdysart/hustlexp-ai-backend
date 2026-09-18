@@ -109,6 +109,7 @@ export const businessProposalRouter = router({
     if (draft.status === 'abandoned') throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This task is no longer available.' });
 
     const quoteResult = await createBusinessQuoteInTransaction(query, {
+      acquisitionOrigin: 'direct_proposal',
       draft,
       organizationId: proposal.business_organization_id,
       actorId: ctx.user.id,

@@ -34,7 +34,7 @@ describe('task draft photo read projection', () => {
       taskDraftId: DRAFT_ID,
       authority: { kind: 'CLAIM_PREVIEW', claimLinkId: CLAIM_LINK_ID },
       storageKeys: [{ photoId: PHOTO_ID, storageKey: 'canonical/task-draft-photo/private.jpg' }],
-    });
+    }, { query });
     expect(result).toEqual([{
       id: PHOTO_ID,
       uploadReceiptId: '40000000-0000-4000-8000-000000000001',

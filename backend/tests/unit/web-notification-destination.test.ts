@@ -33,3 +33,12 @@ describe('web notification destinations', () => {
     `app://content/${id}`, `app://moderation/${id}`, 'app://profile', 'app://admin/fraud', `app://expertise/invite/${id}`,
   ])('omits unsupported or unsafe web destinations: %s', (input) => expect(webNotificationDestination(input)).toBeNull());
 });
+
+it('preserves only concrete org-scoped Provider OS quote destinations', () => {
+  const destination = `/provider-os/quotes/${id}?organizationId=${id}`;
+  expect(webNotificationDestination(destination)).toBe(destination);
+  for (const value of [`/provider-os/quotes/${id}`, `${destination}&redirect=//evil.test`,
+    `${destination}#other`, `/provider-os/quotes/${id}?organizationId=other`]) {
+    expect(webNotificationDestination(value)).toBeNull();
+  }
+});

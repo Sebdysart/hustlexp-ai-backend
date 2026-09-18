@@ -56,7 +56,7 @@ export async function listDeliveredTaskDraftPhotos(
     taskDraftId: params.taskDraftId,
     authority: params.authority,
     storageKeys: result.rows.map((row) => ({ photoId: row.id, storageKey: row.canonical_key })),
-  });
+  }, { query });
 
   return result.rows.flatMap((row) => {
     const delivery = signed.get(row.id);

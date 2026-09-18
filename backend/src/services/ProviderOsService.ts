@@ -7,6 +7,7 @@ import {
   createBusinessQuoteInTransaction,
   validateBusinessQuoteContext,
 } from './BusinessClaimService.js';
+import { getTaskFactsForDisplay } from './taskIntake/getTaskFactsForDisplay.js';
 import { computePreferredArrivalWindow } from './QuoteTiming.js';
 import {
   isProviderOsEligibleDraft,
@@ -41,8 +42,10 @@ export interface ProviderOsDraftSummary {
 }
 
 export interface ProviderOsDraftDetail extends ProviderOsDraftSummary {
+  taskFacts: ReturnType<typeof getTaskFactsForDisplay>;
   rawInput: string;
   quoteId: string | null;
+  existingQuote: { id: string; status: string; acquisition_origin: string | null } | null;
   preferredWindow: string;
   preferredArrivalWindowStart: string;
   preferredArrivalWindowEnd: string;
@@ -287,6 +290,8 @@ export async function listProviderOsDrafts(input: {
          JOIN users u ON u.id = d.poster_user_id AND u.account_status = 'ACTIVE'
         WHERE d.poster_user_id IS NOT NULL
           AND ($2::uuid IS NULL OR d.poster_user_id = $2)
+          AND d.claimed_at IS NULL AND d.task_id IS NULL AND d.quote_id IS NULL
+          AND d.status = ANY($3::text[])
           AND NOT EXISTS (
             SELECT 1
             FROM quotes q
@@ -296,19 +301,12 @@ export async function listProviderOsDrafts(input: {
           )
         ORDER BY d.created_at DESC
         LIMIT 100`,
-      [input.organizationId, input.posterUserId ?? null],
+      [input.organizationId, input.posterUserId ?? null, [...PROVIDER_OS_ELIGIBLE_DRAFT_STATUSES]],
     );
 
     return {
       success: true,
       data: result.rows
-        .filter((row) => isProviderOsEligibleDraft({
-          status: row.status,
-          claimedAt: row.claimed_at,
-          taskId: row.task_id,
-          posterUserId: row.poster_user_id,
-          quoteId: row.quote_id,
-        }))
         .map((row) => ({
           id: row.id,
           posterUserId: row.poster_user_id,
@@ -393,9 +391,9 @@ export async function getProviderOsDraft(input: {
       return failure('INVALID_STATE', 'This request is no longer an unclaimed Provider OS draft.');
     }
 
-    const alreadyQuoted = await query<{ id: string }>(
+    const alreadyQuoted = await query<{ id: string; status: string; acquisition_origin: string | null }>(
       `
-      SELECT id
+      SELECT id, status, acquisition_origin
       FROM quotes
       WHERE task_draft_id = $1
         AND business_organization_id = $2
@@ -404,10 +402,6 @@ export async function getProviderOsDraft(input: {
       `,
       [row.id, input.organizationId],
     );
-    if (alreadyQuoted.rows[0]) {
-      return failure('INVALID_STATE', 'This request is no longer an unclaimed Provider OS draft.');
-    }
-
     const preferredWindow = preferredWindowFromStructured(row.structured);
     const customerWindow = computePreferredArrivalWindow(preferredWindow);
 
@@ -422,12 +416,14 @@ export async function getProviderOsDraft(input: {
         status: row.status,
         scopeSummary: row.scope_summary ?? '',
         rawInput: row.raw_input,
+        taskFacts: getTaskFactsForDisplay({ rawInput: row.raw_input, category: row.category, structured: row.structured }),
         zip: row.zip,
         region: row.region,
         estPriceMinCents: row.est_price_min_cents,
         estPriceMaxCents: row.est_price_max_cents,
         createdAt: row.created_at.toISOString(),
         quoteId: row.quote_id,
+        existingQuote: alreadyQuoted.rows[0] ?? null,
         preferredWindow,
         preferredArrivalWindowStart: customerWindow.arrivalStart.toISOString(),
         preferredArrivalWindowEnd: customerWindow.arrivalEnd.toISOString(),
@@ -553,6 +549,7 @@ export async function setProviderOsDraftQuote(input: {
       );
 
       const quoteWrite = await createBusinessQuoteInTransaction(query, {
+        acquisitionOrigin: 'provider_os',
         draft: {
           id: draft.id,
           title: draft.title,

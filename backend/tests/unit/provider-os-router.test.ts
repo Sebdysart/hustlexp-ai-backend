@@ -187,3 +187,13 @@ it('allows operations capability to grant with an atomic before/after audit', as
   expect(audit?.[1]?.slice(0, 2)).toEqual([ACTOR, ORG]);
   expect(JSON.parse(String(audit?.[1]?.[2]))).toEqual({ before: null, after: { organization_id: ORG, status: 'active' } });
 });
+
+it('requires explicit organization context and rejects client origin on acquisition', async () => {
+  await expect(caller.listQuotes({} as never)).rejects.toThrow();
+  await expect(caller.getQuote({ quoteId: DRAFT } as never)).rejects.toThrow();
+  await expect(caller.setQuote({ draftId: DRAFT, organizationId: ORG,
+    proposedCustomerTotalCents: 12000, proposedPayoutCents: 10000,
+    arrivalWindowStart: '2026-10-01T12:00:00.000Z', arrivalWindowEnd: '2026-10-02T23:59:59.000Z',
+    acquisitionOrigin: 'claim_link',
+  } as never)).rejects.toThrow();
+});

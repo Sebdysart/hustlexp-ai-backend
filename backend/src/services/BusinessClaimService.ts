@@ -43,6 +43,7 @@ function failure(code: string, message: string): ServiceResult<never> {
 }
 
 type CreateBusinessQuoteInput = {
+  acquisitionOrigin: 'claim_link' | 'direct_proposal' | 'provider_os';
   draft: { id: string; title: string | null; scope_summary: string | null; poster_user_id: string };
   organizationId: string;
   actorId: string;
@@ -135,11 +136,11 @@ export async function createBusinessQuoteInTransaction(
     `INSERT INTO quotes (
        task_draft_id, title, status, environment, is_test,
        business_organization_id, business_location_id,
-       provider_service_profile_id, claimed_by_user_id
-     ) VALUES ($1, $2, $5, 'TEST', TRUE, $3, NULL, NULL, $4)
+       provider_service_profile_id, claimed_by_user_id, acquisition_origin
+     ) VALUES ($1, $2, $5, 'TEST', TRUE, $3, NULL, NULL, $4, $6)
      RETURNING id`,
     [input.draft.id, input.draft.title ?? 'Business Quote', input.organizationId, input.actorId,
-      input.pendingBusinessVerification ? PENDING_BUSINESS_VERIFICATION : 'draft'],
+      input.pendingBusinessVerification ? PENDING_BUSINESS_VERIFICATION : 'draft', input.acquisitionOrigin],
   );
   const quoteId = quoteResult.rows[0]?.id;
   if (!quoteId) return { success: false as const, error: { code: 'QUOTE_CREATE_FAILED', message: 'Unable to create the business quote.' } };
@@ -159,7 +160,7 @@ export async function createBusinessQuoteInTransaction(
       input.draft.scope_summary ?? input.draft.title ?? 'Task',
       input.proposedCustomerTotalCents,
       input.proposedPayoutCents,
-      JSON.stringify({ business_claim: true, business_organization_id: input.organizationId, platform_margin_cents: platformMarginCents }),
+      JSON.stringify({ acquisition_origin: input.acquisitionOrigin, business_claim: input.acquisitionOrigin === 'claim_link', business_organization_id: input.organizationId, platform_margin_cents: platformMarginCents }),
       payToken,
       arrivalWindowStart,
       arrivalWindowEnd,
@@ -280,6 +281,7 @@ export async function claimBusinessTask(
       }
 
       const quoteCreateResult = await createBusinessQuoteInTransaction(query, {
+        acquisitionOrigin: 'claim_link',
         draft,
         organizationId: input.organizationId,
         actorId: input.actorId,
@@ -476,6 +478,7 @@ export async function quoteAfterAssessment(input: {
       if (quoteExpiresAt <= new Date()) return failure('QUOTE_WINDOW_TOO_SOON', 'The proposed service window is too soon to create this quote.');
 
       const quoteCreateResult = await createBusinessQuoteInTransaction(query, {
+        acquisitionOrigin: 'claim_link',
         draft,
         organizationId: input.organizationId,
         actorId: input.actorId,

@@ -1,3 +1,4 @@
+import { listProviderOsQuotes, getProviderOsQuote } from '../services/ProviderOsQuoteHistory.js';
 import { db } from '../db.js';
 import { getProviderOsAccessStatus } from '../services/ProviderOsAccess.js';
 import { TRPCError } from '@trpc/server';
@@ -137,6 +138,16 @@ export const providerOsRouter = router({
         arrivalWindowEnd: input.arrivalWindowEnd,
       }),
     )),
+
+  listQuotes: protectedProcedure
+    .input(z.object({ organizationId: z.string().uuid(),
+      cursor: z.object({ createdAt: z.string().datetime(), id: z.string().uuid() }).strict().optional(),
+    }).strict())
+    .query(({ ctx, input }) => listProviderOsQuotes({ ...input, actorId: ctx.user.id })),
+
+  getQuote: protectedProcedure
+    .input(z.object({ organizationId: z.string().uuid(), quoteId: z.string().uuid() }).strict())
+    .query(({ ctx, input }) => getProviderOsQuote({ ...input, actorId: ctx.user.id })),
 
   listClients: protectedProcedure
     .input(z.object({ organizationId: z.string().uuid() }).strict())

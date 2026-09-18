@@ -58,7 +58,8 @@ export interface DeliveryDependencies {
 
 export type TaskDraftPhotoAccessAuthority =
   | { kind: 'AUTHENTICATED'; viewerId: string }
-  | { kind: 'CLAIM_PREVIEW'; claimLinkId: string };
+  | { kind: 'CLAIM_PREVIEW'; claimLinkId: string }
+  | { kind: 'PROVIDER_OS'; viewerId: string; organizationId: string };
 
 export async function issueTaskDraftPhotoAccess(
   params: {
@@ -81,15 +82,16 @@ export async function issueTaskDraftPhotoAccess(
     });
     await query(
       `INSERT INTO task_draft_media_access_log
-         (task_draft_id, photo_id, viewer_id, access_context, claim_link_id, signed_url_expires_at)
-       VALUES ($1,$2,$3,$4,$5,$6)`,
+         (task_draft_id, photo_id, viewer_id, access_context, claim_link_id, signed_url_expires_at, provider_organization_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
       [
         params.taskDraftId,
         item.photoId,
-        params.authority.kind === 'AUTHENTICATED' ? params.authority.viewerId : null,
+        params.authority.kind !== 'CLAIM_PREVIEW' ? params.authority.viewerId : null,
         params.authority.kind,
         params.authority.kind === 'CLAIM_PREVIEW' ? params.authority.claimLinkId : null,
         delivered.get(item.photoId)!.expiresAt,
+        params.authority.kind === 'PROVIDER_OS' ? params.authority.organizationId : null,
       ],
     );
   }

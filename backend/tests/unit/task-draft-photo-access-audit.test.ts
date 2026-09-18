@@ -30,6 +30,7 @@ describe('task draft photo access audit', () => {
       'CLAIM_PREVIEW',
       CLAIM_LINK_ID,
       '2026-09-14T00:05:00.000Z',
+      null,
     ]);
     expect(result.get(PHOTO_ID)?.downloadUrl).toContain('https://private.example/');
   });
@@ -53,4 +54,16 @@ describe('task draft photo access audit', () => {
       null,
     ]);
   });
+});
+
+it('records the explicit Provider OS organization and authenticated actor', async () => {
+  const query = vi.fn().mockResolvedValue({ rows: [], rowCount: 1 });
+  const signObject = vi.fn().mockResolvedValue('https://private.example/photo?signature=test');
+  await issueTaskDraftPhotoAccess({ taskDraftId: DRAFT_ID,
+    authority: { kind: 'PROVIDER_OS', viewerId: 'actor', organizationId: 'org' },
+    storageKeys: [{ photoId: PHOTO_ID, storageKey: STORAGE_KEY }],
+  }, { query, signObject, now: () => new Date('2026-09-14T00:00:00Z') });
+  expect(query.mock.calls[0][1]).toEqual([
+    DRAFT_ID, PHOTO_ID, 'actor', 'PROVIDER_OS', null, '2026-09-14T00:05:00.000Z', 'org',
+  ]);
 });

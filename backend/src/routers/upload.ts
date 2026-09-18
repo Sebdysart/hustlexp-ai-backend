@@ -31,6 +31,7 @@ import {
   MAX_MEDIA_UPLOAD_BYTES,
   SUPPORTED_SANITIZED_IMAGE_TYPES,
 } from '../services/MediaSanitizationService.js';
+import { assertProviderOsDraftPhotoAuthority } from '../services/ProviderOsDraftPhotoAuthority.js';
 import { listDeliveredTaskDraftPhotos } from '../services/TaskDraftPhotoReadService.js';
 
 const log = logger.child({ router: 'upload' });
@@ -431,8 +432,18 @@ export const uploadRouter = router({
     }),
 
   listTaskDraftPhotos: protectedProcedure
-    .input(z.object({ taskDraftId: z.string().uuid() }))
+    .input(z.object({ taskDraftId: z.string().uuid(), providerOrganizationId: z.string().uuid().optional() }).strict())
     .query(async ({ ctx, input }) => {
+      const organizationId = input.providerOrganizationId;
+      if (organizationId) {
+        return db.transaction(async (query) => {
+          await assertProviderOsDraftPhotoAuthority({ actorId: ctx.user.id,
+            organizationId, taskDraftId: input.taskDraftId }, query);
+          return listDeliveredTaskDraftPhotos({ taskDraftId: input.taskDraftId,
+            authority: { kind: 'PROVIDER_OS', viewerId: ctx.user.id, organizationId },
+          }, { query });
+        });
+      }
       await assertDraftPhotoReadAuthority(input.taskDraftId, ctx.user.id);
       return listDeliveredTaskDraftPhotos({
         taskDraftId: input.taskDraftId,

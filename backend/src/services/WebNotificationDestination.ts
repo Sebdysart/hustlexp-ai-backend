@@ -20,6 +20,7 @@ export function notificationTaskId(value: unknown): string | null {
 }
 
 export function webNotificationDestination(value: unknown, taskViewer?: 'poster' | 'provider'): string | null {
+  if (typeof value === 'string' && new RegExp(`^/provider-os/quotes/${uuid}\\?organizationId=${uuid}$`).test(value)) return value;
   const path = pathOnly(value);
   if (!path) return null;
   const taskId = notificationTaskId(path);
