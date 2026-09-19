@@ -21,6 +21,8 @@ build/
 .env.epic03.local
 .env.epic04.local
 
+.tmp*
+
 # Agent coordination files
 .env.agent-coordinator
 agent-reviews/*.json
