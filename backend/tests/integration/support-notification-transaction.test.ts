@@ -28,7 +28,9 @@ describe.skipIf(!url)('support notification commit boundary (isolated PostgreSQL
       CREATE TABLE task_drafts(id UUID PRIMARY KEY,poster_user_id UUID);
       CREATE TABLE business_memberships(organization_id UUID,user_id UUID,status TEXT);
       CREATE TABLE business_assessment_requests(id UUID PRIMARY KEY,task_draft_id UUID,business_organization_id UUID,
-        status TEXT,completed_at TIMESTAMPTZ,updated_at TIMESTAMPTZ);`);
+        status TEXT,completed_at TIMESTAMPTZ,updated_at TIMESTAMPTZ);
+      CREATE FUNCTION business_membership_has_action(UUID,UUID,TEXT) RETURNS BOOLEAN LANGUAGE sql AS
+        'SELECT EXISTS(SELECT 1 FROM business_memberships WHERE organization_id=$1 AND user_id=$2 AND status=''ACTIVE'')';`);
     await query('INSERT INTO users VALUES($1)',[actor]); mocks.query.mockImplementation(query);
     mocks.transaction.mockImplementation(async fn => {
       const connection = new Client({connectionString:url}); await connection.connect();

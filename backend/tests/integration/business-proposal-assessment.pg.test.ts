@@ -64,7 +64,7 @@ describe.skipIf(!testUrl)('businessProposal.requestAssessment (isolated PostgreS
         responded_at TIMESTAMPTZ, updated_at TIMESTAMPTZ);
       CREATE TABLE business_assessment_requests(id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         task_draft_id UUID NOT NULL, business_organization_id UUID NOT NULL,
-        claim_link_id UUID NOT NULL, requested_by_user_id UUID NOT NULL,
+        claim_link_id UUID NOT NULL, proposal_id UUID, requested_by_user_id UUID NOT NULL,
         business_message TEXT NOT NULL, proposed_window_start TIMESTAMPTZ NOT NULL,
         proposed_window_end TIMESTAMPTZ NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING_ADMIN');
       CREATE UNIQUE INDEX assessment_one_active ON business_assessment_requests(task_draft_id,business_organization_id)

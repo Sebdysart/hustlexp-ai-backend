@@ -214,6 +214,10 @@ async function processAnnualTaxFiling(job: Job): Promise<void> {
 type MaintenanceHandler = (job: Job) => Promise<void>;
 
 const MAINTENANCE_HANDLERS: Record<string, MaintenanceHandler> = {
+  'assessment.reconcile_payments': async () => {
+    const { reconcileAssessmentPayments } = await import('../services/AssessmentPaymentService.js');
+    await reconcileAssessmentPayments();
+  },
   'provider_os.reconcile_purchases': async () => {
     const { reconcileProviderOsPurchases } = await import('../services/ProviderOsPurchaseService.js');
     await reconcileProviderOsPurchases();

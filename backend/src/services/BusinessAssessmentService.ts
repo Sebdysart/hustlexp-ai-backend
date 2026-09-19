@@ -353,17 +353,19 @@ export async function requestBusinessProposalAssessment(input: {
           (
             task_draft_id,
             business_organization_id,
+            proposal_id,
             requested_by_user_id,
             business_message,
             proposed_window_start,
             proposed_window_end
           )
-        VALUES ($1, $2, $3, $4, $5, $6)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING id
         `,
         [
           draft.id,
           proposal.business_organization_id,
+          proposal.id,
           input.actorId,
           businessMessage,
           windowStart,

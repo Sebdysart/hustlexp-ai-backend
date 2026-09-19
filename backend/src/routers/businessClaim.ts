@@ -318,6 +318,7 @@ listClaimedDrafts: protectedProcedure
       assessment_window_end: Date | null;
       assessment_scheduled_date: string | null;
       assessment_completed_at: Date | null;
+      assessment_fee_cents: number | null;
     }>(
       `
       SELECT
@@ -361,6 +362,7 @@ listClaimedDrafts: protectedProcedure
         ,assessment.proposed_window_end AS assessment_window_end
         ,assessment.scheduled_date::text AS assessment_scheduled_date
         ,assessment.completed_at AS assessment_completed_at
+        ,assessment.assessment_fee_cents AS assessment_fee_cents
 
       FROM ops_business_claim_links link
 
@@ -388,10 +390,9 @@ listClaimedDrafts: protectedProcedure
           request.proposed_window_end,
           request.scheduled_date,
           request.completed_at
+          ,request.assessment_fee_cents
         FROM business_assessment_requests request
-        WHERE request.task_draft_id = draft.id
-          AND request.business_organization_id =
-            link.claimed_by_organization_id
+        WHERE request.claim_link_id = link.id
         ORDER BY request.created_at DESC
         LIMIT 1
       ) assessment ON TRUE
@@ -466,6 +467,7 @@ listClaimedDrafts: protectedProcedure
         row.assessment_scheduled_date,
       assessmentCompletedAt:
         row.assessment_completed_at?.toISOString() ?? null,
+      assessmentFeeCents: row.assessment_fee_cents ?? null,
     }));
   }),
   claim: protectedProcedure

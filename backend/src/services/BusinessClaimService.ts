@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { db, type QueryFn } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { assertVerifiedProvider } from './BusinessWorkspacePolicy.js';
+import { logger } from '../logger.js';
 import { PENDING_BUSINESS_VERIFICATION, publishBusinessQuoteInTransaction } from './BusinessQuoteActivationService.js';
 
 interface ClaimInput {
@@ -52,6 +53,8 @@ type CreateBusinessQuoteInput = {
   pendingBusinessVerification?: boolean;
   proposedCustomerTotalCents: number;
   proposedPayoutCents: number;
+  assessmentCreditCents?: number;
+  grossCustomerTotalCents?: number;
   arrivalWindowStart: string;
   arrivalWindowEnd: string;
   quoteExpiresAt: Date;
@@ -160,7 +163,8 @@ export async function createBusinessQuoteInTransaction(
       input.draft.scope_summary ?? input.draft.title ?? 'Task',
       input.proposedCustomerTotalCents,
       input.proposedPayoutCents,
-      JSON.stringify({ acquisition_origin: input.acquisitionOrigin, business_claim: input.acquisitionOrigin === 'claim_link', business_organization_id: input.organizationId, platform_margin_cents: platformMarginCents }),
+      JSON.stringify({ acquisition_origin: input.acquisitionOrigin, business_claim: input.acquisitionOrigin === 'claim_link', business_organization_id: input.organizationId, platform_margin_cents: platformMarginCents,
+        ...(input.assessmentCreditCents ? { assessment_credit_cents: input.assessmentCreditCents, gross_customer_total_cents: input.grossCustomerTotalCents } : {}) }),
       payToken,
       arrivalWindowStart,
       arrivalWindowEnd,
@@ -414,16 +418,15 @@ export async function quoteAfterAssessment(input: {
         id: string;
         task_draft_id: string;
         business_organization_id: string;
-        claim_link_id: string;
+        claim_link_id: string | null;
+        proposal_id: string | null;
+        quote_id: string | null;
+        assessment_fee_cents: number | null;
         status: string;
-        assessment_credit_cents: number | null;
       }>(
-        `SELECT assessment.id, assessment.task_draft_id, assessment.business_organization_id, assessment.claim_link_id, assessment.status,
-                payment.amount_cents AS assessment_credit_cents
-                
-         FROM business_assessment_requests assessment
-         LEFT JOIN assessment_payments payment ON payment.assessment_request_id = assessment.id AND payment.status = 'SUCCEEDED'
-         WHERE assessment.id = $1 FOR UPDATE`,
+        `SELECT id, task_draft_id, business_organization_id, claim_link_id, proposal_id,
+                quote_id, assessment_fee_cents, status
+         FROM business_assessment_requests WHERE id = $1 FOR UPDATE`,
         [input.assessmentRequestId],
       );
       const assessment = assessmentResult.rows[0];
@@ -433,10 +436,40 @@ export async function quoteAfterAssessment(input: {
       if (assessment.business_organization_id !== input.organizationId) {
         return failure('ASSESSMENT_WRONG_BUSINESS', 'This assessment belongs to another business.');
       }
-      const assessmentCreditCents = assessment.assessment_credit_cents ?? 0;
-      if (assessmentCreditCents > 0 && input.proposedCustomerTotalCents <= assessmentCreditCents) return failure('QUOTE_TOTAL_NOT_ABOVE_ASSESSMENT_CREDIT', 'The final quote total must exceed the assessment credit.');
-
       await query(`SELECT business_require_action($1, $2, 'ASSIGN_CREW')`, [input.organizationId, input.actorId]);
+      if (assessment.quote_id) {
+        const existing = await query<{ id: string; version_id: string; total_cents: number; payout_cents: number; expires_at: Date }>(
+          `SELECT q.id,v.id AS version_id,v.total_cents,v.hustler_payout_cents AS payout_cents,v.expires_at
+           FROM quotes q JOIN quote_versions v ON v.id=q.active_version_id
+           WHERE q.id=$1 AND q.business_organization_id=$2 AND q.task_draft_id=$3`,
+          [assessment.quote_id,input.organizationId,assessment.task_draft_id],
+        );
+        const row = existing.rows[0];
+        if (!row) return failure('ASSESSMENT_ALREADY_QUOTED', 'The assessment quote is unavailable.');
+        return { success: true as const, data: { assessmentRequestId: assessment.id, taskDraftId: assessment.task_draft_id,
+          quoteId: row.id, quoteVersionId: row.version_id, customerTotalCents: row.total_cents,
+          payoutCents: row.payout_cents, platformMarginCents: row.total_cents-row.payout_cents,
+          expiresAt: row.expires_at.toISOString(), replayed: true } };
+      }
+      if (Boolean(assessment.claim_link_id) === Boolean(assessment.proposal_id)) {
+        return failure('ASSESSMENT_ORIGIN_INVALID', 'The assessment acquisition source is unavailable.');
+      }
+      const payment = await query<{ amount_cents: number }>(
+        `SELECT amount_cents FROM assessment_payments
+         WHERE assessment_request_id = $1 AND status = 'SUCCEEDED' FOR SHARE`,
+        [assessment.id],
+      );
+      const assessmentCreditCents = payment.rows[0]?.amount_cents ?? 0;
+      if ((assessment.assessment_fee_cents ?? 0) > 0 && assessmentCreditCents !== assessment.assessment_fee_cents) {
+        return failure('ASSESSMENT_PAYMENT_REQUIRED', 'The assessment payment must be confirmed before quoting.');
+      }
+      if (assessmentCreditCents > 0 && input.proposedCustomerTotalCents <= assessmentCreditCents) return failure('QUOTE_TOTAL_NOT_ABOVE_ASSESSMENT_CREDIT', 'The final quote total must exceed the assessment credit.');
+      if (assessmentCreditCents > 0 && input.proposedPayoutCents <= assessmentCreditCents) return failure('QUOTE_PAYOUT_NOT_ABOVE_ASSESSMENT_CREDIT', 'The provider payout must exceed the assessment amount already paid.');
+      // The business already received the assessment fee. The canonical quote,
+      // task and escrow represent only the remaining customer/payment balance.
+      const netCustomerTotalCents = input.proposedCustomerTotalCents - assessmentCreditCents;
+      const netPayoutCents = input.proposedPayoutCents - assessmentCreditCents;
+
       const orgResult = await query<{ status: string; provider_enabled: boolean; verification_status: string }>(
         `SELECT status, provider_enabled, verification_status FROM business_organizations WHERE id = $1 FOR SHARE`,
         [input.organizationId],
@@ -457,15 +490,32 @@ export async function quoteAfterAssessment(input: {
       if (!draft) return failure('TASK_DRAFT_NOT_FOUND', 'Task draft no longer exists.');
       if (draft.status === 'abandoned' || draft.task_id) return failure('TASK_DRAFT_UNAVAILABLE', 'This task is no longer available for quoting.');
 
-      const claimResult = await query<{ id: string; status: string; claimed_by_organization_id: string | null; quote_id: string | null }>(
-        `SELECT id, status, claimed_by_organization_id, quote_id
-         FROM ops_business_claim_links WHERE id = $1 FOR UPDATE`,
-        [assessment.claim_link_id],
-      );
-      const claim = claimResult.rows[0];
-      if (!claim || claim.status !== 'CLAIMED') return failure('CLAIM_NOT_AVAILABLE', 'The associated business claim is no longer available.');
-      if (claim.claimed_by_organization_id !== input.organizationId) return failure('CLAIM_WRONG_BUSINESS', 'This claim belongs to another business.');
-      if (claim.quote_id) return failure('CLAIM_ALREADY_QUOTED', 'A quote has already been submitted for this claim.');
+      let acquisitionOrigin: 'claim_link' | 'direct_proposal';
+      if (assessment.claim_link_id) {
+        const claimResult = await query<{ id: string; status: string; task_draft_id: string; claimed_by_organization_id: string | null; quote_id: string | null }>(
+          `SELECT id, status, task_draft_id, claimed_by_organization_id, quote_id
+           FROM ops_business_claim_links WHERE id = $1 FOR UPDATE`,
+          [assessment.claim_link_id],
+        );
+        const claim = claimResult.rows[0];
+        if (!claim || claim.status !== 'CLAIMED' || claim.task_draft_id !== draft.id ||
+            claim.claimed_by_organization_id !== input.organizationId || claim.quote_id) {
+          return failure('CLAIM_NOT_AVAILABLE', 'The associated business claim is no longer available.');
+        }
+        acquisitionOrigin = 'claim_link';
+      } else {
+        const proposalResult = await query<{ id: string; task_draft_id: string; business_organization_id: string; status: string; quote_id: string | null }>(
+          `SELECT id, task_draft_id, business_organization_id, status, quote_id
+           FROM business_task_proposals WHERE id = $1 FOR UPDATE`,
+          [assessment.proposal_id],
+        );
+        const proposal = proposalResult.rows[0];
+        if (!proposal || proposal.task_draft_id !== draft.id || proposal.business_organization_id !== input.organizationId ||
+            !['PENDING', 'VIEWED', 'EXPIRED'].includes(proposal.status) || proposal.quote_id) {
+          return failure('PROPOSAL_NOT_AVAILABLE', 'The associated business proposal is no longer available.');
+        }
+        acquisitionOrigin = 'direct_proposal';
+      }
 
       const arrivalStart = new Date(input.arrivalWindowStart);
       const arrivalEnd = new Date(input.arrivalWindowEnd);
@@ -478,14 +528,16 @@ export async function quoteAfterAssessment(input: {
       if (quoteExpiresAt <= new Date()) return failure('QUOTE_WINDOW_TOO_SOON', 'The proposed service window is too soon to create this quote.');
 
       const quoteCreateResult = await createBusinessQuoteInTransaction(query, {
-        acquisitionOrigin: 'claim_link',
+        acquisitionOrigin,
         draft,
         organizationId: input.organizationId,
         actorId: input.actorId,
         serviceProfileId: input.serviceProfileId,
         businessLocationId: input.businessLocationId,
-        proposedCustomerTotalCents: input.proposedCustomerTotalCents,
-        proposedPayoutCents: input.proposedPayoutCents,
+        proposedCustomerTotalCents: netCustomerTotalCents,
+        proposedPayoutCents: netPayoutCents,
+        assessmentCreditCents,
+        grossCustomerTotalCents: input.proposedCustomerTotalCents,
         arrivalWindowStart: input.arrivalWindowStart,
         arrivalWindowEnd: input.arrivalWindowEnd,
         quoteExpiresAt,
@@ -493,15 +545,26 @@ export async function quoteAfterAssessment(input: {
       if (!quoteCreateResult.success) return failure(quoteCreateResult.error.code, quoteCreateResult.error.message);
 
       const { quoteId, quoteVersionId, customerTotalCents, payoutCents, platformMarginCents } = quoteCreateResult.data;
-      const claimUpdated = await query<{ id: string }>(
-        `UPDATE ops_business_claim_links
-         SET claimed_by_service_profile_id = $2, claimed_by_business_location_id = $3,
-             proposed_customer_total_cents = $4, proposed_payout_cents = $5,
-             quote_id = $6, updated_at = NOW()
-         WHERE id = $1 AND status = 'CLAIMED' AND quote_id IS NULL RETURNING id`,
-        [claim.id, null, null, customerTotalCents, payoutCents, quoteId],
-      );
-      if (!claimUpdated.rows[0]) throw new Error('POST_ASSESSMENT_QUOTE_RACE_LOST');
+      if (assessment.claim_link_id) {
+        const updated = await query<{ id: string }>(
+          `UPDATE ops_business_claim_links SET claimed_by_service_profile_id = NULL,
+             claimed_by_business_location_id = NULL, proposed_customer_total_cents = $2,
+             proposed_payout_cents = $3, quote_id = $4, updated_at = NOW()
+           WHERE id = $1 AND status = 'CLAIMED' AND quote_id IS NULL RETURNING id`,
+          [assessment.claim_link_id, customerTotalCents, payoutCents, quoteId],
+        );
+        if (!updated.rows[0]) throw new Error('POST_ASSESSMENT_QUOTE_RACE_LOST');
+      } else {
+        const updated = await query<{ id: string }>(
+          `UPDATE business_task_proposals SET status = 'QUOTED', quote_id = $2,
+             responded_at = NOW(), updated_at = NOW()
+           WHERE id = $1 AND status IN ('PENDING', 'VIEWED', 'EXPIRED') AND quote_id IS NULL RETURNING id`,
+          [assessment.proposal_id, quoteId],
+        );
+        if (!updated.rows[0]) throw new Error('POST_ASSESSMENT_PROPOSAL_RACE_LOST');
+      }
+      await query('UPDATE business_assessment_requests SET quote_id = $2, quote_is_net_of_credit = TRUE, updated_at = NOW() WHERE id = $1',
+        [assessment.id, quoteId]);
 
       await query(
         `INSERT INTO business_audit_events (organization_id, actor_id, action, object_type, object_id, after_state)
@@ -510,7 +573,9 @@ export async function quoteAfterAssessment(input: {
       );
       return { success: true as const, data: { assessmentRequestId: assessment.id, taskDraftId: draft.id, quoteId, quoteVersionId, customerTotalCents, payoutCents, platformMarginCents, expiresAt: quoteExpiresAt.toISOString() } };
     });
-  } catch {
+  } catch (error) {
+    logger.error({ err: error, assessmentRequestId: input.assessmentRequestId,
+      organizationId: input.organizationId }, 'Post-assessment quote transaction failed');
     return failure('POST_ASSESSMENT_QUOTE_FAILED', 'Unable to submit the post-assessment quote.');
   }
 }

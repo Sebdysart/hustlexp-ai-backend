@@ -11,6 +11,7 @@ async function addRepeatable(
 }
 
 export async function registerScheduledJobs(): Promise<void> {
+  await addRepeatable('maintenance', 'assessment.reconcile_payments', {}, '* * * * *');
   await addRepeatable('maintenance', 'provider_os.reconcile_purchases', {}, '* * * * *');
   await addRepeatable('maintenance', 'dispatch.expire_unfilled', { limit: 100 }, '* * * * *');
   await addRepeatable('maintenance', 'safety.escalate_overdue_checkins', { limit: 100 }, '* * * * *');

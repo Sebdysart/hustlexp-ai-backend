@@ -171,11 +171,13 @@ export async function finalizePaidQuote(
         LEFT JOIN quote_payments payment
           ON payment.quote_id = q.id
          AND payment.quote_version_id = qv.id
-        LEFT JOIN ops_business_claim_links claim
-          ON claim.quote_id = q.id
         LEFT JOIN business_assessment_requests assessment
-          ON assessment.claim_link_id = claim.id
+          ON (assessment.quote_id = q.id OR
+              (assessment.quote_id IS NULL AND EXISTS (
+                SELECT 1 FROM ops_business_claim_links legacy_claim
+                WHERE legacy_claim.id=assessment.claim_link_id AND legacy_claim.quote_id=q.id)))
          AND assessment.status = 'COMPLETED'
+         AND assessment.quote_is_net_of_credit = FALSE
         LEFT JOIN assessment_payments assessment_payment
           ON assessment_payment.assessment_request_id = assessment.id
          AND assessment_payment.status = 'SUCCEEDED'

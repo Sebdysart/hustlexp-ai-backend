@@ -1,6 +1,6 @@
 import type { ServiceResult } from '../types.js';
 
-export type NewPaymentLane = 'escrow_funding' | 'xp_tax' | 'tip' | 'subscription';
+export type NewPaymentLane = 'escrow_funding' | 'assessment' | 'xp_tax' | 'tip' | 'subscription';
 export type NewPaymentCreationMode = 'enabled' | 'frozen';
 type Environment = Record<string, string | undefined>;
 

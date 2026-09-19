@@ -22,7 +22,17 @@ export const businessProposalRouter = router({
   }),
   get: protectedProcedure.input(z.object({ proposalId: z.string().uuid() }).strict()).query(async ({ ctx, input }) => {
     await expire(input.proposalId);
-    const result = await db.query<any>(`SELECT p.id proposal_id,p.task_draft_id,p.business_organization_id,COALESCE(bo.display_name,bo.legal_name) business_name,p.status,p.quote_id,d.title,d.category,d.scope_summary,d.raw_input,d.structured,p.expires_at,p.viewed_at,p.responded_at,p.rejection_reason,p.created_at FROM business_task_proposals p JOIN task_drafts d ON d.id=p.task_draft_id JOIN business_organizations bo ON bo.id=p.business_organization_id WHERE p.id=$1 AND EXISTS (SELECT 1 FROM business_memberships bm WHERE bm.organization_id=p.business_organization_id AND bm.user_id=$2 AND bm.status='ACTIVE') LIMIT 1`, [input.proposalId, ctx.user.id]);
+    const result = await db.query<any>(`SELECT p.id proposal_id,p.task_draft_id,p.business_organization_id,COALESCE(bo.display_name,bo.legal_name) business_name,p.status,p.quote_id,d.title,d.category,d.scope_summary,d.raw_input,d.structured,p.expires_at,p.viewed_at,p.responded_at,p.rejection_reason,p.created_at,
+      assessment.id AS "assessmentRequestId", assessment.status AS "assessmentStatus",
+      assessment.customer_message AS "assessmentCustomerMessage",
+      assessment.proposed_window_start AS "assessmentWindowStart",
+      assessment.proposed_window_end AS "assessmentWindowEnd",
+      assessment.scheduled_date::text AS "assessmentScheduledDate",
+      assessment.assessment_fee_cents AS "assessmentFeeCents"
+      FROM business_task_proposals p JOIN task_drafts d ON d.id=p.task_draft_id
+      JOIN business_organizations bo ON bo.id=p.business_organization_id
+      LEFT JOIN business_assessment_requests assessment ON assessment.proposal_id=p.id
+      WHERE p.id=$1 AND EXISTS (SELECT 1 FROM business_memberships bm WHERE bm.organization_id=p.business_organization_id AND bm.user_id=$2 AND bm.status='ACTIVE') LIMIT 1`, [input.proposalId, ctx.user.id]);
     const proposal = result.rows[0];
     if (!proposal) throw new TRPCError({ code: 'NOT_FOUND', message: 'Business proposal not found' });
     if (proposal.status === 'PENDING') { await db.query(`UPDATE business_task_proposals SET status='VIEWED', viewed_at=COALESCE(viewed_at,NOW()), updated_at=NOW() WHERE id=$1 AND status='PENDING'`, [proposal.proposal_id]); proposal.status='VIEWED'; proposal.viewed_at=new Date(); }
@@ -30,13 +40,19 @@ export const businessProposalRouter = router({
     const answers = structured && typeof structured === 'object' && !Array.isArray(structured) && 'answers' in structured && structured.answers && typeof structured.answers === 'object' && !Array.isArray(structured.answers) ? structured.answers as Record<string, unknown> : {};
     const preferredWindow = String(answers.preferred_window ?? 'flexible');
     const preferred = computePreferredArrivalWindow(preferredWindow);
-    return { ...proposal, structured: undefined, taskFacts: getTaskFactsForDisplay({ rawInput: proposal.raw_input, category: proposal.category, structured: proposal.structured }), preferred_window: preferredWindow, preferred_arrival_window_start: preferred.arrivalStart.toISOString(), preferred_arrival_window_end: preferred.arrivalEnd.toISOString(), expires_at: proposal.expires_at.toISOString(), viewed_at: proposal.viewed_at?.toISOString() ?? null, responded_at: proposal.responded_at?.toISOString() ?? null, created_at: proposal.created_at.toISOString() };
+    return { ...proposal, structured: undefined, taskFacts: getTaskFactsForDisplay({ rawInput: proposal.raw_input, category: proposal.category, structured: proposal.structured }), preferred_window: preferredWindow, preferred_arrival_window_start: preferred.arrivalStart.toISOString(), preferred_arrival_window_end: preferred.arrivalEnd.toISOString(), assessmentWindowStart: proposal.assessmentWindowStart?.toISOString() ?? null, assessmentWindowEnd: proposal.assessmentWindowEnd?.toISOString() ?? null, expires_at: proposal.expires_at.toISOString(), viewed_at: proposal.viewed_at?.toISOString() ?? null, responded_at: proposal.responded_at?.toISOString() ?? null, created_at: proposal.created_at.toISOString() };
   }),
   reject: protectedProcedure.input(z.object({ proposalId: z.string().uuid(), reason: z.string().trim().max(1000).optional() }).strict()).mutation(async ({ ctx, input }) => db.transaction(async (tx) => {
     const proposal = (await tx<any>(`SELECT p.id,p.status,p.expires_at FROM business_task_proposals p WHERE p.id=$1 AND EXISTS (SELECT 1 FROM business_memberships bm WHERE bm.organization_id=p.business_organization_id AND bm.user_id=$2 AND bm.status='ACTIVE') FOR UPDATE`, [input.proposalId, ctx.user.id])).rows[0];
     if (!proposal) throw new TRPCError({ code: 'NOT_FOUND', message: 'Business proposal not found' });
     if (proposal.expires_at <= new Date() && ['PENDING','VIEWED'].includes(proposal.status)) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This task proposal has expired.' });
     if (!['PENDING','VIEWED'].includes(proposal.status)) throw new TRPCError({ code: 'CONFLICT', message: `This proposal is already ${proposal.status.toLowerCase()}.` });
+    const activeAssessment = await tx<{ id: string }>(
+      `SELECT id FROM business_assessment_requests WHERE proposal_id=$1
+       AND status NOT IN ('ADMIN_REJECTED','CUSTOMER_DECLINED','CANCELLED') LIMIT 1`,
+      [proposal.id],
+    );
+    if (activeAssessment.rows[0]) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This proposal has an active onsite assessment.' });
     await tx(`UPDATE business_task_proposals SET status='REJECTED', rejection_reason=$2, responded_at=NOW(), updated_at=NOW() WHERE id=$1`, [proposal.id, input.reason ?? null]);
     return { ok: true, proposal_id: proposal.id, status: 'REJECTED' as const };
   })),
@@ -99,6 +115,12 @@ export const businessProposalRouter = router({
     }
     if (proposal.status === 'QUOTED' && proposal.quote_id) return { ok: true as const, proposal_id: proposal.id, quote_id: proposal.quote_id, replayed: true as const };
     if (!['PENDING', 'VIEWED'].includes(proposal.status)) throw new TRPCError({ code: 'CONFLICT', message: `This proposal is already ${proposal.status.toLowerCase()}.` });
+    const assessment = await query<{ id: string }>(
+      `SELECT id FROM business_assessment_requests WHERE proposal_id=$1
+       AND status NOT IN ('ADMIN_REJECTED','CUSTOMER_DECLINED','CANCELLED') LIMIT 1`,
+      [proposal.id],
+    );
+    if (assessment.rows[0]) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Complete the onsite assessment before submitting its final quote.' });
 
     const draftResult = await query<{ id: string; title: string | null; scope_summary: string | null; poster_user_id: string; status: string }>(
       `SELECT id, title, scope_summary, poster_user_id, status FROM task_drafts WHERE id = $1 FOR UPDATE`,

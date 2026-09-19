@@ -241,8 +241,10 @@ export const quotePaymentRouter = router({
         `SELECT payment.amount_cents
          FROM business_assessment_requests assessment
          JOIN assessment_payments payment ON payment.assessment_request_id = assessment.id
-         JOIN ops_business_claim_links claim ON claim.id = assessment.claim_link_id
-         WHERE claim.quote_id = $1 AND assessment.business_organization_id = $2
+         LEFT JOIN ops_business_claim_links claim ON claim.id = assessment.claim_link_id
+         WHERE (assessment.quote_id = $1 OR (assessment.quote_id IS NULL AND claim.quote_id = $1))
+           AND assessment.business_organization_id = $2
+           AND assessment.quote_is_net_of_credit = FALSE
            AND assessment.status = 'COMPLETED' AND payment.status = 'SUCCEEDED' LIMIT 1`,
         [input.quoteId, quote.business_organization_id],
       );

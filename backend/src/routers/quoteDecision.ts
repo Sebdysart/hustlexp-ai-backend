@@ -58,6 +58,8 @@ export const quoteDecisionRouter = router({
         business_name: string;
         customer_description: string;
         total_cents: number;
+        assessment_credit_cents: string | null;
+        gross_customer_total_cents: string | null;
         arrival_window_start: Date | null;
         arrival_window_end: Date | null;
         expires_at: Date | null;
@@ -72,6 +74,8 @@ export const quoteDecisionRouter = router({
           org.display_name AS business_name,
           qv.customer_description,
           qv.total_cents,
+          qv.scope_json->>'assessment_credit_cents' AS assessment_credit_cents,
+          qv.scope_json->>'gross_customer_total_cents' AS gross_customer_total_cents,
           qv.arrival_window_start,
           qv.arrival_window_end,
           qv.expires_at,
@@ -99,6 +103,8 @@ export const quoteDecisionRouter = router({
         businessName: row.business_name,
         customerDescription: row.customer_description,
         totalCents: Number(row.total_cents),
+        assessmentCreditCents: Number(row.assessment_credit_cents ?? 0) || 0,
+        grossCustomerTotalCents: row.gross_customer_total_cents ? Number(row.gross_customer_total_cents) : null,
         arrivalWindowStart:
           row.arrival_window_start?.toISOString() ?? null,
         arrivalWindowEnd:
