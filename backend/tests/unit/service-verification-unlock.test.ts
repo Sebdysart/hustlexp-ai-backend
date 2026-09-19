@@ -82,7 +82,10 @@ describe('EarnedVerificationUnlockService.recordEarnings', () => {
     expect(notificationSql).toContain('category');
     expect(notificationSql).toContain('deep_link');
     expect(notificationSql).toContain('metadata');
-    expect(notificationSql).not.toContain(' type,');
+    expect(notificationSql).toContain('dedupe_key');
+    expect(notificationSql).toContain('object_id');
+    expect(mockDb.query.mock.calls[4][1]).toContain('/support');
+    expect(mockDb.query.mock.calls[4][1]).toContain('in_app:user-1:earned-verification-unlocked:user-1');
     expect(notificationSql).not.toContain(' data,');
   });
 

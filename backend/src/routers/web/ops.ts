@@ -2064,11 +2064,11 @@ export const webOpsRouter = router({
 
   replySupportThread: operationsAdminProcedure
     .input(z.object({ id: z.string().uuid(), message: z.string().trim().min(1).max(4000) }))
-    .mutation(async ({ ctx, input }) => {
-      const existing = await db.query(`SELECT status, opened_by_user_id, business_organization_id, task_draft_id, task_id, proposal_id, quote_id, source_route FROM support_threads WHERE id = $1 LIMIT 1`, [input.id]);
+    .mutation(async ({ ctx, input }) => db.transaction(async (query) => {
+      const existing = await query(`SELECT status, opened_by_user_id, business_organization_id, task_draft_id, task_id, proposal_id, quote_id, source_route FROM support_threads WHERE id = $1 FOR UPDATE`, [input.id]);
       if (!existing.rows[0]) throw new TRPCError({ code: 'NOT_FOUND' });
       if (existing.rows[0].status === 'RESOLVED') throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Resolved support requests cannot be replied to.' });
-      const result = await db.query(
+      const result = await query(
         `
         WITH inserted_message AS (
           INSERT INTO support_messages (
@@ -2102,9 +2102,9 @@ export const webOpsRouter = router({
       const thread = existing.rows[0];
       const messageId = result.rows[0].message_id as string;
       const actionUrl = `/support/${input.id}`;
-      await NotificationService.createInTransaction(db.query.bind(db), { userId: thread.opened_by_user_id as string, type: 'SUPPORT_OPS_REPLY', title: 'HustleXP support replied', message: 'HustleXP replied to your support request.', entityType: 'support_thread', entityId: input.id as string, actionUrl, dedupeKey: `support-ops-reply:${messageId}` });
+      await NotificationService.createInTransaction(query, { userId: thread.opened_by_user_id as string, type: 'SUPPORT_OPS_REPLY', title: 'HustleXP support replied', message: 'HustleXP replied to your support request.', entityType: 'support_thread', entityId: input.id as string, actionUrl, dedupeKey: `support-ops-reply:${messageId}` });
       return { ok: true as const };
-    }),
+    })),
 
   setSupportThreadStatus: operationsAdminProcedure
     .input(z.object({ id: z.string().uuid(), status: z.enum(['OPEN', 'IN_PROGRESS', 'RESOLVED']) }))

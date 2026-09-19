@@ -60,6 +60,16 @@ import { notificationRouter } from '../../src/routers/notification';
 
 const mockNotificationService = vi.mocked(NotificationService);
 
+it('projects canonical category/body despite web-column migration defaults', async () => {
+  mockNotificationService.getUserNotifications.mockResolvedValueOnce({ success: true, data: [
+    { ...makeNotification(), type: 'general', category: 'task_accepted', message: '', body: 'Your task was accepted.', deep_link: '/support' },
+    { ...makeNotification(), type: 'SUPPORT_OPS_REPLY', category: 'general', message: 'Support replied.', body: 'Legacy body', action_url: '/support' },
+  ] } as any);
+  const rows = await makeUserCaller().list({});
+  expect(rows[0]).toMatchObject({ type: 'task_accepted', message: 'Your task was accepted.' });
+  expect(rows[1]).toMatchObject({ type: 'SUPPORT_OPS_REPLY', message: 'Support replied.' });
+});
+
 // ---------------------------------------------------------------------------
 // Row type and helpers
 // ---------------------------------------------------------------------------

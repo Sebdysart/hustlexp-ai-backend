@@ -28,16 +28,17 @@ const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
  * Includes roles: admin, founder, moderator (NOT support — they don't get fraud alerts).
  * Results are cached for 5 minutes.
  */
-export async function getAdminUserIds(): Promise<string[]> {
+export async function getAdminUserIds(fresh = false): Promise<string[]> {
   const now = Date.now();
-  if (cachedAdminIds && now < cacheExpiry) {
+  if (!fresh && cachedAdminIds && now < cacheExpiry) {
     return cachedAdminIds;
   }
 
   try {
     const result = await db.query<{ user_id: string }>(
-      `SELECT DISTINCT user_id FROM admin_roles
-       WHERE role IN ('admin', 'founder', 'moderator')`,
+      `SELECT DISTINCT a.user_id FROM admin_roles a JOIN users u ON u.id = a.user_id
+       WHERE a.role IN ('admin', 'founder', 'moderator') AND u.account_status = 'ACTIVE'
+         AND NOT COALESCE(u.is_banned, false) AND NOT COALESCE(u.trust_hold, false)`,
     );
 
     cachedAdminIds = result.rows.map((r) => r.user_id);
@@ -45,7 +46,7 @@ export async function getAdminUserIds(): Promise<string[]> {
     return cachedAdminIds;
   } catch (error) {
     log.error({ err: error instanceof Error ? error.message : String(error) }, 'Failed to fetch admin user IDs');
-    return cachedAdminIds || []; // Return stale cache on error, or empty
+    return fresh ? [] : cachedAdminIds || [];
   }
 }
 
@@ -68,7 +69,8 @@ export async function notifyAdmins(params: {
   priority: NotificationPriority;
   metadata?: Record<string, unknown>;
 }): Promise<{ sent: number; failed: number }> {
-  const adminIds = await getAdminUserIds();
+  // Cached directory reads cannot authorize delivery after role/account removal.
+  const adminIds = await getAdminUserIds(true);
 
   if (adminIds.length === 0) {
     log.warn('No admin users found - admin notification skipped');

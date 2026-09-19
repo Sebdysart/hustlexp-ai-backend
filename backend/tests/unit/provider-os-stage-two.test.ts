@@ -10,8 +10,22 @@ import { assertProviderOsDraftPhotoAuthority } from '../../src/services/Provider
 import { getProviderOsQuote, listProviderOsQuotes } from '../../src/services/ProviderOsQuoteHistory.js';
 import { createBusinessQuoteInTransaction } from '../../src/services/BusinessClaimService.js';
 import { REQUIRED_MIGRATION_FILES } from '../../src/jobs/engine-automation-migration-files.js';
+import { setProviderOsDraftQuote } from '../../src/services/ProviderOsService.js';
 
 beforeEach(() => { vi.resetAllMocks(); mocks.access.mockResolvedValue(undefined); });
+it('revalidates client account eligibility under the relationship lock before creating a quote', async () => {
+  mocks.query.mockResolvedValueOnce({ rows: [] })
+    .mockResolvedValueOnce({ rows: [{ id:'org', status:'ACTIVE',provider_enabled:true,verification_status:'VERIFIED' }] })
+    .mockResolvedValueOnce({ rows: [{ id:'draft',poster_user_id:'poster',status:'draft',quote_id:null,claimed_at:null,task_id:null }] })
+    .mockResolvedValueOnce({ rows: [] });
+  const result = await setProviderOsDraftQuote({ actorId:'actor',organizationId:'org',draftId:'draft',
+    proposedCustomerTotalCents:12000,proposedPayoutCents:10000,arrivalWindowStart:'2026-10-01T12:00:00Z',arrivalWindowEnd:'2026-10-02T23:59:59Z' });
+  expect(result).toMatchObject({success:false,error:{code:'FORBIDDEN'}});
+  const sql = mocks.query.mock.calls[3][0];
+  expect(sql).toContain("u.account_status = 'ACTIVE'");
+  expect(sql).toContain('FOR SHARE OF r, u');
+  expect(mocks.publish).not.toHaveBeenCalled();
+});
 describe('Provider OS history and media authority', () => {
   it.each(['history', 'detail', 'photos'])('checks selected organization access before reading %s', async (kind) => {
     mocks.access.mockRejectedValue(new Error('Access revoked'));

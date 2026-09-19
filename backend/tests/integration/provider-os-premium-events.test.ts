@@ -33,7 +33,7 @@ describe.skipIf(!databaseUrl)('Provider OS durable events (isolated PostgreSQL f
     await query('INSERT INTO task_drafts(id,poster_user_id,status) VALUES($1,$2,\'draft\')', [id, poster]);
     return id;
   }
-  async function selectQuote(origin = 'provider_os') {
+  async function selectQuote(origin: string | null = 'provider_os') {
     const draftId = await draft(), quoteId = randomUUID();
     await query(`INSERT INTO quotes(id,task_draft_id,business_organization_id,acquisition_origin,status) VALUES($1,$2,$3,$4,'quote_ready')`, [quoteId, draftId, org, origin]);
     await query('BEGIN');
@@ -136,7 +136,7 @@ describe.skipIf(!databaseUrl)('Provider OS durable events (isolated PostgreSQL f
     expect((await rows('provider_os_domain_events')).filter(e => e.event_type === 'TASK_READY')).toHaveLength(1);
   });
   it('never emits quote events for claim/proposal origins', async () => {
-    await selectQuote('claim_link'); await selectQuote('direct_proposal');
+    await selectQuote('claim_link'); await selectQuote('direct_proposal'); await selectQuote(null);
     expect(await event('QUOTE_ACCEPTED')).toBeUndefined();
   });
   it('isolates organizations and skips revoked/expired entitlements or relationships', async () => {

@@ -1,4 +1,5 @@
 import { notificationTaskId, webNotificationDestination } from '../services/WebNotificationDestination.js';
+import { businessNotificationDestinations, type BusinessNotificationReference } from '../services/BusinessNotificationDestination.js';
 /**
  * Notification Router v1.0.0
  * 
@@ -24,7 +25,14 @@ export const notificationRouter = router({
     .query(async ({ input, ctx }) => {
       const result = await NotificationService.getUserNotifications(ctx.user.id, input.limit, 0, input.unreadOnly);
       if (!result.success) throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: result.error.message });
-      const legacyTaskIds = [...new Set(result.data.map((row: any) => notificationTaskId(row.action_url ?? row.deep_link)).filter((id): id is string => id !== null))];
+      // Repair historical claim-like links using current canonical records. A removed
+      // member or deleted entity gets no action, never a guessed organization.
+      const businessReferences: BusinessNotificationReference[] = result.data.flatMap((row) =>
+        ['QUOTE_ACCEPTED', 'QUOTE_REJECTED', 'ASSESSMENT_PAID', 'ASSESSMENT_SCHEDULED', 'ASSESSMENT_REJECTED'].includes(row.type ?? '') &&
+          row.entity_id && (row.entity_type === 'quote' || row.entity_type === 'assessment')
+          ? [{ id: row.id, entityId: row.entity_id, entityType: row.entity_type }] : []);
+      const businessDestinations = await businessNotificationDestinations(db.query.bind(db), businessReferences, { actorId: ctx.user.id });
+      const legacyTaskIds = [...new Set(result.data.map((row) => notificationTaskId(row.action_url ?? row.deep_link)).filter((id): id is string => id !== null))];
       const taskViewers = new Map<string, 'poster' | 'provider'>();
       if (legacyTaskIds.length) {
         const tasks = await db.query<{ id: string; poster_id: string; worker_id: string | null; business_member: boolean }>(
@@ -38,10 +46,10 @@ export const notificationRouter = router({
           else if (task.worker_id === ctx.user.id || task.business_member) taskViewers.set(task.id, 'provider');
         }
       }
-      return result.data.map((row: any) => {
-        const destination = row.action_url ?? row.deep_link ?? null;
+      return result.data.map((row) => {
+        const destination = businessDestinations.has(row.id) ? businessDestinations.get(row.id) : row.action_url ?? row.deep_link ?? null;
         const taskId = notificationTaskId(destination);
-        return { ...row, type: row.type ?? row.category, message: row.message ?? row.body,
+        return { ...row, type: row.type && row.type !== 'general' ? row.type : row.category, message: row.message || row.body,
           entity_type: row.entity_type ?? row.object_type ?? null,
           entity_id: row.entity_id ?? row.object_id ?? null,
           action_url: webNotificationDestination(destination, taskId ? taskViewers.get(taskId) : undefined) };

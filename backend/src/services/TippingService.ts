@@ -17,6 +17,7 @@ import Stripe from 'stripe';
 import { config } from '../config.js';
 import { db } from '../db.js';
 import { RevenueService } from './RevenueService.js';
+import { NotificationService } from './NotificationService.js';
 import type { ServiceResult } from '../types.js';
 import { logger } from '../logger.js';
 // AUDIT FIX H4: every Stripe call in this service must go through the breaker —
@@ -365,25 +366,17 @@ export const TippingService = {
         );
       }
 
-      // Notify worker (support both constitutional schema and legacy type/data columns)
-      const notifBody = `You received a $${(tip.amount_cents / 100).toFixed(2)} tip! Great job!`;
-      const notifMeta = { task_id: tip.task_id, amount_cents: tip.amount_cents };
+      // Shared in-app writer supplies canonical identity and recipient dedupe columns.
       try {
-        await db.query(
-          `INSERT INTO notifications (user_id, category, title, body, deep_link, task_id, metadata, channels, priority, created_at)
-           VALUES ($1, 'tip_received', '💰 You received a tip!', $2, $3, $4, $5::JSONB, ARRAY['push']::TEXT[], 'HIGH', NOW())`,
-          [tip.worker_id, notifBody, `/task/${tip.task_id}`, tip.task_id, JSON.stringify(notifMeta)]
-        );
+        await NotificationService.create({
+          userId: tip.worker_id, type: 'tip_received', title: '💰 You received a tip!',
+          message: `You received a $${(tip.amount_cents / 100).toFixed(2)} tip! Great job!`,
+          entityType: 'tip', entityId: tip.id, actionUrl: `/tasks/${tip.task_id}`,
+          metadata: { task_id: tip.task_id, amount_cents: tip.amount_cents },
+          dedupeKey: `tip-received:${tip.id}`,
+        });
       } catch {
-        try {
-          await db.query(
-            `INSERT INTO notifications (user_id, type, title, body, data, created_at)
-             VALUES ($1, 'tip_received', '💰 You received a tip!', $2, $3, NOW())`,
-            [tip.worker_id, notifBody, JSON.stringify(notifMeta)]
-          );
-        } catch {
-          log.warn({ tipId: tip.id, workerId: tip.worker_id }, 'Could not create tip_received notification');
-        }
+        log.warn({ tipId: tip.id, workerId: tip.worker_id }, 'Could not create tip_received notification');
       }
 
       return { success: true, data: tip };

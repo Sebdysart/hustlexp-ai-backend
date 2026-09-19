@@ -523,12 +523,13 @@ export async function setProviderOsDraftQuote(input: {
 
       const relationship = await query<{ id: string }>(
         `
-        SELECT id
-          FROM provider_os_relationships
-         WHERE provider_organization_id = $1
-           AND poster_user_id = $2
-           AND status = 'active'
-         FOR SHARE
+        SELECT r.id
+          FROM provider_os_relationships r
+          JOIN users u ON u.id = r.poster_user_id AND u.account_status = 'ACTIVE'
+         WHERE r.provider_organization_id = $1
+           AND r.poster_user_id = $2
+           AND r.status = 'active'
+         FOR SHARE OF r, u
         `,
         [input.organizationId, draft.poster_user_id],
       );

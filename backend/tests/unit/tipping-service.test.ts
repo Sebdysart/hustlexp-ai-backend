@@ -342,6 +342,10 @@ describe('TippingService', () => {
       const result = await TippingService.confirmTip('tip-1', 'pi_123');
 
       expect(result.success).toBe(true);
+      const notice = mockDb.query.mock.calls.find(([sql]) => sql.includes('INSERT INTO notifications'));
+      expect(notice?.[0]).toContain('dedupe_key');
+      expect(notice?.[1]).toContain('in_app:worker-1:tip-received:tip-1');
+      expect(notice?.[1]).toContain('/tasks/task-1');
     });
 
     it('returns INVALID_PAYMENT_INTENT when PI metadata.type is not "tip" (TT-02)', async () => {

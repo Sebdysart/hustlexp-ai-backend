@@ -19,6 +19,7 @@ import { ErrorCodes } from '../types.js';
 import { logger } from '../logger.js';
 import { Redis } from '@upstash/redis';
 import { config } from '../config.js';
+import { businessNotificationDestinations } from './BusinessNotificationDestination.js';
 import {
   applyNotificationPresentation,
   NOTIFICATION_POLICY,
@@ -101,6 +102,11 @@ export type NotificationPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 
 export interface Notification {
   id: string;
+  type?: string | null;
+  message?: string | null;
+  entity_type?: string | null;
+  entity_id?: string | null;
+  action_url?: string | null;
   user_id: string;
   category: string; // VARCHAR(50) - flexible category
   title: string; // VARCHAR(200)
@@ -378,9 +384,12 @@ async function insertNotification(
   query: QueryFn,
   input: CreateInAppNotificationInput,
 ): Promise<void> {
-  const dedupeKey =
+  const eventKey =
     input.dedupeKey ??
     `${input.type}:${input.entityId ?? input.userId}`;
+  // The canonical schema also has a global dedupe-key index. Fan-out identity
+  // must include the recipient, including when several users share one event.
+  const dedupeKey = `in_app:${input.userId}:${eventKey}`;
 
   const objectId =
     input.entityId ?? 'general';
@@ -406,7 +415,7 @@ async function insertNotification(
       dedupe_key,
       supersession_key
     )
-    VALUES (
+    SELECT
       $1::uuid,
       $2::text,
       $3::varchar,
@@ -424,6 +433,8 @@ async function insertNotification(
       $15::text,
       $16::text,
       $17::text
+    WHERE NOT EXISTS (
+      SELECT 1 FROM notifications WHERE user_id = $1::uuid AND dedupe_key = $18::text
     )
     ON CONFLICT DO NOTHING
     `,
@@ -445,6 +456,7 @@ async function insertNotification(
       objectId,
       dedupeKey,
       dedupeKey,
+      eventKey,
     ],
   );
 }
@@ -465,6 +477,11 @@ export const NotificationService = {
     input: Omit<CreateInAppNotificationInput, 'userId'>,
   ): Promise<void> {
     const userIds = await getBusinessNotificationUserIds(query, organizationId);
+    if (input.entityId && (input.entityType === 'quote' || input.entityType === 'assessment')) {
+      const destinations = await businessNotificationDestinations(query,
+        [{ id: input.entityId, entityId: input.entityId, entityType: input.entityType }], { organizationId });
+      input = { ...input, actionUrl: destinations.get(input.entityId) ?? null };
+    }
 
     for (const userId of userIds) {
       await NotificationService.createInTransaction(query, {
@@ -962,7 +979,7 @@ export const NotificationService = {
       // Filter expired notifications
       sql += ` AND (expires_at IS NULL OR expires_at > NOW())`;
       
-      sql += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+      sql += ` ORDER BY created_at DESC, id DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
       params.push(limit, offset);
       
       const result = await db.query<Notification>(sql, params);

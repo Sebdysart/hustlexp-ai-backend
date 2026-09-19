@@ -24,6 +24,7 @@ describe('web notification destinations', () => {
   it.each([
     `/dashboard/drafts/${id}`, `/dashboard/tasks/${id}`, `/dashboard/drafts/${id}/quote`,
     `/business/tasks/${id}`, `/business/claims/${id}`, `/business/proposals/${id}`,
+    `/business/claims/${id}?organizationId=${id}`,
     `/ops/drafts/${id}`, `/ops/tasks/${id}`, `/ops/support/${id}`, `/support/${id}`,
   ])('preserves current detail destination %s', (input) => expect(webNotificationDestination(input)).toBe(input));
   it.each([

@@ -6,7 +6,6 @@ import { writeProviderOsEntitlement } from './ProviderOsEntitlementService.js';
 import { providerOsProduct, providerOsControlledPurchaseEnabled } from './ProviderOsProduct.js';
 import { ControlledProductPaymentProvider } from './payment/ControlledProductPaymentProvider.js';
 import { LocalCertificationPaymentProvider } from './LocalCertificationPaymentProvider.js';
-import { newPaymentCreationMode } from './NewPaymentCreationGuard.js';
 import type { StandaloneProductPurchase } from './payment/StandaloneProductPaymentProvider.js';
 
 interface Purchase extends StandaloneProductPurchase {
@@ -292,7 +291,7 @@ export async function completeControlledProviderOsPurchase(
   actorId: string,
   purchaseId: string
 ) {
-  if (!providerOsControlledPurchaseEnabled() || newPaymentCreationMode() !== 'enabled') {
+  if (!providerOsProduct()) {
     throw new TRPCError({
       code: 'PRECONDITION_FAILED',
       message: 'Controlled-test purchasing is disabled.',

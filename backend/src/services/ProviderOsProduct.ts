@@ -1,5 +1,5 @@
 import { newPaymentCreationMode } from './NewPaymentCreationGuard.js';
-import { localCertificationPaymentEnabled } from './LocalCertificationPaymentProvider.js';
+import { localCertificationPaymentEnabled } from './LocalCertificationPaymentConfig.js';
 
 export interface ProviderOsProduct {
   code: 'provider_os';

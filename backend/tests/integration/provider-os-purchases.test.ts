@@ -123,6 +123,29 @@ describe.skipIf(!databaseUrl)(
       await refreshProviderOsPurchase(org, actor, p.id);
       expect(await entitlement()).toBeUndefined();
     });
+    it.each([
+      ['PROVIDER_OS_TEST_AMOUNT_CENTS', '0'],
+      ['PROVIDER_OS_TEST_CURRENCY', 'eur'],
+      ['PROVIDER_OS_TEST_PERIOD_DAYS', '0'],
+      ['HX_PAYMENT_CREATION_MODE', 'frozen'],
+    ])('blocks new confirmation through every entry point when %s is invalid', async (key, value) => {
+      const p = await purchase();
+      vi.stubEnv(key, value);
+      await expect(completeControlledProviderOsPurchase(org, actor, p.id)).rejects.toThrow();
+      await expect(paid()).rejects.toThrow();
+      await expect(LocalCertificationPaymentProvider.createProductIntent(await row())).rejects.toThrow();
+      expect((await query('SELECT status FROM hxos_local_test_product_intents')).rows[0].status).toBe('requires_confirmation');
+      expect(await entitlement()).toBeUndefined();
+    });
+    it('reconciles an already confirmed payment while creation is frozen and the catalog is invalid', async () => {
+      const p = await purchase();
+      await paid();
+      vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'frozen');
+      vi.stubEnv('PROVIDER_OS_TEST_PERIOD_DAYS', '0');
+      await finalizeProviderOsPurchase(p.id);
+      expect((await row()).status).toBe('succeeded');
+      expect((await entitlement()).source_purchase_id).toBe(p.id);
+    });
     it('verified success grants once across webhook replay and refresh', async () => {
       const p = await purchase();
       await paid();

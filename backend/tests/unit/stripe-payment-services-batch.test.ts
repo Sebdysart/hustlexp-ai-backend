@@ -842,6 +842,15 @@ describe('AdminNotificationHelper', () => {
   });
 
   describe('notifyAdmins', () => {
+    it.each(['removed', 'lookup failed'])('never sends to a cached administrator after %s', async (state) => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{ user_id: 'former-admin' }] } as never);
+      await getAdminUserIds();
+      if (state === 'removed') mockDb.query.mockResolvedValueOnce({ rows: [] } as never);
+      else mockDb.query.mockRejectedValueOnce(new Error('lookup failed'));
+      expect(await notifyAdmins({ title:'Alert',body:'Private operation',deepLink:'/ops',priority:'HIGH' })).toEqual({sent:0,failed:0});
+      expect(mockNotificationService.createNotification).not.toHaveBeenCalled();
+      expect(mockDb.query).toHaveBeenLastCalledWith(expect.stringContaining("u.account_status = 'ACTIVE'"));
+    });
     it('returns sent:0, failed:0 when no admins found', async () => {
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 

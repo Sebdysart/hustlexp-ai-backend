@@ -2,6 +2,9 @@ import type { StandaloneProductPurchase, ProductPaymentVerification } from './pa
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { db, type QueryFn } from '../db.js';
 import type { ServiceResult } from '../types.js';
+import { localCertificationPaymentEnabled } from './LocalCertificationPaymentConfig.js';
+import { providerOsProduct } from './ProviderOsProduct.js';
+export { localCertificationPaymentEnabled } from './LocalCertificationPaymentConfig.js';
 
 const INTENT_RE = /^pi_hxos_test_[a-f0-9]{32}$/;
 type Environment = NodeJS.ProcessEnv | Record<string, string | undefined>;
@@ -58,20 +61,6 @@ function equalHex(left: string, right: string): boolean {
   const a = Buffer.from(left, 'hex');
   const b = Buffer.from(right, 'hex');
   return a.length === b.length && timingSafeEqual(a, b);
-}
-
-export function localCertificationPaymentEnabled(
-  env: Environment = process.env,
-): boolean {
-  const environmentAllowed =
-    env.NODE_ENV !== 'production' ||
-    env.HXOS_ALLOW_LOCAL_TEST_PAYMENT_IN_PRODUCTION === 'true';
-
-  return environmentAllowed
-    && env.HXOS_ALLOW_LOCAL_TEST_PAYMENT === 'true'
-    && env.ENGINE_API_MODE === 'test'
-    && env.STRIPE_MODE === 'test'
-    && secret(env).length >= 32;
 }
 
 export function isLocalCertificationPaymentIntentId(value: string): boolean {
@@ -236,7 +225,7 @@ export const LocalCertificationPaymentProvider = {
 
   /** Standalone controlled product lane. Uses the existing secret/gate, never task or escrow rows. */
   createProductIntent: async (purchase: StandaloneProductPurchase): Promise<{ id: string }> => {
-    assertControlledProductEnabled();
+    assertControlledProductCreationEnabled();
     const id = `pi_hxos_product_test_${hmac(`product-intent:${purchase.id}`).slice(0, 32)}`;
     const secretHash = digest(hmac(`product-confirm:${purchase.id}`));
     return db.transaction(async (query) => {
@@ -271,7 +260,7 @@ export const LocalCertificationPaymentProvider = {
     purchase: StandaloneProductPurchase,
     query: QueryFn
   ): Promise<void> => {
-    assertControlledProductEnabled();
+    assertControlledProductCreationEnabled();
     const intent = await readProductIntent(query, purchase, true);
     if (!equalHex(intent.client_secret_hash, digest(hmac(`product-confirm:${purchase.id}`))))
       throw new Error('Controlled product secret mismatch');
@@ -319,6 +308,11 @@ function assertControlledProductEnabled(): void {
   ) {
     throw new Error('Controlled product payments are disabled');
   }
+}
+function assertControlledProductCreationEnabled(): void {
+  // Creation/confirmation require the full catalog gate. Verification deliberately
+  // uses only the base certification gate so a creation freeze cannot strand payment.
+  if (!providerOsProduct()) throw new Error('Controlled product purchases are unavailable');
 }
 async function readProductIntent(
   query: QueryFn,
