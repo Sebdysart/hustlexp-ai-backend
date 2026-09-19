@@ -2,6 +2,24 @@ import crypto from 'node:crypto';
 import { db } from '../db.js';
 import { assertVerifiedProvider } from './BusinessWorkspacePolicy.js';
 import { NotificationService } from './NotificationService.js';
+import { logger } from '../logger.js';
+
+const log = logger.child({ service: 'BusinessAssessmentService' });
+
+function assessmentFailureDetails(error: unknown) {
+  const value = error && typeof error === 'object' ? error as Record<string, unknown> : {};
+  const safeIdentifier = (field: unknown) =>
+    typeof field === 'string' && /^[a-zA-Z0-9_]{1,128}$/.test(field) ? field : undefined;
+  const code = safeIdentifier(value.code);
+  return {
+    errorClass: error instanceof Error ? error.constructor.name : typeof error,
+    dbCode: code,
+    dbConstraint: safeIdentifier(value.constraint),
+    dbTable: safeIdentifier(value.table),
+    dbColumn: safeIdentifier(value.column),
+    message: code === '23502' ? 'Required database value was null' : 'Assessment transaction failed',
+  };
+}
 
 type AssessmentRequestResult =
   | { success: true; data: { assessmentRequestId: string; claimLinkId: string; taskDraftId: string; status: 'PENDING_ADMIN' } }
@@ -143,6 +161,7 @@ export async function requestBusinessProposalAssessment(input: {
   proposedWindowStart: string;
   proposedWindowEnd: string;
 }): Promise<ProposalAssessmentRequestResult> {
+  let organizationId: string | undefined;
   const businessMessage = input.businessMessage.trim();
 
   if (!businessMessage) {
@@ -190,6 +209,7 @@ export async function requestBusinessProposalAssessment(input: {
         [input.proposalId],
       );
       const proposal = proposalResult.rows[0];
+      organizationId = proposal?.business_organization_id;
 
       if (!proposal || !['PENDING', 'VIEWED'].includes(proposal.status)) {
         return {
@@ -402,7 +422,14 @@ export async function requestBusinessProposalAssessment(input: {
         },
       };
     });
-  } catch {
+  } catch (error) {
+    log.error({
+      action: 'businessProposal.requestAssessment',
+      proposalId: input.proposalId,
+      organizationId,
+      actorId: input.actorId,
+      ...assessmentFailureDetails(error),
+    }, 'Business proposal assessment transaction failed');
     return {
       success: false,
       error: {
