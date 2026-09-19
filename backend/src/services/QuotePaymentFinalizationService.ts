@@ -758,51 +758,52 @@ export async function finalizePaidQuote(
      * Step 4:
      * Finalize the payment/quote state.
      */
-    await db.query(
-      `
-      UPDATE quote_payments
-      SET
-        status = 'SUCCEEDED',
-        updated_at = NOW()
-      WHERE quote_id = $1
-        AND quote_version_id = $2
-        AND provider_payment_id = $3
-        AND task_id = $4
-      `,
-      [
-        input.quoteId,
-        input.quoteVersionId,
-        finalPaymentIntentId,
-        materialized.taskId,
-      ],
-    );
-
-    await db.query(
-      `
-      UPDATE quote_versions
-      SET
-        status = 'paid',
-        updated_at = NOW()
-      WHERE id = $1
-        AND quote_id = $2
-        AND status = 'draft'
-      `,
-      [input.quoteVersionId, input.quoteId],
-    );
-
-    await db.query(
-      `
-      UPDATE quotes
-      SET
-        status = 'paid',
-        updated_at = NOW()
-      WHERE id = $1
-        AND status IN ('quote_ready', 'quote_send_ready')
-      `,
-      [input.quoteId],
-    );
-
     await db.transaction(async (notificationQuery) => {
+      // Match canonical quote/version/payment lock order when finalizers race.
+      await notificationQuery(
+        `
+        UPDATE quotes
+        SET
+          status = 'paid',
+          updated_at = NOW()
+        WHERE id = $1
+          AND status IN ('quote_ready', 'quote_send_ready')
+        `,
+        [input.quoteId],
+      );
+
+      await notificationQuery(
+        `
+        UPDATE quote_versions
+        SET
+          status = 'paid',
+          updated_at = NOW()
+        WHERE id = $1
+          AND quote_id = $2
+          AND status = 'draft'
+        `,
+        [input.quoteVersionId, input.quoteId],
+      );
+
+      await notificationQuery(
+        `
+        UPDATE quote_payments
+        SET
+          status = 'SUCCEEDED',
+          updated_at = NOW()
+        WHERE quote_id = $1
+          AND quote_version_id = $2
+          AND provider_payment_id = $3
+          AND task_id = $4
+        `,
+        [
+          input.quoteId,
+          input.quoteVersionId,
+          finalPaymentIntentId,
+          materialized.taskId,
+        ],
+      );
+
       await NotificationService.createInTransaction(notificationQuery, {
         userId: context.poster_user_id,
         type: 'PAYMENT_CONFIRMED',

@@ -1,3 +1,4 @@
+import { notifyTaskCompleted } from '../lib/task-lifecycle-notifications.js';
 import { createHash } from 'node:crypto';
 import { db, getErrorMessage, isInvariantViolation, type QueryFn } from '../db.js';
 import { writeToOutbox } from '../lib/outbox-helpers.js';
@@ -245,6 +246,9 @@ async function completeTransaction(
     outcomeType: 'TASK_COMPLETED',
     realizedValue: { taskState: 'COMPLETED', payoutReady: true },
   });
+  if (completed.data.worker_id && mode === 'POSTER_CONFIRMED') {
+    await notifyTaskCompleted(completed.data.worker_id, taskId, completed.data.title ?? 'your task', query);
+  }
   return completed;
 }
 

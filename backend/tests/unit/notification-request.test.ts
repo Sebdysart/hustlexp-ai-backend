@@ -59,6 +59,7 @@ describe('durable notification request boundary', () => {
   });
   it.each([
     {category:'proof_submitted',metadata:{proofId:task}},
+    {category:'proof_rejected',metadata:{proofId:task}},
     {category:'new_matching_task',metadata:{applicationId:task}},
   ])('skips delayed $category whose canonical source is no longer actionable', async source => {
     mocks.query.mockImplementation(async (sql:string)=>({rows:sql.includes('FROM outbox_events')
@@ -67,6 +68,22 @@ describe('durable notification request boundary', () => {
     await processNotificationRequest(job);
     expect(mocks.create).not.toHaveBeenCalled();
     expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("status = 'processed'"),[task,'source_no_longer_actionable']);
+  });
+  it('reauthorizes the exact release recipient and keeps canonical work independent of premium access', async () => {
+    const paid={...params,category:'payment_released',taskId:undefined,metadata:{escrowId:task,taskId:task,organizationId:task}};
+    mocks.query.mockImplementation(async (sql:string)=>({rows:sql.includes('FROM outbox_events')
+      ?[{id:task,payload:paid,status:'enqueued'}]:sql.includes('FROM users')?[{id:user}]:[]}));
+    await processNotificationRequest(job);
+    expect(mocks.create).not.toHaveBeenCalled();
+    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("status = 'processed'"),[task,'release_recipient_no_longer_authorized']);
+    const releaseQuery=mocks.query.mock.calls.find(([sql])=>sql.includes('FROM escrows'))!;
+    expect(releaseQuery[1]).toEqual([task,task,user,task]);
+    expect(releaseQuery[0]).toContain('business_membership_has_action');
+    expect(releaseQuery[0]).not.toContain('provider_os_entitlements');
+    mocks.query.mockImplementation(async (sql:string)=>({rows:sql.includes('FROM outbox_events')
+      ?[{id:task,payload:paid,status:'enqueued'}]:[{id:user}]}));
+    await processNotificationRequest(job);
+    expect(mocks.create).toHaveBeenCalledWith(paid);
   });
   it('does not replay processed or missing persisted work', async () => {
     mocks.query.mockResolvedValueOnce({rows:[{id:task,payload:params,status:'processed'}]});

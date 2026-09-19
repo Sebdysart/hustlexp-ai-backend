@@ -3,8 +3,8 @@
  * "both sides receive the right notifications/status updates end to end."
  *
  * A supplied transaction records durable delivery intent with the domain write.
- * Remaining legacy post-commit callers log delivery failures without failing
- * the already committed task/financial mutation.
+ * All domain callers use their transaction. The non-transactional fallback
+ * remains compatible for existing internal integrations.
  *
  * Delivery rides the existing audited rails:
  * NotificationService.createNotification → notifications row + outbox →
@@ -47,7 +47,7 @@ export async function notifyApplicationReceived(posterId: string, taskId: string
 }
 
 /** Poster assigned a worker → tell the worker. */
-export async function notifyWorkerAssigned(workerId: string, taskId: string, taskTitle: string): Promise<void> {
+export async function notifyWorkerAssigned(workerId: string, taskId: string, taskTitle: string, query?: QueryFn): Promise<void> {
   await safeNotify({
     userId: workerId,
     category: 'task_accepted',
@@ -55,12 +55,13 @@ export async function notifyWorkerAssigned(workerId: string, taskId: string, tas
     body: `You got "${taskTitle}". Head over and start when ready.`,
     deepLink: `/tasks/${taskId}`,
     taskId,
+    dedupeKey: `worker-assigned:${taskId}:${workerId}`,
     priority: 'HIGH',
-  });
+  }, query);
 }
 
 /** Worker accepted (instant mode direct-accept) → tell the poster. */
-export async function notifyTaskAccepted(posterId: string, taskId: string, taskTitle: string): Promise<void> {
+export async function notifyTaskAccepted(posterId: string, taskId: string, taskTitle: string, query?: QueryFn): Promise<void> {
   await safeNotify({
     userId: posterId,
     category: 'task_accepted',
@@ -68,8 +69,9 @@ export async function notifyTaskAccepted(posterId: string, taskId: string, taskT
     body: `A hustler accepted "${taskTitle}" and is on it.`,
     deepLink: `/tasks/${taskId}`,
     taskId,
+    dedupeKey: `task-accepted:${taskId}:${posterId}`,
     priority: 'HIGH',
-  });
+  }, query);
 }
 
 /** Worker submitted proof → tell the poster to review. */
@@ -88,7 +90,7 @@ export async function notifyProofSubmitted(posterId: string, taskId: string, tas
 }
 
 /** Poster rejected proof → tell the worker to fix and resubmit. */
-export async function notifyProofRejected(workerId: string, taskId: string, taskTitle: string, reason: string | undefined, proofId: string): Promise<void> {
+export async function notifyProofRejected(workerId: string, taskId: string, taskTitle: string, reason: string | undefined, proofId: string, query?: QueryFn): Promise<void> {
   await safeNotify({
     userId: workerId,
     category: 'proof_rejected',
@@ -97,12 +99,13 @@ export async function notifyProofRejected(workerId: string, taskId: string, task
     deepLink: `/tasks/${taskId}/proof`,
     taskId,
     dedupeKey: `proof-rejected:${proofId}:${workerId}`,
+    metadata: { proofId },
     priority: 'HIGH',
-  });
+  }, query);
 }
 
 /** Task completed (poster approved) → tell the worker. */
-export async function notifyTaskCompleted(workerId: string, taskId: string, taskTitle: string): Promise<void> {
+export async function notifyTaskCompleted(workerId: string, taskId: string, taskTitle: string, query?: QueryFn): Promise<void> {
   await safeNotify({
     userId: workerId,
     category: 'task_completed',
@@ -110,20 +113,27 @@ export async function notifyTaskCompleted(workerId: string, taskId: string, task
     body: `"${taskTitle}" is complete. Your payout is ready for processing.`,
     deepLink: `/tasks/${taskId}`,
     taskId,
+    dedupeKey: `task-completed:${taskId}:${workerId}`,
     priority: 'HIGH',
-  });
+  }, query);
 }
 
 /** Escrow released → report the release without claiming external settlement. */
-export async function notifyPaymentReleased(workerId: string, taskId: string, netPayoutCents: number): Promise<void> {
+export async function notifyPaymentReleased(workerId: string, taskId: string, netPayoutCents: number, query?: QueryFn, escrowId?: string, organizationId?: string): Promise<void> {
+  if (query && !escrowId) throw new Error('Release notification requires escrow identity');
   const dollars = (netPayoutCents / 100).toFixed(2);
   await safeNotify({
     userId: workerId,
     category: 'payment_released',
     title: 'Payout released',
     body: `$${dollars} was released to your payout account. Check earnings for settlement status.`,
-    deepLink: `/earnings`,
-    taskId,
+    deepLink: organizationId ? `/business/tasks/${taskId}` : '/earnings',
+    taskId: escrowId ? undefined : taskId,
+    ...(escrowId ? {
+      objectRef: { type: 'escrow', id: escrowId },
+      metadata: { escrowId, taskId, organizationId },
+      dedupeKey: `payout-released:${escrowId}:${workerId}`,
+    } : {}),
     priority: 'CRITICAL',
-  });
+  }, query);
 }

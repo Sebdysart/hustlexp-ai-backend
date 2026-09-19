@@ -1483,7 +1483,7 @@ describe('task.reviewProof', () => {
     expect(mockProofService.review).toHaveBeenCalledWith(
       expect.objectContaining({ decision: 'REJECTED' })
     );
-    expect(mockTaskService.rejectProof).toHaveBeenCalledWith(TASK_ID, expect.any(String));
+    expect(mockTaskService.rejectProof).toHaveBeenCalledWith(TASK_ID, expect.any(String), PROOF_ID);
   });
 
   it('throws BAD_REQUEST when neither decision nor approved is given (no taskId)', async () => {
@@ -1583,7 +1583,8 @@ describe('task.reviewProof', () => {
     expect(result).toEqual(rejectedProof);
     expect(mockTaskService.rejectProof).toHaveBeenCalledWith(
       TASK_ID,
-      'Work is incomplete'
+      'Work is incomplete',
+      PROOF_ID,
     );
   });
 
@@ -1660,12 +1661,7 @@ describe('task.complete', () => {
       channel: 'WEB',
       expectedPosterId: USER_ID,
     });
-    expect(mockNotifyTaskCompleted).toHaveBeenCalledOnce();
-    expect(mockNotifyTaskCompleted).toHaveBeenCalledWith(
-      OTHER_USER_ID,
-      TASK_ID,
-      'Test Task',
-    );
+    expect(mockNotifyTaskCompleted).not.toHaveBeenCalled();
   });
 
   it('does not duplicate the completion notification on an idempotent replay', async () => {

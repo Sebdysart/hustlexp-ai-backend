@@ -142,7 +142,7 @@ describe('processCompletionReleaseJob — happy path', () => {
     );
 
     // Worker is told they got paid — with the SAME net amount that was transferred
-    expect(notifyPaymentReleased).toHaveBeenCalledWith(WORKER_ID, TASK_ID, expected.netPayoutCents);
+    expect(notifyPaymentReleased).not.toHaveBeenCalled();
   });
 
   it('replay with stripe_transfer_id already set: NO Stripe call, release still invoked with existing id (crash-resume)', async () => {
@@ -170,7 +170,7 @@ describe('processCompletionReleaseJob — happy path', () => {
     await processCompletionReleaseJob(makeJob(signed(basePayload())));
 
     expect(createTransfer).toHaveBeenCalledWith(expect.objectContaining({ amount: 7300 }));
-    expect(notifyPaymentReleased).toHaveBeenCalledWith(WORKER_ID, TASK_ID, 7300);
+    expect(notifyPaymentReleased).not.toHaveBeenCalled();
   });
 
   it('routes Service Business funds and financial notice to the authorized provider recipient', async () => {
@@ -189,9 +189,7 @@ describe('processCompletionReleaseJob — happy path', () => {
       workerId: PAYOUT_RECIPIENT_ID,
       workerStripeAccountId: CONNECT_ID,
     }));
-    const net = computeFeeBreakdown(AMOUNT, 15).netPayoutCents;
-    expect(notifyPaymentReleased).toHaveBeenCalledWith(PAYOUT_RECIPIENT_ID, TASK_ID, net);
-    expect(notifyPaymentReleased).not.toHaveBeenCalledWith(WORKER_ID, TASK_ID, net);
+    expect(notifyPaymentReleased).not.toHaveBeenCalled();
   });
 });
 

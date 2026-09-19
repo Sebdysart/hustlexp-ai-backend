@@ -11,6 +11,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Module mocks — must be declared before any imports that pull those modules
 // ---------------------------------------------------------------------------
 
+vi.mock('../../src/services/NotificationRequestService.js',()=>({enqueueNotificationRequest:vi.fn()}));
+import { enqueueNotificationRequest } from '../../src/services/NotificationRequestService.js';
+
 vi.mock('../../src/db', () => {
   // Shared query mock. `transaction` is given a FACTORY-level passthrough impl
   // (calls its callback with the query mock). This must live in the factory —
@@ -1012,6 +1015,7 @@ describe('TaskService.accept', () => {
 
     expect(result.success).toBe(true);
     expect(result.data?.state).toBe('ACCEPTED');
+    expect(enqueueNotificationRequest).toHaveBeenCalledWith(mockQuery,expect.objectContaining({category:'task_accepted',userId:'poster-1'}));
   });
 
   it('returns NOT_FOUND when task does not exist', async () => {
@@ -1447,15 +1451,16 @@ describe('TaskService.complete', () => {
 // ===========================================================================
 describe('TaskService.rejectProof', () => {
   it('transitions PROOF_SUBMITTED → ACCEPTED (proof rejected)', async () => {
-    const reverted = makeTask({ state: 'ACCEPTED' });
+    const reverted = makeTask({ state: 'ACCEPTED', worker_id: 'worker-1' });
     mockQuery
       .mockResolvedValueOnce({ rows: [makeTask({ state: 'PROOF_SUBMITTED' })], rowCount: 1 } as never) // SELECT FOR UPDATE
       .mockResolvedValueOnce({ rows: [reverted], rowCount: 1 } as never); // UPDATE
 
-    const result = await TaskService.rejectProof('task-1', 'Not complete');
+    const result = await TaskService.rejectProof('task-1', 'Not complete', 'proof-1');
 
     expect(result.success).toBe(true);
     expect(result.data?.state).toBe('ACCEPTED');
+    expect(enqueueNotificationRequest).toHaveBeenCalledWith(mockQuery,expect.objectContaining({category:'proof_rejected',userId:'worker-1'}));
   });
 
   it('returns INVALID_STATE when task is not in PROOF_SUBMITTED state', async () => {

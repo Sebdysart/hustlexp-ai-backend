@@ -1,7 +1,6 @@
 import { config } from '../config.js';
 import { db, type QueryFn } from '../db.js';
 import { computeFeeBreakdown } from '../lib/money.js';
-import { notifyPaymentReleased } from '../lib/task-lifecycle-notifications.js';
 import { workerLogger } from '../logger.js';
 import { notifyAdmins } from '../services/AdminNotificationHelper.js';
 import { EscrowService } from '../services/EscrowService.js';
@@ -155,7 +154,6 @@ async function processLocalTestPayout(
   if (!release.success) {
     await assertLocalReleaseConverged(escrow.id,transfer.data.transferId,release.error.message);
   }
-  await notifyPaymentReleased(payoutRecipientUserId,taskId,transfer.data.amountCents);
   log.info({
     escrowId:escrow.id,taskId,transferId:transfer.data.transferId,
     amountCents:transfer.data.amountCents,provider:transfer.data.provider,
@@ -205,11 +203,6 @@ async function processLocalTestBusinessPayout(
     );
   }
 
-  await notifyPaymentReleased(
-    payoutRecipientUserId,
-    taskId,
-    transfer.data.amountCents,
-  );
 
   log.info(
     {
@@ -373,8 +366,6 @@ async function releaseAndNotify(
   const release=await EscrowService.release({ escrowId:escrow.id,stripeTransferId });
   if (!release.success && TERMINAL_RELEASE_CODES.has(release.error.code)) return;
   if (!release.success) throw new Error(`Completion release: EscrowService.release failed — ${release.error.message}`);
-  const money=computeFeeBreakdown(escrow.amount,config.stripe.platformFeePercent,escrow.platform_fee_cents);
-  await notifyPaymentReleased(payoutRecipientUserId,taskId,money.netPayoutCents);
   log.info({ escrowId:escrow.id,taskId,stripeTransferId },'Escrow RELEASED — payout complete');
 }
 

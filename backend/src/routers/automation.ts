@@ -13,7 +13,6 @@ import { LocalCertificationScreeningProvider } from '../services/LocalCertificat
 import { ControlledTestLiquidityService } from '../services/ControlledTestLiquidityService.js';
 import { ControlledTestDurationEvidenceService } from '../services/ControlledTestDurationEvidenceService.js';
 import { ControlledTestProviderCapabilityService } from '../services/ControlledTestProviderCapabilityService.js';
-import { notifyPaymentReleased } from '../lib/task-lifecycle-notifications.js';
 import { ErrorCodes } from '../types.js';
 
 const idempotencyKey = z
@@ -218,10 +217,6 @@ export const automationRouter = router({
           throwServiceError(released.error);
         }
       }
-      // NotificationService derives a stable task/category dedupe key. Calling
-      // after every exact convergence makes a crash-replay repair a missing
-      // update without ever creating a second visible payout notification.
-      await notifyPaymentReleased(row.worker_id, row.task_id, transfer.data.amountCents);
       return {
         engineTaskId: row.task_id,
         escrowId: row.escrow_id,

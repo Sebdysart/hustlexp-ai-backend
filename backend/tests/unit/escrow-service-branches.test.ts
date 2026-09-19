@@ -31,6 +31,7 @@ const payoutDestination = vi.hoisted(() => vi.fn());
 // Module mocks
 // ---------------------------------------------------------------------------
 
+vi.mock('../../src/services/NotificationRequestService.js',()=>({enqueueNotificationRequest:vi.fn()}));
 vi.mock('../../src/db', () => ({
   db: { query: vi.fn(), transaction: vi.fn() },
   isInvariantViolation: vi.fn(() => false),

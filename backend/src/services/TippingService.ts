@@ -309,13 +309,26 @@ export const TippingService = {
         };
       }
 
-      const result = await db.query<Tip>(
-        `UPDATE tips
-         SET status = 'completed', completed_at = NOW()
-         WHERE id = $1 AND stripe_payment_intent_id = $2
-         RETURNING *`,
-        [tipId, stripePaymentIntentId]
-      );
+      const result = await db.transaction(async (query) => {
+        const result = await query<Tip>(
+          `UPDATE tips
+           SET status = 'completed', completed_at = NOW()
+           WHERE id = $1 AND stripe_payment_intent_id = $2
+           RETURNING *`,
+          [tipId, stripePaymentIntentId]
+        );
+        const tip = result.rows[0];
+        if (tip) {
+          await NotificationService.createInTransaction(query, {
+            userId: tip.worker_id, type: 'tip_received', title: '💰 You received a tip!',
+            message: `You received a $${(tip.amount_cents / 100).toFixed(2)} tip! Great job!`,
+            entityType: 'tip', entityId: tip.id, actionUrl: `/tasks/${tip.task_id}`,
+            metadata: { task_id: tip.task_id, amount_cents: tip.amount_cents },
+            dedupeKey: `tip-received:${tip.id}`,
+          });
+        }
+        return result;
+      });
 
       if (result.rowCount === 0) {
         // LL9: Idempotency — if the UPDATE matched 0 rows, check whether the tip
@@ -364,19 +377,6 @@ export const TippingService = {
           { err: revenueErr instanceof Error ? revenueErr.message : String(revenueErr), tipId: tip.id },
           'confirmTip: revenue ledger write failed — tip confirmed but ledger entry missing; manual reconciliation required'
         );
-      }
-
-      // Shared in-app writer supplies canonical identity and recipient dedupe columns.
-      try {
-        await NotificationService.create({
-          userId: tip.worker_id, type: 'tip_received', title: '💰 You received a tip!',
-          message: `You received a $${(tip.amount_cents / 100).toFixed(2)} tip! Great job!`,
-          entityType: 'tip', entityId: tip.id, actionUrl: `/tasks/${tip.task_id}`,
-          metadata: { task_id: tip.task_id, amount_cents: tip.amount_cents },
-          dedupeKey: `tip-received:${tip.id}`,
-        });
-      } catch {
-        log.warn({ tipId: tip.id, workerId: tip.worker_id }, 'Could not create tip_received notification');
       }
 
       return { success: true, data: tip };

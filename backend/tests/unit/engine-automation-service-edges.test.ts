@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => {
   };
 });
 
+vi.mock('../../src/services/NotificationRequestService.js',()=>({enqueueNotificationRequest:vi.fn()}));
 vi.mock('../../src/db', () => ({
   db: { query: mocks.query, transaction: mocks.transaction },
   isInvariantViolation: mocks.invariant,
@@ -79,6 +80,7 @@ vi.mock('../../src/services/RatingService', () => ({
 }));
 
 import { DispatchExpiryService, buildDispatchExpiryRequestHash } from '../../src/services/DispatchExpiryService';
+import { enqueueNotificationRequest } from '../../src/services/NotificationRequestService.js';
 import { TaskCompletionService } from '../../src/services/TaskCompletionService';
 import { VerifiedPosterCompletionService } from '../../src/services/VerifiedPosterCompletionService';
 import { VerifiedPosterRatingService } from '../../src/services/VerifiedPosterRatingService';
@@ -311,6 +313,21 @@ describe('TaskCompletionService defensive contracts', () => {
   const unattendedHash = createHash('sha256')
     .update(JSON.stringify({ taskId: TASK_ID, mode: 'UNATTENDED' }))
     .digest('hex');
+
+  it('records completion notice in the existing task transaction, never on replay', async () => {
+    query.mockResolvedValue(rows())
+      .mockResolvedValueOnce(rows([completionContext()]))
+      .mockResolvedValueOnce(rows([{state:'ACCEPTED'}]))
+      .mockResolvedValueOnce(rows([{id:TASK_ID,state:'FUNDED'}]))
+      .mockResolvedValueOnce(rows([{id:TASK_ID,state:'COMPLETED',worker_id:WORKER_ID,title:'Task'}]));
+    expect((await TaskCompletionService.complete(TASK_ID,POSTER_ID)).success).toBe(true);
+    expect(enqueueNotificationRequest).toHaveBeenCalledWith(query,expect.objectContaining({category:'task_completed',userId:WORKER_ID,taskId:TASK_ID}));
+    vi.mocked(enqueueNotificationRequest).mockClear();
+    query.mockResolvedValueOnce(rows([completionContext({state:'COMPLETED',payout_ready_at:new Date()})]))
+      .mockResolvedValueOnce(rows([{id:TASK_ID,state:'COMPLETED',worker_id:WORKER_ID}]));
+    expect((await TaskCompletionService.complete(TASK_ID,POSTER_ID)).success).toBe(true);
+    expect(enqueueNotificationRequest).not.toHaveBeenCalled();
+  });
 
   it('rejects unattended idempotency conflicts', async () => {
     query.mockResolvedValueOnce(rows()).mockResolvedValueOnce(rows([{ request_hash: 'different', task_id: TASK_ID }]));

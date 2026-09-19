@@ -2,7 +2,6 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { invalidateTask } from '../cache/db-cache.js';
 import { db } from '../db.js';
-import { notifyProofRejected, notifyTaskCompleted } from '../lib/task-lifecycle-notifications.js';
 import { ProofService } from '../services/ProofService.js';
 import { TaskService } from '../services/TaskService.js';
 import { VerifiedPosterCompletionService } from '../services/VerifiedPosterCompletionService.js';
@@ -99,15 +98,13 @@ async function handleRejectedProof(
   proofId: string,
 ): Promise<void> {
   if (decision !== 'REJECTED') return;
-  const result = await TaskService.rejectProof(taskId, reason ?? 'Proof rejected by poster');
+  const result = await TaskService.rejectProof(taskId, reason ?? 'Proof rejected by poster', proofId);
   if (!result.success) {
     throw new TRPCError({
       code: 'INTERNAL_SERVER_ERROR',
       message: `Proof marked rejected but task state could not be reverted: ${result.error.message}`,
     });
   }
-  const task = result.data as { worker_id?: string | null; title?: string | null };
-  if (task.worker_id) await notifyProofRejected(task.worker_id, taskId, task.title ?? 'your task', reason, proofId);
 }
 
 async function reviewProof(ctx: AuthedContext, input: ReviewProofInput) {
@@ -141,14 +138,6 @@ async function completeTask(ctx: AuthedContext, taskId: string) {
     throw new TRPCError({ code: completeErrorCode(result.error.code), message: result.error.message });
   }
   await invalidateTask(taskId);
-  const task = result.data as {
-    worker_id?: string | null;
-    title?: string | null;
-    completion_idempotency_replayed?: boolean;
-  };
-  if (task.worker_id && task.completion_idempotency_replayed !== true) {
-    await notifyTaskCompleted(task.worker_id, taskId, task.title ?? 'your task');
-  }
   return result.data;
 }
 

@@ -1,6 +1,6 @@
 # Hardening continuation: durable lifecycle notices and recipient eligibility
 
-This continues the source audit after backend commit `5a558617`. The broader goal remains active: this checkpoint closes additional confirmed defects, not every outstanding notification delivery gap.
+This continues the source audit after backend commit `5a558617`. The final consolidated audit is in provider-os-production-readiness.md; this file records the continuation in detail.
 
 ## Confirmed defects fixed
 
@@ -36,8 +36,25 @@ Lease recovery now includes these ledger-backed requests, in the same bounded SK
 - The six previously documented broader baseline failures remain separate. The old migration-count assertion predates this new forward migration too.
 - No live database, Redis delivery, Twilio, charge, browser, push or production deployment verification.
 
-## Remaining evidence/work before full completion
+## Final commit-boundary hardening
 
-The first report's post-commit caveat is narrowed but not eliminated. Assignment/acceptance, rejection/completion, payout notices, verification-unlock, tip notices and ordinary quote-paid fan-out still need their respective commit/recovery boundaries evaluated and closed where a source-confirmed loss is fixable within the notification-only scope. Payment/task execution policy must not be redesigned to accomplish that.
+- Assignment and instant acceptance now record their existing notice in their domain transaction. Router post-commit hooks were removed.
+- Proof rejection carries the actual proof ID into the existing task-reset transaction. Delayed feedback is skipped if a newer proof exists or that task/worker no longer needs the action.
+- Poster-confirmed completion records notice intent next to completion evidence. A replay does not emit again. No completion/approval rule changed.
+- Escrow release records the existing payment_released intent, keyed by escrow/recipient, only with provider transfer evidence and no manual-reconciliation hold. The recipient is revalidated against canonical release/task/payout evidence before NotificationService applies its ordinary channel/preferences rules. Business recipients additionally require current workspace permission and use /business/tasks/:id; premium expiry cannot block that canonical link. No payout math or transfer behavior changed.
+- Tip receipt and earned verification unlock insert their existing in-app notice with their existing local state write. Failed inserts roll back the local notification claim, so retries can publish. No new tip/verification product behavior.
+- Ordinary quote-payment finalization groups final quote/version/payment updates and existing in-app fan-out into one transaction, using canonical quote -> version -> payment lock order. External provider verification, prior materialization and funding remain outside that notification transaction. A failed local insert remains recoverable; external payment is never repeated by the notification writer.
 
-The final completion audit must reconcile every original A–U and N1–N23 requirement against current source/tests and revise the main report/inventory after the remaining changes. Premium-loss canonical execution, verified-only quoting, entitlement authority, controlled-only purchases, legacy SMS suppression, explicit organization context and safe return handling remain mandatory invariants. Product-policy questions (pricing, refunds, recurring billing, expired premium history access, pending verification and retention policy) remain out of scope rather than guessed.
+All generic lifecycle intents reuse notification.create_requested and the existing user_notifications queue. No new transport, category, public notification endpoint, payment rail or separate worker exists. Preference/authorization skips are recorded. Transient delivery/storage failures retry under the existing bounded outbox/worker policy; attempt exhaustion is visible to operators. No claim of exactly-once external transport is made.
+
+## Final validation
+
+- Consolidated focused Provider OS/product/premium/SMS/in-app/outbox/lifecycle run: **34 files / 587 passing tests**.
+- Final task application/assignment/acceptance/proof/review/completion selection plus PostgreSQL paid-notice test: **89 passed**, 245 unrelated tests filtered.
+- Earlier admin helper selection: **13 passed**; frontend unchanged since its **7 files / 67 passing tests**, build and lint.
+- New PostgreSQL tests run real local quote/version/payment/notice SQL after stubbing already-completed provider verification/materialization. Failure rolls back final paid state and notice rows; retry and repeat yield exactly two intended recipient notices. Verification-unlock transaction similarly rolls back its notification claim and publishes once after retry.
+- Additional payout/request tests cover business versus worker destination, exact released recipient, removed authority, and absence of premium entitlement in canonical release access. Existing account/preference/premium checks remain covered by their dedicated suites.
+- Six additional task/escrow fixture failures reproduce on the untouched audit baseline (three task-create expectations; three no-worker/missing-task expectations). They are separate from the six earlier migration/config baseline failures and one full task-router projection expectation. No unrelated assertions were rewritten to hide them.
+- No production migration, network payment, Twilio send, Redis end-to-end delivery, browser run, push or main merge.
+
+The original A–U and N1–N23 scope is cross-referenced in the final report. Remaining pricing/refund/recurring/history-expiry/pending-verification/retention decisions stay deferred, rather than being silently implemented.

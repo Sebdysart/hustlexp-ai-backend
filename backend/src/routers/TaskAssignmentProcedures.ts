@@ -112,12 +112,12 @@ async function assignWorker(ctx: AuthedContext, input: AssignmentInput) {
       requireCurrentOffer: true,
     });
     await verifyFunded(txn, input.taskId);
-    return { ...await commitAssignment(txn, input, applicationId), taskTitle: task.title };
+    const assigned = await commitAssignment(txn, input, applicationId);
+    if (assigned.worker_id) await notifyWorkerAssigned(assigned.worker_id, input.taskId, task.title, txn);
+    return assigned;
   });
   await invalidateTask(input.taskId);
-  if (result.worker_id) await notifyWorkerAssigned(result.worker_id, input.taskId, result.taskTitle);
-  const { taskTitle: _taskTitle, ...assignedTask } = result;
-  return assignedTask;
+  return result;
 }
 
 async function shortlistApplicant(ctx: AuthedContext, input: AssignmentInput) {

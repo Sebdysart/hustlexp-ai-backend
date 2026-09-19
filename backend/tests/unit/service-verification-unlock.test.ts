@@ -140,7 +140,7 @@ describe('EarnedVerificationUnlockService.recordEarnings', () => {
     }
   });
 
-  it('handles notification insert failure gracefully (fire-and-forget)', async () => {
+  it('keeps threshold crossing retryable when its atomic notification insert fails', async () => {
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 1 } as never);
     mockDb.query.mockResolvedValueOnce({
       rows: [{ total_net_earnings_cents: 3000, earned_unlock_threshold_cents: 4000 }],
@@ -154,8 +154,8 @@ describe('EarnedVerificationUnlockService.recordEarnings', () => {
       'user-1', 'task-5', 'escrow-5', 1500,
     );
 
-    // recordEarnings should still succeed
-    expect(result.success).toBe(true);
+    // Transaction must roll back the notification claim so a retry can publish it.
+    expect(result.success).toBe(false);
   });
 
   it('is idempotent — ON CONFLICT DO NOTHING prevents duplicate ledger entries', async () => {

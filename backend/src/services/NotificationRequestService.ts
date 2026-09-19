@@ -62,6 +62,17 @@ export async function processNotificationRequest(job: {
     );
     if (!source.rows.length) skipped = 'source_no_longer_actionable';
   }
+  if (!skipped && params.category === 'proof_rejected' && typeof params.metadata?.proofId === 'string') {
+    const source = await db.query(
+      `SELECT p.id FROM proofs p JOIN tasks t ON t.id=p.task_id
+       WHERE p.id=$1 AND p.task_id=$2 AND t.worker_id=$3 AND p.state='REJECTED'
+         AND t.state IN ('ACCEPTED','IN_PROGRESS')
+         AND NOT EXISTS (SELECT 1 FROM proofs newer WHERE newer.task_id=p.task_id
+           AND (newer.created_at,newer.id) > (p.created_at,p.id))`,
+      [params.metadata.proofId,params.taskId,params.userId],
+    );
+    if (!source.rows.length) skipped = 'source_no_longer_actionable';
+  }
   if (!skipped && params.category === 'new_matching_task' && typeof params.metadata?.applicationId === 'string') {
     const source = await db.query(
       `SELECT a.id FROM task_applications a JOIN tasks t ON t.id=a.task_id
@@ -70,6 +81,23 @@ export async function processNotificationRequest(job: {
       [params.metadata.applicationId,params.taskId,params.userId],
     );
     if (!source.rows.length) skipped = 'source_no_longer_actionable';
+  }
+  if (!skipped && params.category === 'payment_released' && typeof params.metadata?.escrowId === 'string') {
+    const source = await db.query(
+      `SELECT e.id FROM escrows e JOIN tasks t ON t.id=e.task_id
+       WHERE e.id=$1 AND t.id=$2 AND e.state='RELEASED' AND e.provider_transfer_id IS NOT NULL
+         AND (
+           (t.worker_id IS NOT NULL AND COALESCE(t.payout_recipient_user_id,t.worker_id)=$3)
+           OR (t.worker_id IS NULL AND t.orchestration_mode='OPS_MANUAL'
+             AND t.business_fulfiller_organization_id=$4
+             AND EXISTS (SELECT 1 FROM hxos_local_test_business_payout_destinations d
+               WHERE d.organization_id=t.business_fulfiller_organization_id
+                 AND d.payout_recipient_user_id=$3 AND d.status='ACTIVE' AND d.is_test IS TRUE)
+             AND business_membership_has_action(t.business_fulfiller_organization_id,$3,'READ_WORKSPACE'))
+         )`,
+      [params.metadata.escrowId,params.metadata.taskId,params.userId,params.metadata.organizationId ?? null],
+    );
+    if (!source.rows.length) skipped = 'release_recipient_no_longer_authorized';
   }
   if (!skipped) {
     const notification = await NotificationService.createNotification(params);

@@ -2,13 +2,15 @@
 
 Audit date: 2026-09-19. Backend starting commit: `cfe45abdece6a7cc60633efdb013638e8251a05b`, branch `feat/provider-os-foundation`. Frontend route source: the same feature branch, starting at `37e8846`.
 
-This records the first audit checkpoint. See [the continuing hardening findings](provider-os-hardening-followup.md) for subsequent fixes, the new notification-request migration, current validation and remaining completion work. The broader goal is not yet marked complete.
+This is the final consolidated source-audit report. [The follow-up](provider-os-hardening-followup.md) records the additional notification commit-boundary fixes and validation. [The producer inventory](provider-os-notification-producers.md) contains every current shared-writer/wrapper call site and raw destination.
 
 ## Conclusion and limits
 
 The inspected Provider OS architecture is coherent as an organization-scoped, controlled-test product. This pass fixes concrete authorization, notification persistence, destination, and certification-gate defects. No remaining cross-organization acquisition bypass was found in the inspected paths. This is **not live production certification** and is **not approval to charge real money**: only the existing controlled provider is implemented.
 
-Premium events and SMS have durable recovery and current authorization checks. Ordinary legacy notification producers do not all have the same transactionally durable domain-event boundary. In particular, `lib/task-lifecycle-notifications.ts`, the verification-unlock notice, tip notice, and the finalizer's ordinary in-app payment fan-out run after their domain writes. A process crash in that interval can still lose a notice; notification-level dedupe cannot repair a missing domain event. This pre-existing architectural limitation is documented rather than disguised by retries or a task/payment lifecycle redesign. Support and assessment-completion writes could be made atomic locally and are fixed here.
+Premium events and SMS have durable recovery and current authorization checks. The audit also closed ordinary application/proof/assignment/acceptance/rejection/completion/payout notification crash gaps using the existing transactional outbox. Tip/unlock/payment in-app inserts now commit with their associated local state writes. This changes notification persistence, not business decisions, payment amounts, proof requirements or execution policy. No source-confirmed Critical/High/Medium issue remains open in the inspected Provider OS acquisition, purchase and premium-delivery paths after these fixes.
+
+This conclusion is bounded: it is a source audit and targeted hardening pass, not a guarantee that every optional legacy/native feature or external service is production certified. Infrequent legacy operational/security producers retain their existing notification delivery policy; this pass inventories and safely projects their destinations rather than migrating the entire platform to a new event architecture. Repository-wide baseline tests are not all green (details below).
 
 No production database, Railway deployment, live payment, Redis service, Twilio delivery, or browser integration was exercised. PostgreSQL tests below used a disposable loopback cluster, with provider/network mocks.
 
@@ -142,7 +144,8 @@ Two write lanes remain: typed web in-app writes and generic policy-driven/native
 | PROVIDER_OS_CLIENT_TASK_POSTED | eligible org operators | /provider-os/drafts/draft?organizationId=org | exact org/relationship/eligible draft; stale request unavailable |
 | task_accepted, task_completed, proof_submitted, proof_rejected; task-linked new_matching_task/instant events | canonical poster/worker | old /task(s)/id variants project to /dashboard/tasks/id or /business/tasks/id from actual participation | unsupported/unrelated recipients get no guessed task action |
 | escrow_funded, refund_issued, payment_failed | canonical poster | /dashboard/tasks/task | actual participation resolved; payment copy follows authoritative event |
-| payment_released, payout_failed; payment_due XP-tax reminders; wallet/settings-payment native links | worker/account owner | /support | supported web fallback, no invented wallet page |
+| payment_released | actual recorded payout recipient | business release: /business/tasks/task; worker earnings route projects to /support | release-bound durable intent; current recipient/business permission recheck, no premium entitlement; no invented wallet page |
+| payout_failed; payment_due XP-tax reminders; wallet/settings-payment native links | worker/account owner | /support | supported web fallback, no invented wallet page |
 | business_operational_digest | permitted business recipient | /business/dashboard | old operations/week route has no matching web page; safe overview fallback, not cross-org resource authority |
 | security_alert / account_suspended with support link | affected account | /support | protected/auth behavior; suspension still blocks protected API, no bypass |
 | financial/admin security_alert (/admin/escrows or stripe-events) | existing privileged admin recipient set | /ops/tasks | broad existing Ops overview; target still enforces capabilities; no fake escrow detail page |
@@ -187,12 +190,17 @@ Read, click and mark-all updates remain scoped by authenticated user ID. List an
 | Medium | EarnedVerificationUnlockService / TippingService notification blocks | raw legacy inserts omitted required identity/dedupe fields; fallback used obsolete data schema | fixed: shared in-app writer and deterministic existing-event keys; financial/verification rules untouched |
 | Low | NotificationService.getUserNotifications | equal created_at timestamps produced unstable ordering | fixed: UUID tie-break |
 | Low | frontend notification validator | broad prefix accepted unsupported descendants/traversal-like paths | fixed: current exact route contract |
-| Design/reliability limitation | legacy post-commit emitters / ordinary quote-payment in-app phase | crash before notice creation can lose the notice | documented; no speculative task/payment outbox redesign in this pass |
+| High | task-lifecycle notification identity | second applicant/proof attempt collapsed onto task/category/version 1 | fixed: concrete application/proof identities, including rejection |
+| High | canonical lifecycle notification callers | crash between domain commit and post-commit notice lost application/proof/assignment/acceptance/rejection/completion/release notices | fixed: existing outbox intent written on the existing domain transaction; no transport in the transaction |
+| Medium | ordinary quote-paid, tip, verification unlock notices | state committed without its in-app row; unlock replay could never publish again | fixed: atomic local-state/notice transaction; quote/version/payment lock order; PG rollback/retry tests |
+| Medium | payout notice recipient | generic task participation rejected delegated/business payout recipient, with the wrong business destination | fixed: release-bound recipient provenance and current authorization; canonical business task link; no entitlement requirement |
+| Medium | AdminNotificationHelper identity | distinct alerts collapsed onto a shallow admin path | fixed: stable source/type/destination hash and recipient-specific key |
+| Medium | NotificationService business/Ops fan-out | active membership selected suspended/banned/trust-held accounts | fixed: current account eligibility and business READ_WORKSPACE action |
 | Scaling limitation | Provider OS listClients | entire active-client list and aggregate open counts are returned | documented; adding pagination is a separate API/UX contract; draft feed/history/reconciliation/notification reads remain bounded |
 
 ## Migration, deployment and retention
 
-No new migration was necessary and no historical SQL was changed. Existing chain: legacy relations/invites -> organization_access (20260918) -> quote_origin (20260919) -> premium_events (20260920) -> purchases (20260921). Prerequisites for business entities, photos, quote payments and the canonical outbox precede these. Legacy user-owned invitations/relationships were conservatively revoked without choosing a first organization; old rows remain evidence. No retroactive origin inference.
+New forward migration `20260922_notification_request_dispatch.sql` adds the partial index for bounded durable-notification lease recovery. It is appended to the manifest after purchases. No historical SQL was changed. Existing chain: legacy relations/invites -> organization_access (20260918) -> quote_origin (20260919) -> premium_events (20260920) -> purchases (20260921). Prerequisites for business entities, photos, quote payments and the canonical outbox precede these. Legacy user-owned invitations/relationships were conservatively revoked without choosing a first organization; old rows remain evidence. No retroactive origin inference.
 
 Deployment contract remains migrations before serving work: API production start runs engine migrations before server.js; worker startup awaits the same migration runner before registering workers/schedules/outbox readiness. Runner checkpoints each migration under advisory lock and transaction. A partly applied chain resumes at the next unapplied migration; blindly replaying raw historical SQL is not supported. New-table-dependent features should fail on unsupported schema skew, not fall back to user-owned authorization. Do not manually apply production migrations from this audit.
 
@@ -201,6 +209,10 @@ Purchase/intent/event evidence uses RESTRICT on purchase/org relationships; purc
 Indexes cover active org/client lookup, open invites, org-origin quote history, pending purchase uniqueness/due polling, premium pending events and SMS event/recipient uniqueness. Feed eligibility/exclusion occurs in SQL before LIMIT 100 and is org-, not actor-scoped. The new destination projection is a single batch for at most 50 inbox items, with bounded proposal lookup; no per-recipient N+1 reads were added. No speculative indexes or benchmark claims.
 
 ## Validation
+
+Final continuation: backend build/typecheck, compile, scoped lint and diff checks pass. **34 files / 587 tests pass** in the consolidated Provider OS/product/premium/in-app/SMS/outbox/lifecycle run. Another targeted lifecycle run passes **89 tests** (245 unrelated cases filtered), including application, assignment, acceptance, proof/review/completion routers/services and the final paid-state PostgreSQL boundary. The final index migration was applied to the isolated fixture. Source tests verify intent ownership, release recipient routing, and no repeated completion intent on replay. PostgreSQL tests exercise rollback and concurrent request replay; the final quote-notification boundary test stubs provider verification/materialization and uses real PostgreSQL for the paid-state transaction, not a live charge.
+
+Earlier checkpoint results (same task; retained for traceability):
 
 Backend: normal `npm run build` (TypeScript no emit), `npm run compile`, and scoped ESLint pass. Final focused run: **26 files / 466 tests pass**, including real isolated PostgreSQL purchase, premium event, notification fan-out and support/assessment rollback fixtures; notification/channel/outbox, Provider OS policy/history/media/router, product config and existing controlled task-provider tests. Additional focused admin helper: **12 pass**, 52 unrelated cases intentionally filtered. The final run includes **53 passing legacy-emitter tests** in two existing service suites. New fan-out concurrency uses separate PostgreSQL connections/transactions, not only mocks.
 
@@ -215,6 +227,8 @@ Broader backend run: **436 pass / 6 fail** across 28 files. All six failures rep
 5. notification-delivery-contract: old individual Docker COPY expectation.
 6. quote-payment-preflight: requires NODE_ENV to be explicitly set, while canonical helper deliberately permits missing/non-production NODE_ENV with other gates.
 
+Further broad lifecycle checks reproduce six additional failures on the untouched starting commit: three task-create fixtures (old positional scope hash, plan-check mock, old request hash), and three escrow fixtures expecting old no-worker wording/INVALID_STATE instead of current fulfiller/NOT_FOUND semantics. The full task-router suite also has the previously reproduced unrelated getById projection expectation. The worker-registration mock dependency issue was repaired in the focused harness while adding the new dispatch test.
+
 These are reported, not hidden by changing unrelated assertions. Existing focused Provider OS migration-order/origin/catalog checks pass; this is not a full production baseline migration rehearsal. No live end-to-end/browser/SMS/payment integration claim.
 
 ## Exact change scope
@@ -225,13 +239,35 @@ Backend routers: notification, support, businessAssessment (notification complet
 
 Frontend: features/business/organizationContext (new), features/notifications/destination and providerOsDestinations.test, BusinessClaimDetail, BusinessDashboard (claim URLs only). No CSS, logo, hero, navbar markup or visual components changed.
 
+
+Additional backend changes in the final continuation: NotificationRequestService; task-lifecycle-notifications; TaskApplicationProcedures; taskExternalBridge; TaskExecutionProcedures; TaskAssignmentProcedures; TaskAcceptProcedures/TaskAcceptService; TaskReviewProcedures/TaskExecutionService/TaskCompletionService; EscrowReleaseTransaction (notice only), completion-release-orchestrator and automation (remove post-commit duplicate hooks); QuotePaymentFinalizationService (atomic final paid-state/in-app boundary only); TippingService and EarnedVerificationUnlockService (in-app boundary only); worker-registration, outbox-worker, migration manifest and the new dispatch-index migration. Additional tests are recorded in the follow-up report.
+
+The quote/payment/escrow files above were **not wholly untouched**: notification persistence moved alongside their existing state writes. Provider verification, monetary calculations, escrow state rules, payout rails, task materialization, completion evidence, and exact-address rules were preserved. This distinction is intentional and should not be described as a payment architecture rewrite.
+
+## Requirement evidence cross-check
+
+| Requested scope | Evidence and outcome |
+|---|---|
+| A authorization, K/L/M acquisition/relationships/feed | matrix above; ProviderOsAccess/ProviderOsService/providerOs router, BusinessClaimService, ProviderOsDraftPhotoAuthority; exact org/action, consent, VERIFIED acquisition, SQL eligibility before limit, active relationship; current-member read and client-lock regression tests |
+| B/C entitlement/manual-vs-paid | ProviderOsEntitlementService, ProviderOsAccess and purchase finalizer; canonical window rules, organization/entitlement locks, audited before/after, suspension holds, finite extension, no repeat grant |
+| D/E/F purchases/gates/reconciliation | dedicated purchase + controlled intent/event ledgers, canonical full creation/confirmation gates; base-gated verification recovery, minute scheduler/maintenance dispatch, bounded leased SKIP LOCKED claims; PG purchase replay/policy-hold tests |
+| G/H/I events/recipients/SMS | four canonical SQL-trigger events, ProviderOsPremiumEvents and sms-worker; persisted event + recipient ledger, current exact org/member/actions/preferences/phone, SID and uncertainty handling; premium PG/policy/channel tests |
+| J canonical work after premium loss | ordinary task/business/address/proof/completion APIs have no Provider OS entitlement gate; paid links target canonical business task; new release authorization also has no premium gate |
+| N/O/P/Q/R migrations/deploy/audit/retention/performance | append-only migration chain and startup migration ordering; event/purchase/Ops audit evidence; documented deletion policy questions; indexed bounded feed/event/purchase/dispatch queries; no speculative performance rewrite |
+| S/T/U tests/targeted fixes/exclusions | findings table and validation above; only confirmed defects fixed; no billing/provider/price/verification-policy or visual redesign |
+| N1/N2/N3/N4/N14/N15/N16/N17/N18 producers/routes/content/legacy | 63-call AST inventory plus raw-SQL search (only central writers); canonical route table above; no guessed claim links, bearer tokens, exact address, phone or credentials added to user notices; unsupported web features have no action |
+| N5/N6/N7/N8/N9/N19/N20 click/safety/auth/org/guards | notification API projection -> strict frontend destination validator -> router navigation; validated returnTo retained through auth; explicit org URL remains authoritative context, never permission; target APIs reauthorize; paid canonical task is outside premium guard |
+| N10 stale links | canonical task successor for materialized business quotes; customer draft exposes task continuation; deleted/removed-authority business refs become no action; lost entitlement shows access-required; no org guessing or redirect loop; delayed proof/application intents revalidate current source |
+| N11/N12/N13 dedupe/read/order | recipient/event-specific SQL uniqueness, locked premium fan-out, outbox request keys and retry; all read/click mutations bind current user, unread/list share visibility; created_at/id ordering, bounded legacy offset API retained |
+| N21/N22/N23 tests/severity/report | destination/auth/org tests and focused backend/PG suites, explicit findings/severity table, baseline results; no browser integration claimed |
+
 ## Deferred decisions and remaining work
 
 - Approved real price/provider credentials and any recurring/refund/cancellation product policy.
 - Read-only Provider OS quote history after premium expiry; current premium guard preserved.
 - Optional pending-verification quote acquisition needs complete origin-aware activation, not fake claims.
 - Revoked client relationships require support resolution; fresh invitation does not silently restore them.
-- Durable events for remaining ordinary legacy post-commit in-app producers, if the product requires premium-level delivery guarantees across all channels.
+- Any future decision to give all optional native/operational alert producers premium-level durable domain-event guarantees; critical inspected lifecycle notices now have atomic intent/row persistence.
 - Client-list pagination, notification cursor pagination and wider legacy-native feature/web parity.
 - Retention policy for hard-deleted account recipient evidence.
 

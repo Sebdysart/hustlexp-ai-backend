@@ -48,6 +48,17 @@ describe('recipient + category routing', () => {
     }));
     expect(create).not.toHaveBeenCalled();
   });
+  it('persists assignment, acceptance, rejection and completion intent on their domain transaction', async () => {
+    const query=vi.fn();
+    await notifyWorkerAssigned('worker-1',TASK,'Move boxes',query);
+    await notifyTaskAccepted('poster-1',TASK,'Move boxes',query);
+    await notifyProofRejected('worker-1',TASK,'Move boxes','Try again','proof-2',query);
+    await notifyTaskCompleted('worker-1',TASK,'Move boxes',query);
+    expect(enqueueNotificationRequest).toHaveBeenCalledTimes(4);
+    expect(vi.mocked(enqueueNotificationRequest).mock.calls.every(([tx, input])=>tx===query && Boolean(input.dedupeKey))).toBe(true);
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it('distinguishes applicants and proof attempts while deduping each concrete event', async () => {
     await notifyApplicationReceived('poster-1', TASK, 'Move boxes', 'application-1');
     await notifyApplicationReceived('poster-1', TASK, 'Move boxes', 'application-2');
