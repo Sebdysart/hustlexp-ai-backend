@@ -206,11 +206,14 @@ async function getBusinessNotificationUserIds(
 ): Promise<string[]> {
   const result = await query<{ user_id: string }>(
     `
-    SELECT user_id
-    FROM business_memberships
-    WHERE organization_id = $1
-      AND status = 'ACTIVE'
-      AND role IN (
+    SELECT m.user_id
+    FROM business_memberships m JOIN users u ON u.id=m.user_id
+    WHERE m.organization_id = $1
+      AND m.status = 'ACTIVE'
+      AND u.account_status = 'ACTIVE'
+      AND NOT COALESCE(u.is_banned, false) AND NOT COALESCE(u.trust_hold, false)
+      AND business_membership_has_action(m.organization_id, m.user_id, 'READ_WORKSPACE')
+      AND m.role IN (
         'OWNER',
         'ADMIN',
         'DISPATCHER',
@@ -229,10 +232,11 @@ async function getOperationsNotificationUserIds(
 ): Promise<string[]> {
   const result = await query<{ user_id: string }>(
     `
-    SELECT DISTINCT user_id
-    FROM admin_roles
-    WHERE role IN ('admin', 'founder')
-      OR can_manage_operations = TRUE
+    SELECT DISTINCT a.user_id
+    FROM admin_roles a JOIN users u ON u.id=a.user_id
+    WHERE (a.role IN ('admin', 'founder') OR a.can_manage_operations = TRUE)
+      AND u.account_status = 'ACTIVE'
+      AND NOT COALESCE(u.is_banned, false) AND NOT COALESCE(u.trust_hold, false)
     `,
   );
 

@@ -19,13 +19,6 @@ const proofPhotoEvidence = z.object({
   capturedAt: z.string().datetime().optional(),
 }).strict();
 
-async function notifyPosterOfProof(
-  task: { poster_id?: string | null; title?: string | null },
-  taskId: string,
-): Promise<void> {
-  if (task.poster_id) await notifyProofSubmitted(task.poster_id, taskId, task.title ?? 'your task');
-}
-
 export const TaskExecutionProcedures = {
 markTraveling: hustlerProcedure
     .input(z.object({ taskId: Schemas.uuid }))
@@ -301,16 +294,13 @@ submitProof: protectedProcedure
         if (!taskResult.success) {
           throw new TRPCError({ code: 'BAD_REQUEST', message: taskResult.error.message });
         }
+        if (!proofResult.data.idempotency_replayed && taskResult.data.poster_id) {
+          await notifyProofSubmitted(taskResult.data.poster_id, input.taskId, taskResult.data.title ?? 'your task', proofResult.data.id, query);
+        }
         return { proofResult, taskResult };
       });
 
       await invalidateTask(input.taskId);
-
-      // Lifecycle notification (post-commit): tell the poster to review
-      if (!proofResult.data.idempotency_replayed) {
-        const provenTask = taskResult.data as { poster_id?: string | null; title?: string | null };
-        await notifyPosterOfProof(provenTask, input.taskId);
-      }
 
       return {
         task: taskResult.data,

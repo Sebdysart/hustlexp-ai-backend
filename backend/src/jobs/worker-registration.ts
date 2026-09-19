@@ -82,6 +82,9 @@ async function notifyTransferFailed(job: Job): Promise<void> {
 }
 
 const notificationHandlers: Record<string, JobHandler> = {
+  'notification.create_requested': async (job) => {
+    await (await import('../services/NotificationRequestService.js')).processNotificationRequest(job);
+  },
   'provider_os.premium_event': async (job) => {
     await (await import('../services/ProviderOsPremiumEvents.js')).processProviderOsPremiumEvent(job.data.aggregate_id);
   },

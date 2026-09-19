@@ -31,6 +31,8 @@ describe.skipIf(!url)('in-app recipient dedupe against the shipped PostgreSQL un
       expires_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW());
       CREATE UNIQUE INDEX notifications_user_dedupe ON notifications(user_id,dedupe_key);`);
     await query(`CREATE TABLE task_drafts(id UUID PRIMARY KEY, task_id UUID, quote_id UUID);
+      CREATE TABLE users(id UUID PRIMARY KEY,account_status TEXT DEFAULT 'ACTIVE',is_banned BOOLEAN DEFAULT FALSE,trust_hold BOOLEAN DEFAULT FALSE);
+      CREATE TABLE admin_roles(user_id UUID,role TEXT,can_manage_operations BOOLEAN DEFAULT FALSE);
       CREATE TABLE quotes(id UUID PRIMARY KEY, task_draft_id UUID, business_organization_id UUID, acquisition_origin TEXT);
       CREATE TABLE tasks(id UUID PRIMARY KEY,business_fulfiller_organization_id UUID);
       CREATE TABLE business_assessment_requests(id UUID PRIMARY KEY,task_draft_id UUID,business_organization_id UUID);
@@ -38,6 +40,7 @@ describe.skipIf(!url)('in-app recipient dedupe against the shipped PostgreSQL un
       CREATE TABLE ops_business_claim_links(task_draft_id UUID,claimed_by_organization_id UUID,status TEXT,quote_id UUID);
       CREATE TABLE business_memberships(organization_id UUID,user_id UUID,status TEXT DEFAULT 'ACTIVE',role TEXT DEFAULT 'OWNER');
       CREATE FUNCTION business_membership_has_action(UUID,UUID,TEXT) RETURNS BOOLEAN LANGUAGE sql AS 'SELECT EXISTS(SELECT 1 FROM business_memberships WHERE organization_id=$1 AND user_id=$2 AND status=''ACTIVE'')';`);
+    await query('INSERT INTO users(id) VALUES($1),($2)',users);
     mocks.query.mockImplementation(query);
   });
   beforeEach(async () => { await query('TRUNCATE notifications'); });
@@ -97,5 +100,19 @@ describe.skipIf(!url)('in-app recipient dedupe against the shipped PostgreSQL un
     await query("UPDATE business_memberships SET status='REMOVED'");
     expect(await link()).toBeNull();
     expect((await businessNotificationDestinations(query, [{...refs[0],entityId:randomUUID()}], {actorId:users[0]})).get('notice')).toBeNull();
+  });
+  it('excludes suspended business and operations accounts from new fan-out', async () => {
+    const org=randomUUID();
+    await query('INSERT INTO business_memberships(organization_id,user_id) VALUES($1,$2),($1,$3)',[org,...users]);
+    await query("INSERT INTO admin_roles(user_id,role) VALUES($1,'admin'),($2,'founder')",users);
+    await query("UPDATE users SET account_status='SUSPENDED' WHERE id=$1",[users[1]]);
+    await NotificationService.createForBusinessInTransaction(query,org,event);
+    await NotificationService.createForOperationsInTransaction(query,{...event,dedupeKey:'ops-event'});
+    expect((await query('SELECT user_id FROM notifications')).rows).toEqual([{user_id:users[0]},{user_id:users[0]}]);
+    await query('TRUNCATE notifications');
+    await query('UPDATE users SET trust_hold=TRUE WHERE id=$1',[users[0]]);
+    await NotificationService.createForBusinessInTransaction(query,org,{...event,dedupeKey:'another-event'});
+    await NotificationService.createForOperationsInTransaction(query,{...event,dedupeKey:'another-ops-event'});
+    expect((await query('SELECT * FROM notifications')).rows).toHaveLength(0);
   });
 });

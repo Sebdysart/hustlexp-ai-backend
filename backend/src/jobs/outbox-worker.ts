@@ -167,7 +167,7 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
             payload: jobPayload,
           },
           { jobId: bullMqJobId(event.idempotency_key),
-            ...(event.idempotency_key.startsWith('provider_os:v2:')
+            ...(event.idempotency_key.startsWith('provider_os:v2:') || event.event_type === 'notification.create_requested'
               ? { removeOnComplete: true, removeOnFail: true } : {}),
           }
         );
@@ -277,19 +277,19 @@ export interface OutboxWorkerHandles {
 
 async function pollOutbox() {
   try {
-    // Recover only v2 premium dispatch leases, in bounded lock-skipping batches.
+    // Recover ledger-backed premium and notification-request dispatch leases.
     // Their DB ledgers remain authoritative; terminal queue jobs are removable.
     await db.query(`WITH expired AS (
       SELECT id FROM outbox_events
-      WHERE left(idempotency_key, 15) = 'provider_os:v2:' AND status = 'enqueued'
+      WHERE (left(idempotency_key, 15) = 'provider_os:v2:' OR event_type = 'notification.create_requested') AND status = 'enqueued'
         AND enqueued_at < NOW() - INTERVAL '10 minutes'
       ORDER BY enqueued_at LIMIT 100 FOR UPDATE SKIP LOCKED
     ) UPDATE outbox_events event SET
       status = CASE WHEN event.attempts < $1 THEN 'pending' ELSE 'failed' END,
-      error_message = 'premium_dispatch_lease_expired'
+      error_message = 'notification_dispatch_lease_expired'
       FROM expired WHERE event.id = expired.id`, [MAX_OUTBOX_ATTEMPTS]);
   } catch (error) {
-    log.error({ err: error }, 'Premium dispatch recovery failed; ordinary outbox continues');
+    log.error({ err: error }, 'Notification dispatch recovery failed; ordinary outbox continues');
   }
   return processOutboxEvents(100);
 }

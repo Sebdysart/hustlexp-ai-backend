@@ -388,9 +388,11 @@ describe('processOutboxEvents', () => {
     });
   });
 
-  it('removes terminal v2 queue jobs so durable retries can reuse their job ID', async () => {
-    const event = makeEvent({ event_type: 'provider_os.premium_event', queue_name: 'user_notifications',
-      idempotency_key: 'provider_os:v2:event:event-1' });
+  it.each([
+    ['provider_os.premium_event','provider_os:v2:event:event-1'],
+    ['notification.create_requested','notification-request:proof-submitted:proof-1:user-1'],
+  ])('removes terminal %s jobs so durable retries can reuse their job ID', async (eventType,key) => {
+    const event = makeEvent({ event_type: eventType, queue_name: 'user_notifications', idempotency_key: key });
     setupTransactionWithRows([event]);
     mockQueueAdd.mockResolvedValue({ id: 'premium-job' });
     mockDb.query.mockResolvedValue({ rows: [], rowCount: 1 } as never);

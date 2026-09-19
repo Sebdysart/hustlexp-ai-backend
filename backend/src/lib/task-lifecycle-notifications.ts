@@ -2,9 +2,9 @@
  * Task lifecycle notifications — beta-gate requirement:
  * "both sides receive the right notifications/status updates end to end."
  *
- * Every function here is FIRE-AND-FORGET: failures are logged and swallowed.
- * Notification delivery must NEVER block or fail a task/financial mutation.
- * Callers invoke these AFTER the underlying mutation has committed.
+ * A supplied transaction records durable delivery intent with the domain write.
+ * Remaining legacy post-commit callers log delivery failures without failing
+ * the already committed task/financial mutation.
  *
  * Delivery rides the existing audited rails:
  * NotificationService.createNotification → notifications row + outbox →
@@ -12,13 +12,17 @@
  */
 
 import { NotificationService } from '../services/NotificationService.js';
+import type { QueryFn } from '../db.js';
+import { enqueueNotificationRequest } from '../services/NotificationRequestService.js';
 import { logger } from '../logger.js';
 
 const log = logger.child({ module: 'task-lifecycle-notifications' });
 
-async function safeNotify(params: Parameters<typeof NotificationService.createNotification>[0]): Promise<void> {
+async function safeNotify(params: Parameters<typeof NotificationService.createNotification>[0], query?: QueryFn): Promise<void> {
+  if (query) return enqueueNotificationRequest(query, params);
   try {
-    await NotificationService.createNotification(params);
+    const result = await NotificationService.createNotification(params);
+    if (!result.success) throw new Error(result.error.code);
   } catch (err) {
     log.warn(
       { err: err instanceof Error ? err.message : String(err), userId: params.userId, category: params.category, taskId: params.taskId },
@@ -28,7 +32,7 @@ async function safeNotify(params: Parameters<typeof NotificationService.createNo
 }
 
 /** Hustler applied → tell the poster. */
-export async function notifyApplicationReceived(posterId: string, taskId: string, taskTitle: string): Promise<void> {
+export async function notifyApplicationReceived(posterId: string, taskId: string, taskTitle: string, applicationId: string, query?: QueryFn): Promise<void> {
   await safeNotify({
     userId: posterId,
     category: 'new_matching_task',
@@ -36,8 +40,10 @@ export async function notifyApplicationReceived(posterId: string, taskId: string
     body: `Someone applied to "${taskTitle}". Review applicants and assign.`,
     deepLink: `/tasks/${taskId}/applicants`,
     taskId,
+    dedupeKey: `application-received:${applicationId}:${posterId}`,
+    metadata: { applicationId },
     priority: 'MEDIUM',
-  });
+  }, query);
 }
 
 /** Poster assigned a worker → tell the worker. */
@@ -67,7 +73,7 @@ export async function notifyTaskAccepted(posterId: string, taskId: string, taskT
 }
 
 /** Worker submitted proof → tell the poster to review. */
-export async function notifyProofSubmitted(posterId: string, taskId: string, taskTitle: string): Promise<void> {
+export async function notifyProofSubmitted(posterId: string, taskId: string, taskTitle: string, proofId: string, query?: QueryFn): Promise<void> {
   await safeNotify({
     userId: posterId,
     category: 'proof_submitted',
@@ -75,12 +81,14 @@ export async function notifyProofSubmitted(posterId: string, taskId: string, tas
     body: `Work on "${taskTitle}" is done. Review the proof to release payment.`,
     deepLink: `/tasks/${taskId}/proof`,
     taskId,
+    dedupeKey: `proof-submitted:${proofId}:${posterId}`,
+    metadata: { proofId },
     priority: 'HIGH',
-  });
+  }, query);
 }
 
 /** Poster rejected proof → tell the worker to fix and resubmit. */
-export async function notifyProofRejected(workerId: string, taskId: string, taskTitle: string, reason?: string): Promise<void> {
+export async function notifyProofRejected(workerId: string, taskId: string, taskTitle: string, reason: string | undefined, proofId: string): Promise<void> {
   await safeNotify({
     userId: workerId,
     category: 'proof_rejected',
@@ -88,6 +96,7 @@ export async function notifyProofRejected(workerId: string, taskId: string, task
     body: reason ? `"${taskTitle}": ${reason}` : `Your proof for "${taskTitle}" was not approved. Check feedback and resubmit.`,
     deepLink: `/tasks/${taskId}/proof`,
     taskId,
+    dedupeKey: `proof-rejected:${proofId}:${workerId}`,
     priority: 'HIGH',
   });
 }

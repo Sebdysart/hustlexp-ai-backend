@@ -64,11 +64,9 @@ applyForTask: hustlerProcedure
         if ((result.rowCount ?? 0) === 0) {
           throw new TRPCError({ code: 'CONFLICT', message: 'You already have an active application for this task' });
         }
+        await notifyApplicationReceived(task.poster_id, input.taskId, task.title, result.rows[0].id as string, query);
         return { app: result.rows[0], posterId: task.poster_id, taskTitle: task.title };
       });
-
-      // Lifecycle notification (post-commit, fire-and-forget — never blocks the response)
-      await notifyApplicationReceived(appRow.posterId, input.taskId, appRow.taskTitle);
 
       return {
         id: appRow.app.id,

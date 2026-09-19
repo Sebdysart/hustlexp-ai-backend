@@ -96,6 +96,7 @@ async function handleRejectedProof(
   decision: ReviewDecision,
   taskId: string,
   reason: string | undefined,
+  proofId: string,
 ): Promise<void> {
   if (decision !== 'REJECTED') return;
   const result = await TaskService.rejectProof(taskId, reason ?? 'Proof rejected by poster');
@@ -106,7 +107,7 @@ async function handleRejectedProof(
     });
   }
   const task = result.data as { worker_id?: string | null; title?: string | null };
-  if (task.worker_id) await notifyProofRejected(task.worker_id, taskId, task.title ?? 'your task', reason);
+  if (task.worker_id) await notifyProofRejected(task.worker_id, taskId, task.title ?? 'your task', reason, proofId);
 }
 
 async function reviewProof(ctx: AuthedContext, input: ReviewProofInput) {
@@ -116,7 +117,7 @@ async function reviewProof(ctx: AuthedContext, input: ReviewProofInput) {
   await verifyProofTaskContext(input, proof.task_id, ctx.user.id);
   const reviewed = await ProofService.review({ proofId, reviewerId: ctx.user.id, decision, reason });
   if (!reviewed.success) throw new TRPCError({ code: 'BAD_REQUEST', message: reviewed.error.message });
-  await handleRejectedProof(decision, proof.task_id, reason);
+  await handleRejectedProof(decision, proof.task_id, reason, proofId);
   await invalidateTask(proof.task_id);
   return reviewed.data;
 }

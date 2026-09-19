@@ -13,6 +13,7 @@
  */
 
 import { db } from '../db.js';
+import { createHash } from 'node:crypto';
 import { NotificationService, type NotificationPriority } from './NotificationService.js';
 import { logger } from '../logger.js';
 
@@ -79,6 +80,13 @@ export async function notifyAdmins(params: {
 
   let sent = 0;
   let failed = 0;
+  // An admin route prefix (e.g. /admin/escrows) is not event identity. Preserve
+  // distinct incident types/source records while ignoring mutable retry errors.
+  const sourceIds = Object.entries(params.metadata ?? {})
+    .filter(([key,value]) => (/(?:_id|Id)$/.test(key) || key === 'eventVersion') &&
+      (typeof value === 'string' || typeof value === 'number'))
+    .sort(([left],[right]) => left.localeCompare(right));
+  const alertId = createHash('sha256').update(JSON.stringify([params.title,params.deepLink,sourceIds])).digest('hex');
 
   // Send to each admin concurrently (but cap concurrency with Promise.allSettled)
   const results = await Promise.allSettled(
@@ -91,6 +99,8 @@ export async function notifyAdmins(params: {
         deepLink: params.deepLink,
         // No taskId — admin is not a task participant
         metadata: params.metadata,
+        objectRef: { type: 'admin_alert', id: alertId },
+        dedupeKey: `admin-alert:${alertId}:${adminId}`,
         channels: ['in_app', 'push', 'email'],
         priority: params.priority,
       }),

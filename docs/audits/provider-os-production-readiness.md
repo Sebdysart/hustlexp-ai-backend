@@ -2,6 +2,8 @@
 
 Audit date: 2026-09-19. Backend starting commit: `cfe45abdece6a7cc60633efdb013638e8251a05b`, branch `feat/provider-os-foundation`. Frontend route source: the same feature branch, starting at `37e8846`.
 
+This records the first audit checkpoint. See [the continuing hardening findings](provider-os-hardening-followup.md) for subsequent fixes, the new notification-request migration, current validation and remaining completion work. The broader goal is not yet marked complete.
+
 ## Conclusion and limits
 
 The inspected Provider OS architecture is coherent as an organization-scoped, controlled-test product. This pass fixes concrete authorization, notification persistence, destination, and certification-gate defects. No remaining cross-organization acquisition bypass was found in the inspected paths. This is **not live production certification** and is **not approval to charge real money**: only the existing controlled provider is implemented.

@@ -1201,6 +1201,8 @@ describe('task.submitProof', () => {
     expect(result.proof).toEqual(proof);
     expect(mockDb.transaction).toHaveBeenCalledOnce();
     expect(mockTaskService.submitProof).toHaveBeenCalledWith(TASK_ID, expect.any(Function));
+    expect(mockNotifyProofSubmitted).toHaveBeenCalledWith(task.poster_id, TASK_ID, task.title, proof.id, expect.any(Function));
+    expect(mockNotifyProofSubmitted.mock.calls[0][4]).toBe(mockTaskService.submitProof.mock.calls[0][1]);
   });
 
   it('passes extended fields to ProofService.submit', async () => {

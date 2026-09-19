@@ -5,6 +5,7 @@
  * (2) NEVER throw — notification failure must not fail a task/financial mutation.
  */
 import { vi, describe, it, expect, beforeEach } from 'vitest';
+vi.mock('../../src/services/NotificationRequestService.js', () => ({ enqueueNotificationRequest: vi.fn() }));
 
 vi.mock('../../src/services/NotificationService.js', () => ({
   NotificationService: { createNotification: vi.fn() },
@@ -19,6 +20,7 @@ vi.mock('../../src/logger', () => {
 });
 
 import { NotificationService } from '../../src/services/NotificationService.js';
+import { enqueueNotificationRequest } from '../../src/services/NotificationRequestService.js';
 import {
   notifyApplicationReceived,
   notifyWorkerAssigned,
@@ -38,8 +40,28 @@ beforeEach(() => {
 });
 
 describe('recipient + category routing', () => {
+  it('records intent on the supplied transaction instead of starting delivery', async () => {
+    const query=vi.fn();
+    await notifyProofSubmitted('poster-1',TASK,'Move boxes','proof-1',query);
+    expect(enqueueNotificationRequest).toHaveBeenCalledWith(query,expect.objectContaining({
+      dedupeKey:'proof-submitted:proof-1:poster-1',metadata:{proofId:'proof-1'},
+    }));
+    expect(create).not.toHaveBeenCalled();
+  });
+  it('distinguishes applicants and proof attempts while deduping each concrete event', async () => {
+    await notifyApplicationReceived('poster-1', TASK, 'Move boxes', 'application-1');
+    await notifyApplicationReceived('poster-1', TASK, 'Move boxes', 'application-2');
+    await notifyProofSubmitted('poster-1', TASK, 'Move boxes', 'proof-1');
+    await notifyProofSubmitted('poster-1', TASK, 'Move boxes', 'proof-2');
+    await notifyProofSubmitted('poster-1', TASK, 'Move boxes', 'proof-2');
+    const keys = create.mock.calls.map(([input])=>input.dedupeKey);
+    expect(keys[0]).not.toBe(keys[1]);
+    expect(keys[2]).not.toBe(keys[3]);
+    expect(keys[3]).toBe(keys[4]);
+    expect(keys.every(key=>typeof key === 'string')).toBe(true);
+  });
   it('application received → poster, new_matching_task', async () => {
-    await notifyApplicationReceived('poster-1', TASK, 'Move boxes');
+    await notifyApplicationReceived('poster-1', TASK, 'Move boxes', 'application-1');
     expect(create).toHaveBeenCalledWith(expect.objectContaining({
       userId: 'poster-1', category: 'new_matching_task', taskId: TASK,
     }));
@@ -60,14 +82,14 @@ describe('recipient + category routing', () => {
   });
 
   it('proof submitted → poster, proof_submitted', async () => {
-    await notifyProofSubmitted('poster-1', TASK, 'Move boxes');
+    await notifyProofSubmitted('poster-1', TASK, 'Move boxes', 'proof-1');
     expect(create).toHaveBeenCalledWith(expect.objectContaining({
       userId: 'poster-1', category: 'proof_submitted',
     }));
   });
 
   it('proof rejected → worker, proof_rejected, includes reason', async () => {
-    await notifyProofRejected('worker-1', TASK, 'Move boxes', 'photo is blurry');
+    await notifyProofRejected('worker-1', TASK, 'Move boxes', 'photo is blurry', 'proof-1');
     expect(create).toHaveBeenCalledWith(expect.objectContaining({
       userId: 'worker-1', category: 'proof_rejected',
       body: expect.stringContaining('photo is blurry'),
@@ -97,6 +119,6 @@ describe('failure isolation', () => {
     create.mockRejectedValue(new Error('FCM exploded'));
     await expect(notifyPaymentReleased('worker-1', TASK, 8300)).resolves.toBeUndefined();
     await expect(notifyWorkerAssigned('worker-1', TASK, 'x')).resolves.toBeUndefined();
-    await expect(notifyApplicationReceived('poster-1', TASK, 'x')).resolves.toBeUndefined();
+    await expect(notifyApplicationReceived('poster-1', TASK, 'x', 'application-1')).resolves.toBeUndefined();
   });
 });

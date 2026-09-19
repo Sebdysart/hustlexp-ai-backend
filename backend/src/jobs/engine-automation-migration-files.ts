@@ -145,6 +145,7 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260919_provider_os_quote_origin', fileName: '20260919_provider_os_quote_origin.sql' },
   { name: '20260920_provider_os_premium_events', fileName: '20260920_provider_os_premium_events.sql' },
   { name: '20260921_provider_os_purchases', fileName: '20260921_provider_os_purchases.sql' },
+  { name: '20260922_notification_request_dispatch', fileName: '20260922_notification_request_dispatch.sql' },
 ] as const;
 
 
