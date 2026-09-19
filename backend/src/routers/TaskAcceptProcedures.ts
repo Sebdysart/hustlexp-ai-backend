@@ -2,7 +2,6 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { invalidateTask } from '../cache/db-cache.js';
 import { db } from '../db.js';
-import { notifyTaskAccepted } from '../lib/task-lifecycle-notifications.js';
 import { TaskService } from '../services/TaskService.js';
 import { assertTaskMutationEligibility } from '../services/TaskEligibilityPolicy.js';
 import { getManifest } from '../services/TaskTemplateRegistry.js';
@@ -136,12 +135,6 @@ accept: hustlerProcedure
         });
       }
       await invalidateTask(input.taskId);
-
-      // Lifecycle notification (post-commit): instant-accept → tell the poster
-      const acceptedTask = result.data as { poster_id?: string | null; title?: string | null };
-      if (acceptedTask.poster_id) {
-        await notifyTaskAccepted(acceptedTask.poster_id, input.taskId, acceptedTask.title ?? 'your task');
-      }
 
       return result.data;
     })

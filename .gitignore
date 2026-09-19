@@ -63,3 +63,5 @@ pids/
 
 # Git worktrees
 .worktrees/
+
+*.ps1

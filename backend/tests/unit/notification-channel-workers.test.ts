@@ -94,7 +94,8 @@ const smsJob = {
 } as never;
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
+  mocks.query.mockResolvedValue({ rows: [], rowCount: 0 });
   mocks.authorize.mockResolvedValue({ allowed: true });
   mocks.transaction.mockImplementation((fn: (query: typeof mocks.txQuery) => unknown) => fn(mocks.txQuery));
   mocks.breakerExecute.mockImplementation((fn: () => unknown) => fn());
@@ -168,6 +169,7 @@ describe('provider acceptance evidence', () => {
   });
 
   it('records Twilio acceptance without claiming handset delivery', async () => {
+    mocks.query.mockResolvedValueOnce({ rows: [{ provider_os_event_id: null, idempotency_key: 'sms-key-1' }], rowCount: 1 });
     mocks.txQuery
       .mockResolvedValueOnce({
         rows: [{

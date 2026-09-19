@@ -842,6 +842,28 @@ describe('AdminNotificationHelper', () => {
   });
 
   describe('notifyAdmins', () => {
+    it('keeps different admin alerts/entities distinct while deduping retries per recipient', async () => {
+      mockDb.query.mockResolvedValue({rows:[{user_id:'admin-1'},{user_id:'admin-2'}],rowCount:2} as never);
+      const input = {title:'Refund failed',body:'Retry details',deepLink:'/admin/escrows/escrow-1',priority:'HIGH' as const,metadata:{stripe_event_id:'event-1'}};
+      await notifyAdmins(input);
+      await notifyAdmins({...input,body:'Updated retry diagnostics'});
+      await notifyAdmins({...input,deepLink:'/admin/escrows/escrow-2'});
+      await notifyAdmins({...input,title:'Payout blocked'});
+      await notifyAdmins({...input,metadata:{stripe_event_id:'event-2'}});
+      const notifications=vi.mocked(NotificationService.createNotification).mock.calls.map(([value])=>value);
+      expect(new Set(notifications.map(value=>value.dedupeKey)).size).toBe(8);
+      expect(notifications[0].dedupeKey).toBe(notifications[2].dedupeKey);
+      expect(notifications[0].objectRef?.type).toBe('admin_alert');
+    });
+    it.each(['removed', 'lookup failed'])('never sends to a cached administrator after %s', async (state) => {
+      mockDb.query.mockResolvedValueOnce({ rows: [{ user_id: 'former-admin' }] } as never);
+      await getAdminUserIds();
+      if (state === 'removed') mockDb.query.mockResolvedValueOnce({ rows: [] } as never);
+      else mockDb.query.mockRejectedValueOnce(new Error('lookup failed'));
+      expect(await notifyAdmins({ title:'Alert',body:'Private operation',deepLink:'/ops',priority:'HIGH' })).toEqual({sent:0,failed:0});
+      expect(mockNotificationService.createNotification).not.toHaveBeenCalled();
+      expect(mockDb.query).toHaveBeenLastCalledWith(expect.stringContaining("u.account_status = 'ACTIVE'"));
+    });
     it('returns sent:0, failed:0 when no admins found', async () => {
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 

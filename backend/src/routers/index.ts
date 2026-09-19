@@ -97,10 +97,18 @@ import { alphaTelemetryRouter } from './alphaTelemetry.js';
 import { webPostTaskRouter } from './web/postTask.js';
 
 import { quotePaymentRouter } from './quotePayment.js';
+import { customerAddressRouter } from './customerAddress.js';
 
 import { testPayoutRouter } from './testPayout.js';
 
 import { businessClaimRouter } from './businessClaim.js';
+import { providerOsRouter } from './providerOs.js';
+import { supportRouter } from './support.js';
+
+import { quoteDecisionRouter } from './quoteDecision.js';
+import { businessAssessmentRouter } from './businessAssessment.js';
+import { businessProposalRouter } from './businessProposal.js';
+import { completionVerificationRouter } from './completionVerification.js';
 
 
 // ============================================================================
@@ -180,10 +188,18 @@ export const appRouter = router({
   webPostTask: webPostTaskRouter,
 
   quotePayment: quotePaymentRouter,
+  customerAddress: customerAddressRouter,
 
   testPayout: testPayoutRouter,
   
   businessClaim: businessClaimRouter,
+  providerOs: providerOsRouter,
+  support: supportRouter,
+
+  quoteDecision: quoteDecisionRouter,
+  businessAssessment: businessAssessmentRouter,
+  businessProposal: businessProposalRouter,
+  completionVerification: completionVerificationRouter,
   
   // ── Web Platform Domain ─────────────────────────────────────────────────
   // Replaces Supabase edge functions for the website and ops cockpit.

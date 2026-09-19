@@ -1,7 +1,6 @@
 import { config } from '../config.js';
 import { db, type QueryFn } from '../db.js';
 import { computeFeeBreakdown } from '../lib/money.js';
-import { notifyPaymentReleased } from '../lib/task-lifecycle-notifications.js';
 import { workerLogger } from '../logger.js';
 import { notifyAdmins } from '../services/AdminNotificationHelper.js';
 import { EscrowService } from '../services/EscrowService.js';
@@ -155,7 +154,6 @@ async function processLocalTestPayout(
   if (!release.success) {
     await assertLocalReleaseConverged(escrow.id,transfer.data.transferId,release.error.message);
   }
-  await notifyPaymentReleased(payoutRecipientUserId,taskId,transfer.data.amountCents);
   log.info({
     escrowId:escrow.id,taskId,transferId:transfer.data.transferId,
     amountCents:transfer.data.amountCents,provider:transfer.data.provider,
@@ -205,11 +203,6 @@ async function processLocalTestBusinessPayout(
     );
   }
 
-  await notifyPaymentReleased(
-    payoutRecipientUserId,
-    taskId,
-    transfer.data.amountCents,
-  );
 
   log.info(
     {
@@ -226,26 +219,73 @@ async function processLocalTestBusinessPayout(
 }
 
 async function loadStripeDestination(
-  escrow:EscrowSnapshot,
-  task:TaskSnapshot,
-  taskId:string,
-  payoutRecipientUserId:string,
-):Promise<string|null> {
-  if (!task.worker_id) return null;
-  const destination=await loadCurrentTaskPayoutDestination(db.query.bind(db),{
-    taskId,workerId:task.worker_id,payoutRecipientUserId,kind: 'WORKER',
-  });
-  if (destination.ready) return destination.stripeConnectId;
-  log.error({ escrowId:escrow.id,taskId,payoutRecipientUserId,reason:destination.reason },
-    'Payout destination is not current');
+  escrow: EscrowSnapshot,
+  task: TaskSnapshot,
+  taskId: string,
+  payoutRecipientUserId: string,
+): Promise<string | null> {
+  const destination =
+    task.orchestration_mode === 'OPS_MANUAL'
+    && task.business_fulfiller_organization_id
+    && !task.worker_id
+      ? await loadCurrentTaskPayoutDestination(
+          db.query.bind(db),
+          {
+            kind: 'BUSINESS',
+            taskId,
+            businessOrganizationId:
+              task.business_fulfiller_organization_id,
+          },
+        )
+      : task.worker_id
+        ? await loadCurrentTaskPayoutDestination(
+            db.query.bind(db),
+            {
+              kind: 'WORKER',
+              taskId,
+              workerId: task.worker_id,
+              payoutRecipientUserId,
+            },
+          )
+        : null;
+
+  if (!destination) return null;
+
+  if (destination.ready && destination.stripeConnectId) {
+    return destination.stripeConnectId;
+  }
+
+  log.error(
+    {
+      escrowId: escrow.id,
+      taskId,
+      payoutRecipientUserId,
+      workerId: task.worker_id,
+      businessFulfillerOrganizationId:
+        task.business_fulfiller_organization_id,
+      reason: destination.reason,
+    },
+    'Payout destination is not current',
+  );
+
   await notifyAdmins({
-    title:'Payout blocked: destination is not current',
-    body:`Task ${taskId} completed; escrow ${escrow.id} remains FUNDED because its payout evidence is not current. Reconcile the provider destination before release.`,
-    deepLink:`/admin/escrows/${escrow.id}`,
-    priority:'CRITICAL',
-    metadata:{ escrow_id:escrow.id,task_id:taskId,worker_id:task.worker_id,
-      payout_recipient_user_id:payoutRecipientUserId,payout_block_reason:destination.reason },
+    title: 'Payout blocked: destination is not current',
+    body:
+      `Task ${taskId} completed; escrow ${escrow.id} remains FUNDED because its payout evidence is not current. ` +
+      `Reconcile the provider destination before release.`,
+    deepLink: `/admin/escrows/${escrow.id}`,
+    priority: 'CRITICAL',
+    metadata: {
+      escrow_id: escrow.id,
+      task_id: taskId,
+      worker_id: task.worker_id,
+      business_fulfiller_organization_id:
+        task.business_fulfiller_organization_id,
+      payout_recipient_user_id: payoutRecipientUserId,
+      payout_block_reason: destination.reason,
+    },
   });
+
   return null;
 }
 
@@ -326,8 +366,6 @@ async function releaseAndNotify(
   const release=await EscrowService.release({ escrowId:escrow.id,stripeTransferId });
   if (!release.success && TERMINAL_RELEASE_CODES.has(release.error.code)) return;
   if (!release.success) throw new Error(`Completion release: EscrowService.release failed — ${release.error.message}`);
-  const money=computeFeeBreakdown(escrow.amount,config.stripe.platformFeePercent,escrow.platform_fee_cents);
-  await notifyPaymentReleased(payoutRecipientUserId,taskId,money.netPayoutCents);
   log.info({ escrowId:escrow.id,taskId,stripeTransferId },'Escrow RELEASED — payout complete');
 }
 
@@ -341,14 +379,11 @@ export async function processCompletionRelease(input:{escrowId:string;taskId:str
     && task.business_fulfiller_organization_id
     && !task.worker_id
   ) {
-    if (
-      task.automation_classification === 'CONTROLLED_TEST'
-      && localCertificationPayoutEnabled()
-    ) {
-      const payoutRecipientUserId = await resolveBusinessPayoutRecipient(
-        task.business_fulfiller_organization_id,
-      );
+    const payoutRecipientUserId = await resolveBusinessPayoutRecipient(
+      task.business_fulfiller_organization_id,
+    );
 
+    if (process.env.PAYOUT_PROVIDER === 'local_test') {
       await processLocalTestBusinessPayout(
         escrow,
         input.taskId,
@@ -359,11 +394,31 @@ export async function processCompletionRelease(input:{escrowId:string;taskId:str
       return;
     }
 
+    if (process.env.PAYOUT_PROVIDER === 'stripe') {
+      const transferId = await resolveStripeTransfer(
+        escrow,
+        task,
+        input.taskId,
+        payoutRecipientUserId,
+      );
+
+      if (!transferId) return;
+
+      await releaseAndNotify(
+        escrow,
+        input.taskId,
+        payoutRecipientUserId,
+        transferId,
+      );
+
+      return;
+    }
+
     throw new Error(
-      `Task ${input.taskId} is an OPS_MANUAL Business task but no production Business payout provider is configured`,
+      `Task ${input.taskId} is an OPS_MANUAL Business task but no Business payout provider is configured`,
     );
   }
-
+  
   if (!task.worker_id) {
     throw new Error(
       `Task ${input.taskId} is COMPLETED but has no recognized fulfiller payout identity`,

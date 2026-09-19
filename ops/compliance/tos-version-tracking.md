@@ -1,98 +1,47 @@
-# Terms of Service Version Tracking
+# Terms and policy acceptance contract
 
-**Purpose:** Track TOS versions, user acceptance, and change notifications
-**Legal Requirement:** Users must affirmatively accept current TOS before transacting
-**Last Updated:** 2025-02-21
+Status: `PROPOSED_NOT_BUILT / COUNSEL_APPROVAL_REQUIRED`
 
----
+Production effects authorized: `NONE`
 
-## Current TOS Version
+This file does not declare a current Terms of Service version, effective date, route, retention rule, or legal requirement. Those must be supplied and approved by qualified counsel for the exact entity, jurisdiction, user role, category, relationship origin, processor model, and release.
 
-| Field | Value |
-|-------|-------|
-| Version | 1.0.0 |
-| Effective Date | 2025-02-01 |
-| File | public/terms-of-service.html |
-| Route | /terms-of-service, /terms |
+## Target version registry
 
----
+An approved registry must record:
 
-## Database Schema (Planned)
+- immutable policy/version ID and content hash;
+- document type, entity, jurisdiction, role, category, origin, and language;
+- approved/effective/retired timestamps;
+- counsel and policy-owner approval references;
+- material-change and re-acceptance decision;
+- public artifact/build identity;
+- superseded version and change summary;
+- retention, legal-hold, deletion/unlinking, and access policy.
 
-```sql
--- TOS version history
-CREATE TABLE IF NOT EXISTS tos_versions (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  version VARCHAR(20) NOT NULL UNIQUE,
-  effective_date DATE NOT NULL,
-  summary_of_changes TEXT,
-  requires_re_acceptance BOOLEAN NOT NULL DEFAULT true,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+## Acceptance evidence
 
--- User acceptance records
-CREATE TABLE IF NOT EXISTS tos_acceptances (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  tos_version_id UUID NOT NULL REFERENCES tos_versions(id),
-  accepted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  ip_address INET,
-  user_agent TEXT,
-  UNIQUE(user_id, tos_version_id)
-);
+Acceptance must be:
 
--- Index for quick lookup
-CREATE INDEX idx_tos_acceptances_user_version
-  ON tos_acceptances(user_id, tos_version_id);
-```
+- affirmative, purpose-specific, and tied to the exact content hash/version;
+- recorded with server time and server-derived authenticated principal where authentication is required;
+- linked to the relevant task/transaction and policy snapshot when used as a gate;
+- immutable except for approved privacy unlinking that preserves legal/financial evidence;
+- unavailable to AI or browser code as an authority decision;
+- separately versioned for terms, privacy, communications consent, category-specific disclosures, price/scope, and other legally distinct decisions.
 
----
+Absence, stale acceptance, wrong role/jurisdiction, content drift, or withdrawn consent must fail closed for the exact dependent capability without rewriting historical evidence.
 
-## Enforcement Logic (Planned)
+## Change process
 
-```typescript
-// Middleware: Check TOS acceptance before financial transactions
-async function requireCurrentTOS(userId: string): Promise<boolean> {
-  const currentTOS = await db.query(
-    `SELECT id FROM tos_versions
-     WHERE effective_date <= NOW()
-     ORDER BY effective_date DESC LIMIT 1`
-  );
+1. Counsel and policy owner approve exact content and applicability.
+2. Engineering packages content/hash/version and deterministic eligibility rules.
+3. Independent review verifies routes, UI, accessibility, storage, audit, and fail-closed behavior.
+4. Deployment and user communication require separate current authority.
+5. Re-acceptance, expiry, withdrawal, and recovery are monitored and tested.
 
-  if (!currentTOS.rows[0]) return true; // No TOS configured
+**Done Criteria:** Counsel-approved versions, applicability rules, public artifacts, acceptance evidence, withdrawal/re-acceptance, privacy/retention, and independent tests agree on the exact candidate.
 
-  const acceptance = await db.query(
-    `SELECT 1 FROM tos_acceptances
-     WHERE user_id = $1 AND tos_version_id = $2`,
-    [userId, currentTOS.rows[0].id]
-  );
+**Test Plan:** Change content hash, role, jurisdiction, category, origin, or effective time. Existing acceptance must not silently authorize the changed contract.
 
-  return acceptance.rows.length > 0;
-}
-```
-
----
-
-## Version Change Process
-
-1. **Draft** new TOS version
-2. **Legal review** and approval
-3. **Insert** new row in `tos_versions` table
-4. **Set** `requires_re_acceptance = true` if material changes
-5. **Deploy** updated HTML to `/terms-of-service`
-6. **Notify** all active users via email + in-app banner
-7. **Block** financial transactions for users who haven't re-accepted (if required)
-8. **Log** acceptance timestamps and IP addresses for compliance records
-
----
-
-## Audit Trail
-
-All TOS acceptances are immutable records with:
-- User ID
-- TOS version ID
-- Timestamp (server time, not client)
-- IP address (for legal defensibility)
-- User agent (browser identification)
-
-Records are never deleted, even if user account is deleted (legal hold requirement).
+See [the Team Goal and Execution Contract](../../docs/HUSTLEXP_TEAM_ALIGNMENT.md) and `production-legal-approval-handoff.md`.

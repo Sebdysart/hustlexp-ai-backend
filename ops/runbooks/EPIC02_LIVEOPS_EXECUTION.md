@@ -1,3 +1,7 @@
+> Documentation status: `HISTORICAL_EVIDENCE / NON_AUTHORIZING`
+>
+> This source-dated body is preserved verbatim for provenance. It does not authorize a provider-console action, restore, alert, deployment, or current-state claim. Use the current Team Goal and Execution Contract and authority-scoped runbooks.
+
 # EPIC-02 — Live-ops execution package
 
 **Status:** FAILED (templates ready; restore/alert drills not proven in-session)

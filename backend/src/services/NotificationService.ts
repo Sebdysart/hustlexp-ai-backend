@@ -13,11 +13,13 @@
 
 import { randomUUID } from 'crypto';
 import { db, isInvariantViolation, getErrorMessage } from '../db.js';
+import type { QueryFn } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { ErrorCodes } from '../types.js';
 import { logger } from '../logger.js';
 import { Redis } from '@upstash/redis';
 import { config } from '../config.js';
+import { businessNotificationDestinations } from './BusinessNotificationDestination.js';
 import {
   applyNotificationPresentation,
   NOTIFICATION_POLICY,
@@ -100,6 +102,11 @@ export type NotificationPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 
 export interface Notification {
   id: string;
+  type?: string | null;
+  message?: string | null;
+  entity_type?: string | null;
+  entity_id?: string | null;
+  action_url?: string | null;
   user_id: string;
   category: string; // VARCHAR(50) - flexible category
   title: string; // VARCHAR(200)
@@ -179,6 +186,61 @@ export interface UpdatePreferencesParams {
   emailEnabled?: boolean;
   smsEnabled?: boolean;
   categoryPreferences?: Record<string, unknown>;
+}
+
+export interface CreateInAppNotificationInput {
+  userId: string;
+  type: string;
+  title: string;
+  message: string;
+  entityType?: string | null;
+  entityId?: string | null;
+  actionUrl?: string | null;
+  metadata?: Record<string, unknown>;
+  dedupeKey?: string | null;
+}
+
+async function getBusinessNotificationUserIds(
+  query: QueryFn,
+  organizationId: string,
+): Promise<string[]> {
+  const result = await query<{ user_id: string }>(
+    `
+    SELECT m.user_id
+    FROM business_memberships m JOIN users u ON u.id=m.user_id
+    WHERE m.organization_id = $1
+      AND m.status = 'ACTIVE'
+      AND u.account_status = 'ACTIVE'
+      AND NOT COALESCE(u.is_banned, false) AND NOT COALESCE(u.trust_hold, false)
+      AND business_membership_has_action(m.organization_id, m.user_id, 'READ_WORKSPACE')
+      AND m.role IN (
+        'OWNER',
+        'ADMIN',
+        'DISPATCHER',
+        'APPROVER',
+        'REQUESTER'
+      )
+    `,
+    [organizationId],
+  );
+
+  return result.rows.map((row) => row.user_id);
+}
+
+async function getOperationsNotificationUserIds(
+  query: QueryFn,
+): Promise<string[]> {
+  const result = await query<{ user_id: string }>(
+    `
+    SELECT DISTINCT a.user_id
+    FROM admin_roles a JOIN users u ON u.id=a.user_id
+    WHERE (a.role IN ('admin', 'founder') OR a.can_manage_operations = TRUE)
+      AND u.account_status = 'ACTIVE'
+      AND NOT COALESCE(u.is_banned, false) AND NOT COALESCE(u.trust_hold, false)
+    `,
+  );
+
+  return result.rows.map((row) => row.user_id);
 }
 
 // BUG 5 FIX: Categories that bypass the frequency cap entirely.
@@ -322,7 +384,129 @@ async function findMatchingReplay(
 // SERVICE
 // ============================================================================
 
+async function insertNotification(
+  query: QueryFn,
+  input: CreateInAppNotificationInput,
+): Promise<void> {
+  const eventKey =
+    input.dedupeKey ??
+    `${input.type}:${input.entityId ?? input.userId}`;
+  // The canonical schema also has a global dedupe-key index. Fan-out identity
+  // must include the recipient, including when several users share one event.
+  const dedupeKey = `in_app:${input.userId}:${eventKey}`;
+
+  const objectId =
+    input.entityId ?? 'general';
+
+  await query(
+    `
+    INSERT INTO notifications (
+      user_id,
+      type,
+      title,
+      message,
+      entity_type,
+      entity_id,
+      action_url,
+      metadata,
+      category,
+      body,
+      deep_link,
+      priority,
+      notification_class,
+      object_type,
+      object_id,
+      dedupe_key,
+      supersession_key
+    )
+    SELECT
+      $1::uuid,
+      $2::text,
+      $3::varchar,
+      $4::text,
+      $5::text,
+      $6::uuid,
+      $7::text,
+      $8::jsonb,
+      $9::varchar,
+      $10::text,
+      $11::text,
+      $12::varchar,
+      $13::text,
+      $14::text,
+      $15::text,
+      $16::text,
+      $17::text
+    WHERE NOT EXISTS (
+      SELECT 1 FROM notifications WHERE user_id = $1::uuid AND dedupe_key = $18::text
+    )
+    ON CONFLICT DO NOTHING
+    `,
+    [
+      input.userId,
+      input.type,
+      input.title,
+      input.message,
+      input.entityType ?? null,
+      input.entityId ?? null,
+      input.actionUrl ?? null,
+      JSON.stringify(input.metadata ?? {}),
+      input.type,
+      input.message,
+      input.actionUrl ?? '/dashboard',
+      'MEDIUM',
+      'status',
+      input.entityType ?? 'notification',
+      objectId,
+      dedupeKey,
+      dedupeKey,
+      eventKey,
+    ],
+  );
+}
+
 export const NotificationService = {
+  async create(input: CreateInAppNotificationInput): Promise<void> {
+    await insertNotification(db.query.bind(db), input);
+  },
+  async createInTransaction(query: QueryFn, input: CreateInAppNotificationInput): Promise<void> {
+    await insertNotification(query, input);
+  },
+  async createManyInTransaction(query: QueryFn, inputs: CreateInAppNotificationInput[]): Promise<void> {
+    for (const input of inputs) await NotificationService.createInTransaction(query, input);
+  },
+  async createForBusinessInTransaction(
+    query: QueryFn,
+    organizationId: string,
+    input: Omit<CreateInAppNotificationInput, 'userId'>,
+  ): Promise<void> {
+    const userIds = await getBusinessNotificationUserIds(query, organizationId);
+    if (input.entityId && (input.entityType === 'quote' || input.entityType === 'assessment')) {
+      const destinations = await businessNotificationDestinations(query,
+        [{ id: input.entityId, entityId: input.entityId, entityType: input.entityType }], { organizationId });
+      input = { ...input, actionUrl: destinations.get(input.entityId) ?? null };
+    }
+
+    for (const userId of userIds) {
+      await NotificationService.createInTransaction(query, {
+        ...input,
+        userId,
+      });
+    }
+  },
+  async createForOperationsInTransaction(
+    query: QueryFn,
+    input: Omit<CreateInAppNotificationInput, 'userId'>,
+  ): Promise<void> {
+    const userIds = await getOperationsNotificationUserIds(query);
+
+    for (const userId of userIds) {
+      await NotificationService.createInTransaction(query, {
+        ...input,
+        userId,
+      });
+    }
+  },
   // --------------------------------------------------------------------------
   // CREATE OPERATIONS
   // --------------------------------------------------------------------------
@@ -799,7 +983,7 @@ export const NotificationService = {
       // Filter expired notifications
       sql += ` AND (expires_at IS NULL OR expires_at > NOW())`;
       
-      sql += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+      sql += ` ORDER BY created_at DESC, id DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
       params.push(limit, offset);
       
       const result = await db.query<Notification>(sql, params);

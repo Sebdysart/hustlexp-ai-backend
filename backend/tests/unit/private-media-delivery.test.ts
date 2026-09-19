@@ -8,8 +8,8 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/db', () => ({ db: { query: mocks.query } }));
-vi.mock('../../src/storage/r2', () => ({
-  r2: { getSignedUrlForObject: mocks.signObject },
+vi.mock('../../src/storage/backblaze-b2', () => ({
+  backblazeB2: { getSignedUrlForObject: mocks.signObject },
 }));
 vi.mock('../../src/logger', () => ({
   logger: { child: () => ({ warn: mocks.warn, error: mocks.error, info: vi.fn() }) },

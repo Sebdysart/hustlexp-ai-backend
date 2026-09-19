@@ -214,6 +214,10 @@ async function processAnnualTaxFiling(job: Job): Promise<void> {
 type MaintenanceHandler = (job: Job) => Promise<void>;
 
 const MAINTENANCE_HANDLERS: Record<string, MaintenanceHandler> = {
+  'provider_os.reconcile_purchases': async () => {
+    const { reconcileProviderOsPurchases } = await import('../services/ProviderOsPurchaseService.js');
+    await reconcileProviderOsPurchases();
+  },
   recover_stuck_stripe_events: (job) => recoverStuckStripeEvents(job as Job<RecoveryStuckStripeEventsPayload>),
   cleanup_expired_exports: cleanupExpiredExports,
   cleanup_expired_notifications: cleanupExpiredNotifications,

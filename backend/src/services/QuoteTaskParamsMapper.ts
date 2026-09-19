@@ -1,4 +1,4 @@
-import type { CreateTaskParams, TaskRiskLevel } from './TaskServiceShared.js';
+import type { CreateTaskParams } from './TaskServiceShared.js';
 
 type JsonObject = Record<string, unknown>;
 
@@ -10,6 +10,19 @@ interface QuoteTaskDraft {
   structured: JsonObject | null;
   zip: string | null;
   region: string | null;
+  region_code: string | null;
+  region_policy_id: string | null;
+  region_policy_version: string | null;
+  region_policy_hash: string | null;
+  region_policy_snapshot: Record<string, unknown> | null;
+  scheduled_service_date: string | null;
+  validated_risk_level:
+    | 'LOW'
+    | 'MEDIUM'
+    | 'HIGH'
+    | 'IN_HOME'
+    | null;
+  compliance_result: Record<string, unknown> | null;
 }
 
 interface QuoteVersion {
@@ -25,7 +38,6 @@ interface DraftAnswers {
   included_work?: unknown;
   excluded_work?: unknown;
   required_tools?: unknown;
-  risk_level?: unknown;
   required_vehicle?: unknown;
   required_worker_count?: unknown;
   preferred_window?: unknown;
@@ -64,26 +76,6 @@ function asStringArray(value: unknown): string[] {
   ).map((item) => item.trim());
 }
 
-function mapRiskLevel(value: unknown): TaskRiskLevel {
-  switch (String(value ?? '').toLowerCase()) {
-    case 'high':
-    case 'red':
-      return 'HIGH';
-
-    case 'medium':
-    case 'yellow':
-      return 'MEDIUM';
-
-    case 'in_home':
-      return 'IN_HOME';
-
-    case 'low':
-    case 'green':
-    default:
-      return 'LOW';
-  }
-}
-
 function buildRequirements(answers: DraftAnswers): string | undefined {
   const included = asStringArray(answers.included_work);
   const excluded = asStringArray(answers.excluded_work);
@@ -104,14 +96,6 @@ function buildRequirements(answers: DraftAnswers): string | undefined {
   }
 
   return lines.length > 0 ? lines.join('\n') : undefined;
-}
-
-export interface MapQuoteToTaskParamsInput {
-  posterId: string;
-  draft: QuoteTaskDraft;
-  quoteVersion: QuoteVersion;
-  automationClassification: 'PRODUCTION' | 'CONTROLLED_TEST';
-  clientIdempotencyKey?: string;
 }
 
 export function mapQuoteToCreateTaskParams(
@@ -141,6 +125,26 @@ export function mapQuoteToCreateTaskParams(
     throw new Error('Quote version has invalid platform margin');
   }
 
+  if (!draft.validated_risk_level) {
+    throw new Error(
+      'Task draft is missing authoritative risk validation',
+    );
+  }
+
+  const complianceResult = draft.compliance_result as
+    | { score?: unknown }
+    | null;
+  const complianceScore = typeof complianceResult?.score === 'number'
+    && Number.isFinite(complianceResult.score)
+    ? complianceResult.score
+    : undefined;
+
+  if (!draft.region_code) {
+    throw new Error(
+      'Task draft is missing authoritative region validation',
+    );
+  }
+
   return {
     posterId,
 
@@ -159,22 +163,19 @@ export function mapQuoteToCreateTaskParams(
     // TaskCreatePersistence will redact/store it according to the
     // existing location policy.
     roughArea: asString(draft.zip),
-    regionCode: (() => {
-      const region = asString(draft.region);
-      if (!region) return undefined;
-
-      const normalized = region.toUpperCase();
-
-      return normalized.startsWith('US-')
-        ? normalized
-        : `US-${normalized}`;
-    })(),
+    regionCode: draft.region_code,
+    regionPolicyId: draft.region_policy_id ?? undefined,
+    regionPolicyVersion: draft.region_policy_version ?? undefined,
+    regionPolicyHash: draft.region_policy_hash ?? undefined,
+    regionPolicySnapshot: draft.region_policy_snapshot ?? undefined,
 
     price,
     hustlerPayoutCents: payout,
     platformMarginCents: margin,
 
-    riskLevel: mapRiskLevel(answers.risk_level),
+    riskLevel: draft.validated_risk_level,
+    illegalRiskScore: complianceScore,
+    complianceGuardianNotes: draft.compliance_result ?? {},
 
     requiredTools: asStringArray(answers.required_tools),
 
@@ -189,14 +190,29 @@ export function mapQuoteToCreateTaskParams(
 
     dispatchExpiresAt: quoteVersion.dispatch_expires_at,
 
+    scheduledServiceDate: draft.scheduled_service_date ?? undefined,
+
     // Existing task-create policy defaults will handle the rest.
     clientIdempotencyKey: input.clientIdempotencyKey,
     
-    businessOrganizationId: input.businessOrganizationId ?? undefined,
-    businessLocationId: input.businessLocationId ?? undefined,
-    providerOrganizationId: undefined,
-    providerServiceProfileId: undefined,
-    businessFulfillerOrganizationId: input.businessFulfillerOrganizationId ?? undefined,
-    orchestrationMode: input.businessOrganizationId ? 'OPS_MANUAL' : 'AUTOMATED',
+    businessOrganizationId:
+      input.businessOrganizationId ?? undefined,
+
+    businessLocationId:
+      input.businessLocationId ?? undefined,
+
+    providerOrganizationId:
+      undefined,
+
+    providerServiceProfileId:
+      input.providerServiceProfileId ?? undefined,
+
+    businessFulfillerOrganizationId:
+      input.businessFulfillerOrganizationId ?? undefined,
+
+    orchestrationMode:
+      input.businessOrganizationId
+        ? 'OPS_MANUAL'
+        : 'AUTOMATED',
   };
 }

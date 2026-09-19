@@ -1,3 +1,4 @@
+import { notifyTaskAccepted } from '../lib/task-lifecycle-notifications.js';
 import { db } from '../db.js';
 import { taskLogger } from '../logger.js';
 import type { ServiceError, ServiceResult, Task } from '../types.js';
@@ -218,6 +219,7 @@ async function acceptTransaction(query: Query, params: AcceptTaskParams): Promis
   await assertBackgroundCheck(task, params.taskId, params.workerId);
   await assertFunded(query, params.taskId);
   const accepted = await assignTask(query, task, params.taskId, params.workerId);
+  await notifyTaskAccepted(accepted.poster_id, params.taskId, accepted.title ?? 'your task', query);
   return { success: true, data: accepted };
 }
 

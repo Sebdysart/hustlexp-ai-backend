@@ -7,7 +7,7 @@
  */
 
 import { TRPCError } from '@trpc/server';
-import { router, publicProcedure, protectedProcedure, hustlerProcedure, Schemas } from '../trpc.js';
+import { canManageOperations, router, publicProcedure, protectedProcedure, hustlerProcedure, Schemas } from '../trpc.js';
 import { db } from '../db.js';
 import { logger } from '../logger.js';
 import { XPService } from '../services/XPService.js';
@@ -99,7 +99,11 @@ export const userRouter = router({
   me: protectedProcedure
     .input(z.void())
     .query(async ({ ctx }) => {
-      return await toMobileUser(ctx.user!);
+      const profile = await toMobileUser(ctx.user!);
+      return {
+        ...profile,
+        canAccessOps: await canManageOperations(ctx.user.id),
+      };
     }),
 
   /**
@@ -244,7 +248,7 @@ export const userRouter = router({
       firebaseUid: z.string().max(128),
       email: z.string().email().max(254),
       fullName: z.string().trim().min(1).max(255),
-      // Accept "hustler", "worker", or "poster" from frontend
+      // Preferred dashboard mode only; not an authorization role.
       defaultMode: z.string().max(20).default('worker'),
       // COPPA compliance: date of birth for age verification (AUDIT FIX)
       dateOfBirth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Date of birth must be YYYY-MM-DD format'),
@@ -252,6 +256,7 @@ export const userRouter = router({
       phone: z.string().max(20).optional(),
     }))
     .mutation(async ({ input }) => {
+      try {
       // --------------------------------------------------------------------------
       // FIREBASE TOKEN OWNERSHIP VERIFICATION (SEC FIX)
       // The caller must prove they own the Firebase UID by supplying a valid
@@ -369,6 +374,88 @@ export const userRouter = router({
       // Normalize role: iOS sends "hustler" but DB stores "worker"
       const dbMode = normalizeRole(input.defaultMode);
 
+      // Complete registration for a token-owned row that already exists. This
+      // covers lazy-provisioned users, legacy email-linked users, and an
+      // incomplete row created by a concurrent request. Onboarding completion
+      // is represented canonically by onboarding_completed_at, not by the
+      // incidental value of is_minor.
+      const completeExistingRegistration = async (candidate: User): Promise<User> => {
+        let user = candidate;
+
+        if (!user.firebase_uid && decodedToken.email) {
+          const linked = await db.query<User>(
+            `UPDATE users
+                SET firebase_uid = $2,
+                    updated_at = NOW()
+              WHERE id = $1
+                AND firebase_uid IS NULL
+              RETURNING *`,
+            [user.id, input.firebaseUid],
+          );
+
+          user = linked.rows[0] ?? user;
+        }
+
+        if (user.firebase_uid !== input.firebaseUid) {
+          throw new TRPCError({
+            code: 'FORBIDDEN',
+            message: 'This email is already associated with another Firebase identity.',
+          });
+        }
+
+        if (user.onboarding_completed_at == null) {
+          const completed = await db.query<User>(
+            `UPDATE users
+                SET full_name = $2,
+                    phone = $3,
+                    date_of_birth = $4,
+                    is_minor = $5,
+                    default_mode = $6,
+                    onboarding_completed_at = NOW(),
+                    updated_at = NOW()
+              WHERE id = $1
+                AND firebase_uid = $7
+              RETURNING *`,
+            [
+              user.id,
+              input.fullName,
+              input.phone || null,
+              input.dateOfBirth,
+              age < 18,
+              dbMode,
+              input.firebaseUid,
+            ],
+          );
+
+          const completedUser = completed.rows[0];
+          if (!completedUser?.onboarding_completed_at) {
+            throw new TRPCError({
+              code: 'INTERNAL_SERVER_ERROR',
+              message: 'Account registration did not persist onboarding completion.',
+            });
+          }
+          user = completedUser;
+        } else if (user.default_mode !== dbMode) {
+          const updated = await db.query<User>(
+            `UPDATE users
+                SET default_mode = $2,
+                    updated_at = NOW()
+              WHERE id = $1
+                AND firebase_uid = $3
+              RETURNING *`,
+            [user.id, dbMode, input.firebaseUid],
+          );
+
+          user = updated.rows[0] ?? user;
+        }
+
+        // user.me is built from ctx.user, which may be held in the five-minute
+        // auth cache. Evict it without creating a revocation marker so the next
+        // authenticated request reloads the completed row from the database.
+        await invalidateAuthCacheForUser(user.id, input.firebaseUid, false);
+        return user;
+      };
+
       // A64-1 FIX: When decodedToken.email is absent (anonymous, phone, or
       // Sign-in-with-Apple auth), the email guard above was skipped. To prevent
       // IDOR — an attacker supplying a victim's email with their own valid token —
@@ -414,32 +501,36 @@ export const userRouter = router({
         }
 
         if (existingUser) {
-          // Lazy Firebase provisioning deliberately marks age as unverified/minor.
-          // Once the same token-owned Firebase identity supplies an adult DOB,
-          // replace that fail-closed state before returning the account.
-          if (existingUser.is_minor === true && existingUser.firebase_uid === input.firebaseUid) {
-            const verified = await db.query<User>(
-              `UPDATE users
-                  SET date_of_birth = $2, is_minor = false, updated_at = NOW()
-                WHERE id = $1 AND firebase_uid = $3
-                RETURNING *`,
-              [existingUser.id, input.dateOfBirth, input.firebaseUid],
-            );
-            existingUser = verified.rows[0] ?? existingUser;
-          }
-          // Return existing user instead of error (handles re-registration from social auth)
-          return await toMobileUser(existingUser);
+          const completedUser = await completeExistingRegistration(existingUser);
+          return await toMobileUser(completedUser);
         }
-      }
-
+      }  
       // Phone-less registrations start at trust_tier=0 (UNVERIFIED) to restrict
       // account capabilities until phone verification is completed. This limits
       // the usefulness of burner-email ban evasion without a phone number.
       const initialTrustTier = input.phone ? 1 : 0;
 
       const result = await db.query<User>(
-        `INSERT INTO users (firebase_uid, email, full_name, default_mode, date_of_birth, is_minor, trust_tier)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `INSERT INTO users (
+            firebase_uid,
+            email,
+            full_name,
+            default_mode,
+            date_of_birth,
+            is_minor,
+            trust_tier,
+            onboarding_completed_at
+          )
+          VALUES (
+            $1,
+            $2,
+            $3,
+            $4,
+            $5,
+            $6,
+            $7,
+            NOW()
+          )
          ON CONFLICT (firebase_uid) DO NOTHING
          RETURNING *`,
         [input.firebaseUid, input.email, input.fullName, dbMode, input.dateOfBirth, age < 18, initialTrustTier]
@@ -470,10 +561,24 @@ export const userRouter = router({
         if (winner.account_status === 'DELETED') {
           throw new TRPCError({ code: 'FORBIDDEN', message: 'Account has been deleted' });
         }
-        return await toMobileUser(winner);
+        const completedWinner = await completeExistingRegistration(winner);
+        return await toMobileUser(completedWinner);
       }
 
-      return await toMobileUser(result.rows[0]);
+      const newUser = result.rows[0];
+      await invalidateAuthCacheForUser(newUser.id, input.firebaseUid, false);
+      return await toMobileUser(newUser);
+      } catch (error) {
+        log.error(
+          {
+            err: error,
+            firebaseUid: input.firebaseUid,
+            email: input.email,
+          },
+          'user.register failed',
+        );
+        throw error;
+      }
     }),
   
   // --------------------------------------------------------------------------
@@ -515,8 +620,6 @@ export const userRouter = router({
         updates.push(`phone = $${paramIndex++}`);
         values.push(input.phone);
       }
-      const isRoleSwitch = input.defaultMode !== undefined && normalizeRole(input.defaultMode) !== ctx.user.default_mode;
-
       if (input.defaultMode !== undefined) {
         const newMode = normalizeRole(input.defaultMode);
         updates.push(`default_mode = $${paramIndex++}`);
@@ -531,41 +634,15 @@ export const userRouter = router({
       updates.push(`updated_at = NOW()`);
       values.push(ctx.user.id);
 
-      // T53-2 FIX: When switching roles, wrap the open-task COUNT check and
-      // the user UPDATE in a single SERIALIZABLE transaction so that no new task
-      // assignment can sneak in between the check and the write (TOCTOU race).
-      // Non-role-switch updates use a plain query — no locking needed.
-      let updatedUser: User;
-      if (isRoleSwitch) {
-        updatedUser = await db.serializableTransaction(async (txQuery) => {
-          // REG-11 FIX: EXPIRED is terminal — include it so expired tasks don't
-          // block role switching. Terminal TaskStates: COMPLETED, CANCELLED, EXPIRED.
-          const countResult = await txQuery<{ count: string }>(
-            `SELECT COUNT(*) FROM tasks
-             WHERE (poster_id = $1 OR worker_id = $1)
-             AND state NOT IN ('COMPLETED', 'CANCELLED', 'EXPIRED')`,
-            [ctx.user.id]
-          );
-          const openTasksCount = parseInt(countResult.rows[0].count, 10);
-          if (openTasksCount > 0) {
-            throw new TRPCError({
-              code: 'PRECONDITION_FAILED',
-              message: 'Cannot switch role while you have active tasks. Complete or cancel all tasks first.',
-            });
-          }
-          const result = await txQuery<User>(
-            `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
-            values
-          );
-          return result.rows[0];
-        });
-      } else {
-        const result = await db.query<User>(
-          `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
-          values
-        );
-        updatedUser = result.rows[0];
-      }
+      const result = await db.query<User>(
+        `UPDATE users
+         SET ${updates.join(', ')}
+         WHERE id = $${paramIndex}
+         RETURNING *`,
+        values,
+      );
+
+      const updatedUser = result.rows[0];
 
       await invalidateUser(ctx.user.id);
       // SEC-FIX: Evict the in-process auth token cache so the new default_mode

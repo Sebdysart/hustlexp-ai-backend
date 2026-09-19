@@ -11,6 +11,7 @@
  */
 
 import { db } from '../db.js';
+import { NotificationService } from './NotificationService.js';
 import { logger } from '../logger.js';
 import type { ServiceResult } from '../types.js';
 
@@ -111,6 +112,15 @@ export const EarnedVerificationUnlockService = {
            WHERE user_id = $1 AND unlock_notified_at IS NULL`,
           [userId],
         );
+        if ((claimed.rowCount ?? 0) > 0) {
+          await NotificationService.createInTransaction(query, {
+            userId, type: 'EARNED_VERIFICATION_UNLOCKED', title: 'Verification Unlocked',
+            message: 'You have earned enough to unlock identity verification for $1. Contact support to upgrade.',
+            entityType: 'user', entityId: userId, actionUrl: '/support',
+            metadata: { action: 'OPEN_VERIFICATION', fee_cents: 100 },
+            dedupeKey: `earned-verification-unlocked:${userId}`,
+          });
+        }
         return {
           notify: (claimed.rowCount ?? 0) > 0,
           cumulativeBefore,
@@ -123,23 +133,6 @@ export const EarnedVerificationUnlockService = {
           { userId, cumulativeBefore: outcome.cumulativeBefore, cumulativeAfter: outcome.cumulativeAfter },
           'User crossed $40 threshold, triggering $1 verification offer',
         );
-        try {
-          await db.query(
-            `INSERT INTO notifications (
-               user_id, category, title, body, deep_link, metadata, channels, priority, created_at
-             ) VALUES (
-               $1, 'EARNED_VERIFICATION_UNLOCKED', 'Free Verification Unlocked',
-               'You have earned enough to unlock identity verification for $1. Tap to upgrade and access premium tasks.',
-               '/verification', $2::jsonb, ARRAY['in_app','push']::text[], 'HIGH', NOW()
-             )`,
-            [userId, JSON.stringify({ action: 'OPEN_VERIFICATION', fee_cents: 100 })],
-          );
-        } catch (error) {
-          log.error(
-            { err: error instanceof Error ? error.message : String(error), userId },
-            'Notification insert failed',
-          );
-        }
       }
 
       return { success: true, data: undefined };

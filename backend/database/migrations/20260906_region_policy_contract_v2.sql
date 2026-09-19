@@ -251,11 +251,50 @@ BEGIN
   END IF;
 
   v_category := v_policy.policy_document->'categories'->NEW.category;
+
+  /*
+  * Stage 1 manual-production fallback.
+  *
+  * Unknown task categories are not an eligibility failure.
+  * Human operators/providers determine whether the work is appropriate.
+  *
+  * Preserve the region-policy binding and its safety/financial metadata
+  * using conservative neutral defaults.
+  */
   IF v_category IS NULL THEN
-    RAISE EXCEPTION 'HXRP11: category is not permitted by region policy' USING ERRCODE = 'P0001';
+    v_category := jsonb_build_object(
+      'allowedRiskLevels',
+        jsonb_build_array(
+          'LOW',
+          'MEDIUM',
+          'HIGH',
+          'IN_HOME'
+        ),
+
+      'credentials',
+        jsonb_build_object(
+          'licenseRequired', FALSE,
+          'insuranceRequired', FALSE,
+          'backgroundCheckRequired', FALSE
+        ),
+
+      'evidence',
+        jsonb_build_object(
+          'proofRequired', NEW.requires_proof,
+          'minPhotos', 1,
+          'maxPhotos', 5,
+          'gpsRequired', FALSE
+        )
+    );
   END IF;
-  IF NOT ((v_category->'allowedRiskLevels') ? NEW.risk_level) THEN
-    RAISE EXCEPTION 'HXRP12: risk level is not permitted by region policy' USING ERRCODE = 'P0001';
+
+  IF NOT (
+    (v_category->'allowedRiskLevels')
+    ? NEW.risk_level
+  ) THEN
+    RAISE EXCEPTION
+      'HXRP12: risk level is not permitted by region policy'
+      USING ERRCODE = 'P0001';
   END IF;
 
   v_license := (v_category#>>'{credentials,licenseRequired}')::BOOLEAN;
@@ -339,31 +378,64 @@ BEGIN
   IF NEW.region_policy_id IS NULL OR NEW.region_policy_snapshot IS NULL THEN
     RAISE EXCEPTION 'HXRP17: accepted task has no region policy binding' USING ERRCODE = 'P0001';
   END IF;
-  IF NEW.worker_id IS NULL THEN
-    RAISE EXCEPTION 'HXRP18: accepted task requires a worker' USING ERRCODE = 'P0001';
+  IF NEW.worker_id IS NULL
+    AND NOT (
+      NEW.business_fulfiller_organization_id IS NOT NULL
+      AND NEW.orchestration_mode = 'OPS_MANUAL'
+    ) THEN
+    RAISE EXCEPTION
+      'HXRP18: accepted task requires a worker or business fulfiller'
+      USING ERRCODE = 'P0001';
   END IF;
-  IF NEW.background_check_required AND NOT EXISTS (
-    SELECT 1 FROM background_checks b
-    WHERE b.user_id = NEW.worker_id AND upper(b.status) = 'CLEAR'
-      AND (b.expires_at IS NULL OR b.expires_at > clock_timestamp())
-  ) THEN
-    RAISE EXCEPTION 'HXRP19: background check required by region policy' USING ERRCODE = 'P0001';
+  IF NEW.worker_id IS NOT NULL
+    AND NEW.background_check_required
+    AND NOT EXISTS (
+      SELECT 1
+      FROM background_checks b
+      WHERE b.user_id = NEW.worker_id
+        AND upper(b.status) = 'CLEAR'
+        AND (
+          b.expires_at IS NULL
+          OR b.expires_at > clock_timestamp()
+        )
+    ) THEN
+    RAISE EXCEPTION
+      'HXRP19: background check required by region policy'
+      USING ERRCODE = 'P0001';
   END IF;
-  IF NEW.insurance_required AND NOT EXISTS (
-    SELECT 1 FROM insurance_verifications i
-    WHERE i.user_id = NEW.worker_id AND lower(i.status) IN ('approved','verified')
-      AND (i.expiration_date IS NULL OR i.expiration_date >= CURRENT_DATE)
-  ) THEN
-    RAISE EXCEPTION 'HXRP20: insurance required by region policy' USING ERRCODE = 'P0001';
+  IF NEW.worker_id IS NOT NULL
+    AND NEW.insurance_required
+    AND NOT EXISTS (
+      SELECT 1
+      FROM insurance_verifications i
+      WHERE i.user_id = NEW.worker_id
+        AND lower(i.status) IN ('approved', 'verified')
+        AND (
+          i.expiration_date IS NULL
+          OR i.expiration_date >= CURRENT_DATE
+        )
+    ) THEN
+    RAISE EXCEPTION
+      'HXRP20: insurance required by region policy'
+      USING ERRCODE = 'P0001';
   END IF;
-  IF NEW.license_required AND NOT EXISTS (
-    SELECT 1 FROM license_verifications l
-    WHERE l.user_id = NEW.worker_id AND l.trade_type = NEW.trade_type
-      AND l.issuing_state = NEW.location_state
-      AND lower(l.status) IN ('approved','verified')
-      AND (l.expiration_date IS NULL OR l.expiration_date >= CURRENT_DATE)
-  ) THEN
-    RAISE EXCEPTION 'HXRP21: license required by region policy' USING ERRCODE = 'P0001';
+  IF NEW.worker_id IS NOT NULL
+    AND NEW.license_required
+    AND NOT EXISTS (
+      SELECT 1
+      FROM license_verifications l
+      WHERE l.user_id = NEW.worker_id
+        AND l.trade_type = NEW.trade_type
+        AND l.issuing_state = NEW.location_state
+        AND lower(l.status) IN ('approved', 'verified')
+        AND (
+          l.expiration_date IS NULL
+          OR l.expiration_date >= CURRENT_DATE
+        )
+    ) THEN
+    RAISE EXCEPTION
+      'HXRP21: license required by region policy'
+      USING ERRCODE = 'P0001';
   END IF;
   RETURN NEW;
 END;

@@ -76,9 +76,14 @@ export interface RegionPolicyTaskInput {
   category: string;
   riskLevel: z.infer<typeof RiskLevelSchema>;
   requiresProof: boolean;
-  customerTotalCents: number;
-  payoutCents: number | null;
-  marginCents: number | null;
+  customerTotalCents?: number;
+  payoutCents?: number | null;
+  marginCents?: number | null;
+}
+
+export interface RegionPolicyEvaluationOptions {
+  evaluateEconomics?: boolean;
+  evaluateProductionGates?: boolean;
 }
 
 export interface RegionPolicyTaskSnapshot {
@@ -130,13 +135,25 @@ function financialPolicyReasons(
   task: RegionPolicyTaskInput,
 ): string[] {
   const reasons: string[] = [];
-  if (!Number.isInteger(task.customerTotalCents) || task.customerTotalCents < financial.minimumCustomerCents) {
+  if (
+    typeof task.customerTotalCents !== 'number' ||
+    !Number.isInteger(task.customerTotalCents) ||
+    task.customerTotalCents < financial.minimumCustomerCents
+  ) {
     reasons.push('customer_total_below_region_floor');
   }
-  if (!Number.isInteger(task.payoutCents) || (task.payoutCents ?? 0) < financial.minimumPayoutCents) {
+  if (
+    task.payoutCents === undefined ||
+    !Number.isInteger(task.payoutCents) ||
+    (task.payoutCents ?? 0) < financial.minimumPayoutCents
+  ) {
     reasons.push('payout_below_region_floor');
   }
-  if (!Number.isInteger(task.marginCents) || (task.marginCents ?? -1) < financial.minimumMarginCents) {
+  if (
+    task.marginCents === undefined ||
+    !Number.isInteger(task.marginCents) ||
+    (task.marginCents ?? -1) < financial.minimumMarginCents
+  ) {
     reasons.push('margin_below_region_floor');
   }
   return reasons;
@@ -148,12 +165,14 @@ function taskPolicyReasons(
   task: RegionPolicyTaskInput,
   state: string | null,
   now: Date,
+  evaluateEconomics: boolean,
+  evaluateProductionGates: boolean,
 ): string[] {
   const reasons: string[] = [];
-  if (task.automationClassification === 'PRODUCTION' && !row.production_enabled) {
+  if (evaluateProductionGates && task.automationClassification === 'PRODUCTION' && !row.production_enabled) {
     reasons.push('production_policy_not_approved');
   }
-  if (task.automationClassification === 'PRODUCTION' && row.production_enabled) {
+  if (evaluateProductionGates && task.automationClassification === 'PRODUCTION' && row.production_enabled) {
     const effectiveAt = new Date(row.legal_approval_effective_at ?? Number.NaN);
     const reviewAt = new Date(row.legal_approval_review_at ?? Number.NaN);
     if (
@@ -168,9 +187,11 @@ function taskPolicyReasons(
   if (task.regionCode !== row.region_code) reasons.push('region_policy_mismatch');
   if (!state) reasons.push('region_policy_invalid');
   const category = document.categories[task.category];
-  if (!category) reasons.push('category_not_allowed');
   if (category && !category.allowedRiskLevels.includes(task.riskLevel)) reasons.push('risk_level_not_allowed');
   if (category?.evidence.proofRequired && !task.requiresProof) reasons.push('proof_required');
+  if (!evaluateEconomics) {
+    return reasons;
+  }
   return [...reasons, ...financialPolicyReasons(document.financial, task)];
 }
 
@@ -181,40 +202,113 @@ function taskPolicySnapshot(
   state: string,
 ): RegionPolicyTaskSnapshot {
   const category = document.categories[task.category];
-  if (!category) throw new TypeError('Validated region category is unexpectedly absent.');
   const rights = document.workerRights;
   const safety = document.safety;
   return {
     policyId: row.id,
-    policyVersion: row.version,
-    policyHash: row.policy_hash,
-    regionCode: row.region_code,
-    locationState: state,
-    licenseRequired: category.credentials.licenseRequired,
-    insuranceRequired: category.credentials.insuranceRequired,
-    backgroundCheckRequired: category.credentials.backgroundCheckRequired,
-    proofRequired: category.evidence.proofRequired,
-    proofMinPhotos: category.evidence.minPhotos,
-    proofMaxPhotos: category.evidence.maxPhotos,
-    proofGpsRequired: category.evidence.gpsRequired,
-    recordingAllowed: document.recording.allowed,
-    recordingStandaloneConsentRequired: document.recording.standaloneConsentRequired,
-    screeningStandaloneConsentRequired: rights.standaloneScreeningConsentRequired,
-    screeningReportAccessRequired: rights.reportAccessRequired,
-    screeningDisputeAndAppealRequired: rights.disputeAndAppealRequired,
-    screeningAdverseActionNoticeRequired: rights.adverseActionNoticeRequired,
-    safetyIncidentIntakeRequired: safety.incidentIntakeRequired,
-    safetyTimedCheckinRequired: safety.timedCheckinRiskLevels.includes(task.riskLevel),
-    safetyCheckinIntervalsMinutes: [...safety.checkinIntervalsMinutes],
-    safetyLocationRetentionDays: safety.locationRetentionDays,
-    safetyAlternateEmergencyActionRequired: safety.alternateEmergencyActionRequired,
-    currency: document.financial.currency,
+    policyVersion:
+      row.version,
+    policyHash:
+      row.policy_hash,
+    regionCode:
+      row.region_code,
+    locationState:
+      state,
+
+    licenseRequired:
+      category?.credentials
+        .licenseRequired ??
+      false,
+
+    insuranceRequired:
+      category?.credentials
+        .insuranceRequired ??
+      false,
+
+    backgroundCheckRequired:
+      category?.credentials
+        .backgroundCheckRequired ??
+      false,
+
+    proofRequired:
+      category?.evidence
+        .proofRequired ??
+      task.requiresProof,
+
+    proofMinPhotos:
+      category?.evidence
+        .minPhotos ??
+      1,
+
+    proofMaxPhotos:
+      category?.evidence
+        .maxPhotos ??
+      5,
+
+    proofGpsRequired:
+      category?.evidence
+        .gpsRequired ??
+      false,
+
+    recordingAllowed:
+      document.recording
+        .allowed,
+
+    recordingStandaloneConsentRequired:
+      document.recording
+        .standaloneConsentRequired,
+
+    screeningStandaloneConsentRequired:
+      rights
+        .standaloneScreeningConsentRequired,
+
+    screeningReportAccessRequired:
+      rights
+        .reportAccessRequired,
+
+    screeningDisputeAndAppealRequired:
+      rights
+        .disputeAndAppealRequired,
+
+    screeningAdverseActionNoticeRequired:
+      rights
+        .adverseActionNoticeRequired,
+
+    safetyIncidentIntakeRequired:
+      safety
+        .incidentIntakeRequired,
+
+    safetyTimedCheckinRequired:
+      safety
+        .timedCheckinRiskLevels
+        .includes(
+          task.riskLevel,
+        ),
+
+    safetyCheckinIntervalsMinutes:
+      [
+        ...safety
+          .checkinIntervalsMinutes,
+      ],
+
+    safetyLocationRetentionDays:
+      safety
+        .locationRetentionDays,
+
+    safetyAlternateEmergencyActionRequired:
+      safety
+        .alternateEmergencyActionRequired,
+
+    currency:
+      document.financial
+        .currency,
   };
 }
 
 export function evaluateTaskAgainstRegionPolicy(
   row: RegionPolicyRow,
   task: RegionPolicyTaskInput,
+  options: RegionPolicyEvaluationOptions = {},
   now: Date = new Date(),
 ): RegionPolicyEvaluation {
   const identity = PolicyIdentitySchema.safeParse({
@@ -229,7 +323,17 @@ export function evaluateTaskAgainstRegionPolicy(
     return { allowed: false, reasons: ['region_policy_invalid'], snapshot: null };
   }
   const state = locationState(row.region_code);
-  const reasons = taskPolicyReasons(row, document.data, task, state, now);
+  const evaluateEconomics = options.evaluateEconomics ?? true;
+  const evaluateProductionGates = options.evaluateProductionGates ?? true;
+  const reasons = taskPolicyReasons(
+    row,
+    document.data,
+    task,
+    state,
+    now,
+    evaluateEconomics,
+    evaluateProductionGates,
+  );
   if (reasons.length > 0 || !state) {
     return { allowed: false, reasons: [...new Set(reasons)], snapshot: null };
   }

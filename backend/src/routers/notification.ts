@@ -1,3 +1,5 @@
+import { notificationTaskId, webNotificationDestination } from '../services/WebNotificationDestination.js';
+import { businessNotificationDestinations, type BusinessNotificationReference } from '../services/BusinessNotificationDestination.js';
 /**
  * Notification Router v1.0.0
  * 
@@ -18,6 +20,56 @@ import { db } from '../db.js';
 export const DEVICE_TOKEN_CAP = 10;
 
 export const notificationRouter = router({
+  list: protectedProcedure
+    .input(z.object({ limit: z.number().int().min(1).max(50).default(30), unreadOnly: z.boolean().default(false) }).default({}))
+    .query(async ({ input, ctx }) => {
+      const result = await NotificationService.getUserNotifications(ctx.user.id, input.limit, 0, input.unreadOnly);
+      if (!result.success) throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: result.error.message });
+      // Repair historical claim-like links using current canonical records. A removed
+      // member or deleted entity gets no action, never a guessed organization.
+      const businessReferences: BusinessNotificationReference[] = result.data.flatMap((row) =>
+        ['QUOTE_ACCEPTED', 'QUOTE_REJECTED', 'ASSESSMENT_PAID', 'ASSESSMENT_SCHEDULED', 'ASSESSMENT_REJECTED'].includes(row.type ?? '') &&
+          row.entity_id && (row.entity_type === 'quote' || row.entity_type === 'assessment')
+          ? [{ id: row.id, entityId: row.entity_id, entityType: row.entity_type }] : []);
+      const businessDestinations = await businessNotificationDestinations(db.query.bind(db), businessReferences, { actorId: ctx.user.id });
+      const legacyTaskIds = [...new Set(result.data.map((row) => notificationTaskId(row.action_url ?? row.deep_link)).filter((id): id is string => id !== null))];
+      const taskViewers = new Map<string, 'poster' | 'provider'>();
+      if (legacyTaskIds.length) {
+        const tasks = await db.query<{ id: string; poster_id: string; worker_id: string | null; business_member: boolean }>(
+          `SELECT t.id, t.poster_id, t.worker_id, EXISTS (
+            SELECT 1 FROM business_memberships m
+            WHERE m.organization_id = t.business_fulfiller_organization_id
+              AND m.user_id = $2 AND m.status = 'ACTIVE'
+          ) AS business_member FROM tasks t WHERE t.id = ANY($1::uuid[])`, [legacyTaskIds, ctx.user.id]);
+        for (const task of tasks.rows) {
+          if (task.poster_id === ctx.user.id) taskViewers.set(task.id, 'poster');
+          else if (task.worker_id === ctx.user.id || task.business_member) taskViewers.set(task.id, 'provider');
+        }
+      }
+      return result.data.map((row) => {
+        const destination = businessDestinations.has(row.id) ? businessDestinations.get(row.id) : row.action_url ?? row.deep_link ?? null;
+        const taskId = notificationTaskId(destination);
+        return { ...row, type: row.type && row.type !== 'general' ? row.type : row.category, message: row.message || row.body,
+          entity_type: row.entity_type ?? row.object_type ?? null,
+          entity_id: row.entity_id ?? row.object_id ?? null,
+          action_url: webNotificationDestination(destination, taskId ? taskViewers.get(taskId) : undefined) };
+      });
+    }),
+  unreadCount: protectedProcedure.query(async ({ ctx }) => {
+    const result = await NotificationService.getUnreadCount(ctx.user.id);
+    if (!result.success) throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: result.error.message });
+    return { count: result.data };
+  }),
+  markRead: protectedProcedure.input(z.object({ id: Schemas.uuid })).mutation(async ({ input, ctx }) => {
+    const result = await NotificationService.markAsRead(input.id, ctx.user.id);
+    if (!result.success) throw new TRPCError({ code: 'NOT_FOUND', message: result.error.message });
+    return { ok: true };
+  }),
+  markAllRead: protectedProcedure.mutation(async ({ ctx }) => {
+    const result = await NotificationService.markAllAsRead(ctx.user.id);
+    if (!result.success) throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: result.error.message });
+    return { ok: true };
+  }),
   // --------------------------------------------------------------------------
   // READ OPERATIONS
   // --------------------------------------------------------------------------

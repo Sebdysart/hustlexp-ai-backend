@@ -201,6 +201,9 @@ export const config = {
     encryptionKey: process.env.TAX_TIN_ENCRYPTION_KEY || '',
   },
 
+  launchRegionCode:
+    process.env.HX_LAUNCH_REGION_CODE?.trim().toUpperCase() || 'US-WA',
+
   // Job Queue Security
   // SECURITY: No hardcoded fallback. In production the validator enforces this is set.
   // In dev/test a clearly-labeled non-production value is used so the queue still functions locally.

@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   query: vi.fn(),
   createWorker: vi.fn(),
   notification: vi.fn(),
+  notificationRequest: vi.fn(),
   email: vi.fn(),
   biometric: vi.fn(),
   expertise: vi.fn(),
@@ -28,6 +29,8 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/db', () => ({ db: { query: mocks.query } }));
+vi.mock('../../src/jobs/outbox-worker', () => ({markOutboxEventProcessed: vi.fn()}));
+vi.mock('../../src/services/NotificationRequestService.js', () => ({processNotificationRequest:mocks.notificationRequest}));
 vi.mock('../../src/logger', () => ({ workerLogger: { info: mocks.info, error: mocks.error } }));
 vi.mock('../../src/services/NotificationService', () => ({
   NotificationService: { createNotification: mocks.notification },
@@ -90,6 +93,7 @@ describe('worker registration executable routing', () => {
     mocks.query.mockResolvedValue({ rows: [{ poster_id: 'poster-1' }], rowCount: 1 });
 
     await handler(job('email.send_requested'));
+    await handler(job('notification.create_requested'));
     await handler(job('push.send_requested'));
     await handler(job('sms.send_requested'));
     await handler(job('task.instant_available'));
@@ -103,6 +107,7 @@ describe('worker registration executable routing', () => {
     await handler(job('unimplemented'));
 
     expect(mocks.email).toHaveBeenCalledTimes(2);
+    expect(mocks.notificationRequest).toHaveBeenCalledOnce();
     expect(mocks.pushJob).toHaveBeenCalledTimes(2);
     expect(mocks.smsJob).toHaveBeenCalledTimes(2);
     expect(mocks.instantNotification).toHaveBeenCalledOnce();

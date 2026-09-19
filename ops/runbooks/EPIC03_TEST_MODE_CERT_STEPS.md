@@ -1,3 +1,7 @@
+> Documentation status: `HISTORICAL_EVIDENCE / LEGACY_STRIPE_TEST_ONLY`
+>
+> This body and its receipt references are preserved verbatim. They prove only the recorded legacy Stripe test boundary and cannot authorize a processor, sandbox rerun, payment enablement, or production claim.
+
 # EPIC-03 — Stripe test-mode certification (while prod stays frozen)
 
 **Rule:** Keep production `HX_PAYMENT_CREATION_MODE=frozen`. Do **not** enable live creation.  

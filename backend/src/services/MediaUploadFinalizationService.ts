@@ -13,11 +13,12 @@ import {
 
 const log = logger.child({ service: 'MediaUploadFinalizationService' });
 
-export type MediaUploadPurpose = 'PROOF' | 'MESSAGE';
+export type MediaUploadPurpose = 'PROOF' | 'MESSAGE' | 'TASK_DRAFT_PHOTO';
 
 interface MediaUploadReceiptRow {
   id: string;
-  task_id: string;
+  task_id: string | null;
+  task_draft_id: string | null;
   uploader_id: string;
   purpose: MediaUploadPurpose;
   status: 'QUARANTINED' | 'FINALIZED' | 'CONSUMED' | 'REJECTED' | 'EXPIRED';
@@ -59,7 +60,8 @@ const CANONICAL_EXTENSION: Record<SanitizedImageContentType, 'jpg' | 'png' | 'we
 };
 
 function canonicalMediaKey(row: MediaUploadReceiptRow): string {
-  return `media/${row.purpose.toLowerCase()}/${row.task_id}/${row.uploader_id}/${row.id}.${CANONICAL_EXTENSION[row.expected_content_type]}`;
+  const target = row.task_draft_id ? `task-drafts/${row.task_draft_id}` : `tasks/${row.task_id}`;
+  return `media/${row.purpose.toLowerCase()}/${target}/${row.uploader_id}/${row.id}.${CANONICAL_EXTENSION[row.expected_content_type]}`;
 }
 
 function finalizedEvidence(row: MediaUploadReceiptRow): FinalizedMediaEvidence {
@@ -95,7 +97,7 @@ function parsePositiveInteger(value: string | undefined): number | null {
 
 async function recoverCanonicalFinalization(
   row: MediaUploadReceiptRow,
-  params: { receiptId: string; taskId: string; uploaderId: string; purpose: MediaUploadPurpose },
+  params: { receiptId: string; taskId?: string; taskDraftId?: string; uploaderId: string; purpose: MediaUploadPurpose },
   storage: MediaStorage,
 ): Promise<FinalizedMediaEvidence | null> {
   const canonicalKey = canonicalMediaKey(row);
@@ -119,7 +121,9 @@ async function recoverCanonicalFinalization(
     if (stored.size !== stored.data.length
         || stored.contentType !== row.expected_content_type
         || stored.metadata['receipt-id'] !== row.id
-        || stored.metadata['task-id'] !== row.task_id
+        || (row.task_draft_id
+          ? stored.metadata['task-draft-id'] !== row.task_draft_id
+          : stored.metadata['task-id'] !== row.task_id)
         || stored.metadata['uploaded-by'] !== row.uploader_id
         || stored.metadata.purpose !== row.purpose.toLowerCase()
         || stored.metadata.sanitized !== 'true'
@@ -176,13 +180,14 @@ async function recoverCanonicalFinalization(
 
 function assertReceiptAuthority(
   row: MediaUploadReceiptRow | undefined,
-  params: { receiptId: string; taskId: string; uploaderId: string; purpose: MediaUploadPurpose },
+  params: { receiptId: string; taskId?: string; taskDraftId?: string; uploaderId: string; purpose: MediaUploadPurpose },
 ): asserts row is MediaUploadReceiptRow {
   if (!row) {
     throw new TRPCError({ code: 'NOT_FOUND', message: 'Upload receipt was not found.' });
   }
   if (row.id !== params.receiptId
-      || row.task_id !== params.taskId
+      || (params.taskId !== undefined && row.task_id !== params.taskId)
+      || (params.taskDraftId !== undefined && row.task_draft_id !== params.taskDraftId)
       || row.uploader_id !== params.uploaderId
       || row.purpose !== params.purpose) {
     throw new TRPCError({ code: 'FORBIDDEN', message: 'Upload receipt is outside your task authority.' });
@@ -211,7 +216,9 @@ function validateStoredObject(row: MediaUploadReceiptRow, stored: {
   if (stored.size !== Number(row.expected_size_bytes)) return 'UPLOAD_SIZE_MISMATCH';
   if (stored.contentType !== row.expected_content_type) return 'UPLOAD_TYPE_MISMATCH';
   if (stored.metadata['receipt-id'] !== row.id
-      || stored.metadata['task-id'] !== row.task_id
+      || (row.task_draft_id
+        ? stored.metadata['task-draft-id'] !== row.task_draft_id
+        : stored.metadata['task-id'] !== row.task_id)
       || stored.metadata['uploaded-by'] !== row.uploader_id
       || stored.metadata.purpose !== row.purpose.toLowerCase()) {
     return 'UPLOAD_ATTESTATION_MISMATCH';
@@ -222,7 +229,8 @@ function validateStoredObject(row: MediaUploadReceiptRow, stored: {
 export async function finalizeMediaUpload(
   params: {
     receiptId: string;
-    taskId: string;
+    taskId?: string;
+    taskDraftId?: string;
     uploaderId: string;
     purpose: MediaUploadPurpose;
   },
@@ -233,9 +241,19 @@ export async function finalizeMediaUpload(
     [params.receiptId],
   );
   const row = receipt.rows[0];
-  assertReceiptAuthority(row, params);
+  if (params.purpose === 'TASK_DRAFT_PHOTO') {
+    if (!params.taskDraftId || params.taskId) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Draft photo finalization requires a task draft.' });
+    if (!row || row.id !== params.receiptId || row.task_id !== null || row.task_draft_id !== params.taskDraftId || row.uploader_id !== params.uploaderId || row.purpose !== params.purpose) {
+      throw new TRPCError({ code: 'FORBIDDEN', message: 'Upload receipt is outside your draft authority.' });
+    }
+    const owner = await db.query<{ poster_user_id: string | null }>('SELECT poster_user_id FROM task_drafts WHERE id=$1', [params.taskDraftId]);
+    if (owner.rows[0]?.poster_user_id !== params.uploaderId) throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the draft owner can finalize draft photos.' });
+  } else {
+    if (!params.taskId || params.taskDraftId) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Task upload finalization requires a task.' });
+    assertReceiptAuthority(row, { receiptId: params.receiptId, taskId: params.taskId, uploaderId: params.uploaderId, purpose: params.purpose });
+  }
 
-  if (row.status === 'FINALIZED') return finalizedEvidence(row);
+  if (row.status === 'FINALIZED' || (params.purpose === 'TASK_DRAFT_PHOTO' && row.status === 'CONSUMED')) return finalizedEvidence(row);
   if (row.status !== 'QUARANTINED') {
     throw new TRPCError({
       code: 'PRECONDITION_FAILED',
@@ -282,7 +300,9 @@ export async function finalizeMediaUpload(
   try {
     await storage.uploadFile(canonicalKey, sanitized.data, sanitized.contentType, {
       'receipt-id': row.id,
-      'task-id': row.task_id,
+      ...(row.task_draft_id
+        ? { 'task-draft-id': row.task_draft_id }
+        : { 'task-id': row.task_id as string }),
       'uploaded-by': row.uploader_id,
       purpose: row.purpose.toLowerCase(),
       sanitized: 'true',

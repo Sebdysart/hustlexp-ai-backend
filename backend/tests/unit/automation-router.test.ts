@@ -463,7 +463,7 @@ describe('automation E1/E2/E4 contracts', () => {
     })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
   });
 
-  it('notifies the worker only after a fresh local TEST payout reaches escrow release', async () => {
+  it('delegates the atomic release notification to the canonical escrow service', async () => {
     mockDb.query.mockResolvedValueOnce({
       rows: [{
         task_id: TASK_ID,
@@ -498,8 +498,7 @@ describe('automation E1/E2/E4 contracts', () => {
       escrowState: 'RELEASED',
       idempotencyReplayed: false,
     });
-    expect(mockNotifyPaymentReleased).toHaveBeenCalledOnce();
-    expect(mockNotifyPaymentReleased).toHaveBeenCalledWith(ADMIN_ID, TASK_ID, 9490);
+    expect(mockNotifyPaymentReleased).not.toHaveBeenCalled();
   });
 
   it('treats a canonical terminal escrow code as successful exact TEST settlement convergence', async () => {
@@ -546,8 +545,7 @@ describe('automation E1/E2/E4 contracts', () => {
       escrowState: 'RELEASED',
       idempotencyReplayed: true,
     });
-    expect(mockNotifyPaymentReleased).toHaveBeenCalledOnce();
-    expect(mockNotifyPaymentReleased).toHaveBeenCalledWith(ADMIN_ID, TASK_ID, 9490);
+    expect(mockNotifyPaymentReleased).not.toHaveBeenCalled();
   });
 
   it('fails a terminal TEST settlement replay when exact transfer convergence is absent', async () => {

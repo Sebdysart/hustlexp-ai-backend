@@ -1137,6 +1137,14 @@ describe('task.getProof', () => {
     expect(result).toHaveProperty('videos');
   });
 
+  it('reports media lookup failures rather than pretending there are no proof images', async () => {
+    mockDb.query.mockResolvedValueOnce({ rows: [makeProofRow()], rowCount: 1 } as any);
+    mockProofService.getPhotos.mockResolvedValueOnce({ success: false, error: { code: 'DB_ERROR', message: 'internal storage detail' } } as any);
+    await expect(makeCaller().getProof({ taskId: TASK_ID })).rejects.toMatchObject({
+      code: 'INTERNAL_SERVER_ERROR', message: 'Unable to load completion proof media. Please try again.',
+    });
+  });
+
   it('throws NOT_FOUND when no proof exists', async () => {
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
@@ -1193,6 +1201,8 @@ describe('task.submitProof', () => {
     expect(result.proof).toEqual(proof);
     expect(mockDb.transaction).toHaveBeenCalledOnce();
     expect(mockTaskService.submitProof).toHaveBeenCalledWith(TASK_ID, expect.any(Function));
+    expect(mockNotifyProofSubmitted).toHaveBeenCalledWith(task.poster_id, TASK_ID, task.title, proof.id, expect.any(Function));
+    expect(mockNotifyProofSubmitted.mock.calls[0][4]).toBe(mockTaskService.submitProof.mock.calls[0][1]);
   });
 
   it('passes extended fields to ProofService.submit', async () => {
@@ -1473,7 +1483,7 @@ describe('task.reviewProof', () => {
     expect(mockProofService.review).toHaveBeenCalledWith(
       expect.objectContaining({ decision: 'REJECTED' })
     );
-    expect(mockTaskService.rejectProof).toHaveBeenCalledWith(TASK_ID, expect.any(String));
+    expect(mockTaskService.rejectProof).toHaveBeenCalledWith(TASK_ID, expect.any(String), PROOF_ID);
   });
 
   it('throws BAD_REQUEST when neither decision nor approved is given (no taskId)', async () => {
@@ -1573,7 +1583,8 @@ describe('task.reviewProof', () => {
     expect(result).toEqual(rejectedProof);
     expect(mockTaskService.rejectProof).toHaveBeenCalledWith(
       TASK_ID,
-      'Work is incomplete'
+      'Work is incomplete',
+      PROOF_ID,
     );
   });
 
@@ -1650,12 +1661,7 @@ describe('task.complete', () => {
       channel: 'WEB',
       expectedPosterId: USER_ID,
     });
-    expect(mockNotifyTaskCompleted).toHaveBeenCalledOnce();
-    expect(mockNotifyTaskCompleted).toHaveBeenCalledWith(
-      OTHER_USER_ID,
-      TASK_ID,
-      'Test Task',
-    );
+    expect(mockNotifyTaskCompleted).not.toHaveBeenCalled();
   });
 
   it('does not duplicate the completion notification on an idempotent replay', async () => {

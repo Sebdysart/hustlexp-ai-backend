@@ -2,11 +2,10 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { invalidateTask } from '../cache/db-cache.js';
 import { db } from '../db.js';
-import { notifyProofRejected, notifyTaskCompleted } from '../lib/task-lifecycle-notifications.js';
 import { ProofService } from '../services/ProofService.js';
 import { TaskService } from '../services/TaskService.js';
 import { VerifiedPosterCompletionService } from '../services/VerifiedPosterCompletionService.js';
-import { posterProcedure, Schemas, type AuthedContext } from '../trpc.js';
+import { protectedProcedure, Schemas, type AuthedContext } from '../trpc.js';
 import { ErrorCodes } from '../types.js';
 
 const reviewProofInput = z.object({
@@ -96,17 +95,16 @@ async function handleRejectedProof(
   decision: ReviewDecision,
   taskId: string,
   reason: string | undefined,
+  proofId: string,
 ): Promise<void> {
   if (decision !== 'REJECTED') return;
-  const result = await TaskService.rejectProof(taskId, reason ?? 'Proof rejected by poster');
+  const result = await TaskService.rejectProof(taskId, reason ?? 'Proof rejected by poster', proofId);
   if (!result.success) {
     throw new TRPCError({
       code: 'INTERNAL_SERVER_ERROR',
       message: `Proof marked rejected but task state could not be reverted: ${result.error.message}`,
     });
   }
-  const task = result.data as { worker_id?: string | null; title?: string | null };
-  if (task.worker_id) await notifyProofRejected(task.worker_id, taskId, task.title ?? 'your task', reason);
 }
 
 async function reviewProof(ctx: AuthedContext, input: ReviewProofInput) {
@@ -116,7 +114,7 @@ async function reviewProof(ctx: AuthedContext, input: ReviewProofInput) {
   await verifyProofTaskContext(input, proof.task_id, ctx.user.id);
   const reviewed = await ProofService.review({ proofId, reviewerId: ctx.user.id, decision, reason });
   if (!reviewed.success) throw new TRPCError({ code: 'BAD_REQUEST', message: reviewed.error.message });
-  await handleRejectedProof(decision, proof.task_id, reason);
+  await handleRejectedProof(decision, proof.task_id, reason, proofId);
   await invalidateTask(proof.task_id);
   return reviewed.data;
 }
@@ -140,14 +138,6 @@ async function completeTask(ctx: AuthedContext, taskId: string) {
     throw new TRPCError({ code: completeErrorCode(result.error.code), message: result.error.message });
   }
   await invalidateTask(taskId);
-  const task = result.data as {
-    worker_id?: string | null;
-    title?: string | null;
-    completion_idempotency_replayed?: boolean;
-  };
-  if (task.worker_id && task.completion_idempotency_replayed !== true) {
-    await notifyTaskCompleted(task.worker_id, taskId, task.title ?? 'your task');
-  }
   return result.data;
 }
 
@@ -166,13 +156,13 @@ async function cancelTask(ctx: AuthedContext, taskId: string) {
 }
 
 export const TaskReviewProcedures = {
-  reviewProof: posterProcedure
+  reviewProof: protectedProcedure
     .input(reviewProofInput)
     .mutation(async ({ ctx, input }) => reviewProof(ctx, input)),
-  complete: posterProcedure
+  complete: protectedProcedure
     .input(z.object({ taskId: Schemas.uuid }))
     .mutation(async ({ ctx, input }) => completeTask(ctx, input.taskId)),
-  cancel: posterProcedure
+  cancel: protectedProcedure
     .input(z.object({ taskId: Schemas.uuid, reason: z.string().trim().max(1000).optional() }))
     .mutation(async ({ ctx, input }) => cancelTask(ctx, input.taskId)),
 };

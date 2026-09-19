@@ -197,7 +197,7 @@ describe('external task bridge router', () => {
       String(statement).includes('INSERT INTO task_external_bridge_events') && values?.includes('OFFER_SUBMITTED')
     )).toBe(true);
     expect(sql).not.toMatch(/UPDATE tasks SET state|worker_id\s*=/i);
-    expect(lifecycleMocks.notifyApplicationReceived).toHaveBeenCalledWith(POSTER_ID, TASK_ID, task.title);
+    expect(lifecycleMocks.notifyApplicationReceived).toHaveBeenCalledWith(POSTER_ID, TASK_ID, task.title, APPLICATION_ID, mockDb.query);
   });
 
   it('binds a direct invitation to one verified Hustler and records scope acceptance without assigning', async () => {

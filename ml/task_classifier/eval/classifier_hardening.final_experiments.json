@@ -1,0 +1,4791 @@
+{
+  "caseCount": 2420,
+  "results": [
+    {
+      "experiment": {
+        "number": 1,
+        "name": "legacy-baseline",
+        "hypothesis": "Reproduce the former broad generic guard.",
+        "genericPolicy": "legacy"
+      },
+      "metrics": {
+        "correct": 1948,
+        "wrong": 38,
+        "abstained": 314,
+        "vagueCorrect": 120,
+        "vagueWrong": 0,
+        "precision": 0.9808660624370594,
+        "coverage": 0.8634782608695653,
+        "accuracy": 0.8469565217391304
+      },
+      "groups": {
+        "assembly_handyman": {
+          "correct": 113,
+          "wrong": 0,
+          "abstained": 27,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.8071428571428572,
+          "accuracy": 0.8071428571428572
+        },
+        "auto_indirect": {
+          "correct": 70,
+          "wrong": 0,
+          "abstained": 50,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.5833333333333334,
+          "accuracy": 0.5833333333333334
+        },
+        "cleaning_home": {
+          "correct": 113,
+          "wrong": 0,
+          "abstained": 27,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.8071428571428572,
+          "accuracy": 0.8071428571428572
+        },
+        "events_private": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "generic_assistance": {
+          "correct": 173,
+          "wrong": 0,
+          "abstained": 67,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.7208333333333333,
+          "accuracy": 0.7208333333333333
+        },
+        "handyman_electrical": {
+          "correct": 124,
+          "wrong": 0,
+          "abstained": 36,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.775,
+          "accuracy": 0.775
+        },
+        "handyman_plumbing": {
+          "correct": 115,
+          "wrong": 0,
+          "abstained": 45,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.71875,
+          "accuracy": 0.71875
+        },
+        "moving_delivery": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "multi_intent": {
+          "correct": 25,
+          "wrong": 38,
+          "abstained": 57,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0.3968253968253968,
+          "coverage": 0.525,
+          "accuracy": 0.20833333333333334
+        },
+        "negation_exclusion": {
+          "correct": 215,
+          "wrong": 0,
+          "abstained": 5,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9772727272727273,
+          "accuracy": 0.9772727272727273
+        },
+        "noisy_mobile": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pet_cleaning": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pronoun_coreference": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "target_binding": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "vague": {
+          "correct": 0,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 120,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": null,
+          "accuracy": null
+        }
+      }
+    },
+    {
+      "experiment": {
+        "number": 2,
+        "name": "current-concrete-predicate",
+        "hypothesis": "Concrete predicates should bypass generic wrapper wording."
+      },
+      "metrics": {
+        "correct": 2190,
+        "wrong": 38,
+        "abstained": 72,
+        "vagueCorrect": 120,
+        "vagueWrong": 0,
+        "precision": 0.9829443447037702,
+        "coverage": 0.9686956521739131,
+        "accuracy": 0.9521739130434783
+      },
+      "groups": {
+        "assembly_handyman": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "auto_indirect": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "cleaning_home": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "events_private": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "generic_assistance": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_electrical": {
+          "correct": 160,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_plumbing": {
+          "correct": 150,
+          "wrong": 0,
+          "abstained": 10,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9375,
+          "accuracy": 0.9375
+        },
+        "moving_delivery": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "multi_intent": {
+          "correct": 25,
+          "wrong": 38,
+          "abstained": 57,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0.3968253968253968,
+          "coverage": 0.525,
+          "accuracy": 0.20833333333333334
+        },
+        "negation_exclusion": {
+          "correct": 215,
+          "wrong": 0,
+          "abstained": 5,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9772727272727273,
+          "accuracy": 0.9772727272727273
+        },
+        "noisy_mobile": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pet_cleaning": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pronoun_coreference": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "target_binding": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "vague": {
+          "correct": 0,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 120,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": null,
+          "accuracy": null
+        }
+      }
+    },
+    {
+      "experiment": {
+        "number": 3,
+        "name": "generic-guard-disabled",
+        "hypothesis": "Measure the full safety value of the generic guard.",
+        "genericPolicy": "none"
+      },
+      "metrics": {
+        "correct": 2190,
+        "wrong": 38,
+        "abstained": 72,
+        "vagueCorrect": 120,
+        "vagueWrong": 0,
+        "precision": 0.9829443447037702,
+        "coverage": 0.9686956521739131,
+        "accuracy": 0.9521739130434783
+      },
+      "groups": {
+        "assembly_handyman": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "auto_indirect": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "cleaning_home": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "events_private": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "generic_assistance": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_electrical": {
+          "correct": 160,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_plumbing": {
+          "correct": 150,
+          "wrong": 0,
+          "abstained": 10,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9375,
+          "accuracy": 0.9375
+        },
+        "moving_delivery": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "multi_intent": {
+          "correct": 25,
+          "wrong": 38,
+          "abstained": 57,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0.3968253968253968,
+          "coverage": 0.525,
+          "accuracy": 0.20833333333333334
+        },
+        "negation_exclusion": {
+          "correct": 215,
+          "wrong": 0,
+          "abstained": 5,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9772727272727273,
+          "accuracy": 0.9772727272727273
+        },
+        "noisy_mobile": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pet_cleaning": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pronoun_coreference": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "target_binding": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "vague": {
+          "correct": 0,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 120,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": null,
+          "accuracy": null
+        }
+      }
+    },
+    {
+      "experiment": {
+        "number": 4,
+        "name": "generic-margin-bypass",
+        "hypothesis": "A 0.75 raw margin may safely bypass generic guarding.",
+        "genericPolicy": "margin_075"
+      },
+      "metrics": {
+        "correct": 2190,
+        "wrong": 38,
+        "abstained": 72,
+        "vagueCorrect": 120,
+        "vagueWrong": 0,
+        "precision": 0.9829443447037702,
+        "coverage": 0.9686956521739131,
+        "accuracy": 0.9521739130434783
+      },
+      "groups": {
+        "assembly_handyman": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "auto_indirect": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "cleaning_home": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "events_private": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "generic_assistance": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_electrical": {
+          "correct": 160,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_plumbing": {
+          "correct": 150,
+          "wrong": 0,
+          "abstained": 10,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9375,
+          "accuracy": 0.9375
+        },
+        "moving_delivery": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "multi_intent": {
+          "correct": 25,
+          "wrong": 38,
+          "abstained": 57,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0.3968253968253968,
+          "coverage": 0.525,
+          "accuracy": 0.20833333333333334
+        },
+        "negation_exclusion": {
+          "correct": 215,
+          "wrong": 0,
+          "abstained": 5,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9772727272727273,
+          "accuracy": 0.9772727272727273
+        },
+        "noisy_mobile": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pet_cleaning": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pronoun_coreference": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "target_binding": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "vague": {
+          "correct": 0,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 120,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": null,
+          "accuracy": null
+        }
+      }
+    },
+    {
+      "experiment": {
+        "number": 5,
+        "name": "generic-strong-signal",
+        "hypothesis": "Category-specific strong signals may safely bypass generic guarding.",
+        "genericPolicy": "strong_signal"
+      },
+      "metrics": {
+        "correct": 2190,
+        "wrong": 38,
+        "abstained": 72,
+        "vagueCorrect": 120,
+        "vagueWrong": 0,
+        "precision": 0.9829443447037702,
+        "coverage": 0.9686956521739131,
+        "accuracy": 0.9521739130434783
+      },
+      "groups": {
+        "assembly_handyman": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "auto_indirect": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "cleaning_home": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "events_private": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "generic_assistance": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_electrical": {
+          "correct": 160,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_plumbing": {
+          "correct": 150,
+          "wrong": 0,
+          "abstained": 10,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9375,
+          "accuracy": 0.9375
+        },
+        "moving_delivery": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "multi_intent": {
+          "correct": 25,
+          "wrong": 38,
+          "abstained": 57,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0.3968253968253968,
+          "coverage": 0.525,
+          "accuracy": 0.20833333333333334
+        },
+        "negation_exclusion": {
+          "correct": 215,
+          "wrong": 0,
+          "abstained": 5,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9772727272727273,
+          "accuracy": 0.9772727272727273
+        },
+        "noisy_mobile": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pet_cleaning": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pronoun_coreference": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "target_binding": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "vague": {
+          "correct": 0,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 120,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": null,
+          "accuracy": null
+        }
+      }
+    },
+    {
+      "experiment": {
+        "number": 6,
+        "name": "no-handyman-hardware",
+        "hypothesis": "Removing hardware override prevents target hijacking.",
+        "disabledOverrides": [
+          "explicit_handyman_hardware_work"
+        ]
+      },
+      "metrics": {
+        "correct": 2176,
+        "wrong": 38,
+        "abstained": 86,
+        "vagueCorrect": 120,
+        "vagueWrong": 0,
+        "precision": 0.982836495031617,
+        "coverage": 0.9626086956521739,
+        "accuracy": 0.9460869565217391
+      },
+      "groups": {
+        "assembly_handyman": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "auto_indirect": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "cleaning_home": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "events_private": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "generic_assistance": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_electrical": {
+          "correct": 160,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_plumbing": {
+          "correct": 150,
+          "wrong": 0,
+          "abstained": 10,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9375,
+          "accuracy": 0.9375
+        },
+        "moving_delivery": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "multi_intent": {
+          "correct": 25,
+          "wrong": 38,
+          "abstained": 57,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0.3968253968253968,
+          "coverage": 0.525,
+          "accuracy": 0.20833333333333334
+        },
+        "negation_exclusion": {
+          "correct": 215,
+          "wrong": 0,
+          "abstained": 5,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9772727272727273,
+          "accuracy": 0.9772727272727273
+        },
+        "noisy_mobile": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pet_cleaning": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pronoun_coreference": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "target_binding": {
+          "correct": 226,
+          "wrong": 0,
+          "abstained": 14,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9416666666666667,
+          "accuracy": 0.9416666666666667
+        },
+        "vague": {
+          "correct": 0,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 120,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": null,
+          "accuracy": null
+        }
+      }
+    },
+    {
+      "experiment": {
+        "number": 7,
+        "name": "no-electrical-override",
+        "hypothesis": "Measure dependence on electrical boundary rules.",
+        "disabledOverrides": [
+          "explicit_electrical_request"
+        ]
+      },
+      "metrics": {
+        "correct": 1965,
+        "wrong": 53,
+        "abstained": 282,
+        "vagueCorrect": 120,
+        "vagueWrong": 0,
+        "precision": 0.9737363726461843,
+        "coverage": 0.8773913043478261,
+        "accuracy": 0.8543478260869565
+      },
+      "groups": {
+        "assembly_handyman": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "auto_indirect": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "cleaning_home": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "events_private": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "generic_assistance": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_electrical": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 40,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.75,
+          "accuracy": 0.75
+        },
+        "handyman_plumbing": {
+          "correct": 150,
+          "wrong": 0,
+          "abstained": 10,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9375,
+          "accuracy": 0.9375
+        },
+        "moving_delivery": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "multi_intent": {
+          "correct": 25,
+          "wrong": 38,
+          "abstained": 57,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0.3968253968253968,
+          "coverage": 0.525,
+          "accuracy": 0.20833333333333334
+        },
+        "negation_exclusion": {
+          "correct": 215,
+          "wrong": 0,
+          "abstained": 5,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9772727272727273,
+          "accuracy": 0.9772727272727273
+        },
+        "noisy_mobile": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pet_cleaning": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pronoun_coreference": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "target_binding": {
+          "correct": 55,
+          "wrong": 15,
+          "abstained": 170,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0.7857142857142857,
+          "coverage": 0.2916666666666667,
+          "accuracy": 0.22916666666666666
+        },
+        "vague": {
+          "correct": 0,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 120,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": null,
+          "accuracy": null
+        }
+      }
+    },
+    {
+      "experiment": {
+        "number": 8,
+        "name": "no-plumbing-override",
+        "hypothesis": "Measure dependence on plumbing boundary rules.",
+        "disabledOverrides": [
+          "explicit_plumbing_request"
+        ]
+      },
+      "metrics": {
+        "correct": 2158,
+        "wrong": 38,
+        "abstained": 104,
+        "vagueCorrect": 120,
+        "vagueWrong": 0,
+        "precision": 0.982695810564663,
+        "coverage": 0.9547826086956521,
+        "accuracy": 0.9382608695652174
+      },
+      "groups": {
+        "assembly_handyman": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "auto_indirect": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "cleaning_home": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "events_private": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "generic_assistance": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_electrical": {
+          "correct": 160,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_plumbing": {
+          "correct": 143,
+          "wrong": 0,
+          "abstained": 17,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.89375,
+          "accuracy": 0.89375
+        },
+        "moving_delivery": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "multi_intent": {
+          "correct": 0,
+          "wrong": 38,
+          "abstained": 82,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": 0.31666666666666665,
+          "accuracy": 0
+        },
+        "negation_exclusion": {
+          "correct": 215,
+          "wrong": 0,
+          "abstained": 5,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9772727272727273,
+          "accuracy": 0.9772727272727273
+        },
+        "noisy_mobile": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pet_cleaning": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pronoun_coreference": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "target_binding": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "vague": {
+          "correct": 0,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 120,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": null,
+          "accuracy": null
+        }
+      }
+    },
+    {
+      "experiment": {
+        "number": 9,
+        "name": "no-wall-mount-override",
+        "hypothesis": "Measure wall-mount assembly dependence.",
+        "disabledOverrides": [
+          "explicit_wall_mounting_request"
+        ]
+      },
+      "metrics": {
+        "correct": 2094,
+        "wrong": 38,
+        "abstained": 168,
+        "vagueCorrect": 120,
+        "vagueWrong": 0,
+        "precision": 0.9821763602251408,
+        "coverage": 0.9269565217391305,
+        "accuracy": 0.9104347826086957
+      },
+      "groups": {
+        "assembly_handyman": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "auto_indirect": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "cleaning_home": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "events_private": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "generic_assistance": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_electrical": {
+          "correct": 160,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_plumbing": {
+          "correct": 150,
+          "wrong": 0,
+          "abstained": 10,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9375,
+          "accuracy": 0.9375
+        },
+        "moving_delivery": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "multi_intent": {
+          "correct": 25,
+          "wrong": 38,
+          "abstained": 57,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0.3968253968253968,
+          "coverage": 0.525,
+          "accuracy": 0.20833333333333334
+        },
+        "negation_exclusion": {
+          "correct": 119,
+          "wrong": 0,
+          "abstained": 101,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.5409090909090909,
+          "accuracy": 0.5409090909090909
+        },
+        "noisy_mobile": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pet_cleaning": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pronoun_coreference": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "target_binding": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "vague": {
+          "correct": 0,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 120,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": null,
+          "accuracy": null
+        }
+      }
+    },
+    {
+      "experiment": {
+        "number": 10,
+        "name": "no-paint-override",
+        "hypothesis": "Measure explicit painting rule value.",
+        "disabledOverrides": [
+          "explicit_painting_request",
+          "explicit_patch_and_paint"
+        ]
+      },
+      "metrics": {
+        "correct": 2190,
+        "wrong": 38,
+        "abstained": 72,
+        "vagueCorrect": 120,
+        "vagueWrong": 0,
+        "precision": 0.9829443447037702,
+        "coverage": 0.9686956521739131,
+        "accuracy": 0.9521739130434783
+      },
+      "groups": {
+        "assembly_handyman": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "auto_indirect": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "cleaning_home": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "events_private": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "generic_assistance": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_electrical": {
+          "correct": 160,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_plumbing": {
+          "correct": 150,
+          "wrong": 0,
+          "abstained": 10,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9375,
+          "accuracy": 0.9375
+        },
+        "moving_delivery": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "multi_intent": {
+          "correct": 25,
+          "wrong": 38,
+          "abstained": 57,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0.3968253968253968,
+          "coverage": 0.525,
+          "accuracy": 0.20833333333333334
+        },
+        "negation_exclusion": {
+          "correct": 215,
+          "wrong": 0,
+          "abstained": 5,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9772727272727273,
+          "accuracy": 0.9772727272727273
+        },
+        "noisy_mobile": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pet_cleaning": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pronoun_coreference": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "target_binding": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "vague": {
+          "correct": 0,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 120,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": null,
+          "accuracy": null
+        }
+      }
+    },
+    {
+      "experiment": {
+        "number": 11,
+        "name": "all-overrides-disabled",
+        "hypothesis": "Measure raw-model safety and coverage.",
+        "overridePolicy": "none"
+      },
+      "metrics": {
+        "correct": 1437,
+        "wrong": 53,
+        "abstained": 810,
+        "vagueCorrect": 120,
+        "vagueWrong": 0,
+        "precision": 0.9644295302013423,
+        "coverage": 0.6478260869565218,
+        "accuracy": 0.6247826086956522
+      },
+      "groups": {
+        "assembly_handyman": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "auto_indirect": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "cleaning_home": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "events_private": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "generic_assistance": {
+          "correct": 235,
+          "wrong": 0,
+          "abstained": 5,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9791666666666666,
+          "accuracy": 0.9791666666666666
+        },
+        "handyman_electrical": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 40,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.75,
+          "accuracy": 0.75
+        },
+        "handyman_plumbing": {
+          "correct": 127,
+          "wrong": 0,
+          "abstained": 33,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.79375,
+          "accuracy": 0.79375
+        },
+        "moving_delivery": {
+          "correct": 48,
+          "wrong": 0,
+          "abstained": 132,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.26666666666666666,
+          "accuracy": 0.26666666666666666
+        },
+        "multi_intent": {
+          "correct": 0,
+          "wrong": 38,
+          "abstained": 82,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": 0.31666666666666665,
+          "accuracy": 0
+        },
+        "negation_exclusion": {
+          "correct": 16,
+          "wrong": 0,
+          "abstained": 204,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.07272727272727272,
+          "accuracy": 0.07272727272727272
+        },
+        "noisy_mobile": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pet_cleaning": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 20,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.8571428571428571,
+          "accuracy": 0.8571428571428571
+        },
+        "pronoun_coreference": {
+          "correct": 70,
+          "wrong": 0,
+          "abstained": 110,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.3888888888888889,
+          "accuracy": 0.3888888888888889
+        },
+        "target_binding": {
+          "correct": 41,
+          "wrong": 15,
+          "abstained": 184,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0.7321428571428571,
+          "coverage": 0.23333333333333334,
+          "accuracy": 0.17083333333333334
+        },
+        "vague": {
+          "correct": 0,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 120,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": null,
+          "accuracy": null
+        }
+      }
+    },
+    {
+      "experiment": {
+        "number": 12,
+        "name": "authoritative-only",
+        "hypothesis": "A smaller authoritative rule set may preserve safety.",
+        "overridePolicy": "authoritative"
+      },
+      "metrics": {
+        "correct": 1910,
+        "wrong": 38,
+        "abstained": 352,
+        "vagueCorrect": 120,
+        "vagueWrong": 0,
+        "precision": 0.9804928131416838,
+        "coverage": 0.8469565217391304,
+        "accuracy": 0.8304347826086956
+      },
+      "groups": {
+        "assembly_handyman": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "auto_indirect": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "cleaning_home": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "events_private": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "generic_assistance": {
+          "correct": 235,
+          "wrong": 0,
+          "abstained": 5,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9791666666666666,
+          "accuracy": 0.9791666666666666
+        },
+        "handyman_electrical": {
+          "correct": 160,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_plumbing": {
+          "correct": 127,
+          "wrong": 0,
+          "abstained": 33,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.79375,
+          "accuracy": 0.79375
+        },
+        "moving_delivery": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "multi_intent": {
+          "correct": 0,
+          "wrong": 38,
+          "abstained": 82,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": 0.31666666666666665,
+          "accuracy": 0
+        },
+        "negation_exclusion": {
+          "correct": 112,
+          "wrong": 0,
+          "abstained": 108,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.509090909090909,
+          "accuracy": 0.509090909090909
+        },
+        "noisy_mobile": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pet_cleaning": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pronoun_coreference": {
+          "correct": 70,
+          "wrong": 0,
+          "abstained": 110,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.3888888888888889,
+          "accuracy": 0.3888888888888889
+        },
+        "target_binding": {
+          "correct": 226,
+          "wrong": 0,
+          "abstained": 14,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9416666666666667,
+          "accuracy": 0.9416666666666667
+        },
+        "vague": {
+          "correct": 0,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 120,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": null,
+          "accuracy": null
+        }
+      }
+    },
+    {
+      "experiment": {
+        "number": 13,
+        "name": "agreement-only",
+        "hypothesis": "Model agreement gating may eliminate rule-caused errors.",
+        "overridePolicy": "agreement"
+      },
+      "metrics": {
+        "correct": 1636,
+        "wrong": 53,
+        "abstained": 611,
+        "vagueCorrect": 120,
+        "vagueWrong": 0,
+        "precision": 0.9686204854943754,
+        "coverage": 0.7343478260869565,
+        "accuracy": 0.711304347826087
+      },
+      "groups": {
+        "assembly_handyman": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "auto_indirect": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "cleaning_home": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "events_private": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "generic_assistance": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_electrical": {
+          "correct": 148,
+          "wrong": 0,
+          "abstained": 12,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.925,
+          "accuracy": 0.925
+        },
+        "handyman_plumbing": {
+          "correct": 149,
+          "wrong": 0,
+          "abstained": 11,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.93125,
+          "accuracy": 0.93125
+        },
+        "moving_delivery": {
+          "correct": 84,
+          "wrong": 0,
+          "abstained": 96,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.4666666666666667,
+          "accuracy": 0.4666666666666667
+        },
+        "multi_intent": {
+          "correct": 0,
+          "wrong": 38,
+          "abstained": 82,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": 0.31666666666666665,
+          "accuracy": 0
+        },
+        "negation_exclusion": {
+          "correct": 22,
+          "wrong": 0,
+          "abstained": 198,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.1,
+          "accuracy": 0.1
+        },
+        "noisy_mobile": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pet_cleaning": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pronoun_coreference": {
+          "correct": 113,
+          "wrong": 0,
+          "abstained": 67,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.6277777777777778,
+          "accuracy": 0.6277777777777778
+        },
+        "target_binding": {
+          "correct": 80,
+          "wrong": 15,
+          "abstained": 145,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0.8421052631578947,
+          "coverage": 0.3958333333333333,
+          "accuracy": 0.3333333333333333
+        },
+        "vague": {
+          "correct": 0,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 120,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": null,
+          "accuracy": null
+        }
+      }
+    },
+    {
+      "experiment": {
+        "number": 14,
+        "name": "no-internal-relocation",
+        "hypothesis": "Measure moving boundary rule dependence.",
+        "disabledOverrides": [
+          "explicit_internal_relocation"
+        ]
+      },
+      "metrics": {
+        "correct": 2058,
+        "wrong": 38,
+        "abstained": 204,
+        "vagueCorrect": 120,
+        "vagueWrong": 0,
+        "precision": 0.9818702290076335,
+        "coverage": 0.9113043478260869,
+        "accuracy": 0.8947826086956522
+      },
+      "groups": {
+        "assembly_handyman": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "auto_indirect": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "cleaning_home": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "events_private": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "generic_assistance": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_electrical": {
+          "correct": 160,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_plumbing": {
+          "correct": 150,
+          "wrong": 0,
+          "abstained": 10,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9375,
+          "accuracy": 0.9375
+        },
+        "moving_delivery": {
+          "correct": 48,
+          "wrong": 0,
+          "abstained": 132,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.26666666666666666,
+          "accuracy": 0.26666666666666666
+        },
+        "multi_intent": {
+          "correct": 25,
+          "wrong": 38,
+          "abstained": 57,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0.3968253968253968,
+          "coverage": 0.525,
+          "accuracy": 0.20833333333333334
+        },
+        "negation_exclusion": {
+          "correct": 215,
+          "wrong": 0,
+          "abstained": 5,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9772727272727273,
+          "accuracy": 0.9772727272727273
+        },
+        "noisy_mobile": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pet_cleaning": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pronoun_coreference": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "target_binding": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "vague": {
+          "correct": 0,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 120,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": null,
+          "accuracy": null
+        }
+      }
+    },
+    {
+      "experiment": {
+        "number": 15,
+        "name": "no-delivery-boundary",
+        "hypothesis": "Measure delivery transport override dependence.",
+        "disabledOverrides": [
+          "explicit_pickup_delivery",
+          "explicit_bring_task_object"
+        ]
+      },
+      "metrics": {
+        "correct": 2190,
+        "wrong": 38,
+        "abstained": 72,
+        "vagueCorrect": 120,
+        "vagueWrong": 0,
+        "precision": 0.9829443447037702,
+        "coverage": 0.9686956521739131,
+        "accuracy": 0.9521739130434783
+      },
+      "groups": {
+        "assembly_handyman": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "auto_indirect": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "cleaning_home": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "events_private": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "generic_assistance": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_electrical": {
+          "correct": 160,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_plumbing": {
+          "correct": 150,
+          "wrong": 0,
+          "abstained": 10,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9375,
+          "accuracy": 0.9375
+        },
+        "moving_delivery": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "multi_intent": {
+          "correct": 25,
+          "wrong": 38,
+          "abstained": 57,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0.3968253968253968,
+          "coverage": 0.525,
+          "accuracy": 0.20833333333333334
+        },
+        "negation_exclusion": {
+          "correct": 215,
+          "wrong": 0,
+          "abstained": 5,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9772727272727273,
+          "accuracy": 0.9772727272727273
+        },
+        "noisy_mobile": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pet_cleaning": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pronoun_coreference": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "target_binding": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "vague": {
+          "correct": 0,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 120,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": null,
+          "accuracy": null
+        }
+      }
+    },
+    {
+      "experiment": {
+        "number": 16,
+        "name": "no-pet-care-override",
+        "hypothesis": "Measure pet primary-intent override dependence.",
+        "disabledOverrides": [
+          "explicit_pet_care_action"
+        ]
+      },
+      "metrics": {
+        "correct": 2170,
+        "wrong": 38,
+        "abstained": 92,
+        "vagueCorrect": 120,
+        "vagueWrong": 0,
+        "precision": 0.9827898550724637,
+        "coverage": 0.96,
+        "accuracy": 0.9434782608695652
+      },
+      "groups": {
+        "assembly_handyman": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "auto_indirect": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "cleaning_home": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "events_private": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "generic_assistance": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_electrical": {
+          "correct": 160,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_plumbing": {
+          "correct": 150,
+          "wrong": 0,
+          "abstained": 10,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9375,
+          "accuracy": 0.9375
+        },
+        "moving_delivery": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "multi_intent": {
+          "correct": 25,
+          "wrong": 38,
+          "abstained": 57,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0.3968253968253968,
+          "coverage": 0.525,
+          "accuracy": 0.20833333333333334
+        },
+        "negation_exclusion": {
+          "correct": 215,
+          "wrong": 0,
+          "abstained": 5,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9772727272727273,
+          "accuracy": 0.9772727272727273
+        },
+        "noisy_mobile": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pet_cleaning": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 20,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.8571428571428571,
+          "accuracy": 0.8571428571428571
+        },
+        "pronoun_coreference": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "target_binding": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "vague": {
+          "correct": 0,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 120,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": null,
+          "accuracy": null
+        }
+      }
+    },
+    {
+      "experiment": {
+        "number": 17,
+        "name": "no-pet-cleaning-override",
+        "hypothesis": "Measure incidental-pet cleaning rule dependence.",
+        "disabledOverrides": [
+          "pet_related_cleaning"
+        ]
+      },
+      "metrics": {
+        "correct": 2190,
+        "wrong": 38,
+        "abstained": 72,
+        "vagueCorrect": 120,
+        "vagueWrong": 0,
+        "precision": 0.9829443447037702,
+        "coverage": 0.9686956521739131,
+        "accuracy": 0.9521739130434783
+      },
+      "groups": {
+        "assembly_handyman": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "auto_indirect": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "cleaning_home": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "events_private": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "generic_assistance": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_electrical": {
+          "correct": 160,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_plumbing": {
+          "correct": 150,
+          "wrong": 0,
+          "abstained": 10,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9375,
+          "accuracy": 0.9375
+        },
+        "moving_delivery": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "multi_intent": {
+          "correct": 25,
+          "wrong": 38,
+          "abstained": 57,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0.3968253968253968,
+          "coverage": 0.525,
+          "accuracy": 0.20833333333333334
+        },
+        "negation_exclusion": {
+          "correct": 215,
+          "wrong": 0,
+          "abstained": 5,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9772727272727273,
+          "accuracy": 0.9772727272727273
+        },
+        "noisy_mobile": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pet_cleaning": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pronoun_coreference": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "target_binding": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "vague": {
+          "correct": 0,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 120,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": null,
+          "accuracy": null
+        }
+      }
+    },
+    {
+      "experiment": {
+        "number": 18,
+        "name": "no-home-damage-override",
+        "hypothesis": "Measure home damage assessment rescue value.",
+        "disabledOverrides": [
+          "explicit_home_damage_assessment"
+        ]
+      },
+      "metrics": {
+        "correct": 2190,
+        "wrong": 38,
+        "abstained": 72,
+        "vagueCorrect": 120,
+        "vagueWrong": 0,
+        "precision": 0.9829443447037702,
+        "coverage": 0.9686956521739131,
+        "accuracy": 0.9521739130434783
+      },
+      "groups": {
+        "assembly_handyman": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "auto_indirect": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "cleaning_home": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "events_private": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "generic_assistance": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_electrical": {
+          "correct": 160,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_plumbing": {
+          "correct": 150,
+          "wrong": 0,
+          "abstained": 10,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9375,
+          "accuracy": 0.9375
+        },
+        "moving_delivery": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "multi_intent": {
+          "correct": 25,
+          "wrong": 38,
+          "abstained": 57,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0.3968253968253968,
+          "coverage": 0.525,
+          "accuracy": 0.20833333333333334
+        },
+        "negation_exclusion": {
+          "correct": 215,
+          "wrong": 0,
+          "abstained": 5,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9772727272727273,
+          "accuracy": 0.9772727272727273
+        },
+        "noisy_mobile": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pet_cleaning": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pronoun_coreference": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "target_binding": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "vague": {
+          "correct": 0,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 120,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": null,
+          "accuracy": null
+        }
+      }
+    },
+    {
+      "experiment": {
+        "number": 19,
+        "name": "no-home-domain-override",
+        "hypothesis": "Measure home-services domain rescue value.",
+        "disabledOverrides": [
+          "explicit_home_services_domain"
+        ]
+      },
+      "metrics": {
+        "correct": 2190,
+        "wrong": 38,
+        "abstained": 72,
+        "vagueCorrect": 120,
+        "vagueWrong": 0,
+        "precision": 0.9829443447037702,
+        "coverage": 0.9686956521739131,
+        "accuracy": 0.9521739130434783
+      },
+      "groups": {
+        "assembly_handyman": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "auto_indirect": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "cleaning_home": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "events_private": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "generic_assistance": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_electrical": {
+          "correct": 160,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_plumbing": {
+          "correct": 150,
+          "wrong": 0,
+          "abstained": 10,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9375,
+          "accuracy": 0.9375
+        },
+        "moving_delivery": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "multi_intent": {
+          "correct": 25,
+          "wrong": 38,
+          "abstained": 57,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0.3968253968253968,
+          "coverage": 0.525,
+          "accuracy": 0.20833333333333334
+        },
+        "negation_exclusion": {
+          "correct": 215,
+          "wrong": 0,
+          "abstained": 5,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9772727272727273,
+          "accuracy": 0.9772727272727273
+        },
+        "noisy_mobile": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pet_cleaning": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pronoun_coreference": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "target_binding": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "vague": {
+          "correct": 0,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 120,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": null,
+          "accuracy": null
+        }
+      }
+    },
+    {
+      "experiment": {
+        "number": 20,
+        "name": "primary-clause-policy",
+        "hypothesis": "First/main task clauses should resist secondary-task hijacking.",
+        "primaryClause": true
+      },
+      "metrics": {
+        "correct": 2267,
+        "wrong": 24,
+        "abstained": 9,
+        "vagueCorrect": 120,
+        "vagueWrong": 0,
+        "precision": 0.9895242252291576,
+        "coverage": 0.9960869565217392,
+        "accuracy": 0.9856521739130435
+      },
+      "groups": {
+        "assembly_handyman": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "auto_indirect": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "cleaning_home": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "events_private": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "generic_assistance": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_electrical": {
+          "correct": 160,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_plumbing": {
+          "correct": 155,
+          "wrong": 0,
+          "abstained": 5,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.96875,
+          "accuracy": 0.96875
+        },
+        "moving_delivery": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "multi_intent": {
+          "correct": 96,
+          "wrong": 24,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0.8,
+          "coverage": 1,
+          "accuracy": 0.8
+        },
+        "negation_exclusion": {
+          "correct": 216,
+          "wrong": 0,
+          "abstained": 4,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9818181818181818,
+          "accuracy": 0.9818181818181818
+        },
+        "noisy_mobile": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pet_cleaning": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pronoun_coreference": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "target_binding": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "vague": {
+          "correct": 0,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 120,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": null,
+          "accuracy": null
+        }
+      }
+    },
+    {
+      "experiment": {
+        "number": 21,
+        "name": "threshold-040",
+        "hypothesis": "Lower threshold may recover safe coverage after semantic guards.",
+        "threshold": 0.4
+      },
+      "metrics": {
+        "correct": 2190,
+        "wrong": 54,
+        "abstained": 56,
+        "vagueCorrect": 120,
+        "vagueWrong": 0,
+        "precision": 0.9759358288770054,
+        "coverage": 0.9756521739130435,
+        "accuracy": 0.9521739130434783
+      },
+      "groups": {
+        "assembly_handyman": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "auto_indirect": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "cleaning_home": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "events_private": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "generic_assistance": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_electrical": {
+          "correct": 160,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_plumbing": {
+          "correct": 150,
+          "wrong": 0,
+          "abstained": 10,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9375,
+          "accuracy": 0.9375
+        },
+        "moving_delivery": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "multi_intent": {
+          "correct": 25,
+          "wrong": 54,
+          "abstained": 41,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0.31645569620253167,
+          "coverage": 0.6583333333333333,
+          "accuracy": 0.20833333333333334
+        },
+        "negation_exclusion": {
+          "correct": 215,
+          "wrong": 0,
+          "abstained": 5,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9772727272727273,
+          "accuracy": 0.9772727272727273
+        },
+        "noisy_mobile": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pet_cleaning": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pronoun_coreference": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "target_binding": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "vague": {
+          "correct": 0,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 120,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": null,
+          "accuracy": null
+        }
+      }
+    },
+    {
+      "experiment": {
+        "number": 22,
+        "name": "threshold-045",
+        "hypothesis": "A modest threshold reduction may improve accepted recall.",
+        "threshold": 0.45
+      },
+      "metrics": {
+        "correct": 2190,
+        "wrong": 50,
+        "abstained": 60,
+        "vagueCorrect": 120,
+        "vagueWrong": 0,
+        "precision": 0.9776785714285714,
+        "coverage": 0.9739130434782609,
+        "accuracy": 0.9521739130434783
+      },
+      "groups": {
+        "assembly_handyman": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "auto_indirect": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "cleaning_home": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "events_private": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "generic_assistance": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_electrical": {
+          "correct": 160,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_plumbing": {
+          "correct": 150,
+          "wrong": 0,
+          "abstained": 10,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9375,
+          "accuracy": 0.9375
+        },
+        "moving_delivery": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "multi_intent": {
+          "correct": 25,
+          "wrong": 50,
+          "abstained": 45,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0.3333333333333333,
+          "coverage": 0.625,
+          "accuracy": 0.20833333333333334
+        },
+        "negation_exclusion": {
+          "correct": 215,
+          "wrong": 0,
+          "abstained": 5,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9772727272727273,
+          "accuracy": 0.9772727272727273
+        },
+        "noisy_mobile": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pet_cleaning": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pronoun_coreference": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "target_binding": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "vague": {
+          "correct": 0,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 120,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": null,
+          "accuracy": null
+        }
+      }
+    },
+    {
+      "experiment": {
+        "number": 23,
+        "name": "threshold-050",
+        "hypothesis": "Production threshold reference.",
+        "threshold": 0.5
+      },
+      "metrics": {
+        "correct": 2190,
+        "wrong": 38,
+        "abstained": 72,
+        "vagueCorrect": 120,
+        "vagueWrong": 0,
+        "precision": 0.9829443447037702,
+        "coverage": 0.9686956521739131,
+        "accuracy": 0.9521739130434783
+      },
+      "groups": {
+        "assembly_handyman": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "auto_indirect": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "cleaning_home": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "events_private": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "generic_assistance": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_electrical": {
+          "correct": 160,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_plumbing": {
+          "correct": 150,
+          "wrong": 0,
+          "abstained": 10,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9375,
+          "accuracy": 0.9375
+        },
+        "moving_delivery": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "multi_intent": {
+          "correct": 25,
+          "wrong": 38,
+          "abstained": 57,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0.3968253968253968,
+          "coverage": 0.525,
+          "accuracy": 0.20833333333333334
+        },
+        "negation_exclusion": {
+          "correct": 215,
+          "wrong": 0,
+          "abstained": 5,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9772727272727273,
+          "accuracy": 0.9772727272727273
+        },
+        "noisy_mobile": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pet_cleaning": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pronoun_coreference": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "target_binding": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "vague": {
+          "correct": 0,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 120,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": null,
+          "accuracy": null
+        }
+      }
+    },
+    {
+      "experiment": {
+        "number": 24,
+        "name": "threshold-055",
+        "hypothesis": "A higher threshold should trade coverage for precision.",
+        "threshold": 0.55
+      },
+      "metrics": {
+        "correct": 2190,
+        "wrong": 34,
+        "abstained": 76,
+        "vagueCorrect": 120,
+        "vagueWrong": 0,
+        "precision": 0.9847122302158273,
+        "coverage": 0.9669565217391304,
+        "accuracy": 0.9521739130434783
+      },
+      "groups": {
+        "assembly_handyman": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "auto_indirect": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "cleaning_home": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "events_private": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "generic_assistance": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_electrical": {
+          "correct": 160,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_plumbing": {
+          "correct": 150,
+          "wrong": 0,
+          "abstained": 10,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9375,
+          "accuracy": 0.9375
+        },
+        "moving_delivery": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "multi_intent": {
+          "correct": 25,
+          "wrong": 34,
+          "abstained": 61,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0.423728813559322,
+          "coverage": 0.49166666666666664,
+          "accuracy": 0.20833333333333334
+        },
+        "negation_exclusion": {
+          "correct": 215,
+          "wrong": 0,
+          "abstained": 5,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9772727272727273,
+          "accuracy": 0.9772727272727273
+        },
+        "noisy_mobile": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pet_cleaning": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pronoun_coreference": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "target_binding": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "vague": {
+          "correct": 0,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 120,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": null,
+          "accuracy": null
+        }
+      }
+    },
+    {
+      "experiment": {
+        "number": 25,
+        "name": "threshold-060",
+        "hypothesis": "A conservative threshold tests the upper safety bound.",
+        "threshold": 0.6
+      },
+      "metrics": {
+        "correct": 2190,
+        "wrong": 30,
+        "abstained": 80,
+        "vagueCorrect": 120,
+        "vagueWrong": 0,
+        "precision": 0.9864864864864865,
+        "coverage": 0.9652173913043478,
+        "accuracy": 0.9521739130434783
+      },
+      "groups": {
+        "assembly_handyman": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "auto_indirect": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "cleaning_home": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "events_private": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "generic_assistance": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_electrical": {
+          "correct": 160,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_plumbing": {
+          "correct": 150,
+          "wrong": 0,
+          "abstained": 10,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9375,
+          "accuracy": 0.9375
+        },
+        "moving_delivery": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "multi_intent": {
+          "correct": 25,
+          "wrong": 30,
+          "abstained": 65,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0.45454545454545453,
+          "coverage": 0.4583333333333333,
+          "accuracy": 0.20833333333333334
+        },
+        "negation_exclusion": {
+          "correct": 215,
+          "wrong": 0,
+          "abstained": 5,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9772727272727273,
+          "accuracy": 0.9772727272727273
+        },
+        "noisy_mobile": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pet_cleaning": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pronoun_coreference": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "target_binding": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "vague": {
+          "correct": 0,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 120,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": null,
+          "accuracy": null
+        }
+      }
+    },
+    {
+      "experiment": {
+        "number": 26,
+        "name": "primary-clause-plus-045",
+        "hypothesis": "Primary intent handling may permit a lower threshold safely.",
+        "primaryClause": true,
+        "threshold": 0.45
+      },
+      "metrics": {
+        "correct": 2267,
+        "wrong": 24,
+        "abstained": 9,
+        "vagueCorrect": 120,
+        "vagueWrong": 0,
+        "precision": 0.9895242252291576,
+        "coverage": 0.9960869565217392,
+        "accuracy": 0.9856521739130435
+      },
+      "groups": {
+        "assembly_handyman": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "auto_indirect": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "cleaning_home": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "events_private": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "generic_assistance": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_electrical": {
+          "correct": 160,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_plumbing": {
+          "correct": 155,
+          "wrong": 0,
+          "abstained": 5,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.96875,
+          "accuracy": 0.96875
+        },
+        "moving_delivery": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "multi_intent": {
+          "correct": 96,
+          "wrong": 24,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0.8,
+          "coverage": 1,
+          "accuracy": 0.8
+        },
+        "negation_exclusion": {
+          "correct": 216,
+          "wrong": 0,
+          "abstained": 4,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9818181818181818,
+          "accuracy": 0.9818181818181818
+        },
+        "noisy_mobile": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pet_cleaning": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pronoun_coreference": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "target_binding": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "vague": {
+          "correct": 0,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 120,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": null,
+          "accuracy": null
+        }
+      }
+    },
+    {
+      "experiment": {
+        "number": 27,
+        "name": "agreement-plus-045",
+        "hypothesis": "Agreement-only overrides may permit a lower threshold.",
+        "overridePolicy": "agreement",
+        "threshold": 0.45
+      },
+      "metrics": {
+        "correct": 1636,
+        "wrong": 70,
+        "abstained": 594,
+        "vagueCorrect": 120,
+        "vagueWrong": 0,
+        "precision": 0.958968347010551,
+        "coverage": 0.7417391304347826,
+        "accuracy": 0.711304347826087
+      },
+      "groups": {
+        "assembly_handyman": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "auto_indirect": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "cleaning_home": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "events_private": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "generic_assistance": {
+          "correct": 240,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_electrical": {
+          "correct": 148,
+          "wrong": 0,
+          "abstained": 12,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.925,
+          "accuracy": 0.925
+        },
+        "handyman_plumbing": {
+          "correct": 149,
+          "wrong": 0,
+          "abstained": 11,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.93125,
+          "accuracy": 0.93125
+        },
+        "moving_delivery": {
+          "correct": 84,
+          "wrong": 0,
+          "abstained": 96,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.4666666666666667,
+          "accuracy": 0.4666666666666667
+        },
+        "multi_intent": {
+          "correct": 0,
+          "wrong": 50,
+          "abstained": 70,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": 0.4166666666666667,
+          "accuracy": 0
+        },
+        "negation_exclusion": {
+          "correct": 22,
+          "wrong": 0,
+          "abstained": 198,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.1,
+          "accuracy": 0.1
+        },
+        "noisy_mobile": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pet_cleaning": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pronoun_coreference": {
+          "correct": 113,
+          "wrong": 0,
+          "abstained": 67,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.6277777777777778,
+          "accuracy": 0.6277777777777778
+        },
+        "target_binding": {
+          "correct": 80,
+          "wrong": 20,
+          "abstained": 140,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0.8,
+          "coverage": 0.4166666666666667,
+          "accuracy": 0.3333333333333333
+        },
+        "vague": {
+          "correct": 0,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 120,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": null,
+          "accuracy": null
+        }
+      }
+    },
+    {
+      "experiment": {
+        "number": 28,
+        "name": "authoritative-plus-045",
+        "hypothesis": "Authoritative rules plus lower threshold may simplify policy.",
+        "overridePolicy": "authoritative",
+        "threshold": 0.45
+      },
+      "metrics": {
+        "correct": 1935,
+        "wrong": 50,
+        "abstained": 315,
+        "vagueCorrect": 120,
+        "vagueWrong": 0,
+        "precision": 0.9748110831234257,
+        "coverage": 0.8630434782608696,
+        "accuracy": 0.841304347826087
+      },
+      "groups": {
+        "assembly_handyman": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "auto_indirect": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "cleaning_home": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "events_private": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "generic_assistance": {
+          "correct": 236,
+          "wrong": 0,
+          "abstained": 4,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9833333333333333,
+          "accuracy": 0.9833333333333333
+        },
+        "handyman_electrical": {
+          "correct": 160,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "handyman_plumbing": {
+          "correct": 133,
+          "wrong": 0,
+          "abstained": 27,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.83125,
+          "accuracy": 0.83125
+        },
+        "moving_delivery": {
+          "correct": 180,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "multi_intent": {
+          "correct": 0,
+          "wrong": 50,
+          "abstained": 70,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": 0.4166666666666667,
+          "accuracy": 0
+        },
+        "negation_exclusion": {
+          "correct": 114,
+          "wrong": 0,
+          "abstained": 106,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.5181818181818182,
+          "accuracy": 0.5181818181818182
+        },
+        "noisy_mobile": {
+          "correct": 120,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pet_cleaning": {
+          "correct": 140,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 1,
+          "accuracy": 1
+        },
+        "pronoun_coreference": {
+          "correct": 80,
+          "wrong": 0,
+          "abstained": 100,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.4444444444444444,
+          "accuracy": 0.4444444444444444
+        },
+        "target_binding": {
+          "correct": 232,
+          "wrong": 0,
+          "abstained": 8,
+          "vagueCorrect": 0,
+          "vagueWrong": 0,
+          "precision": 1,
+          "coverage": 0.9666666666666667,
+          "accuracy": 0.9666666666666667
+        },
+        "vague": {
+          "correct": 0,
+          "wrong": 0,
+          "abstained": 0,
+          "vagueCorrect": 120,
+          "vagueWrong": 0,
+          "precision": 0,
+          "coverage": null,
+          "accuracy": null
+        }
+      }
+    }
+  ]
+}

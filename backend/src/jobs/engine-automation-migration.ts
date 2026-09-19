@@ -8,6 +8,8 @@ import {
   encryptTaskLocation,
 } from '../services/TaskLocationCrypto.js';
 
+const MIGRATION_CONNECT_TIMEOUT_MS = 10_000;
+
 export const ADD_MISSING_TABLES_V2_MIGRATION = 'add_missing_tables_v2';
 export const ENGINE_AUTOMATION_MIGRATION = '20260710_engine_automation_contracts';
 export const PROOF_ALIGNMENT_MIGRATION = '20260711_required_proof_alignment';
@@ -243,7 +245,10 @@ export function productionMigrationRuntime(): MigrationRuntime {
     })),
     readText: (filePath) => readFile(filePath, 'utf8'),
     createClient: (databaseUrl): MigrationClient => {
-      const client = new Client({ connectionString: databaseUrl });
+      const client = new Client({
+        connectionString: databaseUrl,
+        connectionTimeoutMillis: MIGRATION_CONNECT_TIMEOUT_MS,
+      });
       return {
         connect: async () => {
           await client.connect();

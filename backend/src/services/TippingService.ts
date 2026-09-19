@@ -17,6 +17,7 @@ import Stripe from 'stripe';
 import { config } from '../config.js';
 import { db } from '../db.js';
 import { RevenueService } from './RevenueService.js';
+import { NotificationService } from './NotificationService.js';
 import type { ServiceResult } from '../types.js';
 import { logger } from '../logger.js';
 // AUDIT FIX H4: every Stripe call in this service must go through the breaker —
@@ -308,13 +309,26 @@ export const TippingService = {
         };
       }
 
-      const result = await db.query<Tip>(
-        `UPDATE tips
-         SET status = 'completed', completed_at = NOW()
-         WHERE id = $1 AND stripe_payment_intent_id = $2
-         RETURNING *`,
-        [tipId, stripePaymentIntentId]
-      );
+      const result = await db.transaction(async (query) => {
+        const result = await query<Tip>(
+          `UPDATE tips
+           SET status = 'completed', completed_at = NOW()
+           WHERE id = $1 AND stripe_payment_intent_id = $2
+           RETURNING *`,
+          [tipId, stripePaymentIntentId]
+        );
+        const tip = result.rows[0];
+        if (tip) {
+          await NotificationService.createInTransaction(query, {
+            userId: tip.worker_id, type: 'tip_received', title: '💰 You received a tip!',
+            message: `You received a $${(tip.amount_cents / 100).toFixed(2)} tip! Great job!`,
+            entityType: 'tip', entityId: tip.id, actionUrl: `/tasks/${tip.task_id}`,
+            metadata: { task_id: tip.task_id, amount_cents: tip.amount_cents },
+            dedupeKey: `tip-received:${tip.id}`,
+          });
+        }
+        return result;
+      });
 
       if (result.rowCount === 0) {
         // LL9: Idempotency — if the UPDATE matched 0 rows, check whether the tip
@@ -363,27 +377,6 @@ export const TippingService = {
           { err: revenueErr instanceof Error ? revenueErr.message : String(revenueErr), tipId: tip.id },
           'confirmTip: revenue ledger write failed — tip confirmed but ledger entry missing; manual reconciliation required'
         );
-      }
-
-      // Notify worker (support both constitutional schema and legacy type/data columns)
-      const notifBody = `You received a $${(tip.amount_cents / 100).toFixed(2)} tip! Great job!`;
-      const notifMeta = { task_id: tip.task_id, amount_cents: tip.amount_cents };
-      try {
-        await db.query(
-          `INSERT INTO notifications (user_id, category, title, body, deep_link, task_id, metadata, channels, priority, created_at)
-           VALUES ($1, 'tip_received', '💰 You received a tip!', $2, $3, $4, $5::JSONB, ARRAY['push']::TEXT[], 'HIGH', NOW())`,
-          [tip.worker_id, notifBody, `/task/${tip.task_id}`, tip.task_id, JSON.stringify(notifMeta)]
-        );
-      } catch {
-        try {
-          await db.query(
-            `INSERT INTO notifications (user_id, type, title, body, data, created_at)
-             VALUES ($1, 'tip_received', '💰 You received a tip!', $2, $3, NOW())`,
-            [tip.worker_id, notifBody, JSON.stringify(notifMeta)]
-          );
-        } catch {
-          log.warn({ tipId: tip.id, workerId: tip.worker_id }, 'Could not create tip_received notification');
-        }
       }
 
       return { success: true, data: tip };

@@ -15,6 +15,7 @@ const payoutDestination = vi.hoisted(() => vi.fn());
 // (for methods wrapped in db.transaction()). The transaction mock calls the
 // provided callback with the same `query` spy so existing mockResolvedValueOnce
 // sequences work seamlessly inside and outside transactions.
+vi.mock('../../src/services/NotificationRequestService.js',()=>({enqueueNotificationRequest:vi.fn()}));
 vi.mock('../../src/db', () => {
   const queryFn = vi.fn();
   return {

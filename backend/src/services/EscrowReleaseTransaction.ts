@@ -1,3 +1,4 @@
+import { notifyPaymentReleased } from '../lib/task-lifecycle-notifications.js';
 import type { QueryFn } from '../db.js';
 import { config } from '../config.js';
 import { clampFeePercent, computeFeeBreakdown, feeBasisPoints } from '../lib/money.js';
@@ -319,6 +320,11 @@ export async function executeReleaseTransaction(
   if (validation.error) return validation.error as Extract<ServiceResult<Escrow>, { success: false }>;
   const transitioned = await transitionEscrow(query, { params, escrow, provider });
   if (!transitioned.success) return transitioned;
+  // Notification intent only: transport stays outside the financial transaction.
+  if (provider.transferId && !validation.manualRequired) {
+    await notifyPaymentReleased(payoutRecipientUserId, escrow.task_id, breakdown.netPayoutCents,
+      query, escrow.id, isManualBusiness ? task.business_fulfiller_organization_id ?? undefined : undefined);
+  }
   const post: ReleasePost = {
     workerId,
     businessFulfillerOrganizationId: task.business_fulfiller_organization_id,
