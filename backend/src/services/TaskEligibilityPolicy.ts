@@ -116,6 +116,8 @@ export function taskEligibilityPredicates(
         SELECT 1 FROM background_checks screening
         WHERE screening.user_id = ${worker}.id
           AND upper(screening.status) = 'CLEAR'
+          AND screening.provider_environment = 'PRODUCTION'
+          AND screening.is_test IS FALSE
           AND (screening.expires_at IS NULL OR screening.expires_at > NOW())
       )
     )`,

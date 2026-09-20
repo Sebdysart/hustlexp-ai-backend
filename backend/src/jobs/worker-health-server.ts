@@ -20,6 +20,7 @@ interface WorkerHealthServerOptions {
   production?: boolean;
   identity?: BuildIdentity;
   trustedIdentity?: (identity: BuildIdentity) => boolean;
+  readinessCheck?: () => boolean;
 }
 
 function resolvePort(value: string | undefined): number {
@@ -71,7 +72,13 @@ export async function startWorkerHealthServer(
     }
 
     const trustedBuild = !production || trustedIdentity(identity);
-    const ready = state === 'ready' && trustedBuild;
+    let runtimeReady = true;
+    try {
+      runtimeReady = options.readinessCheck?.() ?? true;
+    } catch {
+      runtimeReady = false;
+    }
+    const ready = state === 'ready' && trustedBuild && runtimeReady;
     response.writeHead(ready ? 200 : 503);
     response.end(JSON.stringify({
       status: ready ? 'healthy' : 'unhealthy',

@@ -35,7 +35,10 @@ describe('task mutation eligibility environments', () => {
     })).rejects.toThrow('not currently eligible');
 
     expect(query).toHaveBeenCalledTimes(1);
-    expect(String(vi.mocked(query).mock.calls[0]?.[0])).toContain("automation_classification = 'PRODUCTION'");
+    const productionSql = String(vi.mocked(query).mock.calls[0]?.[0]);
+    expect(productionSql).toContain("automation_classification = 'PRODUCTION'");
+    expect(productionSql).toContain("screening.provider_environment = 'PRODUCTION'");
+    expect(productionSql).toContain('screening.is_test IS FALSE');
   });
 
   it('rejects when the explicit controlled TEST evidence chain is incomplete', async () => {

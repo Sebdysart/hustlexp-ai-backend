@@ -35,7 +35,7 @@
  * Reference: Phase N2.4 — Verification Resolution (LOCKED)
  */
 
-import { db } from '../db.js';
+import { db, type QueryFn } from '../db.js';
 import { logger } from '../logger.js';
 import { TRPCError } from '@trpc/server';
 
@@ -125,9 +125,10 @@ function adjustRiskClearanceForBackgroundCheck(
  */
 export async function recomputeCapabilityProfile(
   userId: string,
-  reasonMeta?: { reason: string; sourceVerificationId?: string }
+  reasonMeta?: { reason: string; sourceVerificationId?: string },
+  transactionQuery?: QueryFn,
 ): Promise<void> {
-  return db.transaction(async (query) => {
+  const recompute = async (query: QueryFn) => {
 
   // Step 2: Load immutable authority inputs from the canonical user profile.
   const userResult = await query<UserRow>(
@@ -310,5 +311,6 @@ export async function recomputeCapabilityProfile(
     backgroundCheckIsTest,
     reason: reasonMeta?.reason,
   }, 'Capability recompute completed');
-  });
+  };
+  return transactionQuery ? recompute(transactionQuery) : db.transaction(recompute);
 }

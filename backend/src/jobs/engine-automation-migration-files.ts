@@ -149,6 +149,7 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260923_business_proposal_assessment_source', fileName: '20260923_business_proposal_assessment_source.sql' },
   { name: '20260924_assessment_lifecycle_integrity', fileName: '20260924_assessment_lifecycle_integrity.sql' },
   { name: '20260925_provider_os_assessment_source', fileName: '20260925_provider_os_assessment_source.sql' },
+  { name: '20260926_checkr_webhook_ordering', fileName: '20260926_checkr_webhook_ordering.sql' },
 ] as const;
 
 

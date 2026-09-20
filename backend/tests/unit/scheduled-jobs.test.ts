@@ -14,6 +14,7 @@ const queueAddCalls: Array<{ queueName: string; jobName: string; data: unknown; 
 
 vi.mock('../../src/jobs/queues', () => {
   return {
+    verifyQueueRedisConnection: vi.fn(async () => undefined),
     enqueueRepeatableJob: vi.fn(async (queueName: string, jobName: string, data: unknown, pattern: string) => {
       queueAddCalls.push({ queueName, jobName, data, opts: { repeat: { pattern } } });
       return { id: `mock-job-${queueName}-${jobName}` };
@@ -66,7 +67,7 @@ vi.mock('../../src/logger', () => ({
 }));
 
 vi.mock('../../src/db', () => ({
-  db: { query: vi.fn() },
+  db: { query: vi.fn(async () => ({ rows: [{ name: 'migration-applied' }] })) },
 }));
 
 vi.mock('../../src/config', () => ({

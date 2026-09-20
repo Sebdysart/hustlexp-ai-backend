@@ -85,6 +85,15 @@ describe('worker deployment health server', () => {
     });
   });
 
+  it('withdraws readiness when a registered runtime component stops', async () => {
+    let runtimeReady = true;
+    const { handle, url } = await create({ production: true, readinessCheck: () => runtimeReady });
+    handle.markReady();
+    expect((await fetch(`${url}/health/readiness`)).status).toBe(200);
+    runtimeReady = false;
+    expect((await fetch(`${url}/health/readiness`)).status).toBe(503);
+  });
+
   it('rejects unsupported paths and methods without leaking runtime state', async () => {
     const { url } = await create({ production: false });
 

@@ -15,6 +15,7 @@ import {
   controlledTestQuotePaymentEnabled,
   settleControlledTestQuotePayment,
 } from './ControlledTestQuotePaymentService.js';
+import { quotePaymentReplayDecision } from './QuotePaymentReplayPolicy.js';
 
 interface FinalizePaidQuoteInput {
   quoteId: string;
@@ -402,6 +403,7 @@ export async function finalizePaidQuote(
           taskId: existingPayment.task_id,
           escrowId: escrow.id,
           replayed: true,
+          paymentSucceeded: true,
         };
       }
 
@@ -621,8 +623,40 @@ export async function finalizePaidQuote(
         taskId,
         escrowId: escrow.id,
         replayed: taskResult.replayed === true,
+        paymentSucceeded: false,
       };
     });
+
+    if (materialized.paymentSucceeded) {
+      const replayState = await db.query<{ escrow_state: string; task_state: string }>(
+        `SELECT e.state AS escrow_state, t.state AS task_state
+         FROM escrows e JOIN tasks t ON t.id = e.task_id
+         WHERE e.id = $1 AND t.id = $2`,
+        [materialized.escrowId, materialized.taskId],
+      );
+      const state = replayState.rows[0];
+      if (!state) throw new Error('ESCROW_NOT_FOUND_FOR_REPLAY');
+      const decision = quotePaymentReplayDecision({
+        escrowState: state.escrow_state,
+        taskState: state.task_state,
+      });
+      if (decision === 'refunded') {
+        return fail('QUOTE_PAYMENT_REFUNDED', 'This payment was refunded. No new charge was created.');
+      }
+      if (decision === 'complete') {
+        return {
+          success: true,
+          data: {
+            taskId: materialized.taskId,
+            escrowId: materialized.escrowId,
+            quoteId: input.quoteId,
+            quoteVersionId: input.quoteVersionId,
+            paymentIntentId: input.paymentIntentId,
+            replayed: true,
+          },
+        };
+      }
+    }
 
     let finalPaymentIntentId = input.paymentIntentId;
 

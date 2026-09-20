@@ -29,7 +29,8 @@ import {
   startWorkerHealthServer,
   type WorkerHealthServer,
 } from './worker-health-server.js';
-import { runEngineAutomationMigration } from "./engine-automation-migration.js";
+import { db } from '../db.js';
+import { REQUIRED_MIGRATION_FILES } from './engine-automation-migration-files.js';
 import { verifyQueueRedisConnection } from './queues.js';
 
 // Track all registered workers and outbox interval handles for graceful shutdown
@@ -72,7 +73,18 @@ async function startWorkers(): Promise<void> {
 
   try {
     log.info('Starting HustleXP Worker Runtime...');
-    await runEngineAutomationMigration();
+    // Schema changes belong to the migration/API startup identity. The worker
+    // needs only read access to the migration ledger and must fail closed if a
+    // deployment starts it before the reviewed manifest has been applied.
+    const latestMigration = REQUIRED_MIGRATION_FILES.at(-1)?.name;
+    if (!latestMigration) throw new Error('Required migration manifest is empty');
+    const applied = await db.query<{ name: string }>(
+      'SELECT name FROM applied_migrations WHERE name = $1',
+      [latestMigration],
+    );
+    if (!applied.rows[0]) {
+      throw new Error(`Worker schema is not ready: ${latestMigration} has not been applied`);
+    }
     await verifyQueueRedisConnection();
     // Register all BullMQ workers
     registerWorkers();
@@ -177,7 +189,11 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
  */
 export async function bootWorkerProcess(): Promise<void> {
   validateConfig();
-  workerHealthServer = await startWorkerHealthServer();
+  workerHealthServer = await startWorkerHealthServer({
+    readinessCheck: () => outboxHandles !== null
+      && activeWorkers.length > 0
+      && activeWorkers.every((worker) => worker.isRunning() && !worker.isPaused()),
+  });
   await startWorkers();
   workerHealthServer.markReady();
 }
