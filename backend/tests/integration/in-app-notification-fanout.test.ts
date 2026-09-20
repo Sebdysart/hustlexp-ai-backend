@@ -35,7 +35,7 @@ describe.skipIf(!url)('in-app recipient dedupe against the shipped PostgreSQL un
       CREATE TABLE admin_roles(user_id UUID,role TEXT,can_manage_operations BOOLEAN DEFAULT FALSE);
       CREATE TABLE quotes(id UUID PRIMARY KEY, task_draft_id UUID, business_organization_id UUID, acquisition_origin TEXT);
       CREATE TABLE tasks(id UUID PRIMARY KEY,business_fulfiller_organization_id UUID);
-      CREATE TABLE business_assessment_requests(id UUID PRIMARY KEY,task_draft_id UUID,business_organization_id UUID,proposal_id UUID,claim_link_id UUID);
+      CREATE TABLE business_assessment_requests(id UUID PRIMARY KEY,task_draft_id UUID,business_organization_id UUID,proposal_id UUID,claim_link_id UUID,provider_os_relationship_id UUID);
       CREATE TABLE business_task_proposals(id UUID PRIMARY KEY,task_draft_id UUID,business_organization_id UUID,quote_id UUID,created_at TIMESTAMPTZ DEFAULT NOW());
       CREATE TABLE ops_business_claim_links(id UUID PRIMARY KEY,task_draft_id UUID,claimed_by_organization_id UUID,status TEXT,quote_id UUID);
       CREATE TABLE business_memberships(organization_id UUID,user_id UUID,status TEXT DEFAULT 'ACTIVE',role TEXT DEFAULT 'OWNER');
@@ -108,7 +108,7 @@ describe.skipIf(!url)('in-app recipient dedupe against the shipped PostgreSQL un
     await query('INSERT INTO business_memberships(organization_id,user_id) VALUES($1,$2)',[org,users[0]]);
     await query('INSERT INTO business_task_proposals(id,task_draft_id,business_organization_id) VALUES($1,$2,$3)',[proposal,draft,org]);
     await query("INSERT INTO ops_business_claim_links VALUES($1,$2,$3,'CLAIMED',NULL)",[claim,draft,org]);
-    await query('INSERT INTO business_assessment_requests VALUES($1,$2,$3,$4,NULL),($5,$2,$3,NULL,$6)',
+    await query('INSERT INTO business_assessment_requests(id,task_draft_id,business_organization_id,proposal_id,claim_link_id) VALUES($1,$2,$3,$4,NULL),($5,$2,$3,NULL,$6)',
       [proposalAssessment,draft,org,proposal,claimAssessment,claim]);
     const destinations=await businessNotificationDestinations(query,[
       {id:'proposal',entityType:'assessment',entityId:proposalAssessment},

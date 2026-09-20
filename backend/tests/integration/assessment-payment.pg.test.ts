@@ -40,14 +40,14 @@ describe.skipIf(!testUrl)('assessment controlled payment (isolated PostgreSQL)',
       CREATE TABLE ops_business_claim_links(id UUID PRIMARY KEY,quote_id UUID);
       CREATE TABLE business_assessment_requests(id UUID PRIMARY KEY,task_draft_id UUID NOT NULL REFERENCES task_drafts(id),
         business_organization_id UUID NOT NULL REFERENCES business_organizations(id),claim_link_id UUID,
-        assessment_fee_cents INTEGER,assessment_platform_fee_cents INTEGER,status TEXT NOT NULL);
+        assessment_fee_cents INTEGER,status TEXT NOT NULL);
       CREATE TABLE assessment_payments(id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         assessment_request_id UUID NOT NULL UNIQUE REFERENCES business_assessment_requests(id),
         task_draft_id UUID NOT NULL REFERENCES task_drafts(id),
         business_organization_id UUID NOT NULL REFERENCES business_organizations(id),
         poster_user_id UUID NOT NULL REFERENCES users(id),provider TEXT NOT NULL,
         provider_payment_id TEXT NOT NULL,provider_merchant_id TEXT NOT NULL,
-        amount_cents INTEGER NOT NULL,platform_fee_cents INTEGER NOT NULL,status TEXT NOT NULL,created_at TIMESTAMPTZ DEFAULT NOW(),
+        amount_cents INTEGER NOT NULL,status TEXT NOT NULL,created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW(),UNIQUE(provider,provider_payment_id));
       CREATE TABLE notice_fixture(organization_id UUID,dedupe_key TEXT UNIQUE);`);
     await fixture.query(readFileSync('backend/database/migrations/20260924_assessment_lifecycle_integrity.sql','utf8'));
@@ -79,8 +79,8 @@ describe.skipIf(!testUrl)('assessment controlled payment (isolated PostgreSQL)',
     await expect(service.createAssessmentPayment(assessment,otherActor)).rejects.toMatchObject({code:'NOT_FOUND'});
     const created = await service.createAssessmentPayment(assessment,actor);
     expect(created).toMatchObject({status:'PENDING',amountCents:4500,testMode:true});
-    expect((await fixture.query('SELECT status,provider_merchant_id,amount_cents,platform_fee_cents,currency FROM assessment_payments')).rows)
-      .toEqual([{status:'PENDING',provider_merchant_id:'local_test',amount_cents:4500,platform_fee_cents:0,currency:'USD'}]);
+    expect((await fixture.query('SELECT status,provider_merchant_id,amount_cents,currency FROM assessment_payments')).rows)
+      .toEqual([{status:'PENDING',provider_merchant_id:'local_test',amount_cents:4500,currency:'USD'}]);
     expect((await fixture.query('SELECT status FROM hxos_local_test_assessment_intents')).rows).toEqual([{status:'requires_confirmation'}]);
     await expect(service.confirmAssessmentPayment(assessment,otherActor,created.clientSecret!)).rejects.toMatchObject({code:'NOT_FOUND'});
     await expect(service.confirmAssessmentPayment(assessment,actor,'wrong'.repeat(16))).rejects.toMatchObject({code:'FORBIDDEN'});

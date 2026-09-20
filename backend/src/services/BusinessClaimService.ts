@@ -4,6 +4,7 @@ import type { ServiceResult } from '../types.js';
 import { assertVerifiedProvider } from './BusinessWorkspacePolicy.js';
 import { logger } from '../logger.js';
 import { PENDING_BUSINESS_VERIFICATION, publishBusinessQuoteInTransaction } from './BusinessQuoteActivationService.js';
+import { assertProviderOsAccess } from './ProviderOsAccess.js';
 
 interface ClaimInput {
   token: string;
@@ -420,11 +421,12 @@ export async function quoteAfterAssessment(input: {
         business_organization_id: string;
         claim_link_id: string | null;
         proposal_id: string | null;
+        provider_os_relationship_id: string | null;
         quote_id: string | null;
         assessment_fee_cents: number | null;
         status: string;
       }>(
-        `SELECT id, task_draft_id, business_organization_id, claim_link_id, proposal_id,
+        `SELECT id, task_draft_id, business_organization_id, claim_link_id, proposal_id, provider_os_relationship_id,
                 quote_id, assessment_fee_cents, status
          FROM business_assessment_requests WHERE id = $1 FOR UPDATE`,
         [input.assessmentRequestId],
@@ -451,7 +453,7 @@ export async function quoteAfterAssessment(input: {
           payoutCents: row.payout_cents, platformMarginCents: row.total_cents-row.payout_cents,
           expiresAt: row.expires_at.toISOString(), replayed: true } };
       }
-      if (Boolean(assessment.claim_link_id) === Boolean(assessment.proposal_id)) {
+      if ([assessment.claim_link_id, assessment.proposal_id, assessment.provider_os_relationship_id].filter(Boolean).length !== 1) {
         return failure('ASSESSMENT_ORIGIN_INVALID', 'The assessment acquisition source is unavailable.');
       }
       const payment = await query<{ amount_cents: number }>(
@@ -490,7 +492,7 @@ export async function quoteAfterAssessment(input: {
       if (!draft) return failure('TASK_DRAFT_NOT_FOUND', 'Task draft no longer exists.');
       if (draft.status === 'abandoned' || draft.task_id) return failure('TASK_DRAFT_UNAVAILABLE', 'This task is no longer available for quoting.');
 
-      let acquisitionOrigin: 'claim_link' | 'direct_proposal';
+      let acquisitionOrigin: 'claim_link' | 'direct_proposal' | 'provider_os';
       if (assessment.claim_link_id) {
         const claimResult = await query<{ id: string; status: string; task_draft_id: string; claimed_by_organization_id: string | null; quote_id: string | null }>(
           `SELECT id, status, task_draft_id, claimed_by_organization_id, quote_id
@@ -503,7 +505,7 @@ export async function quoteAfterAssessment(input: {
           return failure('CLAIM_NOT_AVAILABLE', 'The associated business claim is no longer available.');
         }
         acquisitionOrigin = 'claim_link';
-      } else {
+      } else if (assessment.proposal_id) {
         const proposalResult = await query<{ id: string; task_draft_id: string; business_organization_id: string; status: string; quote_id: string | null }>(
           `SELECT id, task_draft_id, business_organization_id, status, quote_id
            FROM business_task_proposals WHERE id = $1 FOR UPDATE`,
@@ -515,6 +517,20 @@ export async function quoteAfterAssessment(input: {
           return failure('PROPOSAL_NOT_AVAILABLE', 'The associated business proposal is no longer available.');
         }
         acquisitionOrigin = 'direct_proposal';
+      } else {
+        try {
+          await assertProviderOsAccess({ actorId: input.actorId, organizationId: input.organizationId, operation: 'ASSIGN_CREW' }, query);
+        } catch {
+          return failure('PROVIDER_OS_ACCESS_INACTIVE', 'Provider OS access is required to submit this quote.');
+        }
+        const relationship = await query<{ id: string }>(
+          `SELECT id FROM provider_os_relationships
+           WHERE id=$1 AND provider_organization_id=$2 AND poster_user_id=$3 AND status='active'
+           FOR SHARE`,
+          [assessment.provider_os_relationship_id,input.organizationId,draft.poster_user_id],
+        );
+        if (!relationship.rows[0]) return failure('PROVIDER_OS_RELATIONSHIP_INACTIVE', 'This Provider OS client relationship is no longer active.');
+        acquisitionOrigin = 'provider_os';
       }
 
       const arrivalStart = new Date(input.arrivalWindowStart);
@@ -554,7 +570,7 @@ export async function quoteAfterAssessment(input: {
           [assessment.claim_link_id, customerTotalCents, payoutCents, quoteId],
         );
         if (!updated.rows[0]) throw new Error('POST_ASSESSMENT_QUOTE_RACE_LOST');
-      } else {
+      } else if (assessment.proposal_id) {
         const updated = await query<{ id: string }>(
           `UPDATE business_task_proposals SET status = 'QUOTED', quote_id = $2,
              responded_at = NOW(), updated_at = NOW()

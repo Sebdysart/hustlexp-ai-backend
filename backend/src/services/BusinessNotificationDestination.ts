@@ -14,6 +14,7 @@ interface DestinationContext {
   task_id: string | null;
   proposal_id: string | null;
   claimed: boolean;
+  source_provider_os_relationship_id: string | null;
 }
 
 /** Resolve canonical ownership, never infer a claim from a draft/quote ID. */
@@ -30,11 +31,13 @@ export async function businessNotificationDestinations(
     ), entities AS (
       SELECT r.id, 'quote'::text AS entity_type, q.business_organization_id AS organization_id,
         q.task_draft_id AS draft_id, q.id AS quote_id, q.acquisition_origin,
-        NULL::uuid AS source_proposal_id, NULL::uuid AS source_claim_link_id
+        NULL::uuid AS source_proposal_id, NULL::uuid AS source_claim_link_id,
+        NULL::uuid AS source_provider_os_relationship_id
       FROM refs r JOIN quotes q ON r."entityType" = 'quote' AND q.id = r."entityId"
       UNION ALL
       SELECT r.id, 'assessment'::text, a.business_organization_id, a.task_draft_id,
-        NULL::uuid, NULL::text, a.proposal_id, a.claim_link_id
+        NULL::uuid, NULL::text, a.proposal_id, a.claim_link_id,
+        a.provider_os_relationship_id
       FROM refs r JOIN business_assessment_requests a ON r."entityType" = 'assessment' AND a.id = r."entityId"
     )
     SELECT e.*, t.id AS task_id, p.id AS proposal_id,
@@ -60,6 +63,8 @@ export async function businessNotificationDestinations(
     if (row.task_id) destination = `/business/tasks/${row.task_id}`;
     else if (row.acquisition_origin === 'provider_os' && row.quote_id)
       destination = `/provider-os/quotes/${row.quote_id}?organizationId=${row.organization_id}`;
+    else if (row.source_provider_os_relationship_id)
+      destination = `/provider-os/drafts/${row.draft_id}?organizationId=${row.organization_id}`;
     else if (row.proposal_id) destination = `/business/proposals/${row.proposal_id}`;
     else if (row.claimed) destination = `/business/claims/${row.draft_id}?organizationId=${row.organization_id}`;
     destinations.set(row.id, destination);

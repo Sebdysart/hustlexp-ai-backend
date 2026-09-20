@@ -46,6 +46,14 @@ export interface ProviderOsDraftDetail extends ProviderOsDraftSummary {
   rawInput: string;
   quoteId: string | null;
   existingQuote: { id: string; status: string; acquisition_origin: string | null } | null;
+  assessmentRequestId: string | null;
+  assessmentStatus: string | null;
+  assessmentCustomerMessage: string | null;
+  assessmentWindowStart: string | null;
+  assessmentWindowEnd: string | null;
+  assessmentScheduledDate: string | null;
+  assessmentFeeCents: number | null;
+  assessmentQuoteId: string | null;
   preferredWindow: string;
   preferredArrivalWindowStart: string;
   preferredArrivalWindowEnd: string;
@@ -351,6 +359,7 @@ export async function getProviderOsDraft(input: {
       task_id: string | null;
       quote_id: string | null;
       structured: unknown;
+      relationship_id: string;
     }>(
       `SELECT d.id,
               d.poster_user_id,
@@ -368,7 +377,8 @@ export async function getProviderOsDraft(input: {
               d.claimed_at,
               d.task_id,
               d.quote_id,
-              d.structured
+              d.structured,
+              r.id AS relationship_id
          FROM task_drafts d
          JOIN provider_os_relationships r
            ON r.poster_user_id = d.poster_user_id
@@ -402,6 +412,20 @@ export async function getProviderOsDraft(input: {
       `,
       [row.id, input.organizationId],
     );
+    const assessment = await query<{
+      id: string; status: string; customer_message: string | null;
+      proposed_window_start: Date; proposed_window_end: Date;
+      scheduled_date: string | null; assessment_fee_cents: number | null;
+      quote_id: string | null;
+    }>(
+      `SELECT id,status,customer_message,proposed_window_start,proposed_window_end,
+              scheduled_date::text AS scheduled_date,assessment_fee_cents,quote_id
+       FROM business_assessment_requests
+       WHERE provider_os_relationship_id=$1 AND task_draft_id=$2
+       ORDER BY created_at DESC,id DESC LIMIT 1`,
+      [row.relationship_id,row.id],
+    );
+    const assessmentRow = assessment.rows[0];
     const preferredWindow = preferredWindowFromStructured(row.structured);
     const customerWindow = computePreferredArrivalWindow(preferredWindow);
 
@@ -424,6 +448,14 @@ export async function getProviderOsDraft(input: {
         createdAt: row.created_at.toISOString(),
         quoteId: row.quote_id,
         existingQuote: alreadyQuoted.rows[0] ?? null,
+        assessmentRequestId: assessmentRow?.id ?? null,
+        assessmentStatus: assessmentRow?.status ?? null,
+        assessmentCustomerMessage: assessmentRow?.customer_message ?? null,
+        assessmentWindowStart: assessmentRow?.proposed_window_start?.toISOString() ?? null,
+        assessmentWindowEnd: assessmentRow?.proposed_window_end?.toISOString() ?? null,
+        assessmentScheduledDate: assessmentRow?.scheduled_date ?? null,
+        assessmentFeeCents: assessmentRow?.assessment_fee_cents ?? null,
+        assessmentQuoteId: assessmentRow?.quote_id ?? null,
         preferredWindow,
         preferredArrivalWindowStart: customerWindow.arrivalStart.toISOString(),
         preferredArrivalWindowEnd: customerWindow.arrivalEnd.toISOString(),
@@ -539,6 +571,16 @@ export async function setProviderOsDraftQuote(input: {
           'FORBIDDEN',
           'You can only quote tasks from active clients of this business in Provider OS.',
         );
+      }
+
+      const activeAssessment = await query<{ id: string }>(
+        `SELECT id FROM business_assessment_requests
+         WHERE provider_os_relationship_id=$1 AND task_draft_id=$2
+           AND status NOT IN ('ADMIN_REJECTED','CUSTOMER_DECLINED','CANCELLED') LIMIT 1`,
+        [relationship.rows[0].id,draft.id],
+      );
+      if (activeAssessment.rows[0]) {
+        return failure('ASSESSMENT_ACTIVE', 'Complete the onsite assessment before submitting its final quote.');
       }
 
       if (!draft.poster_user_id) {

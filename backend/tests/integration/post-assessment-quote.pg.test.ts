@@ -38,6 +38,7 @@ describe.skipIf(!testUrl)('post-assessment quote origins (isolated PostgreSQL)',
       CREATE TABLE task_drafts(id UUID PRIMARY KEY,title TEXT,scope_summary TEXT,poster_user_id UUID,status TEXT,task_id UUID);
       CREATE TABLE business_task_proposals(id UUID PRIMARY KEY,task_draft_id UUID,business_organization_id UUID,status TEXT,
         quote_id UUID,responded_at TIMESTAMPTZ,updated_at TIMESTAMPTZ);
+      CREATE TABLE provider_os_relationships(id UUID PRIMARY KEY);
       CREATE TABLE quotes(id UUID PRIMARY KEY DEFAULT gen_random_uuid(),task_draft_id UUID,title TEXT,status TEXT,environment TEXT,
         is_test BOOLEAN,business_organization_id UUID,business_location_id UUID,provider_service_profile_id UUID,
         claimed_by_user_id UUID,acquisition_origin TEXT,active_version_id UUID,updated_at TIMESTAMPTZ);
@@ -57,6 +58,7 @@ describe.skipIf(!testUrl)('post-assessment quote origins (isolated PostgreSQL)',
         action TEXT,object_type TEXT,object_id UUID,after_state JSONB);
       CREATE TABLE notice_fixture(dedupe_key TEXT UNIQUE);`);
     await fixture.query(readFileSync('backend/database/migrations/20260924_assessment_lifecycle_integrity.sql','utf8'));
+    await fixture.query(readFileSync('backend/database/migrations/20260925_provider_os_assessment_source.sql','utf8'));
     await fixture.query('INSERT INTO users(id) VALUES($1),($2)',[actor,poster]);
     await fixture.query("INSERT INTO business_organizations VALUES($1,'ACTIVE',TRUE,'VERIFIED'),($2,'ACTIVE',TRUE,'VERIFIED')",[orgA,orgB]);
     await fixture.query("INSERT INTO business_memberships VALUES($1,$2,'ACTIVE','OWNER'),($3,$2,'ACTIVE','OWNER')",[orgA,actor,orgB]);

@@ -9,13 +9,12 @@ import { newPaymentCreationFailure } from './NewPaymentCreationGuard.js';
 type Assessment = {
   id: string; task_draft_id: string; business_organization_id: string;
   poster_user_id: string; assessment_fee_cents: number | null; status: string;
-  assessment_platform_fee_cents: number | null;
 };
 type Payment = {
   id: string; assessment_request_id: string; task_draft_id: string;
   business_organization_id: string; poster_user_id: string;
   provider: string; provider_payment_id: string; provider_merchant_id: string;
-  amount_cents: number; platform_fee_cents: number; currency: string; status: string;
+  amount_cents: number; currency: string; status: string;
 };
 type Intent = {
   id: string; assessment_payment_id: string; assessment_request_id: string;
@@ -28,15 +27,18 @@ const digest = (value: string) => createHash('sha256').update(value).digest('hex
 const reference = (assessmentId: string) => `assessment_local_test_${digest(assessmentId).slice(0, 32)}`;
 
 function requireControlledPayment(): void {
+  if (process.env.PAYMENT_PROVIDER !== 'local_test') {
+    throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Assessment payment is unavailable for the configured provider.' });
+  }
   if (!controlledTestQuotePaymentEnabled()) {
-    throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Controlled assessment payment is unavailable.' });
+    throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Controlled assessment payment is disabled or incomplete.' });
   }
 }
 
 async function ownedAssessment(query: QueryFn, assessmentId: string, posterId: string, lock = false): Promise<Assessment> {
   const result = await query<Assessment>(
     `SELECT a.id,a.task_draft_id,a.business_organization_id,d.poster_user_id,
-            a.assessment_fee_cents,a.assessment_platform_fee_cents,a.status
+            a.assessment_fee_cents,a.status
      FROM business_assessment_requests a
      JOIN task_drafts d ON d.id=a.task_draft_id
      WHERE a.id=$1 AND d.poster_user_id=$2 ${lock ? 'FOR UPDATE OF a' : ''}`,
@@ -60,8 +62,11 @@ function assertPayable(assessment: Assessment): number {
 /** A local payment and its provider ledger are committed before any confirmation. */
 export async function createAssessmentPayment(assessmentId: string, posterId: string) {
   requireControlledPayment();
-  return db.transaction(async (query) => {
+  let context: { draftId: string; organizationId: string } | undefined;
+  try {
+  return await db.transaction(async (query) => {
     const assessment = await ownedAssessment(query, assessmentId, posterId, true);
+    context = { draftId: assessment.task_draft_id, organizationId: assessment.business_organization_id };
     const existing = await query<Payment>('SELECT * FROM assessment_payments WHERE assessment_request_id=$1 FOR UPDATE', [assessmentId]);
     let payment = existing.rows[0];
     // A confirmed payment remains queryable after the customer schedules the
@@ -70,7 +75,6 @@ export async function createAssessmentPayment(assessmentId: string, posterId: st
       payment.poster_user_id === posterId && payment.task_draft_id === assessment.task_draft_id &&
       payment.business_organization_id === assessment.business_organization_id &&
       payment.amount_cents === assessment.assessment_fee_cents && payment.currency === 'USD' &&
-      payment.platform_fee_cents === (assessment.assessment_platform_fee_cents ?? 0) &&
       payment.provider_payment_id === reference(assessmentId)) {
       return { paymentIntentId: payment.provider_payment_id, amountCents: payment.amount_cents,
         status: 'SUCCEEDED' as const, testMode: true, clientSecret: null };
@@ -78,7 +82,6 @@ export async function createAssessmentPayment(assessmentId: string, posterId: st
     const amount = assertPayable(assessment);
     if (payment && (payment.provider !== 'local_test' || payment.amount_cents !== amount ||
       payment.currency !== 'USD' || payment.poster_user_id !== posterId ||
-      payment.platform_fee_cents !== (assessment.assessment_platform_fee_cents ?? 0) ||
       payment.business_organization_id !== assessment.business_organization_id ||
       payment.task_draft_id !== assessment.task_draft_id || payment.provider_payment_id !== reference(assessmentId))) {
       throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'The existing assessment payment requires support review.' });
@@ -93,10 +96,10 @@ export async function createAssessmentPayment(assessmentId: string, posterId: st
       const created = await query<Payment>(
         `INSERT INTO assessment_payments
          (assessment_request_id,task_draft_id,business_organization_id,poster_user_id,
-          provider,provider_payment_id,provider_merchant_id,amount_cents,platform_fee_cents,currency,status)
-         VALUES ($1,$2,$3,$4,'local_test',$5,'local_test',$6,$7,'USD','PENDING') RETURNING *`,
+          provider,provider_payment_id,provider_merchant_id,amount_cents,currency,status)
+         VALUES ($1,$2,$3,$4,'local_test',$5,'local_test',$6,'USD','PENDING') RETURNING *`,
         [assessment.id,assessment.task_draft_id,assessment.business_organization_id,posterId,
-          reference(assessmentId),amount,assessment.assessment_platform_fee_cents ?? 0],
+          reference(assessmentId),amount],
       );
       payment = created.rows[0];
     }
@@ -125,6 +128,28 @@ export async function createAssessmentPayment(assessmentId: string, posterId: st
     }
     return { paymentIntentId: payment.provider_payment_id, amountCents: amount, status: 'PENDING' as const, testMode: true, clientSecret: secret };
   });
+  } catch (error) {
+    if (error instanceof TRPCError) throw error;
+    const dbError = error && typeof error === 'object' ? error as { code?: unknown; constraint?: unknown; column?: unknown } : {};
+    const safe = (value: unknown) => typeof value === 'string' && /^[A-Za-z0-9_]{1,128}$/.test(value) ? value : undefined;
+    log.error({ action: 'createPaymentIntent', assessmentId, posterId,
+      draftId: context?.draftId, organizationId: context?.organizationId,
+      provider: process.env.PAYMENT_PROVIDER,
+      errorClass: error instanceof Error ? error.constructor.name : typeof error,
+      dbCode: safe(dbError.code), dbConstraint: safe(dbError.constraint), dbColumn: safe(dbError.column),
+      message: dbError.code === '42703' ? 'Required payment column is missing'
+        : dbError.code === '42P01' ? 'Required payment table is missing'
+          : dbError.code === '23505' ? 'Payment uniqueness conflict'
+            : 'Assessment payment transaction failed',
+    }, 'Assessment payment creation failed');
+    if (['42P01', '42703'].includes(String(dbError.code))) {
+      throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Assessment payment is temporarily unavailable. Please contact support.' });
+    }
+    if (dbError.code === '23505') {
+      throw new TRPCError({ code: 'CONFLICT', message: 'Assessment payment is already being prepared. Please retry.' });
+    }
+    throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Unable to create the assessment payment. Please try again.' });
+  }
 }
 
 export async function confirmAssessmentPayment(assessmentId: string, posterId: string, clientSecret: string) {
@@ -172,13 +197,12 @@ export async function finalizeAssessmentPayment(assessmentId: string): Promise<v
     if (!intent || intent.status !== 'succeeded') return;
     const assessment = (await query<Assessment>(
       `SELECT a.id,a.task_draft_id,a.business_organization_id,d.poster_user_id,
-      a.assessment_fee_cents,a.assessment_platform_fee_cents,a.status
+      a.assessment_fee_cents,a.status
        FROM business_assessment_requests a JOIN task_drafts d ON d.id=a.task_draft_id WHERE a.id=$1`,
       [assessmentId],
     )).rows[0];
     if (!assessment || assessment.status !== 'AWAITING_CUSTOMER' ||
       assessment.assessment_fee_cents !== payment.amount_cents ||
-      (assessment.assessment_platform_fee_cents ?? 0) !== payment.platform_fee_cents ||
       intent.assessment_payment_id !== payment.id || intent.assessment_request_id !== assessmentId ||
       intent.task_draft_id !== payment.task_draft_id || intent.business_organization_id !== payment.business_organization_id ||
       intent.poster_user_id !== payment.poster_user_id || intent.amount_cents !== payment.amount_cents ||

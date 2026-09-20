@@ -3,6 +3,8 @@ import { db } from '../db.js';
 import { assertVerifiedProvider } from './BusinessWorkspacePolicy.js';
 import { NotificationService } from './NotificationService.js';
 import { logger } from '../logger.js';
+import { assertProviderOsAccess } from './ProviderOsAccess.js';
+import { isProviderOsEligibleDraft } from './ProviderOsPolicy.js';
 
 const log = logger.child({ service: 'BusinessAssessmentService' });
 
@@ -439,5 +441,100 @@ export async function requestBusinessProposalAssessment(input: {
         message: 'Unable to submit the assessment request.',
       },
     };
+  }
+}
+
+/** Provider OS supplies a consented organization/client relationship, never a claim token. */
+export async function requestProviderOsAssessment(input: {
+  draftId: string;
+  organizationId: string;
+  actorId: string;
+  businessMessage: string;
+  proposedWindowStart: string;
+  proposedWindowEnd: string;
+}) {
+  const message = input.businessMessage.trim();
+  const windowStart = new Date(input.proposedWindowStart);
+  const windowEnd = new Date(input.proposedWindowEnd);
+  if (!message) return { success: false as const, error: { code: 'ASSESSMENT_MESSAGE_REQUIRED', message: 'Explain why an onsite assessment is needed.' } };
+  if (!Number.isFinite(windowStart.getTime()) || !Number.isFinite(windowEnd.getTime()) || windowEnd <= windowStart) {
+    return { success: false as const, error: { code: 'INVALID_ASSESSMENT_WINDOW', message: 'The proposed assessment window is invalid.' } };
+  }
+  try {
+    return await db.transaction(async (query) => {
+      await assertProviderOsAccess({ actorId: input.actorId, organizationId: input.organizationId, operation: 'ASSIGN_CREW' }, query);
+      const org = (await query<{ status: string; provider_enabled: boolean; verification_status: string; display_name: string | null }>(
+        'SELECT status, provider_enabled, verification_status, display_name FROM business_organizations WHERE id=$1 FOR SHARE',
+        [input.organizationId],
+      )).rows[0];
+      try {
+        if (!org) throw new Error('Business missing');
+        assertVerifiedProvider({ status: org.status, providerEnabled: org.provider_enabled, verificationStatus: org.verification_status });
+      } catch {
+        return { success: false as const, error: { code: 'BUSINESS_NOT_READY', message: 'The business is not verified to request an assessment.' } };
+      }
+      const draft = (await query<{ id: string; poster_user_id: string | null; status: string; claimed_at: Date | null; task_id: string | null; quote_id: string | null }>(
+        `SELECT id, poster_user_id, status, claimed_at, task_id, quote_id FROM task_drafts WHERE id=$1 FOR UPDATE`,
+        [input.draftId],
+      )).rows[0];
+      if (!draft || !isProviderOsEligibleDraft({ status: draft.status, claimedAt: draft.claimed_at,
+        taskId: draft.task_id, posterUserId: draft.poster_user_id, quoteId: draft.quote_id })) {
+        return { success: false as const, error: { code: 'TASK_DRAFT_UNAVAILABLE', message: 'This client request is no longer eligible for an assessment.' } };
+      }
+      const relationship = (await query<{ id: string }>(
+        `SELECT r.id FROM provider_os_relationships r
+         JOIN users client ON client.id=r.poster_user_id AND client.account_status='ACTIVE'
+         WHERE r.provider_organization_id=$1 AND r.poster_user_id=$2 AND r.status='active'
+         FOR SHARE OF r, client`, [input.organizationId, draft.poster_user_id],
+      )).rows[0];
+      if (!relationship) return { success: false as const, error: { code: 'FORBIDDEN', message: 'This customer is not an active Provider OS client of this business.' } };
+      const quoted = await query<{ id: string }>(
+        `SELECT id FROM quotes WHERE task_draft_id=$1 AND business_organization_id=$2
+         AND status NOT IN ('rejected','withdrawn','expired','superseded') LIMIT 1`,
+        [draft.id, input.organizationId],
+      );
+      if (quoted.rows[0]) return { success: false as const, error: { code: 'ALREADY_QUOTED', message: 'This business has already quoted this request.' } };
+      const activeAssessment = await query<{ id: string }>(
+        `SELECT id FROM business_assessment_requests
+         WHERE task_draft_id=$1 AND business_organization_id=$2
+           AND status IN ('PENDING_ADMIN','AWAITING_CUSTOMER','SCHEDULED','COMPLETED') LIMIT 1`,
+        [draft.id, input.organizationId],
+      );
+      if (activeAssessment.rows[0]) return { success: false as const, error: { code: 'ASSESSMENT_ALREADY_ACTIVE', message: 'This business already has an active assessment for this request.' } };
+      const existing = await query<{ id: string }>(
+        `SELECT id FROM business_assessment_requests WHERE task_draft_id=$1 AND business_organization_id=$2
+         AND provider_os_relationship_id=$3 LIMIT 1`,
+        [draft.id, input.organizationId, relationship.id],
+      );
+      if (existing.rows[0]) return { success: false as const, error: { code: 'ASSESSMENT_ALREADY_EXISTS', message: 'This business already has an assessment for this request.' } };
+      const created = await query<{ id: string }>(
+        `INSERT INTO business_assessment_requests
+         (task_draft_id,business_organization_id,provider_os_relationship_id,requested_by_user_id,
+          business_message,proposed_window_start,proposed_window_end)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+        [draft.id,input.organizationId,relationship.id,input.actorId,message,windowStart,windowEnd],
+      );
+      const assessmentRequestId = created.rows[0].id;
+      await NotificationService.createForOperationsInTransaction(query, {
+        type: 'ASSESSMENT_REQUESTED', title: 'New assessment request',
+        message: `${org.display_name || 'A business'} requested an onsite assessment.`,
+        entityType: 'assessment', entityId: assessmentRequestId,
+        actionUrl: `/ops/drafts/${draft.id}`, dedupeKey: `assessment-requested:${assessmentRequestId}`,
+      });
+      await query(
+        `INSERT INTO business_audit_events (organization_id,actor_id,action,object_type,object_id,after_state)
+         VALUES ($1,$2,'ASSESSMENT_REQUESTED','TASK_DRAFT',$3,$4::jsonb)`,
+        [input.organizationId,input.actorId,draft.id,JSON.stringify({ assessmentRequestId,
+          providerOsRelationshipId: relationship.id, source: 'PROVIDER_OS',
+          proposedWindowStart: windowStart.toISOString(), proposedWindowEnd: windowEnd.toISOString() })],
+      );
+      return { success: true as const, data: { assessmentRequestId, taskDraftId: draft.id, status: 'PENDING_ADMIN' as const } };
+    });
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && (error as { code?: unknown }).code === 'FORBIDDEN') throw error;
+    log.error({ action: 'providerOs.requestAssessment', draftId: input.draftId,
+      organizationId: input.organizationId, actorId: input.actorId,
+      ...assessmentFailureDetails(error) }, 'Provider OS assessment transaction failed');
+    return { success: false as const, error: { code: 'ASSESSMENT_REQUEST_FAILED', message: 'Unable to submit the assessment request.' } };
   }
 }

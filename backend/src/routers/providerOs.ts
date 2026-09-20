@@ -3,6 +3,7 @@ import { createProviderOsPurchase, getProviderOsPurchaseState, refreshProviderOs
 import { listProviderOsQuotes, getProviderOsQuote } from '../services/ProviderOsQuoteHistory.js';
 import { db } from '../db.js';
 import { getProviderOsAccessStatus } from '../services/ProviderOsAccess.js';
+import { requestProviderOsAssessment } from '../services/BusinessAssessmentService.js';
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { protectedProcedure, publicProcedure, operationsAdminProcedure, router } from '../trpc.js';
@@ -136,6 +137,15 @@ export const providerOsRouter = router({
         arrivalWindowEnd: input.arrivalWindowEnd,
       }),
     )),
+
+  requestAssessment: protectedProcedure
+    .input(z.object({
+      organizationId: z.string().uuid(), draftId: z.string().uuid(),
+      businessMessage: z.string().trim().min(1).max(4000),
+      proposedWindowStart: z.string().datetime(),
+      proposedWindowEnd: z.string().datetime(),
+    }).strict())
+    .mutation(async ({ ctx, input }) => unwrap(await requestProviderOsAssessment({ ...input, actorId: ctx.user.id }))),
 
   listQuotes: protectedProcedure
     .input(z.object({ organizationId: z.string().uuid(),
