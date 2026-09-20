@@ -403,6 +403,39 @@ describe('task.getById', () => {
     // reset handled by global beforeEach
   });
 
+  it('allows an exact service-assignment business member to open canonical task detail', async () => {
+    const organizationId = '22222222-2222-4222-8222-222222222222';
+    const task = makeTaskRow({ state: 'ACCEPTED', poster_id: OTHER_USER_ID,
+      worker_id: OTHER_USER_ID, provider_organization_id: organizationId });
+    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: organizationId }] } as any);
+    const result = await makeCaller().getById({ taskId: TASK_ID });
+    expect(result.viewer_role).toBe('business');
+    const [sql, params] = mockDb.query.mock.calls[0];
+    expect(sql).toContain('assignment.id = task.provider_assignment_id');
+    expect(params).toEqual([organizationId, USER_ID, TASK_ID]);
+  });
+
+  it('allows an exact quote-fulfiller business member to open canonical task detail', async () => {
+    const organizationId = '22222222-2222-4222-8222-222222222222';
+    const task = makeTaskRow({ state: 'ACCEPTED', poster_id: OTHER_USER_ID,
+      worker_id: null, business_fulfiller_organization_id: organizationId });
+    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
+    mockDb.query.mockResolvedValueOnce({ rows: [{ id: organizationId }] } as any);
+    const result = await makeCaller().getById({ taskId: TASK_ID });
+    expect(result.viewer_role).toBe('business');
+    expect(mockDb.query.mock.calls[0][0]).toContain('task.business_fulfiller_organization_id = organization.id');
+  });
+
+  it('does not expose service-assignment task detail to another organization member', async () => {
+    const organizationId = '22222222-2222-4222-8222-222222222222';
+    const task = makeTaskRow({ state: 'ACCEPTED', poster_id: OTHER_USER_ID,
+      worker_id: OTHER_USER_ID, provider_organization_id: organizationId });
+    mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });
+    mockDb.query.mockResolvedValueOnce({ rows: [] } as any);
+    await expect(makeCaller().getById({ taskId: TASK_ID })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
   it('returns task data when found', async () => {
     const task = makeTaskRow();
     mockTaskService.getById.mockResolvedValueOnce({ success: true, data: task as any });

@@ -75,8 +75,9 @@ interface ServiceBusinessAssignmentRow {
   completed_at: string | Date | null;
 }
 
-function assignmentPayoutState(
-  row: ServiceBusinessAssignmentRow,
+export function assignmentPayoutState(
+  row: { escrow_state: string | null; stripe_transfer_id: string | null;
+    provider_transfer_status: string | null; task_state: string },
 ): ServiceBusinessAssignment['payoutState'] {
   if (
     row.escrow_state === 'RELEASED'

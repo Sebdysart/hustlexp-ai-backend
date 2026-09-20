@@ -5,6 +5,7 @@ import { db } from '../db.js';
 import { TaskService } from '../services/TaskService.js';
 import { getTaskFactsForDisplay } from '../services/taskIntake/getTaskFactsForDisplay.js';
 import { controlledTestQuotePaymentEnabled } from '../services/ControlledTestQuotePaymentService.js';
+import { businessTaskOwnershipSql } from '../services/BusinessTaskOwnership.js';
 import { hustlerProcedure, posterProcedure, protectedProcedure, Schemas } from '../trpc.js';
 
 type TaskViewerRole =
@@ -28,20 +29,24 @@ getById: protectedProcedure
         },
         { tags: [CACHE_TAGS.TASK(input.taskId)], ttl: CACHE_TTL.taskDetails }
       );
+      const businessOrganizationId = task.business_fulfiller_organization_id ?? task.provider_organization_id;
       const businessMembership =
-        task.business_fulfiller_organization_id
+        businessOrganizationId
           ? await db.query<{ id: string }>(
               `
-              SELECT id
-              FROM business_memberships
-              WHERE organization_id = $1
-                AND user_id = $2
-                AND status = 'ACTIVE'
+              SELECT organization.id
+              FROM tasks task
+              JOIN business_organizations organization ON organization.id=$1
+              WHERE task.id=$3
+                AND organization.status='ACTIVE'
+                AND business_membership_has_action(organization.id,$2,'READ_WORKSPACE')
+                AND ${businessTaskOwnershipSql('task', 'organization.id')}
               LIMIT 1
               `,
               [
-                task.business_fulfiller_organization_id,
+                businessOrganizationId,
                 ctx.user.id,
+                input.taskId,
               ],
             )
           : { rows: [] as Array<{ id: string }> };

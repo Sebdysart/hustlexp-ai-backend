@@ -73,6 +73,7 @@ import { assignmentRouter } from './assignment.js';
 import { automationRouter } from './automation.js';
 import { businessWorkspaceRouter } from './businessWorkspace.js';
 import { serviceBusinessRouter } from './serviceBusiness.js';
+import { businessTaskRouter } from './businessTask.js';
 
 // ── ADMIN DOMAIN ────────────────────────────────────────────────────────
 // Requires admin_roles table entry. Platform operations.
@@ -167,6 +168,7 @@ export const appRouter = router({
   automation: automationRouter,
   businessWorkspace: businessWorkspaceRouter,
   serviceBusiness: serviceBusinessRouter,
+  businessTask: businessTaskRouter,
 
   // ── Admin Domain ───────────────────────────────────────────────────────
   admin: adminRouter,
