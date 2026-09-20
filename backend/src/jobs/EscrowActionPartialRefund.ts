@@ -10,6 +10,7 @@ import { workerLogger } from '../logger.js';
 import { RevenueService } from '../services/RevenueService.js';
 import { SelfInsurancePoolService } from '../services/SelfInsurancePoolService.js';
 import { StripeService } from '../services/StripeService.js';
+import { confirmEscrowRefund } from '../services/EscrowRefundProvider.js';
 import { loadCurrentTaskPayoutDestination } from '../services/TaskPayoutDestinationService.js';
 import { TaskService } from '../services/TaskService.js';
 import { lockEscrowForStripeRestriction, stripeRestrictionCode } from './EscrowActionRestriction.js';
@@ -68,10 +69,10 @@ async function loadTask(taskId: string): Promise<TaskPayoutRow> {
   return result.rows[0];
 }
 
-function checkpointRefundId(metadata: string): string | null {
+function checkpointRefundId(metadata: unknown): string | null {
   try {
-    const parsed = JSON.parse(metadata) as Record<string, unknown>;
-    return typeof parsed.stripe_refund_id === 'string' ? parsed.stripe_refund_id : null;
+    const parsed = (typeof metadata === 'string' ? JSON.parse(metadata) : metadata) as Record<string, unknown> | null;
+    return typeof parsed?.stripe_refund_id === 'string' ? parsed.stripe_refund_id : null;
   } catch {
     return null;
   }
@@ -79,7 +80,7 @@ function checkpointRefundId(metadata: string): string | null {
 
 async function pendingRefundId(action: EscrowActionInput, money: SplitMoney): Promise<string | null> {
   if (money.refundAmount === 0 || action.escrow.stripe_refund_id) return null;
-  const result = await db.query<{ metadata: string }>(
+  const result = await db.query<{ metadata: unknown }>(
     `SELECT metadata FROM escrow_events
       WHERE escrow_id = $1 AND actor_type = 'system'
         AND metadata::jsonb->>'event_type' = 'partial_refund_pending'
@@ -100,26 +101,18 @@ async function pendingRefundId(action: EscrowActionInput, money: SplitMoney): Pr
 async function resolveRefund(action: EscrowActionInput, money: SplitMoney): Promise<string | null> {
   const checkpointId = await pendingRefundId(action, money);
   const existing = action.escrow.stripe_refund_id ?? checkpointId;
-  if (money.refundAmount === 0 || existing) return existing;
+  if (money.refundAmount === 0) return existing;
   if (!action.escrow.stripe_payment_intent_id) {
     throw new Error(`Escrow ${action.escrow.id} has no stripe_payment_intent_id for refund`);
   }
-  const result = await StripeService.createRefund({
+  return confirmEscrowRefund({
     paymentIntentId: action.escrow.stripe_payment_intent_id,
     escrowId: action.escrow.id,
     amount: money.refundAmount,
-    reason: 'requested_by_customer',
     idempotencyKeySuffix: 'wkr_partial_refund',
+    checkpointType: 'partial_refund_pending',
+    existingRefundId: existing,
   });
-  if (!result.success) throw new Error(`Failed to create refund: ${result.error.message}`);
-  const refundId = result.data.refundId;
-  await db.query(
-    `INSERT INTO escrow_events (escrow_id, from_state, to_state, actor_id, actor_type, metadata)
-     VALUES ($1, 'LOCKED_DISPUTE', 'LOCKED_DISPUTE', NULL, 'system', $2)`,
-    [action.escrow.id, JSON.stringify({ event_type: 'partial_refund_pending', stripe_refund_id: refundId })],
-  );
-  log.info({ escrowId: action.escrow.id, refundId }, 'Persisted partial_refund_pending checkpoint');
-  return refundId;
 }
 
 async function freshTransferId(escrowId: string): Promise<string | null> {

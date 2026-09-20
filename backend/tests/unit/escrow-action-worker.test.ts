@@ -15,6 +15,7 @@
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 
 const payoutDestination = vi.hoisted(() => vi.fn());
+const confirmRefund = vi.hoisted(() => vi.fn());
 
 // ---------------------------------------------------------------------------
 // Module mocks — must be declared before any imports that trigger the module
@@ -37,6 +38,7 @@ vi.mock('../../src/db', () => {
 vi.mock('../../src/services/StripeService.js', () => ({
   StripeService: { createTransfer: vi.fn(), createRefund: vi.fn() },
 }));
+vi.mock('../../src/services/EscrowRefundProvider.js', () => ({ confirmEscrowRefund: confirmRefund }));
 
 vi.mock('../../src/services/TaskPayoutDestinationService.js', () => ({
   loadCurrentTaskPayoutDestination: payoutDestination,
@@ -525,6 +527,11 @@ describe('escrow-action-worker — FOR UPDATE runs inside db.transaction()', () 
 describe('escrow-action-worker — refund_requested handler', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    confirmRefund.mockImplementation(async (params) => {
+      const result = await StripeService.createRefund(params);
+      if (!result.success) throw new Error(result.error.message);
+      return result.data.refundId;
+    });
     vi.mocked(StripeService.createRefund).mockResolvedValue({
       success: true,
       data: { refundId: 'refund_test_abc' },

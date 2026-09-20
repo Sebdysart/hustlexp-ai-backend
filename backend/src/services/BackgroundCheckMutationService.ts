@@ -1,4 +1,3 @@
-import { createHash, randomUUID } from 'node:crypto';
 import { TRPCError } from '@trpc/server';
 import { db } from '../db.js';
 import { logger } from '../logger.js';
@@ -52,33 +51,6 @@ async function assertNoActiveCheck(userId: string): Promise<void> {
   throw new TRPCError({ code: 'CONFLICT', message });
 }
 
-async function recordInitiationEvent(
-  initiation: BackgroundCheckInitiation,
-  row: BackgroundCheckRow,
-  externalCheckId: string,
-): Promise<void> {
-  const requestHash = createHash('sha256').update(JSON.stringify({
-    userId: initiation.userId,
-    provider: initiation.provider,
-    consentId: initiation.consentId,
-    externalCheckId,
-  })).digest('hex');
-  await db.query(
-    `INSERT INTO worker_screening_events (
-       worker_id, background_check_id, consent_id, event_type, actor_id,
-       request_hash, idempotency_key, public_message
-     ) VALUES ($1,$2,$3,'CHECK_INITIATED',$1,$4,$5,$6)`,
-    [
-      initiation.userId,
-      row.id,
-      initiation.consentId,
-      requestHash,
-      `check-initiated:${externalCheckId}`,
-      'The named screening provider received the consent-bound screening request.',
-    ],
-  );
-}
-
 export async function initiateBackgroundCheck(
   initiation: BackgroundCheckInitiation,
 ): Promise<BackgroundCheck> {
@@ -90,37 +62,12 @@ export async function initiateBackgroundCheck(
   }
   await assertCurrentConsent(initiation);
   await assertNoActiveCheck(initiation.userId);
-  const externalCheckId = `bc_${randomUUID()}`;
-  const expiresAt = new Date();
-  expiresAt.setFullYear(expiresAt.getFullYear() + 1);
-  const result = await db.query<BackgroundCheckRow>(
-    `INSERT INTO background_checks (
-      user_id, provider, check_id, status,
-      initiated_at, expires_at, details, screening_consent_id
-    )
-    VALUES ($1, $2, $3, 'PENDING', NOW(), $4, $5, $6)
-    RETURNING *`,
-    [
-      initiation.userId,
-      initiation.provider,
-      externalCheckId,
-      expiresAt.toISOString(),
-      JSON.stringify({
-        providerPayloadPrepared: Boolean(
-          initiation.ssnLast4 || initiation.dateOfBirth || initiation.fullName,
-        ),
-        sensitiveIdentityDataStored: false,
-      }),
-      initiation.consentId,
-    ],
-  );
-  const row = result.rows[0];
-  await recordInitiationEvent(initiation, row, externalCheckId);
-  log.info(
-    { userId: initiation.userId, provider: initiation.provider, checkId: row.id, externalCheckId },
-    'Background check initiated',
-  );
-  return backgroundCheckFromRow(row);
+  // No external screening adapter sends this request. A locally generated ID
+  // cannot be presented as evidence that Checkr/Sterling/GoodHire received it.
+  throw new TRPCError({
+    code: 'PRECONDITION_FAILED',
+    message: 'This screening provider is not connected. No background check was ordered.',
+  });
 }
 
 export async function updateBackgroundCheckStatus(

@@ -7,7 +7,6 @@ import type { ServiceResult } from '../types.js';
 const DESTINATION_RE = /^pd_hxos_test_[a-f0-9]{32}$/;
 const TRANSFER_RE = /^tr_hxos_test_[a-f0-9]{32}$/;
 
-const BUSINESS_DESTINATION_RE = /^pd_hxos_business_test_[a-f0-9]{32}$/;
 const BUSINESS_TRANSFER_RE = /^tr_hxos_business_test_[a-f0-9]{32}$/;
 
 type Environment = NodeJS.ProcessEnv | Record<string, string | undefined>;
@@ -352,7 +351,7 @@ export const LocalCertificationPayoutProvider = {
   activateBusinessDestination: async (
     organizationId: string,
     payoutRecipientUserId: string,
-    actorId: string,
+    _actorId: string,
   ): Promise<ServiceResult<{
     destinationId: string;
     provider: 'LOCAL_CERTIFICATION_TEST';
@@ -731,7 +730,10 @@ export const LocalCertificationPayoutProvider = {
           row.platform_fee_cents,
         );
 
-        if (breakdown.netPayoutCents <= 0) {
+        // The organization payout is the frozen quote payout. Worker
+        // self-insurance is not deducted from business fulfillment.
+        if (breakdown.netBeforeInsuranceCents !== row.hustler_payout_cents
+          || breakdown.netBeforeInsuranceCents <= 0) {
           return failure(
             'LOCAL_TEST_PAYOUT_PRECONDITION_FAILED',
             'Business local certification payout amount is invalid.',
@@ -758,7 +760,7 @@ export const LocalCertificationPayoutProvider = {
             params.organizationId,
             params.payoutRecipientUserId,
             row.destination_id,
-            breakdown.netPayoutCents,
+            breakdown.netBeforeInsuranceCents,
             params.idempotencyKey,
             hash,
           ],

@@ -167,26 +167,18 @@ export const adminRouter = router({
             sourceIdempotencyKey: `admin-ban:${randomUUID()}`,
           });
         }
+        await query(
+          `INSERT INTO admin_actions (admin_id, action_type, target_id, reason, metadata)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [ctx.user.id, input.banned ? 'user_ban' : 'user_unban', input.userId,
+            input.reason ?? null, JSON.stringify({ banned: input.banned })],
+        );
         return updated;
       });
 
       if (result.rows.length === 0) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'User not found' });
       }
-
-      await db.query(
-        `INSERT INTO admin_actions (admin_id, action_type, target_id, reason, metadata)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [
-          ctx.user.id,
-          input.banned ? 'user_ban' : 'user_unban',
-          input.userId,
-          input.reason ?? null,
-          JSON.stringify({ banned: input.banned }),
-        ]
-      ).catch(err => {
-        log.warn({ err }, '[admin.setUserBan] Failed to write audit log — ban proceeding without audit record');
-      });
 
       // Look up firebase_uid so the Redis revocation marker uses the same key
       // namespace that trpc.ts and auth/middleware.ts read (auth:revoked:<firebaseUid>).
@@ -353,21 +345,25 @@ export const adminRouter = router({
     }))
     .mutation(async ({ ctx, input }) => {
       const newStatus = input.suspended ? 'SUSPENDED' : 'ACTIVE';
-      const result = await db.query<{ id: string; firebase_uid: string | null }>(
-        `UPDATE users SET account_status = $1, updated_at = NOW() WHERE id = $2 AND is_banned = false RETURNING id, firebase_uid`,
-        [newStatus, input.userId]
-      );
+      const result = await db.transaction(async (query) => {
+        const updated = await query<{ id: string; firebase_uid: string | null }>(
+          `UPDATE users SET account_status = $1, updated_at = NOW()
+           WHERE id = $2 AND is_banned = false RETURNING id, firebase_uid`,
+          [newStatus, input.userId],
+        );
+        if (updated.rows.length > 0) {
+          await query(
+            `INSERT INTO admin_actions (admin_id, action_type, target_id, reason, metadata)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [ctx.user.id, input.suspended ? 'user_suspend' : 'user_unsuspend',
+              input.userId, input.reason ?? null, JSON.stringify({ suspended: input.suspended })],
+          );
+        }
+        return updated;
+      });
       if (result.rows.length === 0) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'User not found or user is banned (use setUserBan instead)' });
       }
-      // Audit log
-      await db.query(
-        `INSERT INTO admin_actions (admin_id, action_type, target_id, reason, metadata)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [ctx.user.id, input.suspended ? 'user_suspend' : 'user_unsuspend',
-         input.userId, input.reason ?? null, JSON.stringify({ suspended: input.suspended })]
-      ).catch(err => log.warn({ err }, 'Failed to write setSuspension audit log'));
-
       if (input.suspended) {
         // Full session revocation — pass firebaseUid to avoid a redundant DB lookup
         // (same pattern as setUserBan which already does this correctly).

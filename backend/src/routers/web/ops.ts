@@ -80,9 +80,9 @@ async function recordOpsAudit(input: {
   targetType: string;
   targetId?: string | null;
   meta?: Record<string, unknown>;
-}): Promise<void> {
+}, query = db.query.bind(db), required = false): Promise<void> {
   try {
-    await db.query(
+    await query(
       `INSERT INTO ops_action_audit (actor_user_id, actor_label, action, target_type, target_id, meta)
        VALUES ($1, 'ops', $2, $3, $4, $5::jsonb)`,
       [
@@ -94,7 +94,7 @@ async function recordOpsAudit(input: {
       ],
     );
   } catch (error) {
-    // Table may not exist until migration applies — never fail the operator action.
+    if (required) throw error;
     log.warn({ err: error, action: input.action }, 'ops_action_audit write skipped');
   }
 }
@@ -974,21 +974,14 @@ export const webOpsRouter = router({
           if (business.verification_status === 'VERIFIED') {
             await activatePendingBusinessQuotesInTransaction(query, business.id);
           }
+          await recordOpsAudit({
+            actorUserId: ctx.user.id,
+            action: 'business_verification_status_changed',
+            targetType: 'business_organization',
+            targetId: input.organization_id,
+            meta: { verification_status: input.verification_status },
+          }, query, true);
           return business;
-        });
-
-        await recordOpsAudit({
-          actorUserId: ctx.user.id,
-          action:
-            'business_verification_status_changed',
-          targetType:
-            'business_organization',
-          targetId:
-            input.organization_id,
-          meta: {
-            verification_status:
-              input.verification_status,
-          },
         });
 
         return {
@@ -1009,23 +1002,23 @@ export const webOpsRouter = router({
         }).strict(),
       )
       .mutation(async ({ ctx, input }) => {
-        const result = await db.query<{ id: string; status: string }>(
-          `UPDATE business_organizations
-           SET status = $2, updated_at = NOW()
-           WHERE id = $1
-           RETURNING id, status`,
-          [input.organization_id, input.status],
-        );
-        const business = result.rows[0];
-        if (!business) {
-          throw new TRPCError({ code: 'NOT_FOUND', message: 'Business not found' });
-        }
-        await recordOpsAudit({
-          actorUserId: ctx.user.id,
-          action: 'business_status_changed',
-          targetType: 'business_organization',
-          targetId: input.organization_id,
-          meta: { status: input.status },
+        const business = await db.transaction(async (query) => {
+          const result = await query<{ id: string; status: string }>(
+            `UPDATE business_organizations
+             SET status = $2, updated_at = NOW()
+             WHERE id = $1 RETURNING id, status`,
+            [input.organization_id, input.status],
+          );
+          const business = result.rows[0];
+          if (!business) throw new TRPCError({ code: 'NOT_FOUND', message: 'Business not found' });
+          await recordOpsAudit({
+            actorUserId: ctx.user.id,
+            action: 'business_status_changed',
+            targetType: 'business_organization',
+            targetId: input.organization_id,
+            meta: { status: input.status },
+          }, query, true);
+          return business;
         });
         return { ok: true, organization_id: business.id, status: business.status };
       }),

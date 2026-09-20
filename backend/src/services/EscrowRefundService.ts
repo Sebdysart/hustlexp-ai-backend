@@ -3,6 +3,7 @@ import { escrowLogger } from '../logger.js';
 import type { Escrow, ServiceResult } from '../types.js';
 import { XPService } from './XPService.js';
 import { StripeService } from './StripeService.js';
+import { confirmEscrowRefund } from './EscrowRefundProvider.js';
 import type { RefundContext } from './EscrowRefundTypes.js';
 import { prepareRefund, terminalizeRefund } from './EscrowRefundTransaction.js';
 import { logEscrowEvent } from './EscrowServiceShared.js';
@@ -47,16 +48,15 @@ async function issueStripeRefund(
       refundCode: 'MISSING_STRIPE_PI',
     });
   }
-  if (!context.stripePaymentIntentId || context.stripeRefundId) return context.stripeRefundId;
-  const result = await StripeService.createRefund({
-    paymentIntentId: context.stripePaymentIntentId,
+  if (!context.stripePaymentIntentId) return context.stripeRefundId;
+  return confirmEscrowRefund({
     escrowId: context.escrowId,
     amount: context.amount,
-    reason: 'requested_by_customer',
+    paymentIntentId: context.stripePaymentIntentId,
     idempotencyKeySuffix: adminOverride ? 'admin_override' : 'svc_refund',
+    checkpointType: adminOverride ? 'admin_full_refund_pending' : 'full_refund_pending',
+    existingRefundId: context.stripeRefundId,
   });
-  if (!result.success) throw new Error(`Stripe refund failed — ${result.error.message}`);
-  return result.data?.refundId ?? null;
 }
 
 async function runRefundEffects(context: RefundContext, params: RefundEscrowParams): Promise<void> {

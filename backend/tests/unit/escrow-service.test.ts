@@ -7,6 +7,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const payoutDestination = vi.hoisted(() => vi.fn());
+const confirmRefund = vi.hoisted(() => vi.fn());
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -57,11 +58,16 @@ vi.mock('../../src/services/RevenueService', () => ({
 vi.mock('../../src/services/StripeService', () => ({
   StripeService: {
     createRefund: vi.fn().mockResolvedValue({ success: true, data: { refundId: 're_test', amount: 5000, status: 'succeeded' } }),
+    getEscrowRefund: vi.fn().mockResolvedValue({ success: true, data: {
+      refundId: 're_test', amount: 2000, status: 'succeeded', paymentIntentId: 'pi_test', escrowId: 'esc-1',
+    } }),
     createTransfer: vi.fn().mockResolvedValue({ success: true, data: { transferId: 'tr_test', amount: 3000 } }),
     cancelRefund: vi.fn().mockResolvedValue({ success: true, data: { refundId: 're_test', status: 'cancelled' } }),
     createTransferReversal: vi.fn().mockResolvedValue({ success: true, data: { reversalId: 'pyr_test' } }),
   },
 }));
+
+vi.mock('../../src/services/EscrowRefundProvider.js', () => ({ confirmEscrowRefund: confirmRefund }));
 
 vi.mock('../../src/services/TaskPayoutDestinationService.js', () => ({
   loadCurrentTaskPayoutDestination: payoutDestination,
@@ -73,6 +79,7 @@ import { EarnedVerificationUnlockService } from '../../src/services/EarnedVerifi
 import { XPService } from '../../src/services/XPService';
 import { SelfInsurancePoolService } from '../../src/services/SelfInsurancePoolService.js';
 import { RevenueService } from '../../src/services/RevenueService';
+import { StripeService as MockStripeService } from '../../src/services/StripeService';
 
 const mockDb = vi.mocked(db);
 const mockIsInvariantViolation = vi.mocked(isInvariantViolation);
@@ -101,6 +108,17 @@ beforeEach(() => {
   // responses queued. Reset them so one escrow scenario cannot contaminate
   // the next scenario while preserving the transaction mock implementation.
   mockDb.query.mockReset();
+  // The provider response must match the requested amount for both full and split refunds.
+  vi.mocked(MockStripeService.createRefund).mockImplementation(async (params) => ({
+    success: true,
+    data: { refundId: 're_test', amount: params.amount ?? 5000, status: 'succeeded' },
+  }));
+  confirmRefund.mockImplementation(async (params) => {
+    if (params.existingRefundId) return params.existingRefundId;
+    const result = await MockStripeService.createRefund(params);
+    if (!result.success) throw new Error(result.error.message);
+    return result.data.refundId;
+  });
   mockIsInvariantViolation.mockReturnValue(false);
   mockIsUniqueViolation.mockReturnValue(false);
   payoutDestination.mockImplementation(async (query,binding) => {

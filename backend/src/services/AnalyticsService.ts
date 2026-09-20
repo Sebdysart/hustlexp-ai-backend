@@ -117,8 +117,21 @@ export const AnalyticsService = {
       // Privacy check: Verify user has granted analytics consent (GDPR compliance)
       if (params.userId) {
         const consentResult = await GDPRService.getConsentStatus(params.userId, 'analytics');
+
+        // An unavailable consent store cannot establish that this identified
+        // event is permitted. Keep the existing no-record opt-out policy, but
+        // never turn a failed lookup into permission to track.
+        if (!consentResult.success) {
+          return {
+            success: false,
+            error: {
+              code: 'CONSENT_UNAVAILABLE',
+              message: 'Analytics consent could not be verified',
+            },
+          };
+        }
         
-        if (consentResult.success && consentResult.data.length > 0) {
+        if (consentResult.data.length > 0) {
           const analyticsConsent = consentResult.data.find(c => c.consent_type === 'analytics');
           
           // If consent exists and is not granted, skip tracking (respect user privacy)

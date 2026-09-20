@@ -64,21 +64,19 @@ describe('BackgroundCheckService', () => {
   // initiateBackgroundCheck
   // --------------------------------------------------------------------------
   describe('initiateBackgroundCheck', () => {
-    it('creates a new background check', async () => {
+    it('does not fabricate an external background check when no provider adapter is connected', async () => {
       mockDb.query
         .mockResolvedValueOnce({ rows: [{ id: 'consent-1', provider: 'checkr', disclosure_version: 'hx-worker-screening-rights-v1' }], rowCount: 1 } as never)
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // No existing
-        .mockResolvedValueOnce({ rows: [makeRow()], rowCount: 1 } as never) // Insert
-        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // Event
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
-      const result = await initiateBackgroundCheck({
+      await expect(initiateBackgroundCheck({
         userId: 'user-1',
         provider: 'checkr',
         consentId: 'consent-1',
-      });
+      })).rejects.toThrow('not connected');
 
-      expect(result.id).toBe('bc-1');
-      expect(result.status).toBe('PENDING');
+      expect(mockDb.query).toHaveBeenCalledTimes(2);
+      expect(mockDb.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO background_checks'))).toBe(false);
     });
 
     it('throws CONFLICT when check in progress', async () => {

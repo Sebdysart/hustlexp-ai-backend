@@ -129,6 +129,11 @@ interface CreateRefundResult {
   status: string;
 }
 
+interface EscrowRefundResult extends CreateRefundResult {
+  paymentIntentId: string | null;
+  escrowId: string | null;
+}
+
 interface WebhookEvent {
   type: string;
   data: {
@@ -546,6 +551,30 @@ export const StripeService = {
           code: 'STRIPE_ERROR',
           message: error instanceof Error ? error.message : 'Unknown Stripe error',
         },
+      };
+    }
+  },
+
+  getEscrowRefund: async (refundId: string): Promise<ServiceResult<EscrowRefundResult>> => {
+    if (!stripe) {
+      return { success: false, error: { code: 'STRIPE_NOT_CONFIGURED', message: 'Stripe is not configured' } };
+    }
+    try {
+      const refund = await stripeBreaker.execute(() => stripe!.refunds.retrieve(refundId));
+      return {
+        success: true,
+        data: {
+          refundId: refund.id,
+          amount: refund.amount,
+          status: refund.status ?? '',
+          paymentIntentId: typeof refund.payment_intent === 'string' ? refund.payment_intent : null,
+          escrowId: refund.metadata?.escrow_id ?? null,
+        },
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: { code: 'STRIPE_ERROR', message: error instanceof Error ? error.message : 'Unknown Stripe error' },
       };
     }
   },

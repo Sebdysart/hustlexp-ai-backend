@@ -1,4 +1,4 @@
-import { db } from '../db.js';
+import { db, type QueryFn } from '../db.js';
 import { writeToOutbox } from '../lib/outbox-helpers.js';
 import type { ServiceResult, Task, TaskProgressState } from '../types.js';
 import { ErrorCodes, VALID_PROGRESS_TRANSITIONS } from '../types.js';
@@ -122,7 +122,7 @@ async function progressTransaction(query: Query, params: AdvanceProgressParams):
   return updateProgress(query, params, from);
 }
 
-async function emitProgress(params: AdvanceProgressParams, result: ProgressResult): Promise<void> {
+async function emitProgress(params: AdvanceProgressParams, result: ProgressResult, query: QueryFn): Promise<void> {
   // A same-state retry returns the canonical task but is not a material state
   // change. Do not manufacture a visible timeline/outbox event for transport
   // retries or repeated worker actions.
@@ -141,7 +141,7 @@ async function emitProgress(params: AdvanceProgressParams, result: ProgressResul
       occurredAt: result.progressUpdatedAt?.toISOString() ?? new Date().toISOString(),
     },
     queueName: 'user_notifications',
-  });
+  }, query);
 }
 
 function progressError(error: unknown): ServiceResult<Task> {
@@ -159,10 +159,18 @@ function progressError(error: unknown): ServiceResult<Task> {
   return { success: false, error: { code: 'INTERNAL_ERROR', message } };
 }
 
-async function advanceProgress(params: AdvanceProgressParams): Promise<ServiceResult<Task>> {
+async function advanceProgress(params: AdvanceProgressParams, transactionQuery?: QueryFn): Promise<ServiceResult<Task>> {
   try {
-    const result = await db.transaction((query) => progressTransaction(query, params));
-    await emitProgress(params, result);
+    const result = transactionQuery
+      ? await progressTransaction(transactionQuery, params).then(async (progress) => {
+          await emitProgress(params, progress, transactionQuery);
+          return progress;
+        })
+      : await db.transaction(async (query) => {
+          const progress = await progressTransaction(query, params);
+          await emitProgress(params, progress, query);
+          return progress;
+        });
     return { success: true, data: result.task };
   } catch (error) {
     return progressError(error);

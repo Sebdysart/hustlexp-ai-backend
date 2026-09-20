@@ -281,6 +281,21 @@ describe('AnalyticsService.trackEvent', () => {
     expect(mockDb.query).not.toHaveBeenCalled();
   });
 
+  it('does not track an identified event when the consent lookup fails', async () => {
+    mockGDPR.getConsentStatus.mockResolvedValueOnce({
+      success: false,
+      error: { code: 'DB_ERROR', message: 'Consent store unavailable' },
+    });
+
+    const result = await AnalyticsService.trackEvent(makeTrackEventParams());
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.code).toBe('CONSENT_UNAVAILABLE');
+    }
+    expect(mockDb.query).not.toHaveBeenCalled();
+  });
+
   it('tracks event when user has granted analytics consent', async () => {
     mockGDPR.getConsentStatus.mockResolvedValueOnce({
       success: true,

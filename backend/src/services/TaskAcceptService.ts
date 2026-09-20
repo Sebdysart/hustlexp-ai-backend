@@ -1,4 +1,5 @@
 import { notifyTaskAccepted } from '../lib/task-lifecycle-notifications.js';
+import { TRPCError } from '@trpc/server';
 import { db } from '../db.js';
 import { taskLogger } from '../logger.js';
 import type { ServiceError, ServiceResult, Task } from '../types.js';
@@ -8,6 +9,7 @@ import { PlanService } from './PlanService.js';
 import { TaskProgressService } from './TaskProgressService.js';
 import { TaskReadService } from './TaskReadService.js';
 import { assertTaskMutationEligibility } from './TaskEligibilityPolicy.js';
+import { reserveIndividualTask } from './IndividualTaskReservation.js';
 import type { AcceptTaskParams, TaskRiskLevel } from './TaskServiceShared.js';
 
 const log = taskLogger.child({ service: 'TaskAcceptService' });
@@ -201,8 +203,11 @@ async function assignTask(query: Query, task: TaskCandidate, taskId: string, wor
     [taskId, workerId]
   );
   if (!result.rows[0]) return recordRace(task, taskId, workerId);
-  await TaskProgressService.advanceProgress({ taskId, to: 'ACCEPTED', actor: { type: 'system' } });
-  return result.rows[0];
+  const progress = await TaskProgressService.advanceProgress(
+    { taskId, to: 'ACCEPTED', actor: { type: 'system' } }, query,
+  );
+  if (!progress.success) fail(progress.error.code, progress.error.message);
+  return progress.data;
 }
 
 async function acceptTransaction(query: Query, params: AcceptTaskParams): Promise<ServiceResult<Task>> {
@@ -218,6 +223,9 @@ async function acceptTransaction(query: Query, params: AcceptTaskParams): Promis
   await assertFraudRisk(params.taskId, params.workerId);
   await assertBackgroundCheck(task, params.taskId, params.workerId);
   await assertFunded(query, params.taskId);
+  await reserveIndividualTask(query, {
+    taskId: params.taskId, workerId: params.workerId, actorId: params.workerId,
+  });
   const accepted = await assignTask(query, task, params.taskId, params.workerId);
   await notifyTaskAccepted(accepted.poster_id, params.taskId, accepted.title ?? 'your task', query);
   return { success: true, data: accepted };
@@ -228,6 +236,9 @@ async function accept(params: AcceptTaskParams): Promise<ServiceResult<Task>> {
     return await db.transaction((query) => acceptTransaction(query, params));
   } catch (error) {
     if (error instanceof AcceptFailure) return { success: false, error: error.serviceError };
+    if (error instanceof TRPCError) return {
+      success: false, error: { code: 'INVALID_STATE', message: error.message },
+    };
     return { success: false, error: { code: 'DB_ERROR', message: 'A database error occurred. Please try again.' } };
   }
 }

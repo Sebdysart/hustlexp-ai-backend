@@ -112,6 +112,8 @@ export const EscrowReleaseReconciliationService = {
         config.stripe.platformFeePercent,
         escrow.platform_fee_cents,
       );
+      const payoutCents = isManualBusiness
+        ? breakdown.netBeforeInsuranceCents : breakdown.netPayoutCents;
 
       await db.query(
         `INSERT INTO escrow_events (
@@ -213,7 +215,7 @@ export const EscrowReleaseReconciliationService = {
           escrow.worker_id
             ? breakdown.insuranceContributionCents
             : 0,
-        netPayoutCents: breakdown.netPayoutCents,
+        netPayoutCents: payoutCents,
       };
       log.info(data, 'Escrow release witnesses reconciled');
       return { success: true, data };

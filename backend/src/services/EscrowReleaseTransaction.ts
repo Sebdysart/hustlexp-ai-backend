@@ -311,10 +311,15 @@ export async function executeReleaseTransaction(
     clampFeePercent(config.stripe.platformFeePercent),
     escrow.platform_fee_cents,
   );
+  const payoutCents = isManualBusiness
+    ? breakdown.netBeforeInsuranceCents : breakdown.netPayoutCents;
+  if (isManualBusiness && task.hustler_payout_cents !== payoutCents) {
+    return failed(ErrorCodes.INVALID_STATE, 'Business payout does not match the frozen task economics');
+  }
   const provider = payoutProvider(params, escrow);
   const validation = await validateProvider(query, {
     params,escrow,task,workerId,payoutRecipientUserId,
-    netPayoutCents: breakdown.netPayoutCents,
+    netPayoutCents: payoutCents,
     stripeTransferId: provider.stripeTransferId,
   });
   if (validation.error) return validation.error as Extract<ServiceResult<Escrow>, { success: false }>;
@@ -322,7 +327,7 @@ export async function executeReleaseTransaction(
   if (!transitioned.success) return transitioned;
   // Notification intent only: transport stays outside the financial transaction.
   if (provider.transferId && !validation.manualRequired) {
-    await notifyPaymentReleased(payoutRecipientUserId, escrow.task_id, breakdown.netPayoutCents,
+    await notifyPaymentReleased(payoutRecipientUserId, escrow.task_id, payoutCents,
       query, escrow.id, isManualBusiness ? task.business_fulfiller_organization_id ?? undefined : undefined);
   }
   const post: ReleasePost = {
@@ -331,10 +336,10 @@ export async function executeReleaseTransaction(
     payoutRecipientUserId,
     serviceBusinessProvider: task.provider_organization_id != null,
     grossPayoutCents: escrow.amount,
-    netPayoutCents: breakdown.netPayoutCents,
+    netPayoutCents: payoutCents,
     platformFeeCents: breakdown.platformFeeCents,
     platformFeePercent: feeBasisPoints(escrow.amount, breakdown.platformFeeCents) / 100,
-    insuranceContributionCents: breakdown.insuranceContributionCents,
+    insuranceContributionCents: isManualBusiness ? 0 : breakdown.insuranceContributionCents,
     taskId: escrow.task_id,
     paymentMethod: task.payment_method ?? 'escrow',
     escrowStateBefore: escrow.state,

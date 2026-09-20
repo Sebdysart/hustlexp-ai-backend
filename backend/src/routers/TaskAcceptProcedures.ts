@@ -4,6 +4,8 @@ import { invalidateTask } from '../cache/db-cache.js';
 import { db } from '../db.js';
 import { TaskService } from '../services/TaskService.js';
 import { assertTaskMutationEligibility } from '../services/TaskEligibilityPolicy.js';
+import { reserveIndividualTask } from '../services/IndividualTaskReservation.js';
+import { TaskProgressService } from '../services/TaskProgressService.js';
 import { getManifest } from '../services/TaskTemplateRegistry.js';
 import { hustlerProcedure, protectedProcedure, publicProcedure, Schemas } from '../trpc.js';
 
@@ -68,6 +70,17 @@ acceptWithConsent: hustlerProcedure
           requireCurrentOffer: true,
         });
 
+        const funded = await query<{ state: string }>(
+          'SELECT state FROM escrows WHERE task_id=$1 ORDER BY created_at DESC LIMIT 1',
+          [input.taskId],
+        );
+        if (funded.rows[0]?.state !== 'FUNDED') {
+          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Task must be funded before acceptance' });
+        }
+        await reserveIndividualTask(query, {
+          taskId: input.taskId, workerId: ctx.user.id, actorId: ctx.user.id,
+        });
+
         const updateResult = await query(
           `UPDATE tasks
            SET mutual_consent_accepted = TRUE,
@@ -83,6 +96,12 @@ acceptWithConsent: hustlerProcedure
             code: 'PRECONDITION_FAILED',
             message: 'Task is no longer available for claiming',
           });
+        }
+        const progress = await TaskProgressService.advanceProgress(
+          { taskId: input.taskId, to: 'ACCEPTED', actor: { type: 'system' } }, query,
+        );
+        if (!progress.success) {
+          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: progress.error.message });
         }
       });
 

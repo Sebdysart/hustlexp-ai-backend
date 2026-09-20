@@ -577,6 +577,11 @@ async function handleTransferCreated(transfer: Stripe.Transfer, stripeEventId: s
  * intentionally outside.
  */
 async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string): Promise<void> {
+  // Stripe also emits charge.refunded for partial refunds. A signed event is
+  // not evidence that the entire escrow was returned to the customer.
+  if (charge.refunded !== true || charge.amount <= 0 || charge.amount_refunded < charge.amount) {
+    throw new Error(`PARTIAL_REFUND_REQUIRES_RECONCILIATION: charge ${charge.id} is not fully refunded`);
+  }
   // P0: Extract escrow_id from charge metadata (preferred), fallback to payment_intent lookup
   const escrowId = charge.metadata?.escrow_id;
 
@@ -584,13 +589,20 @@ async function handleChargeRefunded(charge: Stripe.Charge, stripeEventId: string
   // inline list. Stripe returns inline refund lists newest-first for <10 refunds,
   // but reduce() is safe regardless of order and handles paginated charges (>10
   // refunds) where data[0] may not be the just-created one.
-  const refundId = charge.refunds?.data?.reduce(
+  const latestRefund = charge.refunds?.data?.reduce(
     (latest: Stripe.Refund | null, r: Stripe.Refund) =>
       !latest || r.created > latest.created ? r : latest,
     null
-  )?.id;
+  );
+  const refundId = latestRefund?.id;
   if (!refundId) {
     throw new Error(`Charge ${charge.id} missing refund ID`);
+  }
+  if (latestRefund.status !== 'succeeded') {
+    const verified = await StripeService.getEscrowRefund(refundId);
+    if (!verified.success || verified.data.status !== 'succeeded') {
+      throw new Error(`REFUND_NOT_SUCCEEDED: charge ${charge.id} refund ${refundId} is not confirmed`);
+    }
   }
 
   // -------------------------------------------------------------------------

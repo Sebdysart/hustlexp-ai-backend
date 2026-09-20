@@ -2,6 +2,7 @@ import { db } from '../db.js';
 import type { QueryFn } from '../db.js';
 import { workerLogger } from '../logger.js';
 import { StripeService } from '../services/StripeService.js';
+import { confirmEscrowRefund } from '../services/EscrowRefundProvider.js';
 import type { EscrowActionInput } from './EscrowActionTypes.js';
 
 const log = workerLogger.child({ worker: 'escrow-action' });
@@ -132,17 +133,16 @@ export async function handleRefundRequest(action: EscrowActionInput): Promise<vo
   const amount = action.refundAmount === undefined
     ? action.escrow.amount
     : Math.min(action.refundAmount, action.escrow.amount);
-  const result = await StripeService.createRefund({
+  const refundId = await confirmEscrowRefund({
     paymentIntentId: action.escrow.stripe_payment_intent_id,
     escrowId: action.escrow.id,
     amount,
-    reason: 'requested_by_customer',
     idempotencyKeySuffix: 'wkr_refund',
+    checkpointType: 'worker_full_refund_pending',
   });
-  if (!result.success) throw new Error(`Failed to create refund: ${result.error.message}`);
   await db.transaction((query) => storeRefund(query, {
     escrowId: action.escrow.id,
-    refundId: result.data.refundId,
+    refundId,
   }));
-  log.info({ escrowId: action.escrow.id, refundId: result.data.refundId }, 'Refund created for escrow');
+  log.info({ escrowId: action.escrow.id, refundId }, 'Refund succeeded for escrow');
 }

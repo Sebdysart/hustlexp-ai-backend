@@ -48,6 +48,20 @@ beforeEach(() => {
 });
 
 describe('EscrowReleaseReconciliationService', () => {
+  it('reports the full frozen business payout without worker insurance', async () => {
+    mocks.query
+      .mockResolvedValueOnce({ rows: [releasedRow({
+        worker_id: null, business_fulfiller_organization_id: 'org-1', orchestration_mode: 'OPS_MANUAL',
+      })], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
+    const result = await EscrowReleaseReconciliationService.reconcile({ escrowId: 'escrow-1' });
+    expect(result).toMatchObject({ success: true, data: {
+      grossAmountCents: 5000, platformFeeCents: 1000,
+      insuranceContributionCents: 0, netPayoutCents: 4000,
+    } });
+    expect(mocks.insurance).not.toHaveBeenCalled();
+    expect(mocks.earnings).not.toHaveBeenCalled();
+  });
   it('reconciles the exact 5000 = 1000 fee + 100 insurance + 3900 worker accounting', async () => {
     mocks.query
       .mockResolvedValueOnce({ rows: [releasedRow()], rowCount: 1 })

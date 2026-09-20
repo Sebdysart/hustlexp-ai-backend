@@ -353,8 +353,9 @@ describe('REPLAY ATTACK 3 — charge.refunded replayed', () => {
             data: {
               object: {
                 id: 'ch_test_001',
+                amount: 5000, amount_refunded: 5000, refunded: true,
                 metadata: { escrow_id: escrowId },
-                refunds: { data: [{ id: refundId }] },
+                refunds: { data: [{ id: refundId, status: 'succeeded' }] },
               },
             },
           },
@@ -542,9 +543,10 @@ describe('WRONG ORDER 6 — charge.refunded before charge.succeeded (escrow not 
             data: {
               object: {
                 id: 'ch_no_escrow',
+                amount: 5000, amount_refunded: 5000, refunded: true,
                 metadata: {}, // no escrow_id in metadata
                 payment_intent: 'pi_no_escrow',
-                refunds: { data: [{ id: refundId }] },
+                refunds: { data: [{ id: refundId, status: 'succeeded' }] },
               },
             },
           },

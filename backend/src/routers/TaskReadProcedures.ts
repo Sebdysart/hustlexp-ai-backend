@@ -4,6 +4,7 @@ import { CACHE_KEYS, CACHE_TAGS, CACHE_TTL, cachedDbQuery } from '../cache/db-ca
 import { db } from '../db.js';
 import { TaskService } from '../services/TaskService.js';
 import { getTaskFactsForDisplay } from '../services/taskIntake/getTaskFactsForDisplay.js';
+import { controlledTestQuotePaymentEnabled } from '../services/ControlledTestQuotePaymentService.js';
 import { hustlerProcedure, posterProcedure, protectedProcedure, Schemas } from '../trpc.js';
 
 type TaskViewerRole =
@@ -226,7 +227,9 @@ getQuoteVersionByQuoteId: posterProcedure
          qv.id,
          qv.quote_id,
          qv.status,
-         q.status AS payment_status
+         q.status AS payment_status,
+         q.environment,
+         q.is_test
        FROM quote_versions qv
        JOIN quotes q ON q.id = qv.quote_id
          AND q.active_version_id = qv.id
@@ -249,7 +252,15 @@ getQuoteVersionByQuoteId: posterProcedure
       });
     }
 
-    return result.rows[0];
+    const version = result.rows[0];
+    return {
+      ...version,
+      paymentCapability: version.environment === 'TEST'
+        && version.is_test === true
+        && controlledTestQuotePaymentEnabled()
+        ? { provider: 'local_test' as const, simulated: true as const }
+        : null,
+    };
   }),
 getState: protectedProcedure
     .input(z.object({ taskId: Schemas.uuid }))

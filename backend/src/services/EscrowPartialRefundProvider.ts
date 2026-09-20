@@ -6,6 +6,7 @@ import {
 } from '../lib/money.js';
 import { escrowLogger } from '../logger.js';
 import { StripeService } from './StripeService.js';
+import { confirmEscrowRefund } from './EscrowRefundProvider.js';
 import type {
   PartialRefundAmounts,
   PartialRefundContext,
@@ -40,25 +41,17 @@ async function issuePosterRefund(
   amounts: PartialRefundAmounts,
 ): Promise<string | null> {
   if (amounts.posterCents === 0) return context.existingRefundId;
-  if (context.existingRefundId) {
-    escrowLogger.info(
-      { escrowId: context.escrowId, stripeRefundId: context.existingRefundId },
-      'partialRefund: stripe_refund_id already set — skipping duplicate Stripe refund',
-    );
-    return context.existingRefundId;
-  }
   if (!context.stripePaymentIntentId) {
     throw new Error('partialRefund: no stripe_payment_intent_id — manual refund required');
   }
-  const result = await StripeService.createRefund({
+  return confirmEscrowRefund({
     paymentIntentId: context.stripePaymentIntentId,
     escrowId: context.escrowId,
     amount: amounts.posterCents,
-    reason: 'requested_by_customer',
     idempotencyKeySuffix: 'svc_partial_refund',
+    checkpointType: 'service_partial_refund_pending',
+    existingRefundId: context.existingRefundId,
   });
-  if (!result.success) throw new Error(`partialRefund: Stripe refund failed — ${result.error.message}`);
-  return result.data.refundId;
 }
 
 async function issueWorkerTransfer(

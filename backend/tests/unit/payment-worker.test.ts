@@ -83,6 +83,7 @@ vi.mock('../../src/jobs/queues.js', () => ({
 vi.mock('../../src/services/StripeService.js', () => ({
   StripeService: {
     createTransferReversal: vi.fn().mockResolvedValue({ success: true, data: { reversalId: 'trr_test' } }),
+    getEscrowRefund: vi.fn(),
     getPaymentIntentProcessingFee: vi.fn().mockResolvedValue({
       success: true,
       data: {
@@ -668,8 +669,9 @@ describe('processPaymentJob', () => {
     function setupSuccessfulChargeRefundedFromReleased(escrowId = 'escrow-refund-1', escrowAmount = 5000) {
       const charge = {
         id: 'ch_abc',
+        amount: escrowAmount, amount_refunded: escrowAmount, refunded: true,
         metadata: { escrow_id: escrowId },
-        refunds: { data: [{ id: 'ref_abc' }] },
+        refunds: { data: [{ id: 'ref_abc', status: 'succeeded' }] },
         payment_intent: 'pi_abc',
       };
 
@@ -720,8 +722,9 @@ describe('processPaymentJob', () => {
     function setupSuccessfulChargeRefundedFromFunded(escrowId = 'escrow-refund-1', escrowAmount = 5000) {
       const charge = {
         id: 'ch_abc',
+        amount: escrowAmount, amount_refunded: escrowAmount, refunded: true,
         metadata: { escrow_id: escrowId },
-        refunds: { data: [{ id: 'ref_abc' }] },
+        refunds: { data: [{ id: 'ref_abc', status: 'succeeded' }] },
         payment_intent: 'pi_abc',
       };
 
@@ -754,6 +757,17 @@ describe('processPaymentJob', () => {
 
       return { charge, escrowId, escrowAmount };
     }
+
+    it('never terminalizes a partial charge.refunded event as a full escrow refund', async () => {
+      setupClaim('charge.refunded', {
+        id: 'ch_partial', amount: 5000, amount_refunded: 2000, refunded: false,
+        metadata: { escrow_id: 'escrow-partial' }, payment_intent: 'pi_partial',
+        refunds: { data: [{ id: 're_partial', amount: 2000, status: 'succeeded' }] },
+      }, 'evt_partial_refund');
+      await expect(processPaymentJob(makeJob('charge.refunded', 'evt_partial_refund')))
+        .rejects.toThrow('PARTIAL_REFUND_REQUIRES_RECONCILIATION');
+      expect(mockQuery.mock.calls.some(([sql]) => String(sql).includes("SET state = 'REFUNDED'"))).toBe(false);
+    });
 
     it('calls RevenueService.logEvent after charge.refunded when escrow was RELEASED (fee collected)', async () => {
       setupSuccessfulChargeRefundedFromReleased();
@@ -797,8 +811,9 @@ describe('processPaymentJob', () => {
     it('does NOT call RevenueService.logEvent when escrow is already terminal (skipped path)', async () => {
       const charge = {
         id: 'ch_skip',
+        amount: 3000, amount_refunded: 3000, refunded: true,
         metadata: { escrow_id: 'escrow-skip' },
-        refunds: { data: [{ id: 'ref_skip' }] },
+        refunds: { data: [{ id: 'ref_skip', status: 'succeeded' }] },
         payment_intent: 'pi_skip',
       };
 
@@ -831,8 +846,9 @@ describe('processPaymentJob', () => {
     it('recovers a canonical platform-fee reversal exactly once after a terminal retry', async () => {
       const charge = {
         id: 'ch_retry_canonical',
+        amount: 10_000, amount_refunded: 10_000, refunded: true,
         metadata: { escrow_id: 'escrow-retry-canonical' },
-        refunds: { data: [{ id: 'ref_retry_canonical' }] },
+        refunds: { data: [{ id: 'ref_retry_canonical', status: 'succeeded' }] },
         payment_intent: 'pi_retry_canonical',
       };
       setupClaim('charge.refunded', charge, 'evt_charge_retry_canonical');
