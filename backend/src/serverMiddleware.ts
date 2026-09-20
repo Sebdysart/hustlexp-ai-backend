@@ -66,7 +66,11 @@ function allowedOrigins(): string[] {
   }
   return config.app.allowedOrigins.length > 0
     ? config.app.allowedOrigins
-    : ['https://hustlexp.app', 'https://www.hustlexp.app'];
+    : [
+        'https://hustlexp.app',
+        'https://www.hustlexp.app',
+        'https://hustlexp-site-copy-production.up.railway.app',
+      ];
 }
 
 export function registerCoreMiddleware(app: HustleApp): void {
