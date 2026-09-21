@@ -15,15 +15,20 @@ Assessment-only visits have separate purpose-bound consent/access controls. A no
 
 ## Local reproduction
 
-Package evidence at the checkpoint source specifies Node 22 and npm 10. These commands exist; their presence does not prove startup or success:
+The inspected .github/workflows/ci.yml selects Node 22. The inspected package.json does not declare an engines or packageManager pin. September 20 baseline CI logs record Node 22.23.2/npm 10.9.8; record the actual versions on any new machine. These observed versions do not certify equivalent environments. Run the following separately in an authorized checkout with a validated disposable test environment, preserving each exit status:
 
 ```bash
+node --version
+npm --version
 npm ci
-npm run typecheck
-npm run lint
-npm test
+npx tsc --noEmit
+npx eslint backend/src/ --ext .ts --max-warnings 0
+npx vitest run --reporter=verbose
+npm audit --omit=dev --audit-level=high
 npm run compile
 ```
+
+These are the inspected CI command forms; package lint alone does not add the zero-warning argument. Capture failures without silently weakening rules or skipping evidence. CI's build/role/legal steps may be skipped after test failure; a separate controlled execution must be recorded as a different run, not promoted into the old run. TEST_* secret names in CI do not establish the targets' identity or containment.
 
 Application/worker startup requires a separately identified disposable environment with correctly scoped database/queue credentials and external effects denied. Only after validating those prerequisites:
 
@@ -42,4 +47,4 @@ Do not run destructive reset against persistent/shared databases. Do not use rea
 
 Existing Team Alignment, controlling-spec, architecture, migration and security records remain applicable within their scope, date and actual adoption state. A stale checkpoint or source-contract snapshot cannot establish current facts. No documentation cleanup waives genuine safety, migration, signing, review or release requirements.
 
-Default-branch auto-deployment was historically reported; current deployment linkage and artifact identity were not independently inspected in this execution. Therefore this change is staged on a review branch and is not permission to merge or deploy. Production new-customer-money creation remains frozen unless separately approved/certified. Retain lawful required refund/recovery capabilities and applicable controls.
+The inspected .github/workflows/deploy.yml is workflow_dispatch-only. That does not establish Railway's separate Git integration, preview settings, current deployments or artifact identity. Default-branch auto-deployment was historically reported; current hosted linkage remains unverified. Keep this documentation on the review branch until required checks/review and deployment-safe adoption are evidenced. Production new-customer-money creation remains frozen unless separately approved/certified. Retain lawful required refund/recovery capabilities and applicable controls.
