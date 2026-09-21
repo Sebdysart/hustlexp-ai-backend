@@ -5,6 +5,8 @@ import { db } from '../db.js';
 import { TaskService } from '../services/TaskService.js';
 import { getTaskFactsForDisplay } from '../services/taskIntake/getTaskFactsForDisplay.js';
 import { controlledTestQuotePaymentEnabled } from '../services/ControlledTestQuotePaymentService.js';
+import { configuredQuotePaymentProvider, loadTilledConfig } from '../services/payment/TilledConfig.js';
+import { resolveTilledMerchantAccount } from '../services/payment/TilledMerchantAccountService.js';
 import { businessTaskOwnershipSql } from '../services/BusinessTaskOwnership.js';
 import { hustlerProcedure, posterProcedure, protectedProcedure, Schemas } from '../trpc.js';
 
@@ -234,7 +236,8 @@ getQuoteVersionByQuoteId: posterProcedure
          qv.status,
          q.status AS payment_status,
          q.environment,
-         q.is_test
+         q.is_test,
+         q.business_organization_id
        FROM quote_versions qv
        JOIN quotes q ON q.id = qv.quote_id
          AND q.active_version_id = qv.id
@@ -258,13 +261,38 @@ getQuoteVersionByQuoteId: posterProcedure
     }
 
     const version = result.rows[0];
+    const quotePaymentProvider = configuredQuotePaymentProvider();
+    let paymentCapability: { provider: 'local_test'; simulated: true } | {
+      provider: 'tilled'; simulated: false; environment: 'sandbox' | 'production';
+      publishableKey: string; merchantAccountId: string; confirmationMode: 'tilled_js';
+    } | null = null;
+    if (quotePaymentProvider === 'local_test') {
+      paymentCapability = version.environment === 'TEST'
+        && version.is_test === true && controlledTestQuotePaymentEnabled()
+        ? { provider: 'local_test', simulated: true } : null;
+    } else {
+      try {
+        const tilled = loadTilledConfig();
+        const environmentMatches = tilled.environment === 'sandbox'
+          ? version.environment === 'TEST' && version.is_test === true
+          : version.environment !== 'TEST' && version.is_test !== true;
+        if (environmentMatches && typeof version.business_organization_id === 'string') {
+          const merchant = await resolveTilledMerchantAccount(version.business_organization_id, tilled.environment);
+          if (merchant) {
+            paymentCapability = {
+              provider: 'tilled', simulated: false, environment: tilled.environment,
+              publishableKey: tilled.publishableKey, merchantAccountId: merchant.accountId,
+              confirmationMode: 'tilled_js',
+            };
+          }
+        }
+      } catch {
+        // Keep checkout unavailable without exposing configuration details.
+      }
+    }
     return {
       ...version,
-      paymentCapability: version.environment === 'TEST'
-        && version.is_test === true
-        && controlledTestQuotePaymentEnabled()
-        ? { provider: 'local_test' as const, simulated: true as const }
-        : null,
+      paymentCapability,
     };
   }),
 getState: protectedProcedure

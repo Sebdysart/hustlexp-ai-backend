@@ -118,6 +118,36 @@ function generateBusinessClaimToken(): {
 
 export const webOpsRouter = router({
 
+  mapTilledSandboxMerchantAccount: operationsAdminProcedure
+    .input(z.object({
+      organizationId: z.string().uuid(),
+      providerAccountId: z.string().regex(/^acct_[A-Za-z0-9_]+$/),
+      environment: z.literal('sandbox'),
+    }).strict())
+    .mutation(async ({ ctx, input }) => {
+      const result = await db.transaction(async (query) => {
+        const organization = await query<{ id: string }>(
+          'SELECT id FROM business_organizations WHERE id = $1 FOR UPDATE',
+          [input.organizationId],
+        );
+        if (!organization.rows[0]) throw new TRPCError({ code: 'NOT_FOUND', message: 'Business not found.' });
+        const mapped = await query<{ id: string }>(`
+          INSERT INTO business_payment_accounts (
+            organization_id, provider, environment, provider_account_id, status, charges_enabled)
+          VALUES ($1, 'tilled', 'sandbox', $2, 'ACTIVE', TRUE)
+          ON CONFLICT (organization_id, provider, environment) DO UPDATE
+          SET provider_account_id = EXCLUDED.provider_account_id,
+              status = 'ACTIVE', charges_enabled = TRUE, updated_at = NOW()
+          RETURNING id`, [input.organizationId, input.providerAccountId]);
+        await recordOpsAudit({ actorUserId: ctx.user.id,
+          action: 'tilled_sandbox_merchant_mapped', targetType: 'business_organization',
+          targetId: input.organizationId, meta: { accountId: input.providerAccountId, environment: input.environment },
+        }, query, true);
+        return mapped.rows[0];
+      });
+      return { ok: true as const, paymentAccountId: result.id };
+    }),
+
   // ── Canonical engine lifecycle (E1) — service key only ─────────────────────
 
   listEngineTasks: publicProcedure

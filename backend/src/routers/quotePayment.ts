@@ -18,6 +18,8 @@ import {
   controlledTestQuotePaymentEnabled,
   controlledTestQuotePaymentReference,
 } from '../services/ControlledTestQuotePaymentService.js';
+import { configuredQuotePaymentProvider, TilledConfigurationError } from '../services/payment/TilledConfig.js';
+import { createOrResumeTilledCheckout, finalizeTilledCheckout } from '../services/payment/TilledQuoteCheckoutService.js';
 
 async function finalizeControlledTestQuote(input: {
   quoteId: string;
@@ -46,6 +48,38 @@ async function finalizeControlledTestQuote(input: {
 }
 
 export const quotePaymentRouter = router({
+  createTilledCheckout: protectedProcedure
+    .input(z.object({ quoteId: z.string().uuid(), quoteVersionId: z.string().uuid() }).strict())
+    .mutation(async ({ ctx, input }) => {
+      if (configuredQuotePaymentProvider() !== 'tilled') {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Tilled quote checkout is unavailable.' });
+      }
+      try {
+        return await createOrResumeTilledCheckout({ ...input, posterId: ctx.user.id });
+      } catch (error) {
+        if (error instanceof TilledConfigurationError) {
+          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Tilled checkout is not configured.' });
+        }
+        throw error;
+      }
+    }),
+
+  finalizeTilledCheckout: protectedProcedure
+    .input(z.object({ quoteId: z.string().uuid(), quoteVersionId: z.string().uuid() }).strict())
+    .mutation(async ({ ctx, input }) => {
+      if (configuredQuotePaymentProvider() !== 'tilled') {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Tilled quote checkout is unavailable.' });
+      }
+      try {
+        return await finalizeTilledCheckout({ ...input, posterId: ctx.user.id });
+      } catch (error) {
+        if (error instanceof TilledConfigurationError) {
+          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Tilled checkout is not configured.' });
+        }
+        throw error;
+      }
+    }),
+
   completeControlledTestPayment: protectedProcedure
     .input(
       z.object({
@@ -145,7 +179,8 @@ export const quotePaymentRouter = router({
       } 
 
       if (
-        !controlledTestQuotePaymentEnabled()
+        configuredQuotePaymentProvider() !== 'local_test'
+        || !controlledTestQuotePaymentEnabled()
         || quote.quote_environment !== 'TEST'
         || quote.quote_is_test !== true
       ) {

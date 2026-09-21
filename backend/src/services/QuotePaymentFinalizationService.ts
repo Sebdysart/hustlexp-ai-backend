@@ -9,6 +9,9 @@ import {
   type MapQuoteToTaskParamsInput,
 } from './QuoteTaskParamsMapper.js';
 import { StaxQuotePaymentProvider } from './payment/StaxQuotePaymentProvider.js';
+import { TilledQuotePaymentProvider } from './payment/TilledQuotePaymentProvider.js';
+import { loadTilledConfig } from './payment/TilledConfig.js';
+import { resolveTilledMerchantAccount } from './payment/TilledMerchantAccountService.js';
 import { NotificationService } from './NotificationService.js';
 import { AnalyticsService } from './AnalyticsService.js';
 import {
@@ -22,7 +25,7 @@ interface FinalizePaidQuoteInput {
   quoteVersionId: string;
   posterId: string;
   paymentIntentId: string;
-  paymentMode: 'stax' | 'controlled_test';
+  paymentMode: 'stax' | 'controlled_test' | 'tilled';
 }
 
 interface FinalizePaidQuoteResult {
@@ -103,6 +106,7 @@ interface QuotePaymentRow {
   platform_fee_cents: number | null;
   business_organization_id: string | null;
   provider_merchant_id: string | null;
+  provider_environment: string | null;
 }
 
 function fail<T>(
@@ -134,10 +138,14 @@ export async function finalizePaidQuote(
         hustler_payout_cents: number;
         business_organization_id: string | null;
         provider_payment_id: string | null;
+        payment_id: string | null;
+        task_draft_id: string;
         payment_provider: string | null;
+        payment_status: string | null;
         payment_task_id: string | null;
         payment_amount_cents: number | null;
         provider_merchant_id: string | null;
+        provider_environment: string | null;
         payment_platform_fee_cents: number | null;
         assessment_credit_cents: number | null;
         poster_user_id: string;
@@ -147,6 +155,7 @@ export async function finalizePaidQuote(
         `
         SELECT
           q.id AS quote_id,
+          q.task_draft_id,
           q.status AS quote_status,
           qv.id AS quote_version_id,
           d.quote_id AS selected_quote_id,
@@ -157,11 +166,14 @@ export async function finalizePaidQuote(
           q.is_test AS quote_is_test,
           d.poster_user_id,
           payment.provider AS payment_provider,
+          payment.id AS payment_id,
+          payment.status AS payment_status,
           payment.provider_payment_id,
           payment.task_id AS payment_task_id,
           payment.amount_cents AS payment_amount_cents,
           payment.platform_fee_cents AS payment_platform_fee_cents,
           payment.provider_merchant_id,
+          payment.provider_environment,
           assessment_payment.amount_cents AS assessment_credit_cents
         FROM quotes q
         JOIN quote_versions qv
@@ -218,7 +230,7 @@ export async function finalizePaidQuote(
     }
     const expectedProvider = input.paymentMode === 'controlled_test'
       ? 'local_test'
-      : 'stax';
+      : input.paymentMode === 'tilled' ? 'tilled' : 'stax';
 
     if (context.payment_provider !== expectedProvider) {
       return fail(
@@ -265,6 +277,31 @@ export async function finalizePaidQuote(
           error: verified.error,
         };
       }
+    }
+    if (input.paymentMode === 'tilled'
+      && !(context.quote_status === 'paid' && context.payment_status === 'SUCCEEDED' && context.payment_task_id)) {
+      const config = loadTilledConfig();
+      if (!context.business_organization_id || !context.provider_merchant_id
+        || !context.payment_id || context.provider_environment !== config.environment) {
+        return fail('PAYMENT_ACCOUNT_MISMATCH', 'Payment account binding is incomplete.');
+      }
+      const merchant = await resolveTilledMerchantAccount(context.business_organization_id, config.environment, false);
+      if (!merchant || merchant.accountId !== context.provider_merchant_id) {
+        return fail('PAYMENT_ACCOUNT_MISMATCH', 'Payment merchant account does not match the business.');
+      }
+      const verified = await TilledQuotePaymentProvider.verifySucceededPayment({
+        paymentIntentId: input.paymentIntentId,
+        localPaymentId: context.payment_id,
+        taskDraftId: context.task_draft_id,
+        organizationId: context.business_organization_id,
+        merchantAccountId: context.provider_merchant_id,
+        platformFeeCents: Number(context.payment_platform_fee_cents),
+        quoteId: input.quoteId,
+        quoteVersionId: input.quoteVersionId,
+        posterId: input.posterId,
+        amountCents: quotePaymentAmountCents,
+      });
+      if (!verified.success) return verified;
     }
 
     /*
@@ -358,6 +395,7 @@ export async function finalizePaidQuote(
           platform_fee_cents,
           business_organization_id,
           provider_merchant_id,
+          provider_environment,
           status
         FROM quote_payments
         WHERE quote_id = $1
