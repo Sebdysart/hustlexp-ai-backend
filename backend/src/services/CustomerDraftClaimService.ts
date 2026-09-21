@@ -26,26 +26,35 @@ function publicWebOrigin(): string {
     || 'http://localhost:5173').replace(/\/$/, '');
 }
 
-export function pendingPhoneClaimSmsBody(claimId: string): string {
+export function pendingPhoneClaimUrl(claimId: string): string {
   const token = pendingPhoneClaimToken(claimId);
-  return `HustleXP created your service request. Continue securely: ${publicWebOrigin()}/customer/claim/${encodeURIComponent(token)}`;
+  return `${publicWebOrigin()}/customer/claim/${encodeURIComponent(token)}`;
+}
+
+export function activePendingPhoneClaimUrl(input: {
+  claimId: string | null | undefined;
+  status: string | null | undefined;
+  expiresAt: Date | string | null | undefined;
+}, now = Date.now()): string | null {
+  if (!input.claimId || input.status !== 'OPEN' || !input.expiresAt) return null;
+  const expiresAt = input.expiresAt instanceof Date
+    ? input.expiresAt.getTime()
+    : Date.parse(input.expiresAt);
+  if (!Number.isFinite(expiresAt) || expiresAt <= now) return null;
+  return pendingPhoneClaimUrl(input.claimId);
 }
 
 export interface PendingPhoneClaimCreated {
   claimId: string;
-  rawToken: string;
+  claimUrl: string;
   expiresAt: Date;
-  smsQueued: boolean;
 }
 
 export type PendingPhoneClaimDiagnosticEvent = {
   stage:
     | 'pending_claim_create_start'
-    | 'pending_claim_create_success'
-    | 'sms_enqueue_start'
-    | 'sms_enqueue_success';
+    | 'pending_claim_create_success';
   claimId?: string;
-  smsId?: string;
 };
 
 export async function createPendingPhoneClaimInTransaction(
@@ -86,47 +95,11 @@ export async function createPendingPhoneClaimInTransaction(
     claimId: persistedClaimId,
   });
 
-  // The raw capability is never persisted. The worker deterministically rebuilds
-  // it from the random claim id plus the server-only queue HMAC secret.
-  const body = 'pending_phone_claim';
-  const idempotencyKey = `pending-phone-claim:${claimId}:sms:v1`;
-  input.onDiagnosticStage?.({ stage: 'sms_enqueue_start', claimId: persistedClaimId });
-  const sms = await query<{ id: string }>(
-    `INSERT INTO sms_outbox
-       (user_id, to_phone, body, status, idempotency_key, recipient_kind, recipient_context_id)
-     VALUES (NULL,$1,$2,'pending',$3,'pending_phone_claim',$4)
-     ON CONFLICT (idempotency_key) DO UPDATE SET
-       available_at = LEAST(sms_outbox.available_at, EXCLUDED.available_at),
-       updated_at = NOW()
-     RETURNING id`,
-    [input.normalizedPhone, body, idempotencyKey, claimId],
-  );
-  const smsId = sms.rows[0]?.id;
-  if (!smsId) throw new Error('PENDING_PHONE_CLAIM_SMS_NOT_CREATED');
-
-  await query(
-    `INSERT INTO outbox_events
-       (event_type, aggregate_type, aggregate_id, event_version, idempotency_key,
-        payload, queue_name, status, available_at)
-     VALUES ('sms.send_requested','pending_phone_draft_claim',$1,1,$2,$3::jsonb,'user_notifications','pending',NOW())
-     ON CONFLICT (idempotency_key) DO NOTHING`,
-    [
-      claimId,
-      idempotencyKey,
-      JSON.stringify({
-        smsId,
-        toPhone: input.normalizedPhone,
-        body,
-      }),
-    ],
-  );
-  input.onDiagnosticStage?.({
-    stage: 'sms_enqueue_success',
+  return {
     claimId: persistedClaimId,
-    smsId,
-  });
-
-  return { claimId: persistedClaimId, rawToken, expiresAt, smsQueued: true };
+    claimUrl: pendingPhoneClaimUrl(persistedClaimId),
+    expiresAt,
+  };
 }
 
 interface ClaimRow {

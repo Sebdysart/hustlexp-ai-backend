@@ -14,6 +14,7 @@ vi.mock('../../src/services/NotificationService.js', () => ({
 }));
 
 import {
+  activePendingPhoneClaimUrl,
   claimPendingPhoneDraft,
   createPendingPhoneClaimInTransaction,
 } from '../../src/services/CustomerDraftClaimService.js';
@@ -24,12 +25,11 @@ describe('pending phone draft ownership', () => {
     mocks.transaction.mockImplementation(async (fn) => fn(mocks.query));
   });
 
-  it('stores only the token hash and queues accountless SMS through the outbox', async () => {
+  it('stores only the token hash and returns a claim URL without queuing SMS', async () => {
     const calls: Array<{ sql: string; params?: unknown[] }> = [];
     const query = vi.fn(async (sql: string, params?: unknown[]) => {
       calls.push({ sql, params });
       if (sql.includes('INSERT INTO pending_phone_draft_claims')) return { rows: [{ id: params?.[0] }], rowCount: 1 };
-      if (sql.includes('INSERT INTO sms_outbox')) return { rows: [{ id: 'sms-1' }], rowCount: 1 };
       return { rows: [], rowCount: 1 };
     });
 
@@ -40,9 +40,23 @@ describe('pending phone draft ownership', () => {
     });
 
     const claimInsert = calls.find((call) => call.sql.includes('pending_phone_draft_claims'))!;
-    expect(claimInsert.params).not.toContain(result.rawToken);
-    expect(calls.map((call) => JSON.stringify(call.params)).join(' ')).not.toContain(result.rawToken);
-    expect(calls.find((call) => call.sql.includes('INSERT INTO sms_outbox'))?.params?.[1]).toBe('pending_phone_claim');
+    const claimToken = decodeURIComponent(new URL(result.claimUrl).pathname.split('/').at(-1)!);
+    expect(result.claimUrl).toContain('/customer/claim/');
+    expect(claimInsert.params).not.toContain(claimToken);
+    expect(calls.map((call) => JSON.stringify(call.params)).join(' ')).not.toContain(claimToken);
+    expect(calls.some((call) => call.sql.includes('INSERT INTO sms_outbox'))).toBe(false);
+    expect(calls.some((call) => call.sql.includes('INSERT INTO outbox_events'))).toBe(false);
+  });
+
+  it('only exposes a claim URL while the claim is open and unexpired', () => {
+    const active = {
+      claimId: '11111111-1111-4111-8111-111111111111',
+      status: 'OPEN',
+      expiresAt: new Date(Date.now() + 60_000),
+    };
+    expect(activePendingPhoneClaimUrl(active)).toContain('/customer/claim/');
+    expect(activePendingPhoneClaimUrl({ ...active, status: 'CLAIMED' })).toBeNull();
+    expect(activePendingPhoneClaimUrl({ ...active, expiresAt: new Date(Date.now() - 1) })).toBeNull();
   });
 
   it('atomically binds draft and lead for the matching Firebase-verified phone', async () => {

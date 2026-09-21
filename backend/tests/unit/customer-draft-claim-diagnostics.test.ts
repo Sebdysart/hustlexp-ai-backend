@@ -6,17 +6,13 @@ import {
 } from '../../src/services/CustomerDraftClaimService.js';
 
 describe('pending phone claim creation diagnostics', () => {
-  it('reports claim and SMS persistence boundaries without exposing the phone', async () => {
+  it('reports claim persistence boundaries without exposing the phone or queuing SMS', async () => {
     const events: PendingPhoneClaimDiagnosticEvent[] = [];
+    const calls: string[] = [];
     const query = vi.fn(async (sql: string) => {
+      calls.push(sql);
       if (sql.includes('INSERT INTO pending_phone_draft_claims')) {
         return { rows: [{ id: '11111111-1111-4111-8111-111111111111' }], rowCount: 1 };
-      }
-      if (sql.includes('INSERT INTO sms_outbox')) {
-        return { rows: [{ id: '22222222-2222-4222-8222-222222222222' }], rowCount: 1 };
-      }
-      if (sql.includes('INSERT INTO outbox_events')) {
-        return { rows: [], rowCount: 1 };
       }
       throw new Error(`Unexpected query: ${sql}`);
     });
@@ -31,13 +27,12 @@ describe('pending phone claim creation diagnostics', () => {
     expect(events.map((event) => event.stage)).toEqual([
       'pending_claim_create_start',
       'pending_claim_create_success',
-      'sms_enqueue_start',
-      'sms_enqueue_success',
     ]);
     expect(JSON.stringify(events)).not.toContain('+12065550123');
     expect(events.at(-1)).toMatchObject({
       claimId: '11111111-1111-4111-8111-111111111111',
-      smsId: '22222222-2222-4222-8222-222222222222',
     });
+    expect(calls.some((sql) => sql.includes('sms_outbox'))).toBe(false);
+    expect(calls.some((sql) => sql.includes('outbox_events'))).toBe(false);
   });
 });

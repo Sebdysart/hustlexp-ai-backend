@@ -33,7 +33,10 @@ import {
   CanonicalTaskDraftInputSchema,
   createCanonicalTaskDraftInTransaction,
 } from '../../services/CanonicalTaskDraftService.js';
-import { createPendingPhoneClaimInTransaction } from '../../services/CustomerDraftClaimService.js';
+import {
+  activePendingPhoneClaimUrl,
+  createPendingPhoneClaimInTransaction,
+} from '../../services/CustomerDraftClaimService.js';
 import { normalizePhoneToE164 } from '../../lib/phone.js';
 import { AnalyticsService } from '../../services/AnalyticsService.js';
 
@@ -46,8 +49,6 @@ type CustomerDraftCreateStage =
   | 'canonical_draft_create_success'
   | 'pending_claim_create_start'
   | 'pending_claim_create_success'
-  | 'sms_enqueue_start'
-  | 'sms_enqueue_success'
   | 'ops_audit_write'
   | 'transaction_commit'
   | 'response_build'
@@ -254,30 +255,23 @@ export const webOpsRouter = router({
                 WHERE task_draft_id=$1 LIMIT 1`,
               [draft.taskDraftId],
             );
-            const claimId = existingClaim.rows[0]?.id ?? null;
+            const claim = existingClaim.rows[0];
+            const claimId = claim?.id ?? null;
             markStage('pending_claim_create_success', {
               taskDraftId: draft.taskDraftId,
               claimId,
               replayed: true,
             });
-            markStage('sms_enqueue_start', {
-              taskDraftId: draft.taskDraftId,
-              claimId,
-              replayed: true,
-            });
-            markStage('sms_enqueue_success', {
-              taskDraftId: draft.taskDraftId,
-              claimId,
-              replayed: true,
-              smsStatus: 'already_queued',
-            });
             stage = 'transaction_commit';
             return {
               draft,
               claimId,
-              claimToken: null,
-              smsStatus: 'already_queued' as const,
-              expiresAt: existingClaim.rows[0]?.expires_at ?? null,
+              claimUrl: activePendingPhoneClaimUrl({
+                claimId,
+                status: claim?.status,
+                expiresAt: claim?.expires_at,
+              }),
+              expiresAt: claim?.expires_at ?? null,
             };
           }
 
@@ -291,7 +285,6 @@ export const webOpsRouter = router({
                 taskDraftId: draft.taskDraftId,
                 leadId: draft.leadId,
                 claimId: event.claimId,
-                smsId: event.smsId,
               });
             },
           });
@@ -307,8 +300,7 @@ export const webOpsRouter = router({
           return {
             draft,
             claimId: claim.claimId,
-            claimToken: claim.rawToken,
-            smsStatus: 'queued' as const,
+            claimUrl: claim.claimUrl,
             expiresAt: claim.expiresAt,
           };
         });
@@ -318,7 +310,6 @@ export const webOpsRouter = router({
           leadId: created.draft.leadId,
           claimId: created.claimId,
           replayed: created.draft.replayed,
-          smsStatus: created.smsStatus,
         });
         const response = {
           ok: true as const,
@@ -327,8 +318,7 @@ export const webOpsRouter = router({
           pendingCustomer: true,
           replayed: created.draft.replayed,
           claimId: created.claimId,
-          claimToken: created.claimToken,
-          smsStatus: created.smsStatus,
+          claimUrl: created.claimUrl,
           expiresAt: created.expiresAt,
         };
 
@@ -353,7 +343,6 @@ export const webOpsRouter = router({
           leadId: created.draft.leadId,
           claimId: created.claimId,
           replayed: created.draft.replayed,
-          smsStatus: created.smsStatus,
         });
         return response;
       } catch (error) {
@@ -474,10 +463,10 @@ export const webOpsRouter = router({
 
           poster.full_name AS poster_name,
           poster.email AS poster_email,
+          phone_claim.id AS customer_claim_id,
           phone_claim.status AS customer_claim_status,
           phone_claim.expires_at AS customer_claim_expires_at,
           phone_claim.claimed_at AS customer_claimed_at,
-          phone_claim_sms.status AS customer_sms_status,
 
           claim.id AS claim_link_id,
           claim.status AS claim_status,
@@ -498,15 +487,6 @@ export const webOpsRouter = router({
           ORDER BY created_at DESC
           LIMIT 1
         ) phone_claim ON TRUE
-
-        LEFT JOIN LATERAL (
-          SELECT status
-          FROM sms_outbox
-          WHERE recipient_kind = 'pending_phone_claim'
-            AND recipient_context_id = phone_claim.id
-          ORDER BY created_at DESC
-          LIMIT 1
-        ) phone_claim_sms ON TRUE
 
         LEFT JOIN LATERAL (
           SELECT
@@ -665,6 +645,20 @@ export const webOpsRouter = router({
           delete draft[forbidden];
         }
       }
+
+      draft.customer_claim_url = activePendingPhoneClaimUrl({
+        claimId: typeof draft.customer_claim_id === 'string'
+          ? draft.customer_claim_id
+          : null,
+        status: typeof draft.customer_claim_status === 'string'
+          ? draft.customer_claim_status
+          : null,
+        expiresAt: draft.customer_claim_expires_at instanceof Date
+          || typeof draft.customer_claim_expires_at === 'string'
+          ? draft.customer_claim_expires_at
+          : null,
+      });
+      delete draft.customer_claim_id;
 
       draft.taskFacts = getTaskFactsForDisplay({ rawInput: draft.raw_input, category: draft.category, structured: draft.structured });
 
