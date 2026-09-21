@@ -4,7 +4,7 @@ vi.mock('../../src/db.js', () => ({ db: { query: vi.fn() } }));
 
 const { db } = await import('../../src/db.js');
 const { configuredQuotePaymentProvider, loadTilledConfig } = await import('../../src/services/payment/TilledConfig.js');
-const { TilledClient } = await import('../../src/services/payment/TilledClient.js');
+const { TilledClient, TilledApiError } = await import('../../src/services/payment/TilledClient.js');
 const { resolveTilledMerchantAccount } = await import('../../src/services/payment/TilledMerchantAccountService.js');
 const { normalizeTilledStatus, validateTilledIntentBinding } = await import('../../src/services/payment/TilledQuotePaymentProvider.js');
 
@@ -83,9 +83,9 @@ describe('Tilled payment intent contract', () => {
   });
   it('rejects invalid economics before network access', async () => {
     const fetcher = vi.fn();
-    expect(() => new TilledClient(config, fetcher).createPaymentIntent({
+    await expect(new TilledClient(config, fetcher).createPaymentIntent({
       accountId: 'acct_one', amountCents: 100, platformFeeCents: 101, metadata: {},
-    })).toThrow();
+    })).rejects.toThrow();
     expect(fetcher).not.toHaveBeenCalled();
   });
   it('filters recovery results by the exact local payment ID', async () => {
@@ -115,5 +115,48 @@ describe('Tilled payment intent contract', () => {
   });
   it('normalizes unknown provider states to a fail-closed value', () => {
     expect(normalizeTilledStatus('novel_state')).toBe('unknown');
+  });
+});
+
+describe('Tilled HTTP diagnostics without live credentials', () => {
+  it.each([400, 401, 422, 500])('preserves safe provider fields from HTTP %s', async (status) => {
+    const response = new Response(JSON.stringify({ error: {
+      code: 'payment_intent_rejected', type: 'invalid_request',
+      message: 'Payment account cannot create this intent.',
+    } }), { status, headers: { 'content-type': 'application/json', 'x-request-id': 'request_123' } });
+    const client = new TilledClient(config, vi.fn().mockResolvedValue(response));
+    await expect(client.createPaymentIntent({ accountId: 'acct_one', amountCents: 12000,
+      platformFeeCents: 2000, metadata: intent.metadata })).rejects.toMatchObject({
+      name: 'TilledApiError', code: 'payment_intent_rejected', httpStatus: status,
+      details: { providerErrorType: 'invalid_request',
+        providerMessage: 'Payment account cannot create this intent.',
+        correlationId: 'request_123',
+        kind: status >= 500 ? 'provider_server_error' : 'provider_rejected' },
+    });
+  });
+
+  it('distinguishes a timeout from other network failures', async () => {
+    const client = new TilledClient(config, vi.fn().mockRejectedValue(
+      Object.assign(new Error('The operation timed out'), { name: 'TimeoutError' })));
+    await expect(client.getPaymentIntent('acct_one', 'pi_one'))
+      .rejects.toMatchObject({ code: 'PROVIDER_TIMEOUT', details: { kind: 'timeout' } });
+  });
+
+  it('classifies non-JSON provider responses without dumping their body', async () => {
+    const client = new TilledClient(config, vi.fn().mockResolvedValue(
+      new Response('<html>upstream error</html>', { status: 502,
+        headers: { 'content-type': 'text/html' } })));
+    await expect(client.getPaymentIntent('acct_one', 'pi_one')).rejects.toMatchObject({
+      code: 'INVALID_PROVIDER_RESPONSE', httpStatus: 502,
+      details: { kind: 'invalid_response', contentType: 'text/html' },
+    });
+  });
+
+  it('rejects a successful HTTP response with no Payment Intent fields', async () => {
+    const client = new TilledClient(config, vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), { status: 200 })));
+    await expect(client.createPaymentIntent({ accountId: 'acct_one', amountCents: 12000,
+      platformFeeCents: 2000, metadata: intent.metadata }))
+      .rejects.toBeInstanceOf(TilledApiError);
   });
 });

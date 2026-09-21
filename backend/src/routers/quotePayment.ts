@@ -19,7 +19,35 @@ import {
   controlledTestQuotePaymentReference,
 } from '../services/ControlledTestQuotePaymentService.js';
 import { configuredQuotePaymentProvider, TilledConfigurationError } from '../services/payment/TilledConfig.js';
+import { TilledApiError } from '../services/payment/TilledClient.js';
 import { createOrResumeTilledCheckout, finalizeTilledCheckout } from '../services/payment/TilledQuoteCheckoutService.js';
+import { logger } from '../logger.js';
+
+export function mapTilledCheckoutError(error: unknown): TRPCError | null {
+  if (error instanceof TilledConfigurationError) {
+    return new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Tilled checkout is not configured.' });
+  }
+  if (!(error instanceof TilledApiError)) return null;
+  if (error.code === 'PROVIDER_TIMEOUT' || error.code === 'PROVIDER_UNAVAILABLE'
+    || error.httpStatus === 429 || (error.httpStatus !== undefined && error.httpStatus >= 500)) {
+    return new TRPCError({ code: 'SERVICE_UNAVAILABLE',
+      message: 'Payment provider is temporarily unavailable. Please retry this checkout shortly.' });
+  }
+  if (error.code === 'INVALID_PROVIDER_RESPONSE') {
+    return new TRPCError({ code: 'BAD_GATEWAY',
+      message: 'Payment provider returned an invalid response. Please retry later.' });
+  }
+  if (error.httpStatus === 401) {
+    return new TRPCError({ code: 'SERVICE_UNAVAILABLE',
+      message: 'Payment service authorization is unavailable. Please contact support.' });
+  }
+  if (error.httpStatus === 403 || error.httpStatus === 404 || error.code === 'INVALID_ACCOUNT') {
+    return new TRPCError({ code: 'PRECONDITION_FAILED',
+      message: 'Business payment account cannot accept this payment. Please contact support.' });
+  }
+  return new TRPCError({ code: 'PRECONDITION_FAILED',
+    message: 'Payment provider rejected checkout setup. Please contact support before retrying.' });
+}
 
 async function finalizeControlledTestQuote(input: {
   quoteId: string;
@@ -51,14 +79,22 @@ export const quotePaymentRouter = router({
   createTilledCheckout: protectedProcedure
     .input(z.object({ quoteId: z.string().uuid(), quoteVersionId: z.string().uuid() }).strict())
     .mutation(async ({ ctx, input }) => {
-      if (configuredQuotePaymentProvider() !== 'tilled') {
-        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Tilled quote checkout is unavailable.' });
-      }
       try {
+        logger.info({ operation: 'tilled_create_checkout', stage: 'validate_input', provider: 'tilled',
+          quote_id: input.quoteId, quote_version_id: input.quoteVersionId }, 'Tilled checkout requested');
+        if (configuredQuotePaymentProvider() !== 'tilled') {
+          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Tilled quote checkout is unavailable.' });
+        }
         return await createOrResumeTilledCheckout({ ...input, posterId: ctx.user.id });
       } catch (error) {
-        if (error instanceof TilledConfigurationError) {
-          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Tilled checkout is not configured.' });
+        const mapped = mapTilledCheckoutError(error);
+        if (mapped) {
+          if (error instanceof TilledConfigurationError) {
+            logger.warn({ operation: 'tilled_create_checkout', stage: 'load_tilled_config',
+              quote_id: input.quoteId, quote_version_id: input.quoteVersionId,
+              error_name: error.name, error_message: error.message }, 'Tilled configuration unavailable');
+          }
+          throw mapped;
         }
         throw error;
       }

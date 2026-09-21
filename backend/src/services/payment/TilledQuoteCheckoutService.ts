@@ -1,5 +1,6 @@
 import { TRPCError } from '@trpc/server';
 import { db } from '../../db.js';
+import { logger } from '../../logger.js';
 import { isBusinessQuoteProviderVerified } from '../BusinessQuoteActivationService.js';
 import { buildManualTaskPolicyInput } from '../ManualTaskPolicy.js';
 import { newPaymentCreationFailure, paymentCreationErrorCause } from '../NewPaymentCreationGuard.js';
@@ -7,7 +8,7 @@ import { lockQuoteAddressForPayment } from '../QuoteServiceAddressService.js';
 import { finalizePaidQuote } from '../QuotePaymentFinalizationService.js';
 import { evaluateTaskAgainstRegionPolicy, resolveRegionPolicy } from '../RegionPolicyService.js';
 import { TilledApiError, type TilledPaymentIntent } from './TilledClient.js';
-import { loadTilledConfig } from './TilledConfig.js';
+import { loadTilledConfig, TilledConfigurationError } from './TilledConfig.js';
 import { resolveTilledMerchantAccount } from './TilledMerchantAccountService.js';
 import { TilledQuotePaymentProvider, tilledClient, validateTilledIntentBinding } from './TilledQuotePaymentProvider.js';
 
@@ -75,6 +76,16 @@ export interface TilledFinalizedCheckoutResult {
 
 function blocked(message: string, cause?: { applicationCode: 'PAYMENT_CREATION_FROZEN' }): never {
   throw new TRPCError({ code: 'PRECONDITION_FAILED', message, ...(cause ? { cause } : {}) });
+}
+
+function sanitizedDiagnostic(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  let result = value.slice(0, 4_000);
+  for (const secret of [process.env.TILLED_SECRET_KEY, process.env.TILLED_WEBHOOK_SECRET]) {
+    if (secret) result = result.replaceAll(secret, '[REDACTED]');
+  }
+  return result.replace(/(?:client_secret|tilled-api-key|authorization)\s*[:=]\s*[^\s,;]+/gi,
+    '[REDACTED]');
 }
 
 async function readCheckoutQuote(quoteId: string, quoteVersionId: string, posterId: string): Promise<CheckoutQuote> {
@@ -185,8 +196,22 @@ async function bindIntent(payment: CheckoutPayment, intent: TilledPaymentIntent)
 export async function createOrResumeTilledCheckout(input: {
   quoteId: string; quoteVersionId: string; posterId: string;
 }): Promise<TilledCheckoutResult | TilledFinalizedCheckoutResult> {
+  let stage = 'load_quote';
+  const diagnostic: Record<string, string | undefined> = {
+    operation: 'tilled_create_checkout', provider: 'tilled',
+    quote_id: input.quoteId, quote_version_id: input.quoteVersionId,
+  };
+  const mark = (nextStage: string): void => {
+    stage = nextStage;
+    logger.info({ ...diagnostic, stage }, 'Tilled checkout stage');
+  };
+  try {
+  mark('load_quote');
   const quote = await readCheckoutQuote(input.quoteId, input.quoteVersionId, input.posterId);
+  diagnostic.organization_id = quote.business_organization_id ?? undefined;
+  mark('load_local_payment');
   const existing = await readPayment(input.quoteId, input.quoteVersionId);
+  diagnostic.local_payment_id = existing?.id;
   if (quote.quote_status === 'paid') {
     if (!existing || existing.provider !== 'tilled' || existing.status !== 'SUCCEEDED'
       || !existing.task_id || existing.intent_creation_state !== 'BOUND') {
@@ -194,23 +219,36 @@ export async function createOrResumeTilledCheckout(input: {
     }
     // The canonical finalizer validates ownership and downstream replay state.
     // Its completed replay never calls Tilled or creates another payment.
+    mark('replay_finalized_payment');
     const completed = await finalizeTilledCheckout(input);
     return { finalized: true, taskId: completed.taskId, replayed: true };
   }
+  mark('load_tilled_config');
   const config = loadTilledConfig();
+  diagnostic.environment = config.environment;
   if (config.environment === 'sandbox'
     ? quote.quote_environment !== 'TEST' || quote.quote_is_test !== true
     : quote.quote_environment === 'TEST' || quote.quote_is_test === true) {
     blocked('This quote and payment environment do not match.');
   }
+  mark('validate_quote');
   const economics = await validatePayableQuote(quote);
-  const merchant = await resolveTilledMerchantAccount(economics.organizationId, config.environment, Boolean(!existing || existing.intent_creation_state === 'RESERVED'));
-  if (!merchant) blocked('This business does not have an active payment account.');
+  mark('resolve_merchant_account');
+  const merchant = await resolveTilledMerchantAccount(economics.organizationId, config.environment, false);
+  if (!merchant) blocked('Business payment account is not configured for this environment.');
+  diagnostic.provider_account_id = merchant.accountId;
+  if ((!existing || existing.intent_creation_state === 'RESERVED')
+    && (merchant.status !== 'ACTIVE' || !merchant.chargesEnabled)) {
+    blocked('Business payment account is not active for charges.');
+  }
+  mark('lock_service_address');
   await lockQuoteAddressForPayment(input.quoteId, input.quoteVersionId, input.posterId);
   let payment = existing;
   if (!payment) {
+    mark('validate_payment_creation');
     const frozen = newPaymentCreationFailure('escrow_funding');
     if (frozen) blocked(frozen.error.message, paymentCreationErrorCause(frozen.error.code));
+    mark('reserve_local_payment');
     await db.query(`INSERT INTO quote_payments (
         quote_id, quote_version_id, provider, provider_payment_id, amount_cents,
         platform_fee_cents, business_organization_id, provider_merchant_id,
@@ -223,9 +261,12 @@ export async function createOrResumeTilledCheckout(input: {
     payment = await readPayment(input.quoteId, input.quoteVersionId);
   }
   if (!payment) blocked('Payment reservation could not be created.');
+  diagnostic.local_payment_id = payment.id;
+  mark('validate_payment_binding');
   assertPaymentBinding(payment, economics.organizationId, merchant.accountId, config.environment,
     economics.amountCents, economics.platformFeeCents);
 
+  mark('build_payment_intent_request');
   const binding = {
     paymentIntentId: payment.provider_payment_id,
     localPaymentId: payment.id,
@@ -241,22 +282,40 @@ export async function createOrResumeTilledCheckout(input: {
   const client = tilledClient();
   let intent: TilledPaymentIntent;
   if (payment.intent_creation_state === 'BOUND') {
+    mark('retrieve_bound_provider_intent');
     intent = await client.getPaymentIntent(merchant.accountId, payment.provider_payment_id);
   } else if (payment.intent_creation_state === 'RESERVED') {
+    mark('validate_payment_creation');
     const frozen = newPaymentCreationFailure('escrow_funding');
     if (frozen) blocked(frozen.error.message, paymentCreationErrorCause(frozen.error.code));
+    mark('claim_intent_creation');
     const claimed = await db.query(`UPDATE quote_payments SET intent_creation_state = 'CREATING', updated_at = NOW()
       WHERE id = $1 AND intent_creation_state = 'RESERVED' RETURNING id`, [payment.id]);
     if (!claimed.rows[0]) blocked('Payment creation is already in progress. Please retry shortly.');
-    const created = await TilledQuotePaymentProvider.createPaymentIntent(binding);
+    mark('send_tilled_request');
+    let created: Awaited<ReturnType<typeof TilledQuotePaymentProvider.createPaymentIntent>>;
+    try {
+      created = await TilledQuotePaymentProvider.createPaymentIntent(binding);
+    } catch (error) {
+      // The provider may have accepted the request before a timeout or parse error.
+      // Keep this local payment recoverable; never issue a second intent blindly.
+      await db.query(`UPDATE quote_payments SET intent_creation_state = 'RECONCILE_REQUIRED', updated_at = NOW()
+        WHERE id = $1 AND intent_creation_state = 'CREATING'`, [payment.id]);
+      logger.info({ ...diagnostic, stage: 'mark_reconcile_required' },
+        'Tilled checkout reserved for reconciliation');
+      throw error;
+    }
     if (!created.success) {
       await db.query(`UPDATE quote_payments SET intent_creation_state = 'RECONCILE_REQUIRED', updated_at = NOW()
         WHERE id = $1 AND intent_creation_state = 'CREATING'`, [payment.id]);
       blocked(created.error.message);
     }
+    mark('retrieve_created_provider_intent');
     intent = await client.getPaymentIntent(merchant.accountId, created.data.paymentIntentId);
+    mark('persist_provider_intent');
     await bindIntent(payment, intent);
   } else if (payment.intent_creation_state === 'CREATING' || payment.intent_creation_state === 'RECONCILE_REQUIRED') {
+    mark('reconcile_uncertain_provider_intent');
     let found: TilledPaymentIntent[];
     try {
       found = await client.findPaymentIntentsByLocalPaymentId(merchant.accountId, payment.id);
@@ -268,19 +327,45 @@ export async function createOrResumeTilledCheckout(input: {
     intent = found[0];
     const recovered = validateTilledIntentBinding(intent, { ...binding, paymentIntentId: intent.id }, false);
     if (!recovered.success) blocked(recovered.error.message);
+    mark('persist_provider_intent');
     await bindIntent(payment, intent);
   } else {
     blocked('Payment attempt is not recoverable automatically. Contact support.');
   }
 
+  mark('validate_provider_intent');
   const verified = validateTilledIntentBinding(intent, { ...binding, paymentIntentId: intent.id }, false);
   if (!verified.success || !intent.client_secret) blocked('Payment details could not be verified. Contact support.');
+  mark('serialize_checkout_response');
   return {
     finalized: false, provider: 'tilled', environment: config.environment, localPaymentId: payment.id,
     providerPaymentIntentId: intent.id, clientSecret: intent.client_secret,
     merchantAccountId: merchant.accountId, publishableKey: config.publishableKey,
     status: intent.status, amountCents: economics.amountCents,
   };
+  } catch (error) {
+    const apiError = error instanceof TilledApiError ? error : null;
+    const internal = !(error instanceof TRPCError)
+      && !(error instanceof TilledConfigurationError) && !apiError;
+    const databaseCode = error && typeof error === 'object' && 'code' in error
+      && typeof error.code === 'string' && /^[A-Z0-9]{5}$/.test(error.code)
+      ? error.code : undefined;
+    logger[internal ? 'error' : 'warn']({
+      ...diagnostic, stage,
+      database_error_code: databaseCode,
+      http_status: apiError?.httpStatus,
+      provider_error_code: apiError?.code,
+      provider_error_type: apiError?.details.providerErrorType,
+      provider_error_message: apiError?.details.providerMessage,
+      provider_error_kind: apiError?.details.kind,
+      correlation_id: apiError?.details.correlationId,
+      error_name: error instanceof Error ? error.name : 'unknown',
+      error_message: sanitizedDiagnostic(error instanceof Error ? error.message : String(error)),
+      ...(internal && error instanceof Error
+        ? { error_stack: sanitizedDiagnostic(error.stack) } : {}),
+    }, 'Tilled checkout failed');
+    throw error;
+  }
 }
 
 export async function finalizeTilledCheckout(input: { quoteId: string; quoteVersionId: string; posterId: string }) {

@@ -64,7 +64,6 @@ export function tilledClient(): TilledClient {
 
 export const TilledQuotePaymentProvider: QuotePaymentProvider = {
   async createPaymentIntent(input: CreateQuotePaymentInput) {
-    try {
       const intent = await tilledClient().createPaymentIntent({
         accountId: input.merchantAccountId,
         amountCents: input.amountCents,
@@ -88,10 +87,6 @@ export const TilledQuotePaymentProvider: QuotePaymentProvider = {
         amountCents: intent.amount,
         status: intent.status,
       } };
-    } catch (error) {
-      return failure(error instanceof TilledApiError ? error.code : 'PAYMENT_CREATION_FAILED',
-        'Payment checkout could not be started. Please retry later.');
-    }
   },
 
   async verifySucceededPayment(input: VerifyQuotePaymentInput) {

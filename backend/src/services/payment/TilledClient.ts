@@ -19,10 +19,56 @@ export class TilledApiError extends Error {
   constructor(
     public readonly code: string,
     public readonly httpStatus?: number,
+    public readonly details: {
+      kind?: 'provider_rejected' | 'provider_server_error' | 'timeout' | 'network' | 'invalid_response';
+      providerErrorType?: string;
+      providerMessage?: string;
+      correlationId?: string;
+      contentType?: string;
+    } = {},
   ) {
     super('Tilled payment service is unavailable or rejected the request.');
     this.name = 'TilledApiError';
   }
+}
+
+function safeIdentifier(value: unknown): string | undefined {
+  return typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,100}$/.test(value)
+    ? value : undefined;
+}
+
+function safeProviderMessage(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const message = value.trim().slice(0, 240);
+  if (!message || (process.env.TILLED_SECRET_KEY && message.includes(process.env.TILLED_SECRET_KEY))
+    || /(?:tilled-api-key|client_secret|authorization|\bsk_[A-Za-z0-9]+|\b\d{13,19}\b)/i.test(message)) {
+    return undefined;
+  }
+  return message.replace(/[\r\n\t]/g, ' ');
+}
+
+function providerErrorFields(payload: unknown): {
+  code?: string; type?: string; message?: string;
+} {
+  if (!payload || typeof payload !== 'object') return {};
+  const root = payload as Record<string, unknown>;
+  const nested = root.error && typeof root.error === 'object'
+    ? root.error as Record<string, unknown> : root;
+  return {
+    code: safeIdentifier(nested.code ?? root.code),
+    type: safeIdentifier(nested.type ?? root.type),
+    message: safeProviderMessage(nested.message ?? root.message),
+  };
+}
+
+function isPaymentIntent(value: unknown): value is TilledPaymentIntent {
+  if (!value || typeof value !== 'object') return false;
+  const intent = value as Record<string, unknown>;
+  return typeof intent.id === 'string' && /^pi_[A-Za-z0-9_]+$/.test(intent.id)
+    && typeof intent.account_id === 'string' && /^acct_[A-Za-z0-9_]+$/.test(intent.account_id)
+    && Number.isSafeInteger(intent.amount) && Number.isSafeInteger(intent.amount_received)
+    && typeof intent.currency === 'string' && typeof intent.status === 'string'
+    && typeof intent.capture_method === 'string' && typeof intent.client_secret === 'string';
 }
 
 type Fetcher = typeof fetch;
@@ -36,13 +82,16 @@ export class TilledClient {
   private async request<T>(
     accountId: string,
     path: string,
-    init: { method?: 'GET' | 'POST'; body?: object } = {},
+    init: { method?: 'GET' | 'POST'; body?: object; operation?: string } = {},
   ): Promise<T> {
     if (!/^acct_[A-Za-z0-9_]+$/.test(accountId)) {
       throw new TilledApiError('INVALID_ACCOUNT');
     }
     let response: Response;
     try {
+      logger.info({ provider: 'tilled', operation: init.operation ?? 'read_payment_intent',
+        stage: 'send_tilled_request', provider_account_id: accountId,
+        environment: this.config.environment }, 'Sending Tilled request');
       response = await this.fetcher(`${this.config.apiBaseUrl}${path}`, {
         method: init.method ?? 'GET',
         headers: {
@@ -55,26 +104,51 @@ export class TilledClient {
         signal: AbortSignal.timeout(10_000),
       });
     } catch (error) {
-      logger.warn({ provider: 'tilled', operation: init.method ?? 'GET', errorName: error instanceof Error ? error.name : 'unknown' }, 'Tilled request failed');
-      throw new TilledApiError('PROVIDER_UNAVAILABLE');
+      const timeout = error instanceof Error && (error.name === 'TimeoutError'
+        || error.name === 'AbortError' || /timeout/i.test(error.message));
+      const kind = timeout ? 'timeout' : 'network';
+      logger.warn({ provider: 'tilled', operation: init.operation ?? 'read_payment_intent',
+        stage: 'send_tilled_request', provider_account_id: accountId,
+        environment: this.config.environment, error_name: error instanceof Error ? error.name : 'unknown',
+        network_error_kind: kind }, 'Tilled request failed before HTTP response');
+      throw new TilledApiError(timeout ? 'PROVIDER_TIMEOUT' : 'PROVIDER_UNAVAILABLE', undefined, { kind });
     }
 
     let payload: unknown;
     try {
       payload = await response.json();
     } catch {
-      throw new TilledApiError('INVALID_PROVIDER_RESPONSE', response.status);
+      const contentType = response.headers?.get('content-type') ?? undefined;
+      logger.warn({ provider: 'tilled', operation: init.operation ?? 'read_payment_intent',
+        stage: 'parse_tilled_response', provider_account_id: accountId,
+        environment: this.config.environment, http_status: response.status,
+        content_type: contentType }, 'Tilled returned a non-JSON response');
+      throw new TilledApiError('INVALID_PROVIDER_RESPONSE', response.status,
+        { kind: 'invalid_response', contentType });
     }
     if (!response.ok) {
-      const code = typeof payload === 'object' && payload !== null && 'code' in payload && typeof payload.code === 'string'
-        ? payload.code : 'PROVIDER_REJECTED';
-      logger.warn({ provider: 'tilled', operation: init.method ?? 'GET', httpStatus: response.status, errorCode: code }, 'Tilled rejected request');
-      throw new TilledApiError(code, response.status);
+      const fields = providerErrorFields(payload);
+      const code = fields.code ?? 'PROVIDER_REJECTED';
+      const correlationId = safeIdentifier(response.headers?.get('x-request-id')
+        ?? response.headers?.get('request-id'));
+      const kind = response.status >= 500 ? 'provider_server_error' : 'provider_rejected';
+      logger.warn({ provider: 'tilled', operation: init.operation ?? 'read_payment_intent',
+        stage: 'parse_tilled_response', provider_account_id: accountId,
+        environment: this.config.environment, http_status: response.status,
+        provider_error_code: code, provider_error_type: fields.type,
+        provider_error_message: fields.message, correlation_id: correlationId }, 'Tilled rejected request');
+      throw new TilledApiError(code, response.status, {
+        kind, providerErrorType: fields.type,
+        providerMessage: fields.message, correlationId,
+      });
     }
+    logger.info({ provider: 'tilled', operation: init.operation ?? 'read_payment_intent',
+      stage: 'parse_tilled_response', provider_account_id: accountId,
+      environment: this.config.environment, http_status: response.status }, 'Tilled response parsed');
     return payload as T;
   }
 
-  createPaymentIntent(input: {
+  async createPaymentIntent(input: {
     accountId: string;
     amountCents: number;
     platformFeeCents: number;
@@ -85,8 +159,9 @@ export class TilledClient {
       || input.platformFeeCents > input.amountCents) {
       throw new TilledApiError('INVALID_PAYMENT_ECONOMICS');
     }
-    return this.request(input.accountId, '/v1/payment-intents', {
+    const intent = await this.request<unknown>(input.accountId, '/v1/payment-intents', {
       method: 'POST',
+      operation: 'create_payment_intent',
       body: {
         amount: input.amountCents,
         currency: 'usd',
@@ -96,10 +171,25 @@ export class TilledClient {
         metadata: input.metadata,
       },
     });
+    if (!isPaymentIntent(intent)) {
+      logger.warn({ provider: 'tilled', operation: 'create_payment_intent',
+        stage: 'parse_tilled_response', provider_account_id: input.accountId,
+        environment: this.config.environment }, 'Tilled Payment Intent response is malformed');
+      throw new TilledApiError('INVALID_PROVIDER_RESPONSE', undefined, { kind: 'invalid_response' });
+    }
+    return intent;
   }
 
-  getPaymentIntent(accountId: string, intentId: string): Promise<TilledPaymentIntent> {
-    return this.request(accountId, `/v1/payment-intents/${encodeURIComponent(intentId)}`);
+  async getPaymentIntent(accountId: string, intentId: string): Promise<TilledPaymentIntent> {
+    const intent = await this.request<unknown>(accountId, `/v1/payment-intents/${encodeURIComponent(intentId)}`,
+      { operation: 'get_payment_intent' });
+    if (!isPaymentIntent(intent)) {
+      logger.warn({ provider: 'tilled', operation: 'get_payment_intent',
+        stage: 'parse_tilled_response', provider_account_id: accountId,
+        environment: this.config.environment }, 'Tilled Payment Intent response is malformed');
+      throw new TilledApiError('INVALID_PROVIDER_RESPONSE', undefined, { kind: 'invalid_response' });
+    }
+    return intent;
   }
 
   async findPaymentIntentsByLocalPaymentId(
@@ -113,8 +203,12 @@ export class TilledClient {
     const page = await this.request<{ items?: TilledPaymentIntent[] }>(
       accountId,
       `/v1/payment-intents?${params.toString()}`,
+      { operation: 'list_payment_intents' },
     );
     if (!Array.isArray(page.items)) throw new TilledApiError('INVALID_PROVIDER_RESPONSE');
+    if (!page.items.every(isPaymentIntent)) {
+      throw new TilledApiError('INVALID_PROVIDER_RESPONSE', undefined, { kind: 'invalid_response' });
+    }
     return page.items.filter((intent) => intent.metadata?.hustlexp_payment_id === localPaymentId);
   }
 }
