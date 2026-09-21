@@ -105,6 +105,7 @@ import { testPayoutRouter } from './testPayout.js';
 import { businessClaimRouter } from './businessClaim.js';
 import { providerOsRouter } from './providerOs.js';
 import { supportRouter } from './support.js';
+import { businessPaymentRouter } from './businessPayment.js';
 
 import { quoteDecisionRouter } from './quoteDecision.js';
 import { businessAssessmentRouter } from './businessAssessment.js';
@@ -197,6 +198,7 @@ export const appRouter = router({
   businessClaim: businessClaimRouter,
   providerOs: providerOsRouter,
   support: supportRouter,
+  businessPayment: businessPaymentRouter,
 
   quoteDecision: quoteDecisionRouter,
   businessAssessment: businessAssessmentRouter,

@@ -1,9 +1,26 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../src/db.js', () => ({ db: { query: vi.fn() } }));
-vi.mock('../../src/logger.js', () => ({ logger: {
-  info: vi.fn(), warn: vi.fn(), error: vi.fn(),
-} }));
+vi.mock('../../src/logger.js', () => {
+  const logger = {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    fatal: vi.fn(),
+    child: vi.fn(),
+  };
+  logger.child.mockReturnValue(logger);
+  return {
+    logger,
+    authLogger: logger,
+    taskLogger: logger,
+    escrowLogger: logger,
+    workerLogger: logger,
+    dbLogger: logger,
+    stripeLogger: logger,
+    aiLogger: logger,
+  };
+});
 vi.mock('../../src/services/BusinessQuoteActivationService.js', () => ({
   isBusinessQuoteProviderVerified: vi.fn().mockResolvedValue(true),
 }));

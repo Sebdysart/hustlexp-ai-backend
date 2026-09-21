@@ -32,6 +32,35 @@ export class TilledApiError extends Error {
   }
 }
 
+export type TilledOnboardingStatus =
+  | 'created'
+  | 'started'
+  | 'submitted'
+  | 'active'
+  | 'disabled'
+  | 'in_review'
+  | 'rejected'
+  | 'withdrawn';
+
+export interface TilledAccountCapability {
+  id: string;
+  status: TilledOnboardingStatus;
+  onboarding_application_url?: string;
+  pricing_template?: {
+    id?: string;
+    payment_method_type?: string;
+  };
+}
+
+export interface TilledConnectedAccount {
+  id: string;
+  status?: string;
+  email?: string;
+  name?: string;
+  metadata?: Record<string, string>;
+  capabilities: TilledAccountCapability[];
+}
+
 function safeIdentifier(value: unknown): string | undefined {
   return typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,100}$/.test(value)
     ? value : undefined;
@@ -71,11 +100,38 @@ function isPaymentIntent(value: unknown): value is TilledPaymentIntent {
     && typeof intent.capture_method === 'string' && typeof intent.client_secret === 'string';
 }
 
+const onboardingStatuses = new Set<TilledOnboardingStatus>([
+  'created',
+  'started',
+  'submitted',
+  'active',
+  'disabled',
+  'in_review',
+  'rejected',
+  'withdrawn',
+]);
+
+function isConnectedAccount(value: unknown): value is TilledConnectedAccount {
+  if (!value || typeof value !== 'object') return false;
+  const account = value as Record<string, unknown>;
+  if (typeof account.id !== 'string' || !/^acct_[A-Za-z0-9_]+$/.test(account.id)
+    || !Array.isArray(account.capabilities)) return false;
+  return account.capabilities.every((value) => {
+    if (!value || typeof value !== 'object') return false;
+    const capability = value as Record<string, unknown>;
+    return typeof capability.id === 'string'
+      && typeof capability.status === 'string'
+      && onboardingStatuses.has(capability.status as TilledOnboardingStatus)
+      && (capability.onboarding_application_url === undefined
+        || typeof capability.onboarding_application_url === 'string');
+  });
+}
+
 type Fetcher = typeof fetch;
 
 export class TilledClient {
   constructor(
-    private readonly config: TilledConfig,
+    private readonly config: Pick<TilledConfig, 'environment' | 'apiBaseUrl' | 'secretKey'>,
     private readonly fetcher: Fetcher = fetch,
   ) {}
 
@@ -190,6 +246,77 @@ export class TilledClient {
       throw new TilledApiError('INVALID_PROVIDER_RESPONSE', undefined, { kind: 'invalid_response' });
     }
     return intent;
+  }
+
+  async createConnectedAccount(input: {
+    platformAccountId: string;
+    email: string;
+    name: string;
+    pricingTemplateId: string;
+    metadata: Record<string, string>;
+  }): Promise<TilledConnectedAccount> {
+    const account = await this.request<unknown>(
+      input.platformAccountId,
+      '/v1/accounts/connected',
+      {
+        method: 'POST',
+        operation: 'create_connected_account',
+        body: {
+          email: input.email,
+          name: input.name,
+          pricing_template_ids: [input.pricingTemplateId],
+          metadata: input.metadata,
+        },
+      },
+    );
+    if (!isConnectedAccount(account)) {
+      throw new TilledApiError(
+        'INVALID_PROVIDER_RESPONSE',
+        undefined,
+        { kind: 'invalid_response' },
+      );
+    }
+    return account;
+  }
+
+  async getConnectedAccount(accountId: string): Promise<TilledConnectedAccount> {
+    const account = await this.request<unknown>(
+      accountId,
+      '/v1/accounts',
+      { operation: 'get_connected_account' },
+    );
+    if (!isConnectedAccount(account)) {
+      throw new TilledApiError(
+        'INVALID_PROVIDER_RESPONSE',
+        undefined,
+        { kind: 'invalid_response' },
+      );
+    }
+    return account;
+  }
+
+  async findConnectedAccountsByMetadata(input: {
+    platformAccountId: string;
+    metadata: Record<string, string>;
+  }): Promise<TilledConnectedAccount[]> {
+    const params = new URLSearchParams({ limit: '2' });
+    for (const [key, value] of Object.entries(input.metadata)) {
+      params.set(`metadata[${key}]`, value);
+    }
+    const page = await this.request<{ items?: unknown[] }>(
+      input.platformAccountId,
+      `/v1/accounts/connected?${params.toString()}`,
+      { operation: 'list_connected_accounts' },
+    );
+    if (!Array.isArray(page.items) || !page.items.every(isConnectedAccount)) {
+      throw new TilledApiError(
+        'INVALID_PROVIDER_RESPONSE',
+        undefined,
+        { kind: 'invalid_response' },
+      );
+    }
+    return page.items.filter((account) => Object.entries(input.metadata)
+      .every(([key, value]) => account.metadata?.[key] === value));
   }
 
   async findPaymentIntentsByLocalPaymentId(

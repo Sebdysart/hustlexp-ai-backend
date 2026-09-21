@@ -152,6 +152,7 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260926_checkr_webhook_ordering', fileName: '20260926_checkr_webhook_ordering.sql' },
   { name: '20260927_business_task_list_indexes', fileName: '20260927_business_task_list_indexes.sql' },
   { name: '20260928_tilled_quote_payment', fileName: '20260928_tilled_quote_payment.sql' },
+  { name: '20260929_tilled_merchant_onboarding', fileName: '20260929_tilled_merchant_onboarding.sql' },
 ] as const;
 
 
