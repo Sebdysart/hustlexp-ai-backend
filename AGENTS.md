@@ -14,7 +14,9 @@ Continue the existing dependency plan and one bounded observable workflow. M01's
 
 Before a change record requirement/section, exact source files/functions, schema/worker dependencies, acceptance and failure/recovery cases, owner and non-goals. Run the smallest relevant tests plus applicable gates. Unit mocks, skipped DB tests, seeded terminal rows, compile success and HTTP health are not end-to-end evidence. Missing DATABASE_URL means DB tests unexecuted, not passed. Preserve auth, idempotency, version, identity/access and external-effect containment.
 
-Package scripts at the checkpoint use Node 22/npm 10: npm ci; npm run typecheck; npm run lint; npm test; npm run compile. Reverify package/lock/workflow at the candidate. Startup and db:validate require a validated disposable environment; never run db:reset:destructive on shared/persistent targets. Inspect actual external-effect boundaries before starting API/workers; no live credentials for synthetic tests.
+Toolchain provenance: .github/workflows/ci.yml selects Node 22. The inspected package.json does not declare an engines or packageManager pin; do not attribute Node/npm requirements to it. The September 20 baseline CI logs record Node 22.23.2 and npm 10.9.8; the assistant environment used Node 22.16.0 and npm 10.9.2. These are observed versions, not equivalent-environment certification. Capture actual versions on every run.
+
+For CI parity, capture each command/result separately: npm ci; npx tsc --noEmit; npx eslint backend/src/ --ext .ts --max-warnings 0; npx vitest run --reporter=verbose; npm audit --omit=dev --audit-level=high; npm run compile. The package lint script alone does not add CI's zero-warning argument. Existing CI reads TEST_* database/Redis secrets; their names do not prove disposable topology or effect containment. Local application startup and db:validate require a validated disposable environment; never run db:reset:destructive on shared/persistent targets. Inspect actual external-effect boundaries before starting API/workers; no live credentials for synthetic tests.
 
 ## Report and stop
 
