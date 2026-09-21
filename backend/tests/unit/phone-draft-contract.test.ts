@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 const read = (path: string) => readFileSync(path, 'utf8');
 const migration = read('backend/database/migrations/20261002_phone_draft_claims.sql');
+const schema = read('backend/database/constitutional-schema.sql');
 const claim = read('backend/src/services/CustomerDraftClaimService.ts');
 const ops = read('backend/src/routers/web/ops.ts');
 const postTask = read('backend/src/routers/web/postTask.ts');
@@ -60,6 +61,16 @@ describe('Ops phone draft ownership contract', () => {
     expect(claim).toContain("const body = 'pending_phone_claim'");
     expect(worker).toContain('pendingPhoneClaimSmsBody');
     expect(worker).toContain("recipient_kind === 'pending_phone_claim'");
+  });
+
+  it('routes pending-claim SMS through the canonical allowed notification queue', () => {
+    expect(schema).toMatch(/queue_name[\s\S]*'user_notifications'/i);
+    expect(claim).toMatch(
+      /VALUES \('sms\.send_requested','pending_phone_draft_claim',[\s\S]*'user_notifications','pending',NOW\(\)\)/,
+    );
+    expect(claim).not.toMatch(
+      /VALUES \('sms\.send_requested','pending_phone_draft_claim',[\s\S]*'sms','pending',NOW\(\)\)/,
+    );
   });
 
   it('does not expand Provider OS to ownerless drafts', () => {

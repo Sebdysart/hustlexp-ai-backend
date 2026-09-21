@@ -108,7 +108,7 @@ export async function createPendingPhoneClaimInTransaction(
     `INSERT INTO outbox_events
        (event_type, aggregate_type, aggregate_id, event_version, idempotency_key,
         payload, queue_name, status, available_at)
-     VALUES ('sms.send_requested','pending_phone_draft_claim',$1,1,$2,$3::jsonb,'sms','pending',NOW())
+     VALUES ('sms.send_requested','pending_phone_draft_claim',$1,1,$2,$3::jsonb,'user_notifications','pending',NOW())
      ON CONFLICT (idempotency_key) DO NOTHING`,
     [
       claimId,
