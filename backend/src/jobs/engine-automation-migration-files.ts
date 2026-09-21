@@ -154,6 +154,7 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260928_tilled_quote_payment', fileName: '20260928_tilled_quote_payment.sql' },
   { name: '20260929_tilled_merchant_onboarding', fileName: '20260929_tilled_merchant_onboarding.sql' },
   { name: '20260930_tilled_merchant_invitations', fileName: '20260930_tilled_merchant_invitations.sql' },
+  { name: '20261001_business_quote_list_indexes', fileName: '20261001_business_quote_list_indexes.sql' },
 ] as const;
 
 
