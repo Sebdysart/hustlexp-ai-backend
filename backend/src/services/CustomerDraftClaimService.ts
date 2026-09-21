@@ -38,6 +38,16 @@ export interface PendingPhoneClaimCreated {
   smsQueued: boolean;
 }
 
+export type PendingPhoneClaimDiagnosticEvent = {
+  stage:
+    | 'pending_claim_create_start'
+    | 'pending_claim_create_success'
+    | 'sms_enqueue_start'
+    | 'sms_enqueue_success';
+  claimId?: string;
+  smsId?: string;
+};
+
 export async function createPendingPhoneClaimInTransaction(
   query: QueryFn,
   input: {
@@ -45,11 +55,13 @@ export async function createPendingPhoneClaimInTransaction(
     normalizedPhone: string;
     createdByOpsUserId: string;
     auditMetadata?: Record<string, unknown>;
+    onDiagnosticStage?: (event: PendingPhoneClaimDiagnosticEvent) => void;
   },
 ): Promise<PendingPhoneClaimCreated> {
   const claimId = crypto.randomUUID();
   const rawToken = pendingPhoneClaimToken(claimId);
   const expiresAt = new Date(Date.now() + CLAIM_TTL_MS);
+  input.onDiagnosticStage?.({ stage: 'pending_claim_create_start', claimId });
   const claim = await query<{ id: string }>(
     `INSERT INTO pending_phone_draft_claims
        (id, task_draft_id, intended_phone_e164, intended_phone_hash, token_hash,
@@ -69,11 +81,16 @@ export async function createPendingPhoneClaimInTransaction(
   );
   const persistedClaimId = claim.rows[0]?.id;
   if (!persistedClaimId) throw new Error('PENDING_PHONE_CLAIM_NOT_CREATED');
+  input.onDiagnosticStage?.({
+    stage: 'pending_claim_create_success',
+    claimId: persistedClaimId,
+  });
 
   // The raw capability is never persisted. The worker deterministically rebuilds
   // it from the random claim id plus the server-only queue HMAC secret.
   const body = 'pending_phone_claim';
   const idempotencyKey = `pending-phone-claim:${claimId}:sms:v1`;
+  input.onDiagnosticStage?.({ stage: 'sms_enqueue_start', claimId: persistedClaimId });
   const sms = await query<{ id: string }>(
     `INSERT INTO sms_outbox
        (user_id, to_phone, body, status, idempotency_key, recipient_kind, recipient_context_id)
@@ -103,6 +120,11 @@ export async function createPendingPhoneClaimInTransaction(
       }),
     ],
   );
+  input.onDiagnosticStage?.({
+    stage: 'sms_enqueue_success',
+    claimId: persistedClaimId,
+    smsId,
+  });
 
   return { claimId: persistedClaimId, rawToken, expiresAt, smsQueued: true };
 }

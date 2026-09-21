@@ -28,6 +28,26 @@ describe('Ops phone draft ownership contract', () => {
     expect(ops).toContain('posterUserId: null');
   });
 
+  it('logs every customer-draft creation boundary with one correlation context', () => {
+    for (const stage of [
+      'ops_create_customer_draft_start',
+      'normalize_customer_phone',
+      'canonical_draft_create_start',
+      'canonical_draft_create_success',
+      'pending_claim_create_start',
+      'pending_claim_create_success',
+      'sms_enqueue_start',
+      'sms_enqueue_success',
+      'response_build',
+      'ops_create_customer_draft_success',
+    ]) {
+      expect(`${ops}\n${claim}`).toContain(stage);
+    }
+    expect(ops).toContain('correlationId');
+    expect(ops).toContain('serializeCustomerDraftError');
+    expect(ops).toMatch(/catch\s*\(error\)[\s\S]*throw error/);
+  });
+
   it('locks the claim and both ownership records before consuming it', () => {
     expect(claim).toMatch(/pending_phone_draft_claims[\s\S]*for update/i);
     expect(claim).toMatch(/task_drafts where id=\$1 for update/i);

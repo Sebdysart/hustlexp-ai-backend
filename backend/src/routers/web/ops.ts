@@ -39,6 +39,73 @@ import { AnalyticsService } from '../../services/AnalyticsService.js';
 
 const log = logger.child({ router: 'web.ops' });
 
+type CustomerDraftCreateStage =
+  | 'ops_create_customer_draft_start'
+  | 'normalize_customer_phone'
+  | 'canonical_draft_create_start'
+  | 'canonical_draft_create_success'
+  | 'pending_claim_create_start'
+  | 'pending_claim_create_success'
+  | 'sms_enqueue_start'
+  | 'sms_enqueue_success'
+  | 'ops_audit_write'
+  | 'transaction_commit'
+  | 'response_build'
+  | 'ops_create_customer_draft_success';
+
+const CUSTOMER_DRAFT_SECRET_PATTERN = /\b(?:eyJ[A-Za-z0-9_-]{20,}|[a-f0-9]{64})\b/gi;
+const CUSTOMER_DRAFT_PHONE_PATTERN = /\+?\d[\d\s().-]{6,}\d/g;
+
+function sanitizeCustomerDraftDiagnostic(value: unknown): string | undefined {
+  if (typeof value !== 'string' && typeof value !== 'number') return undefined;
+  return String(value)
+    .slice(0, 2_000)
+    .replace(CUSTOMER_DRAFT_SECRET_PATTERN, '[REDACTED_TOKEN]')
+    .replace(CUSTOMER_DRAFT_PHONE_PATTERN, '[REDACTED_PHONE]');
+}
+
+function serializeCustomerDraftCause(cause: unknown): Record<string, string | undefined> | string | undefined {
+  if (cause instanceof Error) {
+    const record = cause as Error & { code?: unknown };
+    return {
+      name: sanitizeCustomerDraftDiagnostic(record.name),
+      message: sanitizeCustomerDraftDiagnostic(record.message),
+      code: sanitizeCustomerDraftDiagnostic(record.code),
+    };
+  }
+  if (typeof cause === 'string' || typeof cause === 'number') {
+    return sanitizeCustomerDraftDiagnostic(cause);
+  }
+  return undefined;
+}
+
+function serializeCustomerDraftError(error: unknown): Record<string, unknown> {
+  const record = error && typeof error === 'object'
+    ? error as Record<string, unknown>
+    : {};
+  const postgres = {
+    code: sanitizeCustomerDraftDiagnostic(record.code),
+    detail: sanitizeCustomerDraftDiagnostic(record.detail),
+    constraint: sanitizeCustomerDraftDiagnostic(record.constraint),
+    table: sanitizeCustomerDraftDiagnostic(record.table),
+    column: sanitizeCustomerDraftDiagnostic(record.column),
+    schema: sanitizeCustomerDraftDiagnostic(record.schema),
+  };
+
+  return {
+    name: sanitizeCustomerDraftDiagnostic(
+      error instanceof Error ? error.name : record.name,
+    ) ?? typeof error,
+    message: sanitizeCustomerDraftDiagnostic(
+      error instanceof Error ? error.message : record.message,
+    ) ?? 'Unknown error',
+    code: sanitizeCustomerDraftDiagnostic(record.code),
+    cause: serializeCustomerDraftCause(record.cause),
+    postgres,
+    trpcCode: error instanceof TRPCError ? error.code : undefined,
+  };
+}
+
 function mapOpsAuth(error: unknown): never {
   if (error instanceof OpsAuthError) {
     throw new TRPCError({ code: 'FORBIDDEN', message: error.message });
@@ -132,88 +199,170 @@ export const webOpsRouter = router({
       intake: CanonicalTaskDraftInputSchema,
     }))
     .mutation(async ({ ctx, input }) => {
-      const normalizedPhone = normalizePhoneToE164(input.customerPhone);
       const correlationId = crypto.randomUUID();
-      const created = await db.transaction(async (query) => {
-        const draft = await createCanonicalTaskDraftInTransaction(query, {
-          input: {
-            ...input.intake,
-            lead: {
-              ...input.intake.lead,
-              email: undefined,
-              phone: normalizedPhone,
-              name: input.customerName ?? input.intake.lead.name,
+      const requestLog = log.child({
+        action: 'webOps.createCustomerTaskDraft',
+        correlationId,
+        actorUserId: ctx.user.id,
+        submissionId: input.intake.lead.submission_id,
+      });
+      let stage: CustomerDraftCreateStage = 'ops_create_customer_draft_start';
+      const markStage = (
+        nextStage: CustomerDraftCreateStage,
+        identifiers: Record<string, unknown> = {},
+      ): void => {
+        stage = nextStage;
+        requestLog.info({ stage, ...identifiers }, 'Ops customer draft creation stage');
+      };
+
+      try {
+        markStage('ops_create_customer_draft_start');
+        markStage('normalize_customer_phone');
+        const normalizedPhone = normalizePhoneToE164(input.customerPhone);
+
+        const created = await db.transaction(async (query) => {
+          markStage('canonical_draft_create_start');
+          const draft = await createCanonicalTaskDraftInTransaction(query, {
+            input: {
+              ...input.intake,
+              lead: {
+                ...input.intake.lead,
+                email: undefined,
+                phone: normalizedPhone,
+                name: input.customerName ?? input.intake.lead.name,
+              },
+              task: { ...input.intake.task, source: 'ops_phone' },
             },
-            task: { ...input.intake.task, source: 'ops_phone' },
-          },
-          posterUserId: null,
-          actorUserId: ctx.user.id,
-          source: 'ops_phone',
-          correlationId,
-        });
-        if (draft.replayed) {
-          const existingClaim = await query<{ id: string; status: string; expires_at: Date }>(
-            `SELECT id, status, expires_at FROM pending_phone_draft_claims
-              WHERE task_draft_id=$1 LIMIT 1`,
-            [draft.taskDraftId],
-          );
+            posterUserId: null,
+            actorUserId: ctx.user.id,
+            source: 'ops_phone',
+            correlationId,
+          });
+          markStage('canonical_draft_create_success', {
+            taskDraftId: draft.taskDraftId,
+            leadId: draft.leadId,
+            replayed: draft.replayed,
+          });
+
+          if (draft.replayed) {
+            markStage('pending_claim_create_start', {
+              taskDraftId: draft.taskDraftId,
+              replayed: true,
+            });
+            const existingClaim = await query<{ id: string; status: string; expires_at: Date }>(
+              `SELECT id, status, expires_at FROM pending_phone_draft_claims
+                WHERE task_draft_id=$1 LIMIT 1`,
+              [draft.taskDraftId],
+            );
+            const claimId = existingClaim.rows[0]?.id ?? null;
+            markStage('pending_claim_create_success', {
+              taskDraftId: draft.taskDraftId,
+              claimId,
+              replayed: true,
+            });
+            markStage('sms_enqueue_start', {
+              taskDraftId: draft.taskDraftId,
+              claimId,
+              replayed: true,
+            });
+            markStage('sms_enqueue_success', {
+              taskDraftId: draft.taskDraftId,
+              claimId,
+              replayed: true,
+              smsStatus: 'already_queued',
+            });
+            stage = 'transaction_commit';
+            return {
+              draft,
+              claimId,
+              claimToken: null,
+              smsStatus: 'already_queued' as const,
+              expiresAt: existingClaim.rows[0]?.expires_at ?? null,
+            };
+          }
+
+          const claim = await createPendingPhoneClaimInTransaction(query, {
+            taskDraftId: draft.taskDraftId,
+            normalizedPhone,
+            createdByOpsUserId: ctx.user.id,
+            auditMetadata: { source: 'web_ops', correlationId },
+            onDiagnosticStage: (event) => {
+              markStage(event.stage, {
+                taskDraftId: draft.taskDraftId,
+                leadId: draft.leadId,
+                claimId: event.claimId,
+                smsId: event.smsId,
+              });
+            },
+          });
+          stage = 'ops_audit_write';
+          await recordOpsAudit({
+            actorUserId: ctx.user.id,
+            action: 'customer_task_draft_created',
+            targetType: 'task_draft',
+            targetId: draft.taskDraftId,
+            meta: { claim_id: claim.claimId, source: 'ops_phone' },
+          }, query, true);
+          stage = 'transaction_commit';
           return {
             draft,
-            claimId: existingClaim.rows[0]?.id ?? null,
-            claimToken: null,
-            smsStatus: 'already_queued' as const,
-            expiresAt: existingClaim.rows[0]?.expires_at ?? null,
+            claimId: claim.claimId,
+            claimToken: claim.rawToken,
+            smsStatus: 'queued' as const,
+            expiresAt: claim.expiresAt,
           };
-        }
-        const claim = await createPendingPhoneClaimInTransaction(query, {
-          taskDraftId: draft.taskDraftId,
-          normalizedPhone,
-          createdByOpsUserId: ctx.user.id,
-          auditMetadata: { source: 'web_ops', correlationId },
         });
-        await recordOpsAudit({
-          actorUserId: ctx.user.id,
-          action: 'customer_task_draft_created',
-          targetType: 'task_draft',
-          targetId: draft.taskDraftId,
-          meta: { claim_id: claim.claimId, source: 'ops_phone' },
-        }, query, true);
-        return {
-          draft,
-          claimId: claim.claimId,
-          claimToken: claim.rawToken,
-          smsStatus: 'queued' as const,
-          expiresAt: claim.expiresAt,
-        };
-      });
 
-      if (!created.draft.replayed) {
-        void AnalyticsService.track({
-          event_name: 'task_draft_created',
-          deduplication_key: created.draft.taskDraftId,
-          user_id: undefined,
-          correlation_id: correlationId,
-          task_draft_id: created.draft.taskDraftId,
-          category: input.intake.task.category,
-          outcome: 'committed',
-          properties: {
-            acquisition_source: 'ops_phone',
-            poster_pending: true,
-            created_by_ops_user_id: ctx.user.id,
-          },
+        markStage('response_build', {
+          taskDraftId: created.draft.taskDraftId,
+          leadId: created.draft.leadId,
+          claimId: created.claimId,
+          replayed: created.draft.replayed,
+          smsStatus: created.smsStatus,
         });
+        const response = {
+          ok: true as const,
+          taskDraftId: created.draft.taskDraftId,
+          leadId: created.draft.leadId,
+          pendingCustomer: true,
+          replayed: created.draft.replayed,
+          claimId: created.claimId,
+          claimToken: created.claimToken,
+          smsStatus: created.smsStatus,
+          expiresAt: created.expiresAt,
+        };
+
+        if (!created.draft.replayed) {
+          void AnalyticsService.track({
+            event_name: 'task_draft_created',
+            deduplication_key: created.draft.taskDraftId,
+            user_id: undefined,
+            correlation_id: correlationId,
+            task_draft_id: created.draft.taskDraftId,
+            category: input.intake.task.category,
+            outcome: 'committed',
+            properties: {
+              acquisition_source: 'ops_phone',
+              poster_pending: true,
+              created_by_ops_user_id: ctx.user.id,
+            },
+          });
+        }
+        markStage('ops_create_customer_draft_success', {
+          taskDraftId: created.draft.taskDraftId,
+          leadId: created.draft.leadId,
+          claimId: created.claimId,
+          replayed: created.draft.replayed,
+          smsStatus: created.smsStatus,
+        });
+        return response;
+      } catch (error) {
+        requestLog.error(
+          { stage, error: serializeCustomerDraftError(error) },
+          'Ops customer draft creation failed',
+        );
+        throw error;
       }
-      return {
-        ok: true as const,
-        taskDraftId: created.draft.taskDraftId,
-        leadId: created.draft.leadId,
-        pendingCustomer: true,
-        replayed: created.draft.replayed,
-        claimId: created.claimId,
-        claimToken: created.claimToken,
-        smsStatus: created.smsStatus,
-        expiresAt: created.expiresAt,
-      };
     }),
 
   mapTilledSandboxMerchantAccount: operationsAdminProcedure
