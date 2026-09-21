@@ -47,7 +47,7 @@ const invitation = {
   id: 'ui_merchant_owner',
   account_id: 'acct_merchant',
   email: 'owner@example.com',
-  role: 'admin',
+  role: 'merchant_owner',
   created_at: '2026-09-21T00:00:00.000Z',
   updated_at: '2026-09-21T00:00:00.000Z',
   expires_at: '2099-09-28T00:00:00.000Z',
@@ -176,11 +176,14 @@ describe('Tilled merchant onboarding contract', () => {
     const [url, init] = fetcher.mock.calls[0];
     expect(url).toBe('https://sandbox-api.tilled.com/v1/user-invitations');
     expect(init.headers['tilled-account']).toBe('acct_merchant');
-    expect(JSON.parse(init.body)).toEqual({
+    const payload = JSON.parse(init.body);
+    expect(payload).toEqual({
       email: invitation.email,
       email_template: 'merchant_application',
-      role: 'admin',
+      role: 'merchant_owner',
     });
+    expect(payload.role).toMatch(/^merchant_/);
+    expect(['owner', 'admin']).not.toContain(payload.role);
   });
 
   it('recovers only the exact organization and environment metadata', async () => {

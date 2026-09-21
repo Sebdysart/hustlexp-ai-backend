@@ -335,7 +335,7 @@ export class TilledClient {
         body: {
           email: input.email,
           email_template: 'merchant_application',
-          role: 'admin',
+          role: 'merchant_owner',
         },
       },
     );
