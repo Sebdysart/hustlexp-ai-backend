@@ -43,6 +43,18 @@ const account = {
   }],
 };
 
+const invitation = {
+  id: 'ui_merchant_owner',
+  account_id: 'acct_merchant',
+  email: 'owner@example.com',
+  role: 'admin',
+  created_at: '2026-09-21T00:00:00.000Z',
+  updated_at: '2026-09-21T00:00:00.000Z',
+  expires_at: '2099-09-28T00:00:00.000Z',
+  sent_at: '2026-09-21T00:00:00.000Z',
+  invitation_url: 'https://sandbox-app.tilled.com/user-invitations/ui_merchant_owner',
+};
+
 const organizationId = 'c7eaefe5-2f45-4ddf-8ac1-0d1a23ef4fd3';
 const actorId = 'b355def1-8453-44bc-87e8-b216705ceb81';
 const paymentAccountId = 'b39e8183-82ca-4d04-86ac-70deedbbc306';
@@ -55,6 +67,9 @@ const reservedRow = {
   charges_enabled: false,
   provider_onboarding_status: null,
   onboarding_state: 'RESERVED',
+  provider_user_invitation_id: null,
+  invitation_state: 'NOT_CREATED',
+  invitation_email: null,
   last_synced_at: null,
   updated_at: new Date(),
 };
@@ -149,6 +164,25 @@ describe('Tilled merchant onboarding contract', () => {
     expect(fetcher.mock.calls[0][1].headers['tilled-account']).toBe('acct_merchant');
   });
 
+  it('creates the documented merchant application invitation on the connected account', async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(invitation), { status: 201 }),
+    );
+    const result = await new TilledClient(config, fetcher).createUserInvitation({
+      accountId: account.id,
+      email: invitation.email,
+    });
+    expect(result.invitation_url).toBe(invitation.invitation_url);
+    const [url, init] = fetcher.mock.calls[0];
+    expect(url).toBe('https://sandbox-api.tilled.com/v1/user-invitations');
+    expect(init.headers['tilled-account']).toBe('acct_merchant');
+    expect(JSON.parse(init.body)).toEqual({
+      email: invitation.email,
+      email_template: 'merchant_application',
+      role: 'admin',
+    });
+  });
+
   it('recovers only the exact organization and environment metadata', async () => {
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       items: [account, {
@@ -186,16 +220,33 @@ describe('Tilled merchant onboarding idempotency', () => {
       rowCount: 1,
     });
     vi.spyOn(TilledClient.prototype, 'createConnectedAccount').mockResolvedValue(account as never);
-    vi.mocked(db.query).mockResolvedValueOnce({
-      rows: [{
-        ...reservedRow,
-        provider_account_id: account.id,
-        application_id: 'cap_application',
-        provider_onboarding_status: 'created',
-        onboarding_state: 'BOUND',
-      }],
-      rowCount: 1,
-    } as never);
+    vi.spyOn(TilledClient.prototype, 'findUserInvitations').mockResolvedValue([]);
+    vi.spyOn(TilledClient.prototype, 'createUserInvitation').mockResolvedValue(invitation as never);
+    const boundRow = {
+      ...reservedRow,
+      provider_account_id: account.id,
+      application_id: 'cap_application',
+      provider_onboarding_status: 'created',
+      onboarding_state: 'BOUND',
+    } as const;
+    vi.mocked(db.query)
+      .mockResolvedValueOnce({
+        rows: [boundRow],
+        rowCount: 1,
+      } as never)
+      .mockResolvedValueOnce({
+        rows: [{ ...boundRow, invitation_state: 'CREATING' }],
+        rowCount: 1,
+      } as never)
+      .mockResolvedValueOnce({
+        rows: [{
+          ...boundRow,
+          provider_user_invitation_id: invitation.id,
+          invitation_state: 'CREATED',
+          invitation_email: invitation.email,
+        }],
+        rowCount: 1,
+      } as never);
 
     const result = await startBusinessPaymentOnboarding({ organizationId, actorId });
     expect(query.mock.calls[0][0]).toContain('MANAGE_BILLING');
@@ -212,29 +263,117 @@ describe('Tilled merchant onboarding idempotency', () => {
       organizationId,
       status: 'action_required',
       chargesEnabled: false,
-      onboardingUrl: 'https://onboarding.tilled.com/application',
+      onboardingAction: 'open_invitation',
+      invitationUrl: invitation.invitation_url,
     });
+    expect(result).not.toHaveProperty('onboardingUrl');
+    expect(TilledClient.prototype.createUserInvitation).toHaveBeenCalledWith({
+      accountId: 'acct_merchant',
+      email: 'owner@example.com',
+    });
+    expect(vi.mocked(db.query).mock.calls[2][1]).toEqual([
+      paymentAccountId,
+      invitation.id,
+      invitation.email,
+      account.id,
+    ]);
   });
 
-  it('resumes an existing provider account without creating another one', async () => {
+  it('resumes the same connected account and invitation without creating duplicates', async () => {
     const boundRow = {
       ...reservedRow,
       provider_account_id: 'acct_merchant',
       application_id: 'cap_application',
       provider_onboarding_status: 'started',
       onboarding_state: 'BOUND',
+      provider_user_invitation_id: invitation.id,
+      invitation_state: 'CREATED',
+      invitation_email: invitation.email,
     };
     prepareTransaction(boundRow);
-    const create = vi.spyOn(TilledClient.prototype, 'createConnectedAccount');
+    const createAccount = vi.spyOn(TilledClient.prototype, 'createConnectedAccount');
+    const createInvitation = vi.spyOn(TilledClient.prototype, 'createUserInvitation');
     vi.spyOn(TilledClient.prototype, 'getConnectedAccount').mockResolvedValue({
       ...account,
       capabilities: [{ ...account.capabilities[0], status: 'started' }],
     } as never);
+    vi.spyOn(TilledClient.prototype, 'getUserInvitation').mockResolvedValue(invitation as never);
     vi.mocked(db.query).mockResolvedValueOnce({ rows: [boundRow], rowCount: 1 } as never);
 
     const result = await startBusinessPaymentOnboarding({ organizationId, actorId });
-    expect(create).not.toHaveBeenCalled();
-    expect(result.status).toBe('action_required');
+    expect(createAccount).not.toHaveBeenCalled();
+    expect(createInvitation).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      organizationId,
+      status: 'action_required',
+      onboardingAction: 'open_invitation',
+      invitationUrl: invitation.invitation_url,
+    });
+  });
+
+  it('represents an email-only merchant invitation without returning a console URL', async () => {
+    const boundRow = {
+      ...reservedRow,
+      provider_account_id: account.id,
+      application_id: 'cap_application',
+      provider_onboarding_status: 'created',
+      onboarding_state: 'BOUND',
+      provider_user_invitation_id: invitation.id,
+      invitation_state: 'CREATED',
+      invitation_email: invitation.email,
+    } as const;
+    prepareTransaction(boundRow);
+    vi.spyOn(TilledClient.prototype, 'getConnectedAccount').mockResolvedValue(account as never);
+    vi.spyOn(TilledClient.prototype, 'getUserInvitation').mockResolvedValue({
+      ...invitation,
+      invitation_url: undefined,
+    } as never);
+    vi.mocked(db.query).mockResolvedValueOnce({ rows: [boundRow], rowCount: 1 } as never);
+
+    const result = await startBusinessPaymentOnboarding({ organizationId, actorId });
+    expect(result).toMatchObject({
+      status: 'action_required',
+      onboardingAction: 'check_email',
+    });
+    expect(result).not.toHaveProperty('invitationUrl');
+    expect(result).not.toHaveProperty('onboardingUrl');
+  });
+
+  it('recovers an existing provider invitation instead of creating a duplicate', async () => {
+    const boundRow = {
+      ...reservedRow,
+      provider_account_id: account.id,
+      application_id: 'cap_application',
+      provider_onboarding_status: 'created',
+      onboarding_state: 'BOUND',
+      invitation_state: 'RECONCILE_REQUIRED',
+    } as const;
+    prepareTransaction(boundRow);
+    vi.spyOn(TilledClient.prototype, 'getConnectedAccount').mockResolvedValue(account as never);
+    vi.spyOn(TilledClient.prototype, 'findUserInvitations').mockResolvedValue([invitation] as never);
+    const createInvitation = vi.spyOn(TilledClient.prototype, 'createUserInvitation');
+    vi.mocked(db.query)
+      .mockResolvedValueOnce({ rows: [boundRow], rowCount: 1 } as never)
+      .mockResolvedValueOnce({
+        rows: [{ ...boundRow, invitation_state: 'CREATING' }],
+        rowCount: 1,
+      } as never)
+      .mockResolvedValueOnce({
+        rows: [{
+          ...boundRow,
+          provider_user_invitation_id: invitation.id,
+          invitation_state: 'CREATED',
+          invitation_email: invitation.email,
+        }],
+        rowCount: 1,
+      } as never);
+
+    const result = await startBusinessPaymentOnboarding({ organizationId, actorId });
+    expect(createInvitation).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      onboardingAction: 'open_invitation',
+      invitationUrl: invitation.invitation_url,
+    });
   });
 
   it('does not call Tilled when billing authority is denied', async () => {

@@ -61,6 +61,18 @@ export interface TilledConnectedAccount {
   capabilities: TilledAccountCapability[];
 }
 
+export interface TilledUserInvitation {
+  id: string;
+  account_id: string;
+  email: string;
+  role: string;
+  created_at: string;
+  updated_at: string;
+  expires_at: string;
+  invitation_url?: string;
+  sent_at?: string;
+}
+
 function safeIdentifier(value: unknown): string | undefined {
   return typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,100}$/.test(value)
     ? value : undefined;
@@ -125,6 +137,21 @@ function isConnectedAccount(value: unknown): value is TilledConnectedAccount {
       && (capability.onboarding_application_url === undefined
         || typeof capability.onboarding_application_url === 'string');
   });
+}
+
+function isUserInvitation(value: unknown): value is TilledUserInvitation {
+  if (!value || typeof value !== 'object') return false;
+  const invitation = value as Record<string, unknown>;
+  return typeof invitation.id === 'string'
+    && typeof invitation.account_id === 'string'
+    && typeof invitation.email === 'string'
+    && typeof invitation.role === 'string'
+    && typeof invitation.created_at === 'string'
+    && typeof invitation.updated_at === 'string'
+    && typeof invitation.expires_at === 'string'
+    && (invitation.invitation_url === undefined
+      || typeof invitation.invitation_url === 'string')
+    && (invitation.sent_at === undefined || typeof invitation.sent_at === 'string');
 }
 
 type Fetcher = typeof fetch;
@@ -293,6 +320,73 @@ export class TilledClient {
       );
     }
     return account;
+  }
+
+  async createUserInvitation(input: {
+    accountId: string;
+    email: string;
+  }): Promise<TilledUserInvitation> {
+    const invitation = await this.request<unknown>(
+      input.accountId,
+      '/v1/user-invitations',
+      {
+        method: 'POST',
+        operation: 'create_user_invitation',
+        body: {
+          email: input.email,
+          email_template: 'merchant_application',
+          role: 'admin',
+        },
+      },
+    );
+    if (!isUserInvitation(invitation) || invitation.account_id !== input.accountId) {
+      throw new TilledApiError(
+        'INVALID_PROVIDER_RESPONSE',
+        undefined,
+        { kind: 'invalid_response' },
+      );
+    }
+    return invitation;
+  }
+
+  async getUserInvitation(
+    accountId: string,
+    invitationId: string,
+  ): Promise<TilledUserInvitation> {
+    const invitation = await this.request<unknown>(
+      accountId,
+      `/v1/user-invitations/${encodeURIComponent(invitationId)}`,
+      { operation: 'get_user_invitation' },
+    );
+    if (!isUserInvitation(invitation) || invitation.account_id !== accountId) {
+      throw new TilledApiError(
+        'INVALID_PROVIDER_RESPONSE',
+        undefined,
+        { kind: 'invalid_response' },
+      );
+    }
+    return invitation;
+  }
+
+  async findUserInvitations(input: {
+    accountId: string;
+    email: string;
+  }): Promise<TilledUserInvitation[]> {
+    const page = await this.request<{ items?: unknown[] }>(
+      input.accountId,
+      '/v1/user-invitations?offset=0&limit=100',
+      { operation: 'list_user_invitations' },
+    );
+    if (!Array.isArray(page.items) || !page.items.every(isUserInvitation)) {
+      throw new TilledApiError(
+        'INVALID_PROVIDER_RESPONSE',
+        undefined,
+        { kind: 'invalid_response' },
+      );
+    }
+    const normalizedEmail = input.email.trim().toLowerCase();
+    return page.items.filter((invitation) => invitation.account_id === input.accountId
+      && invitation.email.trim().toLowerCase() === normalizedEmail);
   }
 
   async findConnectedAccountsByMetadata(input: {
