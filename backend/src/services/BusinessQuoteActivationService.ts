@@ -17,7 +17,7 @@ export async function isBusinessQuoteProviderVerified(query: QueryFn, organizati
 // organization and draft locks; updating the expected state is the publish gate.
 export async function publishBusinessQuoteInTransaction(
   query: QueryFn,
-  input: { quoteId: string; taskDraftId: string; posterUserId: string; fromStatus: 'draft' | typeof PENDING_BUSINESS_VERIFICATION },
+  input: { quoteId: string; taskDraftId: string; posterUserId: string | null; fromStatus: 'draft' | typeof PENDING_BUSINESS_VERIFICATION },
 ): Promise<boolean> {
   const published = await query<{ id: string }>(
     `UPDATE quotes q SET status = 'submitted', updated_at = NOW()
@@ -32,7 +32,7 @@ export async function publishBusinessQuoteInTransaction(
   );
   if (!published.rows[0]) return false;
 
-  await NotificationService.createInTransaction(query, {
+  if (input.posterUserId) await NotificationService.createInTransaction(query, {
     userId: input.posterUserId,
     type: 'QUOTE_RECEIVED',
     title: 'New quote received',
@@ -68,7 +68,7 @@ export async function activatePendingBusinessQuotesInTransaction(
       [quote.id, quote.task_draft_id, organizationId],
     );
     const draft = (await query<{
-      poster_user_id: string; status: string; quote_id: string | null; task_id: string | null;
+      poster_user_id: string | null; status: string; quote_id: string | null; task_id: string | null;
     }>(
       `SELECT poster_user_id, status, quote_id, task_id FROM task_drafts WHERE id = $1 FOR UPDATE`,
       [quote.task_draft_id],

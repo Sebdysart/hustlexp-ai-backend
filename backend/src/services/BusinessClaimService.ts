@@ -46,7 +46,7 @@ function failure(code: string, message: string): ServiceResult<never> {
 
 type CreateBusinessQuoteInput = {
   acquisitionOrigin: 'claim_link' | 'direct_proposal' | 'provider_os';
-  draft: { id: string; title: string | null; scope_summary: string | null; poster_user_id: string };
+  draft: { id: string; title: string | null; scope_summary: string | null; poster_user_id: string | null };
   organizationId: string;
   actorId: string;
   serviceProfileId?: string;
@@ -257,7 +257,7 @@ export async function claimBusinessTask(
         category: string;
         title: string | null;
         scope_summary: string | null;
-        poster_user_id: string;
+        poster_user_id: string | null;
         status: string;
         quote_id: string | null;
         task_id: string | null;
@@ -484,7 +484,7 @@ export async function quoteAfterAssessment(input: {
         return failure('BUSINESS_NOT_READY', 'The business organization is not currently eligible to quote work.');
       }
 
-      const draftResult = await query<{ id: string; title: string | null; scope_summary: string | null; poster_user_id: string; status: string; task_id: string | null }>(
+      const draftResult = await query<{ id: string; title: string | null; scope_summary: string | null; poster_user_id: string | null; status: string; task_id: string | null }>(
         `SELECT id, title, scope_summary, poster_user_id, status, task_id FROM task_drafts WHERE id = $1 FOR UPDATE`,
         [assessment.task_draft_id],
       );

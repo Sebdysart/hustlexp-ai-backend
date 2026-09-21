@@ -93,7 +93,8 @@ interface DraftRow {
 
 interface LeadRow {
   id: string;
-  email: string;
+  email: string | null;
+  user_id: string | null;
 }
 
 interface QuotePaymentRow {
@@ -107,6 +108,23 @@ interface QuotePaymentRow {
   business_organization_id: string | null;
   provider_merchant_id: string | null;
   provider_environment: string | null;
+}
+
+export function leadOwnershipMatchesPoster(input: {
+  leadUserId: string | null;
+  leadEmail: string | null;
+  posterId: string;
+  posterEmail: string | null;
+}): boolean {
+  if (input.leadUserId) {
+    return input.leadUserId === input.posterId;
+  }
+
+  return Boolean(
+    input.leadEmail
+    && input.posterEmail
+    && input.posterEmail.trim().toLowerCase() === input.leadEmail.trim().toLowerCase(),
+  );
 }
 
 function fail<T>(
@@ -509,7 +527,7 @@ export async function finalizePaidQuote(
 
       const leadResult = await query<LeadRow>(
         `
-        SELECT id, email
+        SELECT id, email, user_id
         FROM leads
         WHERE id = $1
         LIMIT 1
@@ -523,7 +541,7 @@ export async function finalizePaidQuote(
         throw new Error('LEAD_NOT_FOUND');
       }
 
-      const posterResult = await query<{ email: string }>(
+      const posterResult = await query<{ email: string | null }>(
         `
         SELECT email
         FROM users
@@ -539,10 +557,13 @@ export async function finalizePaidQuote(
         throw new Error('POSTER_NOT_FOUND');
       }
 
-      if (
-        poster.email.trim().toLowerCase()
-        !== lead.email.trim().toLowerCase()
-      ) {
+      const ownershipMatches = leadOwnershipMatchesPoster({
+        leadUserId: lead.user_id,
+        leadEmail: lead.email,
+        posterId: input.posterId,
+        posterEmail: poster.email,
+      });
+      if (!ownershipMatches) {
         throw new Error('QUOTE_POSTER_MISMATCH');
       }
 

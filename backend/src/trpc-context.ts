@@ -1,6 +1,6 @@
 import { timingSafeEqual } from 'node:crypto';
 import { firebaseAuth } from './auth/firebase.js';
-import { ensureUserRowForFirebaseUid } from './auth/ensure-user.js';
+import { ensureUserRowForFirebaseUid, FirebasePhoneCollisionError } from './auth/ensure-user.js';
 import { authCache, authCacheKey, authCacheGet, authCacheSet } from './auth-cache.js';
 import { redis } from './cache/redis.js';
 import { db } from './db.js';
@@ -15,6 +15,7 @@ const revokedKey = (uid: string) => `auth:revoked:${uid}`;
 export interface Context extends Record<string, unknown> {
   user: User | null;
   firebaseUid: string | null;
+  authErrorCode?: 'PHONE_ALREADY_LINKED';
   ip: string | null;
   engineBridgeAuthorized?: boolean;
   engineBridgeActorId?: string | null;
@@ -119,6 +120,9 @@ export async function createContext(opts: { req: Request; resHeaders: Headers })
     return await verifiedContext(token, opts.req);
   } catch (error) {
     log.error({ err: safeAuthError(error) }, 'Firebase token verification failed');
+    if (error instanceof FirebasePhoneCollisionError) {
+      return { ...anonymousContext(opts.req), authErrorCode: 'PHONE_ALREADY_LINKED' };
+    }
     return anonymousContext(opts.req);
   }
 }

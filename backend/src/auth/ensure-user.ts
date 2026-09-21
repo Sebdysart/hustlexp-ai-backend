@@ -1,51 +1,58 @@
-/**
- * Lazy DB user provisioning when Firebase Auth has a valid user but the
- * `users` row is missing (e.g. legacy accounts, Firebase-only users).
- * Mirrors `user.register` INSERT shape so `user.me` + protectedProcedure work after sign-in.
- */
-
+/** Lazy domain-user provisioning for verified Firebase identities. */
 import { db } from '../db.js';
+import { normalizePhoneToE164 } from '../lib/phone.js';
 import { logger } from '../logger.js';
 import type { User } from '../types.js';
 import { getFirebaseUserRecord } from './firebase.js';
 
 const log = logger.child({ module: 'ensureUserFromFirebase' });
-
-/** Placeholder DOB for the legacy non-null column; is_minor=true keeps the account fail-closed until onboarding. */
 const LAZY_PROVISION_DOB = '1990-01-01';
 
-/**
- * Insert (or return existing) users row for a Firebase UID.
- * Returns null if Firebase has no email, insert fails (e.g. email owned by another UID), or on error.
- */
+export class FirebasePhoneCollisionError extends Error {
+  readonly applicationCode = 'PHONE_ALREADY_LINKED';
+  constructor() {
+    super('This verified phone number is already linked to another HustleXP account.');
+    this.name = 'FirebasePhoneCollisionError';
+  }
+}
+
 export async function ensureUserRowForFirebaseUid(firebaseUid: string): Promise<User | null> {
   try {
     const fbUser = await getFirebaseUserRecord(firebaseUid);
-    const email = fbUser.email;
-    if (!email) {
-      log.warn({ firebaseUid }, 'Firebase user has no email — cannot provision DB row');
+    const email = fbUser.email?.trim().toLowerCase() || null;
+    const phone = fbUser.phoneNumber ? normalizePhoneToE164(fbUser.phoneNumber) : null;
+    if (!email && !phone) {
+      log.warn({ firebaseUid }, 'Firebase user has no verified email or phone');
       return null;
     }
 
-    const displayName = fbUser.displayName?.trim() || email.split('@')[0] || 'User';
-    // Match user.register: phone-less → trust_tier 0 (UNVERIFIED)
-    const initialTrustTier = 0;
-
-    const result = await db.query<User>(
-      `INSERT INTO users (firebase_uid, email, full_name, default_mode, date_of_birth, is_minor, trust_tier)
-       VALUES ($1, $2, $3, 'worker', $4::date, true, $5)
-       ON CONFLICT (firebase_uid) DO UPDATE SET email = EXCLUDED.email, updated_at = NOW()
-       RETURNING *`,
-      [firebaseUid, email, displayName, LAZY_PROVISION_DOB, initialTrustTier]
-    );
-
-    const row = result.rows[0] ?? null;
-    if (row) {
-      log.info({ userId: row.id, firebaseUid }, 'Lazy-provisioned users row for Firebase sign-in');
+    if (phone) {
+      const collision = await db.query<{ id: string }>(
+        'SELECT id FROM users WHERE phone = $1 AND firebase_uid IS DISTINCT FROM $2 LIMIT 1',
+        [phone, firebaseUid],
+      );
+      if (collision.rows.length) throw new FirebasePhoneCollisionError();
     }
+
+    const displayName = fbUser.displayName?.trim()
+      || (email ? email.split('@')[0] : 'HustleXP customer');
+    const result = await db.query<User>(
+      `INSERT INTO users
+         (firebase_uid, email, phone, full_name, default_mode, date_of_birth, is_minor, trust_tier)
+       VALUES ($1, $2, $3, $4, $5, $6::date, true, $7)
+       ON CONFLICT (firebase_uid) DO UPDATE SET
+         email = COALESCE(users.email, EXCLUDED.email),
+         phone = COALESCE(users.phone, EXCLUDED.phone),
+         updated_at = NOW()
+       RETURNING *`,
+      [firebaseUid, email, phone, displayName, phone && !email ? 'poster' : 'worker', LAZY_PROVISION_DOB, phone ? 1 : 0],
+    );
+    const row = result.rows[0] ?? null;
+    if (row) log.info({ userId: row.id, firebaseUid }, 'Lazy-provisioned Firebase user');
     return row;
-  } catch (err) {
-    log.warn({ err, firebaseUid }, 'Lazy user provision failed (email conflict or schema mismatch)');
+  } catch (error) {
+    if (error instanceof FirebasePhoneCollisionError) throw error;
+    log.warn({ err: error, firebaseUid }, 'Lazy user provision failed');
     return null;
   }
 }

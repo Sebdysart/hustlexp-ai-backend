@@ -68,7 +68,9 @@ const isAuthenticated = t.middleware(async ({ ctx, next }) => {
   if (!ctx.user) {
     throw new TRPCError({
       code: 'UNAUTHORIZED',
-      message: 'Authentication required',
+      message: ctx.authErrorCode === 'PHONE_ALREADY_LINKED'
+        ? 'This verified phone number is already linked to another HustleXP account. Sign in with the original account or contact support.'
+        : 'Authentication required',
     });
   }
   // Secondary defense: check is_banned on every request even if the auth cache

@@ -29,6 +29,13 @@ import { NotificationService } from '../../services/NotificationService.js';
 import { getOpsLiquidityPayload } from '../../services/OpsLiquidityService.js';
 import { assertEngineOpsServiceKey, OpsAuthError } from './opsServiceKey.js';
 import { getTaskFactsForDisplay } from '../../services/taskIntake/getTaskFactsForDisplay.js';
+import {
+  CanonicalTaskDraftInputSchema,
+  createCanonicalTaskDraftInTransaction,
+} from '../../services/CanonicalTaskDraftService.js';
+import { createPendingPhoneClaimInTransaction } from '../../services/CustomerDraftClaimService.js';
+import { normalizePhoneToE164 } from '../../lib/phone.js';
+import { AnalyticsService } from '../../services/AnalyticsService.js';
 
 const log = logger.child({ router: 'web.ops' });
 
@@ -117,6 +124,97 @@ function generateBusinessClaimToken(): {
 }
 
 export const webOpsRouter = router({
+
+  createCustomerTaskDraft: operationsAdminProcedure
+    .input(z.object({
+      customerPhone: z.string().trim().min(7).max(30),
+      customerName: z.string().trim().min(1).max(200).optional(),
+      intake: CanonicalTaskDraftInputSchema,
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const normalizedPhone = normalizePhoneToE164(input.customerPhone);
+      const correlationId = crypto.randomUUID();
+      const created = await db.transaction(async (query) => {
+        const draft = await createCanonicalTaskDraftInTransaction(query, {
+          input: {
+            ...input.intake,
+            lead: {
+              ...input.intake.lead,
+              email: undefined,
+              phone: normalizedPhone,
+              name: input.customerName ?? input.intake.lead.name,
+            },
+            task: { ...input.intake.task, source: 'ops_phone' },
+          },
+          posterUserId: null,
+          actorUserId: ctx.user.id,
+          source: 'ops_phone',
+          correlationId,
+        });
+        if (draft.replayed) {
+          const existingClaim = await query<{ id: string; status: string; expires_at: Date }>(
+            `SELECT id, status, expires_at FROM pending_phone_draft_claims
+              WHERE task_draft_id=$1 LIMIT 1`,
+            [draft.taskDraftId],
+          );
+          return {
+            draft,
+            claimId: existingClaim.rows[0]?.id ?? null,
+            claimToken: null,
+            smsStatus: 'already_queued' as const,
+            expiresAt: existingClaim.rows[0]?.expires_at ?? null,
+          };
+        }
+        const claim = await createPendingPhoneClaimInTransaction(query, {
+          taskDraftId: draft.taskDraftId,
+          normalizedPhone,
+          createdByOpsUserId: ctx.user.id,
+          auditMetadata: { source: 'web_ops', correlationId },
+        });
+        await recordOpsAudit({
+          actorUserId: ctx.user.id,
+          action: 'customer_task_draft_created',
+          targetType: 'task_draft',
+          targetId: draft.taskDraftId,
+          meta: { claim_id: claim.claimId, source: 'ops_phone' },
+        }, query, true);
+        return {
+          draft,
+          claimId: claim.claimId,
+          claimToken: claim.rawToken,
+          smsStatus: 'queued' as const,
+          expiresAt: claim.expiresAt,
+        };
+      });
+
+      if (!created.draft.replayed) {
+        void AnalyticsService.track({
+          event_name: 'task_draft_created',
+          deduplication_key: created.draft.taskDraftId,
+          user_id: undefined,
+          correlation_id: correlationId,
+          task_draft_id: created.draft.taskDraftId,
+          category: input.intake.task.category,
+          outcome: 'committed',
+          properties: {
+            acquisition_source: 'ops_phone',
+            poster_pending: true,
+            created_by_ops_user_id: ctx.user.id,
+          },
+        });
+      }
+      return {
+        ok: true as const,
+        taskDraftId: created.draft.taskDraftId,
+        leadId: created.draft.leadId,
+        pendingCustomer: true,
+        replayed: created.draft.replayed,
+        claimId: created.claimId,
+        claimToken: created.claimToken,
+        smsStatus: created.smsStatus,
+        expiresAt: created.expiresAt,
+      };
+    }),
 
   mapTilledSandboxMerchantAccount: operationsAdminProcedure
     .input(z.object({
@@ -227,6 +325,10 @@ export const webOpsRouter = router({
 
           poster.full_name AS poster_name,
           poster.email AS poster_email,
+          phone_claim.status AS customer_claim_status,
+          phone_claim.expires_at AS customer_claim_expires_at,
+          phone_claim.claimed_at AS customer_claimed_at,
+          phone_claim_sms.status AS customer_sms_status,
 
           claim.id AS claim_link_id,
           claim.status AS claim_status,
@@ -239,6 +341,23 @@ export const webOpsRouter = router({
 
         LEFT JOIN users poster
           ON poster.id = d.poster_user_id
+
+        LEFT JOIN LATERAL (
+          SELECT id, status, expires_at, claimed_at
+          FROM pending_phone_draft_claims
+          WHERE task_draft_id = d.id
+          ORDER BY created_at DESC
+          LIMIT 1
+        ) phone_claim ON TRUE
+
+        LEFT JOIN LATERAL (
+          SELECT status
+          FROM sms_outbox
+          WHERE recipient_kind = 'pending_phone_claim'
+            AND recipient_context_id = phone_claim.id
+          ORDER BY created_at DESC
+          LIMIT 1
+        ) phone_claim_sms ON TRUE
 
         LEFT JOIN LATERAL (
           SELECT

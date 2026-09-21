@@ -150,8 +150,8 @@ interface SMSJobData {
     smsId: string;
     notificationId?: string;
     userId?: string;
-    toPhone: string;
-    body: string;
+    toPhone?: string;
+    body?: string;
   };
 }
 
@@ -167,16 +167,48 @@ interface SMSJobData {
  */
 export async function processSMSJob(job: Job<SMSJobData>): Promise<void> {
   // Extract data from job payload (structured as outbox event)
-  const { smsId, notificationId, toPhone, body } = job.data.payload;
+  const { smsId, notificationId } = job.data.payload;
+  let { toPhone, body } = job.data.payload;
   const jobIdempotencyKey = job.id || `sms:${smsId}`;
   // Route using persisted provenance, never a client/Redis boolean. Legacy premium
   // rows stay suppressed. The ordinary marketplace SMS path below is unchanged.
-  const principal = await db.query<{ provider_os_event_id: string | null; idempotency_key: string }>(
-    'SELECT provider_os_event_id, idempotency_key FROM sms_outbox WHERE id = $1', [smsId],
+  const principal = await db.query<{
+    provider_os_event_id: string | null;
+    idempotency_key: string;
+    recipient_kind: string;
+    claim_status: string | null;
+    claim_expires_at: Date | null;
+    recipient_context_id: string | null;
+  }>(
+    `SELECT sms.provider_os_event_id, sms.idempotency_key, sms.recipient_kind,
+            sms.recipient_context_id,
+            claim.status AS claim_status, claim.expires_at AS claim_expires_at
+       FROM sms_outbox sms
+       LEFT JOIN pending_phone_draft_claims claim
+         ON claim.id = sms.recipient_context_id
+      WHERE sms.id = $1`, [smsId],
   );
   if (principal.rows[0]?.provider_os_event_id || principal.rows[0]?.idempotency_key?.startsWith('provider_os:')) {
     await processPremiumSms(smsId);
     return;
+  }
+  if (principal.rows[0]?.recipient_kind === 'pending_phone_claim') {
+    const claimValid = principal.rows[0].claim_status === 'OPEN'
+      && Boolean(principal.rows[0].claim_expires_at)
+      && principal.rows[0].claim_expires_at!.getTime() > Date.now();
+    if (!claimValid) {
+      await db.query(
+        `UPDATE sms_outbox SET status='suppressed', error_message='pending_phone_claim_inactive', updated_at=NOW()
+          WHERE id=$1 AND status IN ('pending','failed')`,
+        [smsId],
+      );
+      await markOutboxEventProcessed(principal.rows[0].idempotency_key);
+      return;
+    }
+    // This privileged accountless path trusts only the persisted outbox row.
+    toPhone = '';
+    body = (await import('../services/CustomerDraftClaimService.js'))
+      .pendingPhoneClaimSmsBody(principal.rows[0].recipient_context_id!);
   }
 
 

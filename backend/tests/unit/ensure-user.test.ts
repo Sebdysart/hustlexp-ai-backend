@@ -24,7 +24,7 @@ describe('ensureUserRowForFirebaseUid adult safety', () => {
       email: 'adult-check@example.com',
       displayName: 'Adult Check',
     });
-    query.mockResolvedValue({ rows: [{ id: 'user-1', is_minor: true }] });
+    query.mockResolvedValueOnce({ rows: [{ id: 'user-1', is_minor: true }] });
 
     await expect(ensureUserRowForFirebaseUid('firebase-1')).resolves.toMatchObject({
       id: 'user-1',
@@ -32,7 +32,34 @@ describe('ensureUserRowForFirebaseUid adult safety', () => {
     });
 
     const [sql, params] = query.mock.calls[0];
-    expect(String(sql)).toContain("VALUES ($1, $2, $3, 'worker', $4::date, true, $5)");
-    expect(params).toEqual(['firebase-1', 'adult-check@example.com', 'Adult Check', '1990-01-01', 0]);
+    expect(String(sql)).toContain('VALUES ($1, $2, $3, $4, $5, $6::date, true, $7)');
+    expect(params).toEqual(['firebase-1', 'adult-check@example.com', null, 'Adult Check', 'worker', '1990-01-01', 0]);
+  });
+
+  it('provisions a phone-only Firebase identity without a synthetic email', async () => {
+    getFirebaseUserRecord.mockResolvedValue({
+      phoneNumber: '+12065550123',
+      displayName: null,
+    });
+    query
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ id: 'user-phone', email: null, phone: '+12065550123' }] });
+
+    await expect(ensureUserRowForFirebaseUid('firebase-phone')).resolves.toMatchObject({
+      id: 'user-phone', email: null, phone: '+12065550123',
+    });
+
+    expect(query.mock.calls[1][1]).toEqual([
+      'firebase-phone', null, '+12065550123', 'HustleXP customer', 'poster', '1990-01-01', 1,
+    ]);
+  });
+
+  it('rejects a verified phone already bound to another Firebase user', async () => {
+    getFirebaseUserRecord.mockResolvedValue({ phoneNumber: '+12065550123' });
+    query.mockResolvedValueOnce({ rows: [{ id: 'other-user' }] });
+
+    await expect(ensureUserRowForFirebaseUid('firebase-phone')).rejects.toMatchObject({
+      applicationCode: 'PHONE_ALREADY_LINKED',
+    });
   });
 });

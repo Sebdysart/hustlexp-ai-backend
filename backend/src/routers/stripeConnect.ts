@@ -134,6 +134,12 @@ export const stripeConnectRouter = router({
       collectTaxInfo: z.boolean().default(true),
     }))
     .mutation(async ({ ctx, input }) => {
+      if (!ctx.user.email) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Add a verified email before starting payout onboarding.',
+        });
+      }
       const result = await StripeConnectService.createOnboardingLink({
         userId: ctx.user.id,
         email: ctx.user.email,

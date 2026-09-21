@@ -21,7 +21,7 @@ export interface ProviderOsClient {
   relationshipId: string;
   posterUserId: string;
   fullName: string;
-  email: string;
+  email: string | null;
   onboardedAt: string;
   openDraftCount: number;
 }
@@ -156,12 +156,15 @@ export async function acceptProviderOsInvite(input: {
 }): Promise<ServiceResult<ProviderOsClient>> {
   return db.transaction(async (query) => {
     const invite = await validatedInvite(input.token, query);
-    const poster = await query<{ id: string; full_name: string; email: string }>(
+    const poster = await query<{ id: string; full_name: string; email: string | null }>(
       `SELECT id, full_name, email FROM users WHERE id = $1 AND account_status = 'ACTIVE'
        AND NOT COALESCE(is_banned, false) FOR SHARE`, [input.actorId]);
     const user = poster.rows[0];
     if (!user) return failure('FORBIDDEN', 'Active customer account required.');
-    if (invite.intended_email && normalizePosterEmail(user.email) !== invite.intended_email) {
+    if (
+      invite.intended_email
+      && (!user.email || normalizePosterEmail(user.email) !== invite.intended_email)
+    ) {
       return failure('FORBIDDEN', 'Sign in with the email this invite was created for.');
     }
     if (invite.created_by_user_id === input.actorId) return failure('FORBIDDEN', 'You cannot accept your own invitation.');
@@ -204,7 +207,7 @@ export async function listProviderOsClients(input: { actorId: string; organizati
       id: string;
       poster_user_id: string;
       full_name: string;
-      email: string;
+      email: string | null;
       onboarded_at: Date;
       open_draft_count: string;
     }>(

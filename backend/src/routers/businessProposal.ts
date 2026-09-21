@@ -9,7 +9,20 @@ import { getTaskFactsForDisplay } from '../services/taskIntake/getTaskFactsForDi
 import { requestBusinessProposalAssessment } from '../services/BusinessAssessmentService.js';
 
 const statuses = ['PENDING','VIEWED','QUOTED','REJECTED','CANCELLED','EXPIRED'] as const;
-type Status = typeof statuses[number];
+interface ProposalListRow {
+  proposal_id: string; task_draft_id: string; business_organization_id: string;
+  business_name: string; status: string; quote_id: string | null; title: string | null;
+  scope_summary: string | null; expires_at: Date; viewed_at: Date | null;
+  responded_at: Date | null; created_at: Date;
+}
+interface ProposalDetailRow extends ProposalListRow {
+  category: string; raw_input: string | null; structured: Record<string, unknown> | null;
+  rejection_reason: string | null; assessmentRequestId: string | null;
+  assessmentStatus: string | null; assessmentCustomerMessage: string | null;
+  assessmentWindowStart: Date | null; assessmentWindowEnd: Date | null;
+  assessmentScheduledDate: string | null; assessmentFeeCents: number | null;
+}
+interface ProposalStatusRow { id: string; status: string; expires_at: Date }
 async function expire(id: string) { await db.query(`UPDATE business_task_proposals SET status='EXPIRED', responded_at=COALESCE(responded_at,NOW()), updated_at=NOW() WHERE id=$1 AND status IN ('PENDING','VIEWED') AND expires_at<=NOW()`, [id]); }
 
 export const businessProposalRouter = router({
@@ -17,12 +30,12 @@ export const businessProposalRouter = router({
     const status = input?.status ?? null;
     const limit = input?.limit ?? 50;
     await db.query(`UPDATE business_task_proposals p SET status='EXPIRED', responded_at=COALESCE(p.responded_at,NOW()), updated_at=NOW() WHERE p.status IN ('PENDING','VIEWED') AND p.expires_at<=NOW() AND EXISTS (SELECT 1 FROM business_memberships bm WHERE bm.organization_id=p.business_organization_id AND bm.user_id=$1 AND bm.status='ACTIVE')`, [ctx.user.id]);
-    const result = await db.query<any>(`SELECT p.id proposal_id,p.task_draft_id,p.business_organization_id,COALESCE(bo.display_name,bo.legal_name) business_name,p.status,p.quote_id,d.title,d.scope_summary,p.expires_at,p.viewed_at,p.responded_at,p.created_at FROM business_task_proposals p JOIN task_drafts d ON d.id=p.task_draft_id JOIN business_organizations bo ON bo.id=p.business_organization_id WHERE EXISTS (SELECT 1 FROM business_memberships bm WHERE bm.organization_id=p.business_organization_id AND bm.user_id=$1 AND bm.status='ACTIVE') AND ($2::text IS NULL OR p.status=$2) ORDER BY CASE WHEN p.status IN ('PENDING','VIEWED') THEN 0 ELSE 1 END,p.created_at DESC LIMIT $3`, [ctx.user.id, status, limit]);
+    const result = await db.query<ProposalListRow>(`SELECT p.id proposal_id,p.task_draft_id,p.business_organization_id,COALESCE(bo.display_name,bo.legal_name) business_name,p.status,p.quote_id,d.title,d.scope_summary,p.expires_at,p.viewed_at,p.responded_at,p.created_at FROM business_task_proposals p JOIN task_drafts d ON d.id=p.task_draft_id JOIN business_organizations bo ON bo.id=p.business_organization_id WHERE EXISTS (SELECT 1 FROM business_memberships bm WHERE bm.organization_id=p.business_organization_id AND bm.user_id=$1 AND bm.status='ACTIVE') AND ($2::text IS NULL OR p.status=$2) ORDER BY CASE WHEN p.status IN ('PENDING','VIEWED') THEN 0 ELSE 1 END,p.created_at DESC LIMIT $3`, [ctx.user.id, status, limit]);
     return result.rows.map((row) => ({ ...row, expires_at: row.expires_at.toISOString(), viewed_at: row.viewed_at?.toISOString() ?? null, responded_at: row.responded_at?.toISOString() ?? null, created_at: row.created_at.toISOString() }));
   }),
   get: protectedProcedure.input(z.object({ proposalId: z.string().uuid() }).strict()).query(async ({ ctx, input }) => {
     await expire(input.proposalId);
-    const result = await db.query<any>(`SELECT p.id proposal_id,p.task_draft_id,p.business_organization_id,COALESCE(bo.display_name,bo.legal_name) business_name,p.status,p.quote_id,d.title,d.category,d.scope_summary,d.raw_input,d.structured,p.expires_at,p.viewed_at,p.responded_at,p.rejection_reason,p.created_at,
+    const result = await db.query<ProposalDetailRow>(`SELECT p.id proposal_id,p.task_draft_id,p.business_organization_id,COALESCE(bo.display_name,bo.legal_name) business_name,p.status,p.quote_id,d.title,d.category,d.scope_summary,d.raw_input,d.structured,p.expires_at,p.viewed_at,p.responded_at,p.rejection_reason,p.created_at,
       assessment.id AS "assessmentRequestId", assessment.status AS "assessmentStatus",
       assessment.customer_message AS "assessmentCustomerMessage",
       assessment.proposed_window_start AS "assessmentWindowStart",
@@ -43,7 +56,7 @@ export const businessProposalRouter = router({
     return { ...proposal, structured: undefined, taskFacts: getTaskFactsForDisplay({ rawInput: proposal.raw_input, category: proposal.category, structured: proposal.structured }), preferred_window: preferredWindow, preferred_arrival_window_start: preferred.arrivalStart.toISOString(), preferred_arrival_window_end: preferred.arrivalEnd.toISOString(), assessmentWindowStart: proposal.assessmentWindowStart?.toISOString() ?? null, assessmentWindowEnd: proposal.assessmentWindowEnd?.toISOString() ?? null, expires_at: proposal.expires_at.toISOString(), viewed_at: proposal.viewed_at?.toISOString() ?? null, responded_at: proposal.responded_at?.toISOString() ?? null, created_at: proposal.created_at.toISOString() };
   }),
   reject: protectedProcedure.input(z.object({ proposalId: z.string().uuid(), reason: z.string().trim().max(1000).optional() }).strict()).mutation(async ({ ctx, input }) => db.transaction(async (tx) => {
-    const proposal = (await tx<any>(`SELECT p.id,p.status,p.expires_at FROM business_task_proposals p WHERE p.id=$1 AND EXISTS (SELECT 1 FROM business_memberships bm WHERE bm.organization_id=p.business_organization_id AND bm.user_id=$2 AND bm.status='ACTIVE') FOR UPDATE`, [input.proposalId, ctx.user.id])).rows[0];
+    const proposal = (await tx<ProposalStatusRow>(`SELECT p.id,p.status,p.expires_at FROM business_task_proposals p WHERE p.id=$1 AND EXISTS (SELECT 1 FROM business_memberships bm WHERE bm.organization_id=p.business_organization_id AND bm.user_id=$2 AND bm.status='ACTIVE') FOR UPDATE`, [input.proposalId, ctx.user.id])).rows[0];
     if (!proposal) throw new TRPCError({ code: 'NOT_FOUND', message: 'Business proposal not found' });
     if (proposal.expires_at <= new Date() && ['PENDING','VIEWED'].includes(proposal.status)) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This task proposal has expired.' });
     if (!['PENDING','VIEWED'].includes(proposal.status)) throw new TRPCError({ code: 'CONFLICT', message: `This proposal is already ${proposal.status.toLowerCase()}.` });
@@ -122,7 +135,7 @@ export const businessProposalRouter = router({
     );
     if (assessment.rows[0]) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Complete the onsite assessment before submitting its final quote.' });
 
-    const draftResult = await query<{ id: string; title: string | null; scope_summary: string | null; poster_user_id: string; status: string }>(
+    const draftResult = await query<{ id: string; title: string | null; scope_summary: string | null; poster_user_id: string | null; status: string }>(
       `SELECT id, title, scope_summary, poster_user_id, status FROM task_drafts WHERE id = $1 FOR UPDATE`,
       [proposal.task_draft_id],
     );

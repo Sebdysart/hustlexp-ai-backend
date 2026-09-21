@@ -17,7 +17,8 @@ import { cachedDbQuery, invalidateUser, CACHE_KEYS, CACHE_TTL, CACHE_TAGS } from
 import { invalidateAuthCacheForUser } from '../auth-cache.js';
 import { getStreakStatus } from '../services/StreakService.js';
 import { z } from 'zod';
-import { firebaseAuth } from '../auth/firebase.js';
+import { firebaseAuth, getFirebaseUserRecord } from '../auth/firebase.js';
+import { normalizePhoneToE164 } from '../lib/phone.js';
 
 const log = logger.child({ router: 'user' });
 
@@ -246,7 +247,7 @@ export const userRouter = router({
       // do inline token verification here instead of relying on protectedProcedure.
       idToken: z.string().min(1),
       firebaseUid: z.string().max(128),
-      email: z.string().email().max(254),
+      email: z.string().email().max(254).optional(),
       fullName: z.string().trim().min(1).max(255),
       // Preferred dashboard mode only; not an authorization role.
       defaultMode: z.string().max(20).default('worker'),
@@ -278,6 +279,17 @@ export const userRouter = router({
           message: 'Firebase ID token does not match the provided firebaseUid.',
         });
       }
+      const firebaseUser = await getFirebaseUserRecord(decodedToken.uid);
+      const verifiedEmail = (decodedToken.email ?? firebaseUser.email)?.trim().toLowerCase() || null;
+      const verifiedPhone = firebaseUser.phoneNumber
+        ? normalizePhoneToE164(firebaseUser.phoneNumber)
+        : null;
+      if (!verifiedEmail && !verifiedPhone) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'A verified email address or phone number is required.',
+        });
+      }
       // --------------------------------------------------------------------------
       // R48-1 IDOR FIX: Cross-check input.email against Firebase token email.
       // Without this, an attacker can supply their own valid Firebase token (for
@@ -286,7 +298,7 @@ export const userRouter = router({
       // Sign-in-with-Apple and some OAuth providers omit email from the token —
       // fail-open for those cases (decodedToken.email is undefined/null).
       // --------------------------------------------------------------------------
-      if (decodedToken.email && decodedToken.email.toLowerCase() !== input.email.toLowerCase()) {
+      if (input.email && (!verifiedEmail || verifiedEmail !== input.email.toLowerCase())) {
         throw new TRPCError({
           code: 'FORBIDDEN',
           message: 'Email address does not match the provided Firebase ID token.',
@@ -339,13 +351,24 @@ export const userRouter = router({
       // re-registering without a phone number. Accepted mitigation: phone-less accounts
       // receive trust_tier=0 which restricts access to high-value task categories.
       // Product decision: phone requirement deferred post-beta.
-      if (input.phone) {
+      if (verifiedPhone) {
         const bannedPhone = await db.query<{ id: string }>(
           `SELECT id FROM users WHERE phone = $1 AND is_banned = true`,
-          [input.phone]
+          [verifiedPhone]
         );
         if (bannedPhone.rows.length > 0) {
           throw new TRPCError({ code: 'FORBIDDEN', message: 'Account registration not permitted.' });
+        }
+        const phoneOwner = await db.query<{ id: string; firebase_uid: string | null }>(
+          'SELECT id, firebase_uid FROM users WHERE phone = $1 LIMIT 1',
+          [verifiedPhone],
+        );
+        if (phoneOwner.rows[0]?.firebase_uid !== undefined
+          && phoneOwner.rows[0].firebase_uid !== input.firebaseUid) {
+          throw new TRPCError({
+            code: 'CONFLICT',
+            message: 'This verified phone number is already linked to another HustleXP account.',
+          });
         }
       }
 
@@ -361,12 +384,12 @@ export const userRouter = router({
       // re-register with the same email. The corrected logic only excludes a DELETED
       // row when it is NOT banned — a legitimately erased non-banned user. A row that
       // is DELETED AND banned still triggers the FORBIDDEN guard.
-      const bannedByEmail = await db.query<{ id: string }>(
+      const bannedByEmail = verifiedEmail ? await db.query<{ id: string }>(
         `SELECT id FROM users WHERE email = $1
           AND (is_banned = true OR account_status = 'SUSPENDED')
           AND NOT (account_status = 'DELETED' AND is_banned = false)`,
-        [input.email]
-      );
+        [verifiedEmail]
+      ) : { rows: [] };
       if (bannedByEmail.rows.length > 0) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Account registration not permitted.' });
       }
@@ -407,19 +430,21 @@ export const userRouter = router({
           const completed = await db.query<User>(
             `UPDATE users
                 SET full_name = $2,
-                    phone = $3,
-                    date_of_birth = $4,
-                    is_minor = $5,
-                    default_mode = $6,
+                    email = COALESCE(email, $3),
+                    phone = COALESCE(phone, $4),
+                    date_of_birth = $5,
+                    is_minor = $6,
+                    default_mode = $7,
                     onboarding_completed_at = NOW(),
                     updated_at = NOW()
               WHERE id = $1
-                AND firebase_uid = $7
+                AND firebase_uid = $8
               RETURNING *`,
             [
               user.id,
               input.fullName,
-              input.phone || null,
+              verifiedEmail,
+              verifiedPhone,
               input.dateOfBirth,
               age < 18,
               dbMode,
@@ -463,10 +488,10 @@ export const userRouter = router({
       // email without a token-verified email would allow any anonymous-auth user
       // to claim another user's profile just by knowing their email address.
       // Check if user already exists
-      const existing = decodedToken.email
+      const existing = verifiedEmail
         ? await db.query<User>(
             'SELECT * FROM users WHERE firebase_uid = $1 OR email = $2',
-            [input.firebaseUid, input.email]
+            [input.firebaseUid, verifiedEmail]
           )
         : await db.query<User>(
             'SELECT * FROM users WHERE firebase_uid = $1',
@@ -508,12 +533,13 @@ export const userRouter = router({
       // Phone-less registrations start at trust_tier=0 (UNVERIFIED) to restrict
       // account capabilities until phone verification is completed. This limits
       // the usefulness of burner-email ban evasion without a phone number.
-      const initialTrustTier = input.phone ? 1 : 0;
+      const initialTrustTier = verifiedPhone ? 1 : 0;
 
       const result = await db.query<User>(
         `INSERT INTO users (
             firebase_uid,
             email,
+            phone,
             full_name,
             default_mode,
             date_of_birth,
@@ -529,11 +555,12 @@ export const userRouter = router({
             $5,
             $6,
             $7,
+            $8,
             NOW()
           )
          ON CONFLICT (firebase_uid) DO NOTHING
          RETURNING *`,
-        [input.firebaseUid, input.email, input.fullName, dbMode, input.dateOfBirth, age < 18, initialTrustTier]
+        [input.firebaseUid, verifiedEmail, verifiedPhone, input.fullName, dbMode, input.dateOfBirth, age < 18, initialTrustTier]
       );
 
       if (result.rows.length === 0) {
@@ -573,7 +600,7 @@ export const userRouter = router({
           {
             err: error,
             firebaseUid: input.firebaseUid,
-            email: input.email,
+            hasSubmittedEmail: Boolean(input.email),
           },
           'user.register failed',
         );

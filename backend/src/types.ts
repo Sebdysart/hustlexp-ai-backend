@@ -20,8 +20,8 @@ export * from './types-errors.js';
 export interface User {
   id: string;
   firebase_uid?: string;
-  email: string;
-  phone?: string;
+  email: string | null;
+  phone?: string | null;
   full_name: string;
   bio?: string;
   avatar_url?: string;

@@ -41,6 +41,7 @@ vi.mock('../../src/db', () => {
 
 vi.mock('../../src/auth/firebase', () => ({
   firebaseAuth: { verifyIdToken: vi.fn() },
+  getFirebaseUserRecord: vi.fn(),
 }));
 
 vi.mock('../../src/logger', () => ({
@@ -97,7 +98,7 @@ process.env.R2_PUBLIC_URL = 'https://cdn.example.com';
 // ---------------------------------------------------------------------------
 
 import { db } from '../../src/db';
-import { firebaseAuth } from '../../src/auth/firebase';
+import { firebaseAuth, getFirebaseUserRecord } from '../../src/auth/firebase';
 import { userRouter } from '../../src/routers/user';
 import { XPService } from '../../src/services/XPService';
 import { EarnedVerificationUnlockService } from '../../src/services/EarnedVerificationUnlockService';
@@ -106,6 +107,7 @@ import { invalidateAuthCacheForUser } from '../../src/auth-cache';
 
 const mockDb = vi.mocked(db);
 const mockFirebaseAuth = vi.mocked(firebaseAuth);
+const mockGetFirebaseUserRecord = vi.mocked(getFirebaseUserRecord);
 const mockXPService = vi.mocked(XPService);
 const mockEVUService = vi.mocked(EarnedVerificationUnlockService);
 const mockGDPRService = vi.mocked(GDPRService);
@@ -611,6 +613,7 @@ describe('user.register', () => {
     vi.clearAllMocks();
     // Default: token verifies successfully and UID matches validInput.firebaseUid
     mockFirebaseAuth.verifyIdToken.mockResolvedValue({ uid: 'fb-new-user' } as any);
+    mockGetFirebaseUserRecord.mockResolvedValue({ email: 'newuser@hustlexp.com' } as any);
   });
 
   const validInput = {
@@ -663,6 +666,40 @@ describe('user.register', () => {
       // The INSERT call is the third db.query call (index 2)
       const [, params] = (mockDb.query as any).mock.calls[2];
       expect(params).toContain('worker');
+    });
+
+    it('provisions a phone-only user from the Firebase-verified phone, not caller input', async () => {
+      mockFirebaseAuth.verifyIdToken.mockResolvedValue({ uid: 'fb-phone-user' } as any);
+      mockGetFirebaseUserRecord.mockResolvedValue({ phoneNumber: '+12065550123' } as any);
+      const phoneUser = makeFakeUser({
+        id: 'phone-user-id',
+        firebase_uid: 'fb-phone-user',
+        email: null as unknown as string,
+        phone: '+12065550123',
+        full_name: 'Phone Customer',
+        default_mode: 'poster',
+      });
+      // Banned phone, phone owner, existing Firebase UID, insert, stats.
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+      mockDb.query.mockResolvedValueOnce({ rows: [phoneUser], rowCount: 1 } as any);
+      setupStatsQuery();
+
+      const result = await makePublicCaller().register({
+        idToken: 'phone-id-token',
+        firebaseUid: 'fb-phone-user',
+        fullName: 'Phone Customer',
+        defaultMode: 'poster',
+        dateOfBirth: '2000-05-15',
+        phone: '+12065550999',
+      });
+
+      const [, params] = (mockDb.query as any).mock.calls[3];
+      expect(params).toContain(null);
+      expect(params).toContain('+12065550123');
+      expect(params).not.toContain('+12065550999');
+      expect(result).toMatchObject({ id: 'phone-user-id', email: null, phone: '+12065550123' });
     });
   });
 
@@ -746,6 +783,7 @@ describe('user.register', () => {
         [
           'lazy-user-id',
           validInput.fullName,
+          validInput.email,
           null,
           validInput.dateOfBirth,
           false,
