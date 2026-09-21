@@ -128,6 +128,20 @@ afterEach(() => {
 });
 
 describe('Tilled checkout diagnostics before durable reservation', () => {
+  it('binds UUID columns separately from the text reservation reference', async () => {
+    await createOrResumeTilledCheckout(input);
+    const reservation = vi.mocked(db.query).mock.calls.find(([sql]) =>
+      String(sql).includes('INSERT INTO quote_payments'));
+
+    expect(reservation).toBeDefined();
+    const [sql, values] = reservation!;
+    expect(String(sql)).toMatch(/VALUES \(\$1, \$2, 'tilled', 'tilled_reservation:' \|\| \$8::text \|\| ':' \|\| \$9::text/);
+    expect(values).toEqual([
+      input.quoteId, input.quoteVersionId, 12000, 2000,
+      'org-one', 'acct_one', 'sandbox', input.quoteId, input.quoteVersionId,
+    ]);
+  });
+
   it('reports missing credentials and creates no local payment', async () => {
     vi.stubEnv('TILLED_SECRET_KEY', '');
     await expect(createOrResumeTilledCheckout(input)).rejects.toMatchObject({

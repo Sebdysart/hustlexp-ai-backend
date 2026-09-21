@@ -253,11 +253,12 @@ export async function createOrResumeTilledCheckout(input: {
         quote_id, quote_version_id, provider, provider_payment_id, amount_cents,
         platform_fee_cents, business_organization_id, provider_merchant_id,
         provider_environment, intent_creation_state, status)
-      VALUES ($1, $2, 'tilled', 'tilled_reservation:' || $1::text || ':' || $2::text,
+      VALUES ($1, $2, 'tilled', 'tilled_reservation:' || $8::text || ':' || $9::text,
         $3, $4, $5, $6, $7, 'RESERVED', 'PENDING')
       ON CONFLICT (quote_id, quote_version_id) DO NOTHING`,
       [input.quoteId, input.quoteVersionId, economics.amountCents, economics.platformFeeCents,
-        economics.organizationId, merchant.accountId, config.environment]);
+        economics.organizationId, merchant.accountId, config.environment,
+        input.quoteId, input.quoteVersionId]);
     payment = await readPayment(input.quoteId, input.quoteVersionId);
   }
   if (!payment) blocked('Payment reservation could not be created.');
