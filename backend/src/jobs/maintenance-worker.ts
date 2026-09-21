@@ -214,6 +214,16 @@ async function processAnnualTaxFiling(job: Job): Promise<void> {
 type MaintenanceHandler = (job: Job) => Promise<void>;
 
 const MAINTENANCE_HANDLERS: Record<string, MaintenanceHandler> = {
+  'tilled.process_webhook_events': async (job) => {
+    const { processPendingTilledWebhookEvents } = await import('../services/payment/TilledWebhookService.js');
+    const processed = await processPendingTilledWebhookEvents(boundedJobLimit(job, 25));
+    if (processed > 0) log.info({ processed }, 'Tilled webhook event batch handled');
+  },
+  'tilled.reconcile_quote_payments': async (job) => {
+    const { reconcileTilledQuotePayments } = await import('../services/payment/TilledQuoteReconciliationService.js');
+    const result = await reconcileTilledQuotePayments(boundedJobLimit(job, 25));
+    if (result.scanned > 0) log.info(result, 'Tilled quote payment reconciliation completed');
+  },
   'assessment.reconcile_payments': async () => {
     const { reconcileAssessmentPayments } = await import('../services/AssessmentPaymentService.js');
     await reconcileAssessmentPayments();

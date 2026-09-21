@@ -127,4 +127,11 @@ async function checkrWebhook(context: Context) {
 export function registerWebhookRoutes(app: HustleApp): void {
   app.post('/webhooks/stripe', stripeWebhook);
   app.post('/webhooks/checkr', checkrWebhook);
+  app.post('/webhooks/tilled', async (context) => {
+    const rawBody = await context.req.text();
+    const { ingestTilledWebhook } = await import('./services/payment/TilledWebhookService.js');
+    const result = await ingestTilledWebhook(rawBody, context.req.header('payments-signature'));
+    if (!result.accepted) return context.json({ error: 'Webhook rejected' }, result.status);
+    return context.json({ received: true, eventId: result.eventId }, 200);
+  });
 }

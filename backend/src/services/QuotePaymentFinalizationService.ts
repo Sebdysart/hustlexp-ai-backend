@@ -302,6 +302,11 @@ export async function finalizePaidQuote(
         amountCents: quotePaymentAmountCents,
       });
       if (!verified.success) return verified;
+      await db.query(
+        `UPDATE quote_payments SET provider_status = 'succeeded', updated_at = NOW()
+         WHERE id = $1 AND provider = 'tilled' AND provider_payment_id = $2`,
+        [context.payment_id, input.paymentIntentId],
+      );
     }
 
     /*

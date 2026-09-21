@@ -185,13 +185,7 @@ async function bindIntent(payment: CheckoutPayment, intent: TilledPaymentIntent)
 export async function createOrResumeTilledCheckout(input: {
   quoteId: string; quoteVersionId: string; posterId: string;
 }): Promise<TilledCheckoutResult | TilledFinalizedCheckoutResult> {
-  const config = loadTilledConfig();
   const quote = await readCheckoutQuote(input.quoteId, input.quoteVersionId, input.posterId);
-  if (config.environment === 'sandbox'
-    ? quote.quote_environment !== 'TEST' || quote.quote_is_test !== true
-    : quote.quote_environment === 'TEST' || quote.quote_is_test === true) {
-    blocked('This quote and payment environment do not match.');
-  }
   const existing = await readPayment(input.quoteId, input.quoteVersionId);
   if (quote.quote_status === 'paid') {
     if (!existing || existing.provider !== 'tilled' || existing.status !== 'SUCCEEDED'
@@ -202,6 +196,12 @@ export async function createOrResumeTilledCheckout(input: {
     // Its completed replay never calls Tilled or creates another payment.
     const completed = await finalizeTilledCheckout(input);
     return { finalized: true, taskId: completed.taskId, replayed: true };
+  }
+  const config = loadTilledConfig();
+  if (config.environment === 'sandbox'
+    ? quote.quote_environment !== 'TEST' || quote.quote_is_test !== true
+    : quote.quote_environment === 'TEST' || quote.quote_is_test === true) {
+    blocked('This quote and payment environment do not match.');
   }
   const economics = await validatePayableQuote(quote);
   const merchant = await resolveTilledMerchantAccount(economics.organizationId, config.environment, Boolean(!existing || existing.intent_creation_state === 'RESERVED'));
