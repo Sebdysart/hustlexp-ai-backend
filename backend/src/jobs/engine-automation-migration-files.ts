@@ -21,6 +21,7 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260718_zone_category_liquidity_cells', fileName: '20260718_zone_category_liquidity_cells.sql' },
   { name: '20260718_worker_offer_decision_contract', fileName: '20260718_worker_offer_decision_contract.sql' },
   { name: '20260718_worker_screening_rights_contract', fileName: '20260718_worker_screening_rights_contract.sql' },
+  { name: '20260923_region_policy_schema_prerequisite', fileName: '20260923_region_policy_schema_prerequisite.sql' },
   { name: '20260718_completion_retention_contract', fileName: '20260718_completion_retention_contract.sql' },
   { name: '20260718_task_public_clarifications', fileName: '20260718_task_public_clarifications.sql' },
   { name: '20260718_marketplace_reputation_contract', fileName: '20260718_marketplace_reputation_contract.sql' },
