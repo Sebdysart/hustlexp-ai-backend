@@ -3,6 +3,7 @@ import { TRPCError } from '@trpc/server';
 import { db, type QueryFn } from '../db.js';
 import { backblazeB2 } from '../storage/backblaze-b2.js';
 import { requireBusinessManagementAuthority, requireOperationsAuthority, recordBusinessManagementAudit } from './BusinessManagementAuthority.js';
+import { isServiceJurisdiction } from '../contracts/serviceJurisdiction.js';
 
 export type BusinessCredentialStatus = 'PENDING' | 'ACTIVE' | 'EXPIRED' | 'REJECTED' | 'REVOKED';
 interface CredentialTypeRow { id: string; code: string; display_name: string; requires_number: boolean; requires_evidence: boolean; supports_expiration: boolean; jurisdiction_code: string | null }
@@ -54,6 +55,7 @@ export interface SubmitOrganizationCredentialInput {
 }
 
 export async function submitOrganizationCredential(input: SubmitOrganizationCredentialInput): Promise<{ id: string; status: 'PENDING'; versionId: string }> {
+  if (!isServiceJurisdiction(input.jurisdictionCode)) throw new TRPCError({code:'BAD_REQUEST',message:'Select a valid credential jurisdiction.'});
   return db.transaction(async (query) => {
     // Lock org before membership/credential rows: same ordering as quote gate and Ops review.
     await query('SELECT id FROM business_organizations WHERE id=$1 FOR UPDATE',[input.organizationId]);

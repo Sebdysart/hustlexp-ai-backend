@@ -3,20 +3,27 @@ import { TRPCError } from '@trpc/server';
 import { db, type QueryFn } from '../../db.js';
 import { operationsAdminProcedure } from '../../trpc.js';
 import { SERVICE_CATEGORY_CODES } from '../../contracts/serviceCategories.js';
+import { serviceJurisdictionSchema } from '../../contracts/serviceJurisdiction.js';
 import { requireOperationsAuthority, recordBusinessManagementAudit } from '../../services/BusinessManagementAuthority.js';
 import { recordOpsAudit } from '../../services/OpsAuditService.js';
 import { listBusinessServiceEligibility } from '../../services/BusinessTaskEligibilityService.js';
 import { activatePendingBusinessQuotesInTransaction } from '../../services/BusinessQuoteActivationService.js';
+import { deriveManualTaskRisk } from '../../services/ManualTaskRisk.js';
+import { buildManualTaskPolicyInput } from '../../services/ManualTaskPolicy.js';
+import { evaluateTaskAgainstRegionPolicy, resolveRegionPolicy } from '../../services/RegionPolicyService.js';
 
 const uuid = z.string().uuid();
 const category = z.enum(SERVICE_CATEGORY_CODES);
-const jurisdiction = z.string().regex(/^US-[A-Z]{2}(-[A-Z0-9_-]+)?$/);
+const jurisdiction = serviceJurisdictionSchema;
 const reason = z.string().trim().min(3).max(2000);
 const draftInput = z.object({taskDraftId:uuid}).strict();
 const policyStatus = z.enum(['UNRESTRICTED','CREDENTIAL_REQUIRED','MANUAL_REVIEW_REQUIRED','DISABLED']);
 export const categoryCorrectionInput = draftInput.extend({category,reason}).strict();
 export const categoryPolicyInput = z.object({category,jurisdictionCode:jurisdiction,status:policyStatus,manualReviewRequired:z.boolean(),
   requiredCredentialTypeIds:z.array(uuid).max(30),reason,effectiveFrom:z.string().datetime()}).strict();
+export const credentialTypeInput = z.object({code:z.string().regex(/^[A-Z0-9_]{2,80}$/),displayName:z.string().trim().min(1).max(200),
+  credentialKind:z.string().trim().min(1).max(80),issuingAuthority:z.string().trim().min(1).max(200).optional(),jurisdictionCode:jurisdiction.optional(),
+  supportsExpiration:z.boolean(),requiresNumber:z.boolean(),requiresEvidence:z.boolean()}).strict();
 
 export async function readTaskDraftCategoryReview(query:QueryFn,taskDraftId:string) {
   const draft=(await query<{category:string;task_id:string|null;has_business_quote:boolean}>(`SELECT d.category,d.task_id,
@@ -35,7 +42,27 @@ export async function correctTaskDraftCategory(actorId:string,input:z.infer<type
     const before=await readTaskDraftCategoryReview(query,input.taskDraftId);
     if(!before.canCorrect) throw new TRPCError({code:'PRECONDITION_FAILED',message:before.blockedReason!});
     if(before.category===input.category) throw new TRPCError({code:'BAD_REQUEST',message:'Choose a different primary category.'});
-    await query('UPDATE task_drafts SET category=$2,updated_at=NOW() WHERE id=$1',[input.taskDraftId,input.category]);
+    const draft=(await query<{raw_input:string|null;scope_summary:string|null;title:string|null;region_code:string|null}>(
+      'SELECT raw_input,scope_summary,title,region_code FROM task_drafts WHERE id=$1',[input.taskDraftId])).rows[0];
+    if(!draft) throw new TRPCError({code:'NOT_FOUND',message:'Task draft not found.'});
+    const taskText=draft.raw_input?.trim() || draft.scope_summary?.trim() || draft.title?.trim();
+    if(!taskText) throw new TRPCError({code:'PRECONDITION_FAILED',message:'Task text is required to validate the corrected category.'});
+    const riskLevel=deriveManualTaskRisk(taskText,{category:input.category});
+    // ComplianceGuardian evaluates task text and user context, not category.
+    // Preserve its existing result; category-dependent risk and policy change here.
+    const regionCode=draft.region_code;
+    if(!regionCode) throw new TRPCError({code:'PRECONDITION_FAILED',message:'The draft has no service-region policy. Revalidate it before correcting its category.'});
+    const policy=await resolveRegionPolicy(regionCode,query);
+    if(!policy) throw new TRPCError({code:'PRECONDITION_FAILED',message:'Task validation is temporarily unavailable because the service-region policy is unavailable.'});
+    const evaluation=evaluateTaskAgainstRegionPolicy(policy,buildManualTaskPolicyInput({regionCode,category:input.category,riskLevel}),
+      {evaluateEconomics:false,evaluateProductionGates:false});
+    const snapshot=evaluation.snapshot;
+    if(!evaluation.allowed || !snapshot?.policyId || !snapshot.policyVersion || !snapshot.policyHash) {
+      throw new TRPCError({code:'PRECONDITION_FAILED',message:'The corrected category is not allowed under the current service-region policy.'});
+    }
+    await query(`UPDATE task_drafts SET category=$2,validated_risk_level=$3,
+      region_policy_id=$4,region_policy_version=$5,region_policy_hash=$6,region_policy_snapshot=$7::jsonb,updated_at=NOW() WHERE id=$1`,
+      [input.taskDraftId,input.category,riskLevel,snapshot.policyId,snapshot.policyVersion,snapshot.policyHash,JSON.stringify(snapshot)]);
     await query(`INSERT INTO task_draft_category_corrections(task_draft_id,previous_category,new_category,changed_by,reason)
       VALUES($1,$2,$3,$4,$5)`,[input.taskDraftId,before.category,input.category,actorId,input.reason]);
     await recordOpsAudit({actorUserId:actorId,action:'task_draft_category_corrected',targetType:'task_draft',targetId:input.taskDraftId,
@@ -104,10 +131,10 @@ export async function recheckBusinessQuoteEligibility(actorId: string, organizat
     if (!organization.rows[0]) throw new TRPCError({
       code: 'PRECONDITION_FAILED', message: 'An active, verified provider organization is required before publishing pending quotes.',
     });
-    const activated = await activatePendingBusinessQuotesInTransaction(query, organizationId);
+    const result = await activatePendingBusinessQuotesInTransaction(query, organizationId);
     await recordOpsAudit({actorUserId: actorId, action: 'business_pending_quotes_rechecked',
-      targetType: 'business_organization', targetId: organizationId, meta: {activated}}, query, true);
-    return {activated};
+      targetType: 'business_organization', targetId: organizationId, meta: {activated:result.activated,eligibilityFailures:result.eligibilityFailures}}, query, true);
+    return result;
   });
 }
 export const opsBusinessEligibilityProcedures={
@@ -119,9 +146,7 @@ export const opsBusinessEligibilityProcedures={
   correctTaskDraftCategory:operationsAdminProcedure.input(categoryCorrectionInput).mutation(({ctx,input})=>correctTaskDraftCategory(ctx.user.id,input)),
   reviewBusinessService:operationsAdminProcedure.input(reviewServiceInput).mutation(({ctx,input})=>reviewBusinessService(ctx.user.id,input)),
   setServiceCategoryPolicy:operationsAdminProcedure.input(categoryPolicyInput).mutation(({ctx,input})=>setServiceCategoryPolicy(ctx.user.id,input)),
-  createCredentialType:operationsAdminProcedure.input(z.object({code:z.string().regex(/^[A-Z0-9_]{2,80}$/),displayName:z.string().trim().min(1).max(200),
-    credentialKind:z.string().trim().min(1).max(80),issuingAuthority:z.string().trim().min(1).max(200).optional(),jurisdictionCode:jurisdiction.optional(),
-    supportsExpiration:z.boolean(),requiresNumber:z.boolean(),requiresEvidence:z.boolean()}).strict()).mutation(({ctx,input})=>db.transaction(async(query)=>{
+  createCredentialType:operationsAdminProcedure.input(credentialTypeInput).mutation(({ctx,input})=>db.transaction(async(query)=>{
     await requireOperationsAuthority(query,ctx.user.id);
     const saved=await query<{id:string}>(`INSERT INTO credential_types(code,display_name,credential_kind,issuing_authority,jurisdiction_code,supports_expiration,requires_number,requires_evidence)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(code) DO NOTHING RETURNING id`,[input.code,input.displayName,input.credentialKind,input.issuingAuthority??null,input.jurisdictionCode??null,input.supportsExpiration,input.requiresNumber,input.requiresEvidence]);

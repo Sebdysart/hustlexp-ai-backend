@@ -4,6 +4,7 @@ import { protectedProcedure, router } from '../trpc.js';
 import type { ServiceResult } from '../types.js';
 import { db } from '../db.js';
 import { SERVICE_CATEGORY_CODES } from '../contracts/serviceCategories.js';
+import { serviceJurisdictionSchema } from '../contracts/serviceJurisdiction.js';
 import { requireBusinessManagementAuthority } from '../services/BusinessManagementAuthority.js';
 import { listBusinessServiceEligibility } from '../services/BusinessTaskEligibilityService.js';
 import { readBusinessCredentials, submitOrganizationCredential, getCredentialEvidence } from '../services/BusinessCredentialService.js';
@@ -264,7 +265,7 @@ export const businessWorkspaceRouter = router({
 
   submitCredential: protectedProcedure.input(z.object({
     organizationId:uuid,membershipId:uuid.nullable().optional(),credentialTypeId:uuid,
-    credentialNumber:optionalCredentialText,issuingAuthority:optionalCredentialText,jurisdictionCode:z.string().trim().regex(/^[A-Z]{2}(?:-[A-Z0-9]{1,10})?$/),
+    credentialNumber:optionalCredentialText,issuingAuthority:optionalCredentialText,jurisdictionCode:serviceJurisdictionSchema,
     issuedAt:z.string().date().nullable().optional(),expiresAt:z.string().date().nullable().optional(),
     uploadReceiptIds:z.array(uuid).max(5),idempotencyKey,
   }).strict()).mutation(({ctx,input})=>submitOrganizationCredential({...input,actorId:ctx.user.id})),

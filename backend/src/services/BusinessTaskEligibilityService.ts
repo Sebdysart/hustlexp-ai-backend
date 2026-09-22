@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { QueryFn } from '../db.js';
 import { SERVICE_CATEGORY_CODES, SERVICE_CATEGORY_LABELS, isServiceCategoryCode } from '../contracts/serviceCategories.js';
+import { isServiceJurisdiction } from '../contracts/serviceJurisdiction.js';
 
 export const BUSINESS_ELIGIBILITY_VERSION = 'stage1-v1';
 export type CategoryPolicyStatus = 'UNRESTRICTED' | 'CREDENTIAL_REQUIRED' | 'MANUAL_REVIEW_REQUIRED' | 'DISABLED';
@@ -91,7 +92,7 @@ export function evaluateServiceEligibility(context: EligibilityContext, primaryC
   const addReason = (code: string, credentialTypeCode?: string) => reasons.push({ code, message: reasonMessages[code], ...(credentialTypeCode ? {credentialTypeCode} : {}) });
   if (!profile?.selected_by_business) addReason('SERVICE_NOT_OFFERED');
   if (category?.status === 'RETIRED' || policy?.policy_status === 'DISABLED') addReason('CATEGORY_DISABLED');
-  if (!category || category.status !== 'ACTIVE' || !policy || !jurisdictionCode || !/^US-[A-Z]{2}(-[A-Z0-9_-]+)?$/.test(jurisdictionCode)) addReason('CATEGORY_POLICY_MISSING');
+  if (!category || category.status !== 'ACTIVE' || !policy || !isServiceJurisdiction(jurisdictionCode)) addReason('CATEGORY_POLICY_MISSING');
   if (primaryCategory === 'other') addReason('MANUAL_REVIEW_REQUIRED');
   if (profile?.eligibility_status === 'BLOCKED') addReason('SERVICE_PENDING_REVIEW');
   if (policy && (policy.manual_review_required || policy.policy_status === 'MANUAL_REVIEW_REQUIRED') && primaryCategory !== 'other') {

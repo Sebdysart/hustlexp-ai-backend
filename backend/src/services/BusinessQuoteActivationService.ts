@@ -1,4 +1,4 @@
-import { evaluateBusinessTaskEligibility, persistBusinessQuoteEligibilityDecision } from './BusinessTaskEligibilityService.js';
+import { businessEligibilityFailure, evaluateBusinessTaskEligibility, persistBusinessQuoteEligibilityDecision } from './BusinessTaskEligibilityService.js';
 import type { QueryFn } from '../db.js';
 import { NotificationService } from './NotificationService.js';
 
@@ -52,7 +52,7 @@ export async function publishBusinessQuoteInTransaction(
 export async function activatePendingBusinessQuotesInTransaction(
   query: QueryFn,
   organizationId: string,
-): Promise<number> {
+): Promise<{ activated: number; eligibilityFailures: Array<{ quoteId: string; taskDraftId: string; code: string; message: string }> }> {
   const pending = await query<{ id: string; task_draft_id: string }>(
     `SELECT id, task_draft_id FROM quotes
      WHERE business_organization_id = $1 AND status = $2
@@ -60,6 +60,7 @@ export async function activatePendingBusinessQuotesInTransaction(
     [organizationId, PENDING_BUSINESS_VERIFICATION],
   );
   let activated = 0;
+  const eligibilityFailures: Array<{ quoteId: string; taskDraftId: string; code: string; message: string }> = [];
   for (const quote of pending.rows) {
     const claim = await query<{ id: string }>(
       `SELECT id FROM ops_business_claim_links
@@ -92,11 +93,15 @@ export async function activatePendingBusinessQuotesInTransaction(
       continue;
     }
     const decision = await query<{id: string}>('SELECT id FROM business_quote_eligibility_decisions WHERE quote_id=$1',[quote.id]);
+    // The immutable decision explains quote creation, not current permission to
+    // make an unbooked quote customer-usable. Recheck on every activation attempt.
+    const eligibility = await evaluateBusinessTaskEligibility(query,{organizationId,taskDraftId:quote.task_draft_id,action:'SUBMIT_QUOTE'});
+    if (!eligibility.eligible) {
+      eligibilityFailures.push({quoteId:quote.id,taskDraftId:quote.task_draft_id,...businessEligibilityFailure(eligibility)});
+      continue;
+    }
     if (!decision.rows[0]) {
-      // Legacy pending quotes get a first decision before publication. Existing
-      // snapshots are historical and are not rechecked for ordinary later expiry.
-      const eligibility = await evaluateBusinessTaskEligibility(query,{organizationId,taskDraftId:quote.task_draft_id,action:'SUBMIT_QUOTE'});
-      if (!eligibility.eligible) continue;
+      // Legacy pending quotes get their first immutable decision before publication.
       await query('UPDATE quotes SET provider_service_profile_id=$2 WHERE id=$1',[quote.id,eligibility.serviceProfileId]);
       await persistBusinessQuoteEligibilityDecision(query,eligibility,{organizationId,taskDraftId:quote.task_draft_id,quoteId:quote.id,quoteVersionId:version.id});
     }
@@ -105,5 +110,5 @@ export async function activatePendingBusinessQuotesInTransaction(
       posterUserId: draft.poster_user_id, fromStatus: PENDING_BUSINESS_VERIFICATION,
     })) activated += 1;
   }
-  return activated;
+  return {activated,eligibilityFailures};
 }

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { db } from '../db.js';
+import { db, type QueryFn } from '../db.js';
 
 const RiskLevelSchema = z.enum(['LOW', 'MEDIUM', 'HIGH', 'IN_HOME']);
 
@@ -344,8 +344,8 @@ export function evaluateTaskAgainstRegionPolicy(
   };
 }
 
-export async function resolveRegionPolicy(regionCode: string): Promise<RegionPolicyRow | null> {
-  const result = await db.query<RegionPolicyRow>(
+export async function resolveRegionPolicy(regionCode: string, query: QueryFn = db.query.bind(db)): Promise<RegionPolicyRow | null> {
+  const result = await query<RegionPolicyRow>(
     `SELECT policy.id, policy.region_code, policy.version, policy.policy_hash,
             policy.production_enabled, policy.effective_from, policy.effective_until,
             policy.policy_document,
