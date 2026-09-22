@@ -6,6 +6,10 @@ Production launch: `NO-GO`
 
 Production effects authorized by this repository documentation: `NONE`
 
+[HustleXP Business and Universal V1 Charter](https://github.com/Sebdysart/HUSTLEXP-DOCS/blob/main/governance/HUSTLEXP_BUSINESS_AND_UNIVERSAL_V1_CHARTER.md) is the controlling cross-repository authority for business identity, Universal V1 scope, marketplace lanes, provider routing, lifecycle, economics, launch gates, and versioned policy ownership. Its operating doctrine is **Wide intake. Credentialed routing. Narrow financial commitment.** This backend README is a narrower implementation reference: where documents conflict, the Charter controls business intent, while the most restrictive current production-safety hold continues to control execution. Nothing in the Charter enables payment creation or changes the `NO-GO` state recorded here.
+
+Charter v1.1.0 makes `VERIFIED_TRADE_BUSINESS` a first-class provider class in an `ACTIVE_GATED` managed marketplace lane. Referral is an interim capability, not the trade business model. Backend implementation must preserve independent provider, credential, category, task, legal-role, processor, transaction, and payment gates; the current production-money freeze remains unchanged.
+
 [The Team Goal and Execution Contract](docs/HUSTLEXP_TEAM_ALIGNMENT.md) is the stable engineering target. [The Current Backend Checkpoint](docs/HUSTLEXP_CURRENT_BACKEND_CHECKPOINT.md) contains source-dated implementation and external-state facts. The default-branch copy of the target becomes team-operative only at an exact commit accepted by an independent Reviewer; working-copy edits never change adopted policy. [AGENTS.md](AGENTS.md) controls repository workflow; canonical Governor state and accepted evidence control program authority.
 
 Documentation publication and backend implementation use separate candidates. Do not place runtime changes in a documentation branch. The reserved implementation branch is `codex/task-first-fake-fse-postgres-authority-rebuild`; do not create or populate it until persistent targets are closed and a fresh revision lock authorizes its exact base, tree, paths, and migration identity.
