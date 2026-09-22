@@ -28,6 +28,7 @@ function unwrap<T>(result: ServiceResult<T>): T {
             : code === 'INVALID_STATE' ? 'CONFLICT'
               : 'BAD_REQUEST',
       message: result.error.message,
+      cause: { applicationCode: result.error.code },
     });
   }
   return result.data;

@@ -62,6 +62,7 @@ vi.mock('../../src/logger', () => ({
 // R2 credentials fully configured so isR2Configured=true and s3Client is non-null
 vi.mock('../../src/config', () => ({
   config: {
+    backblaze: { b2: { endpoint: 'https://s3.example.test', region: 'us-west-004', keyId: 'test-key', applicationKey: 'test-secret', bucketName: 'hustlexp-bucket' } },
     cloudflare: {
       r2: {
         accountId:       'account-id-123',
@@ -135,7 +136,7 @@ describe('upload.getPresignedUrl — R2 configured (presigned URL path)', () => 
     expect(result.uploadUrl).not.toContain('mock');
   });
 
-  it('includes ContentLength in PutObjectCommand when fileSize is provided', async () => {
+  it('stores the required file size in the receipt for server-side finalization', async () => {
     mocks.mockGetSignedUrl.mockResolvedValue('https://presigned.example.com?sig=sz');
 
     await makeCaller().getPresignedUrl({
@@ -147,10 +148,12 @@ describe('upload.getPresignedUrl — R2 configured (presigned URL path)', () => 
 
     // The PutObjectCommand constructor was called with params containing ContentLength
     const ctorArgs = mocks.mockPutObjectCommandCtor.mock.calls[0][0];
-    expect(ctorArgs.ContentLength).toBe(2048);
+    expect(ctorArgs.ContentLength).toBeUndefined();
+    const receiptWrite = mockDb.query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO media_upload_receipts'));
+    expect(receiptWrite?.[1]?.[7]).toBe(2048);
   });
 
-  it('always includes ContentLength in PutObjectCommand (fileSize is required)', async () => {
+  it('preserves small file size in the signed upload receipt without a browser-controlled length header', async () => {
     mocks.mockGetSignedUrl.mockResolvedValue('https://presigned.example.com?sig=nosz');
 
     await makeCaller().getPresignedUrl({
@@ -161,7 +164,9 @@ describe('upload.getPresignedUrl — R2 configured (presigned URL path)', () => 
     });
 
     const ctorArgs = mocks.mockPutObjectCommandCtor.mock.calls[0][0];
-    expect(ctorArgs.ContentLength).toBe(512);
+    expect(ctorArgs.ContentLength).toBeUndefined();
+    const receiptWrite = mockDb.query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO media_upload_receipts'));
+    expect(receiptWrite?.[1]?.[7]).toBe(512);
   });
 
   it('does not expose a canonical or public URL before finalization', async () => {

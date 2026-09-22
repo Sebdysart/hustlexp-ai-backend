@@ -55,7 +55,7 @@ describe('Operations router least privilege', () => {
   });
 
   it('rejects staff without can_manage_operations', async () => {
-    mockDb.query.mockResolvedValueOnce({
+    mockDb.query.mockResolvedValue({
       rows: [{ role: 'support', capability_granted: false }], rowCount: 1,
     } as any);
     await expect(caller(true).listExceptions({})).rejects.toThrow('Required administrator capability missing');
@@ -63,8 +63,15 @@ describe('Operations router least privilege', () => {
     expect(operations.list).not.toHaveBeenCalled();
   });
 
+  it('rejects capability removed between fresh authority checks', async () => {
+    mockDb.query.mockResolvedValueOnce({ rows: [{ role: 'support', capability_granted: true }], rowCount: 1 } as any)
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+    await expect(caller(true).listExceptions({})).rejects.toThrow('Required administrator capability missing');
+    expect(operations.list).not.toHaveBeenCalled();
+  });
+
   it('allows explicitly capable staff and forwards only normalized input', async () => {
-    mockDb.query.mockResolvedValueOnce({
+    mockDb.query.mockResolvedValue({
       rows: [{ role: 'support', capability_granted: true }], rowCount: 1,
     } as any);
     await expect(caller(true).listExceptions({ priorityClass: 'SAFETY' })).resolves.toEqual([]);
@@ -74,7 +81,7 @@ describe('Operations router least privilege', () => {
   });
 
   it('retains explicit admin/founder break-glass authority', async () => {
-    mockDb.query.mockResolvedValueOnce({
+    mockDb.query.mockResolvedValue({
       rows: [{ role: 'admin', capability_granted: false }], rowCount: 1,
     } as any);
     await expect(caller(true).listExceptions({})).resolves.toEqual([]);
@@ -85,7 +92,7 @@ describe('Operations router least privilege', () => {
     await expect(caller(false).listAIActivity({})).rejects.toThrow('Administrator access required');
     expect(aiObservability.list).not.toHaveBeenCalled();
 
-    mockDb.query.mockResolvedValueOnce({
+    mockDb.query.mockResolvedValue({
       rows: [{ role: 'support', capability_granted: true }], rowCount: 1,
     } as any);
     await expect(caller(true).listAIActivity({ executionResult: 'FAILED' })).resolves.toEqual([]);
@@ -95,7 +102,7 @@ describe('Operations router least privilege', () => {
   });
 
   it('passes authenticated operator identity and explicit purpose into detail access logging', async () => {
-    mockDb.query.mockResolvedValueOnce({
+    mockDb.query.mockResolvedValue({
       rows: [{ role: 'support', capability_granted: true }], rowCount: 1,
     } as any);
     const purpose = 'Investigate model evidence and realized outcome attribution.';

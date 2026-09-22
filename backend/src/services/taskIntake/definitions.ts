@@ -35,6 +35,6 @@ function primaryQuestions(category:TaskCategory,profile?:IntakeProfile|null):Int
 export function getQuestionsForIntake(primaryCategory:TaskCategory,secondaryIntents:readonly TaskCategory[]=[],profile?:IntakeProfile|null):IntakeQuestion[]{const secondary=secondaryIntents.filter((category,index,all)=>category!==primaryCategory&&category!=='other'&&all.indexOf(category)===index);return dedupeQuestions([...primaryQuestions(primaryCategory,profile),...secondary.flatMap((category)=>B[category]),...U]);}
 export function getQuestionsForCategory(category:TaskCategory,profile?:IntakeProfile|null):IntakeQuestion[]{return getQuestionsForIntake(category,[],profile)}
 export function getKnownIntakeQuestionKeys():Set<string>{return new Set([...Object.values(B).flat(),...Object.values(PROFILE_QUESTIONS).flat(),...Object.values(PROFILE_CLARIFICATION_QUESTIONS),...U].map((question)=>question.key));}
-export const TASK_CATEGORIES=Object.freeze(['yard','cleaning','moving','assembly','delivery','handyman','home_services','auto','events','pet_care','painting','plumbing','electrical','other'] as const);
+export { SERVICE_CATEGORY_CODES as TASK_CATEGORIES } from '../../contracts/serviceCategories.js';
 
 

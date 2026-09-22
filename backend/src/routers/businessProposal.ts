@@ -86,6 +86,7 @@ export const businessProposalRouter = router({
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
           message: result.error.message,
+          cause: { applicationCode: result.error.code },
         });
       }
 
@@ -156,7 +157,7 @@ export const businessProposalRouter = router({
       arrivalWindowEnd: input.arrivalWindowEnd,
       quoteExpiresAt: proposal.expires_at,
     });
-    if (!quoteResult.success) throw new TRPCError({ code: quoteResult.error.code.includes('CONFLICT') ? 'CONFLICT' : 'PRECONDITION_FAILED', message: quoteResult.error.message });
+    if (!quoteResult.success) throw new TRPCError({ code: quoteResult.error.code.includes('CONFLICT') ? 'CONFLICT' : 'PRECONDITION_FAILED', message: quoteResult.error.message, cause: { applicationCode: quoteResult.error.code } });
 
     const quoteId = quoteResult.data.quoteId;
     await query(`UPDATE business_task_proposals SET status = 'QUOTED', quote_id = $2, responded_at = NOW(), updated_at = NOW() WHERE id = $1`, [proposal.id, quoteId]);

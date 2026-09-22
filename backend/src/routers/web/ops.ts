@@ -38,6 +38,9 @@ import {
   createPendingPhoneClaimInTransaction,
 } from '../../services/CustomerDraftClaimService.js';
 import { normalizePhoneToE164 } from '../../lib/phone.js';
+import { recordOpsAudit } from '../../services/OpsAuditService.js';
+import { opsBusinessCredentialProcedures } from './opsBusinessCredentials.js';
+import { opsBusinessEligibilityProcedures } from './opsBusinessEligibility.js';
 import { AnalyticsService } from '../../services/AnalyticsService.js';
 
 const log = logger.child({ router: 'web.ops' });
@@ -149,30 +152,6 @@ function hustlerValues(input: UpsertHustlerInput): unknown[] {
   ];
 }
 
-async function recordOpsAudit(input: {
-  actorUserId?: string | null;
-  action: string;
-  targetType: string;
-  targetId?: string | null;
-  meta?: Record<string, unknown>;
-}, query = db.query.bind(db), required = false): Promise<void> {
-  try {
-    await query(
-      `INSERT INTO ops_action_audit (actor_user_id, actor_label, action, target_type, target_id, meta)
-       VALUES ($1, 'ops', $2, $3, $4, $5::jsonb)`,
-      [
-        input.actorUserId ?? null,
-        input.action,
-        input.targetType,
-        input.targetId ?? null,
-        JSON.stringify(input.meta ?? {}),
-      ],
-    );
-  } catch (error) {
-    if (required) throw error;
-    log.warn({ err: error, action: input.action }, 'ops_action_audit write skipped');
-  }
-}
 
 function quoteEligibilityError(code: 'not_eligible' | 'already_linked' | 'not_found', message: string): never {
   throw new TRPCError({ code: 'CONFLICT', message: `${code}:${message}` });
@@ -192,6 +171,8 @@ function generateBusinessClaimToken(): {
 }
 
 export const webOpsRouter = router({
+  ...opsBusinessCredentialProcedures,
+  ...opsBusinessEligibilityProcedures,
 
   createCustomerTaskDraft: operationsAdminProcedure
     .input(z.object({
@@ -1183,6 +1164,7 @@ export const webOpsRouter = router({
           SELECT
             id,
             name,
+            purpose,
             rough_location,
             postal_code,
             region_code,

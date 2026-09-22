@@ -4,6 +4,7 @@ import type { ServiceResult } from '../types.js';
 import { assertVerifiedProvider } from './BusinessWorkspacePolicy.js';
 import { logger } from '../logger.js';
 import { PENDING_BUSINESS_VERIFICATION, publishBusinessQuoteInTransaction } from './BusinessQuoteActivationService.js';
+import { evaluateBusinessTaskEligibility, businessEligibilityFailure, persistBusinessQuoteEligibilityDecision } from './BusinessTaskEligibilityService.js';
 import { assertProviderOsAccess } from './ProviderOsAccess.js';
 
 interface ClaimInput {
@@ -98,9 +99,8 @@ export async function validateBusinessQuoteContext(
   } catch {
     return failure('BUSINESS_NOT_READY', 'The business organization is not currently eligible to claim work.');
   }
-  // Service profiles and business locations are dormant for launch. Legacy
-  // clients may still send their IDs, but they neither grant authority nor bind
-  // new marketplace quotes to dormant configuration.
+  // Client-supplied profile/location IDs never grant authority. The shared quote
+  // gate derives the selected canonical service from the locked task category.
   return { success: true, data: { organizationId: input.organizationId, pendingBusinessVerification: org.verification_status !== 'VERIFIED' } };
 }
 
@@ -135,16 +135,19 @@ export async function createBusinessQuoteInTransaction(
     return { success: false as const, error: { code: 'BUSINESS_ALREADY_QUOTED', message: 'This business already has an active quote for this task.' } };
   }
 
+  const eligibility = await evaluateBusinessTaskEligibility(query, {organizationId: input.organizationId, taskDraftId: input.draft.id, action: 'SUBMIT_QUOTE'});
+  if (!eligibility.eligible) return { success: false as const, error: businessEligibilityFailure(eligibility) };
+
   const platformMarginCents = input.proposedCustomerTotalCents - input.proposedPayoutCents;
   const quoteResult = await query<{ id: string }>(
     `INSERT INTO quotes (
        task_draft_id, title, status, environment, is_test,
        business_organization_id, business_location_id,
        provider_service_profile_id, claimed_by_user_id, acquisition_origin
-     ) VALUES ($1, $2, $5, 'TEST', TRUE, $3, NULL, NULL, $4, $6)
+     ) VALUES ($1, $2, $5, 'TEST', TRUE, $3, NULL, $7, $4, $6)
      RETURNING id`,
     [input.draft.id, input.draft.title ?? 'Business Quote', input.organizationId, input.actorId,
-      input.pendingBusinessVerification ? PENDING_BUSINESS_VERIFICATION : 'draft', input.acquisitionOrigin],
+      input.pendingBusinessVerification ? PENDING_BUSINESS_VERIFICATION : 'draft', input.acquisitionOrigin, eligibility.serviceProfileId],
   );
   const quoteId = quoteResult.rows[0]?.id;
   if (!quoteId) return { success: false as const, error: { code: 'QUOTE_CREATE_FAILED', message: 'Unable to create the business quote.' } };
@@ -177,6 +180,7 @@ export async function createBusinessQuoteInTransaction(
   if (!quoteVersionId) return { success: false as const, error: { code: 'QUOTE_VERSION_CREATE_FAILED', message: 'Unable to create business quote version.' } };
 
   await query(`UPDATE quotes SET active_version_id = $1, updated_at = NOW() WHERE id = $2`, [quoteVersionId, quoteId]);
+  await persistBusinessQuoteEligibilityDecision(query, eligibility, {organizationId: input.organizationId, taskDraftId: input.draft.id, quoteId, quoteVersionId});
   if (!input.pendingBusinessVerification) {
     const published = await publishBusinessQuoteInTransaction(query, {
       quoteId, taskDraftId: input.draft.id, posterUserId: input.draft.poster_user_id, fromStatus: 'draft',

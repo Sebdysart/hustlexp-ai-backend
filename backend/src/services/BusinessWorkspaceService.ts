@@ -1,8 +1,10 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { TRPCError } from '@trpc/server';
 import { db } from '../db.js';
 import { logger } from '../logger.js';
 import type { ServiceResult } from '../types.js';
-import { encryptTaskLocation } from './TaskLocationCrypto.js';
+import { encryptTaskLocation, decryptTaskLocation } from './TaskLocationCrypto.js';
+import { requireBusinessManagementAuthority, recordBusinessManagementAudit } from './BusinessManagementAuthority.js';
 import type { BusinessRole } from './BusinessWorkspacePolicy.js';
 import {
   ensureBusinessTestPayoutDestination,
@@ -333,4 +335,60 @@ export async function listBusinessLocations(
   } catch (error) {
     return failure(error, 'BUSINESS_LOCATION_LIST_FAILED', 'Business locations could not be loaded.');
   }
+}
+
+export async function getBusinessAddress(actorId: string, organizationId: string) {
+  return db.transaction(async (query) => {
+    await requireBusinessManagementAuthority(query,actorId,organizationId,'MANAGE_LOCATIONS');
+    const address=await query<{id:string;rough_location:string;postal_code:string;region_code:string;timezone:string;exact_address_ciphertext:string;exact_address_nonce:string;exact_address_auth_tag:string;exact_address_key_id:string}>(
+      `SELECT id,rough_location,postal_code,region_code,timezone,exact_address_ciphertext,exact_address_nonce,exact_address_auth_tag,exact_address_key_id
+       FROM business_locations WHERE organization_id=$1 AND purpose='BUSINESS_ADDRESS' AND status='ACTIVE'`,[organizationId]);
+    const row=address.rows[0];
+    if(!row) return null;
+    return {id:row.id,roughLocation:row.rough_location,postalCode:row.postal_code,regionCode:row.region_code,timezone:row.timezone,
+      exactAddress:decryptTaskLocation(row.id,{location_ciphertext:row.exact_address_ciphertext,location_nonce:row.exact_address_nonce,location_auth_tag:row.exact_address_auth_tag,location_key_id:row.exact_address_key_id})};
+  });
+}
+
+/** One encrypted business/billing address, independent of service coverage. */
+export async function saveBusinessAddress(input:{actorId:string;organizationId:string;exactAddress:string;roughLocation:string;postalCode:string;regionCode:string;timezone:string}) {
+  return db.transaction(async(query)=>{
+    await query('SELECT id FROM business_organizations WHERE id=$1 FOR UPDATE',[input.organizationId]);
+    await requireBusinessManagementAuthority(query,input.actorId,input.organizationId,'MANAGE_LOCATIONS');
+    const previous=await query<{id:string}>(`SELECT id FROM business_locations WHERE organization_id=$1 AND purpose='BUSINESS_ADDRESS' AND status='ACTIVE' FOR UPDATE`,[input.organizationId]);
+    const id=previous.rows[0]?.id ?? randomUUID();
+    const encrypted=encryptTaskLocation(id,input.exactAddress);
+    const access=encryptTaskLocation(`${id}:access`,'Business billing address; no customer task access instructions.');
+    await query(`INSERT INTO business_locations(id,organization_id,name,rough_location,postal_code,region_code,timezone,purpose,
+      exact_address_ciphertext,exact_address_nonce,exact_address_auth_tag,exact_address_key_id,exact_address_fingerprint,
+      access_ciphertext,access_nonce,access_auth_tag,access_key_id,access_fingerprint,created_by,creation_idempotency_key)
+      VALUES($1,$2,'Business / billing address',$3,$4,$5,$6,'BUSINESS_ADDRESS',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+      ON CONFLICT(id) DO UPDATE SET rough_location=EXCLUDED.rough_location,postal_code=EXCLUDED.postal_code,region_code=EXCLUDED.region_code,timezone=EXCLUDED.timezone,
+        exact_address_ciphertext=EXCLUDED.exact_address_ciphertext,exact_address_nonce=EXCLUDED.exact_address_nonce,exact_address_auth_tag=EXCLUDED.exact_address_auth_tag,
+        exact_address_key_id=EXCLUDED.exact_address_key_id,exact_address_fingerprint=EXCLUDED.exact_address_fingerprint,updated_at=NOW()`,
+      [id,input.organizationId,input.roughLocation,input.postalCode,input.regionCode,input.timezone,encrypted.ciphertext,encrypted.nonce,encrypted.authTag,encrypted.keyId,encrypted.fingerprint,
+        access.ciphertext,access.nonce,access.authTag,access.keyId,access.fingerprint,input.actorId,`business-address:${id}`]);
+    await recordBusinessManagementAudit(query,{actorId:input.actorId,organizationId:input.organizationId,action:'business_address_saved',objectType:'business_location',objectId:id,after:{purpose:'BUSINESS_ADDRESS',regionCode:input.regionCode}});
+    return {id};
+  });
+}
+
+export async function selectBusinessServices(input:{actorId:string;organizationId:string;serviceCodes:string[]}) {
+  return db.transaction(async(query)=>{
+    await query('SELECT id FROM business_organizations WHERE id=$1 FOR UPDATE',[input.organizationId]);
+    await requireBusinessManagementAuthority(query,input.actorId,input.organizationId,'MANAGE_SERVICES');
+    const codes=[...new Set(input.serviceCodes)];
+    const categories=await query<{id:string;code:string;display_name:string}>(`SELECT id,code,display_name FROM service_categories WHERE code=ANY($1::text[]) AND status='ACTIVE' FOR SHARE`,[codes]);
+    if(categories.rows.length!==codes.length) throw new TRPCError({code:'BAD_REQUEST',message:'Select active canonical service categories.'});
+    await query(`UPDATE business_service_profiles SET selected_by_business=false,updated_at=NOW() WHERE organization_id=$1 AND selected_by_business AND NOT(service_code=ANY($2::text[]))`,[input.organizationId,codes]);
+    for(const category of categories.rows) {
+      await query(`INSERT INTO business_service_profiles(organization_id,service_code,service_category_id,service_name,service_description,
+        pricing_mode,response_mode,status,selected_by_business,eligibility_status,created_by,creation_idempotency_key)
+        VALUES($1,$2,$3,$4,$5,'QUOTE_REQUIRED','INDIVIDUAL_OFFERS','DRAFT',true,'DECLARED',$6,$7)
+        ON CONFLICT(organization_id,service_code) DO UPDATE SET service_category_id=EXCLUDED.service_category_id,selected_by_business=true,updated_at=NOW()`,
+        [input.organizationId,category.code,category.id,category.display_name,`Business offers ${category.display_name} services.`,input.actorId,`stage1-service:${category.code}`]);
+    }
+    await recordBusinessManagementAudit(query,{actorId:input.actorId,organizationId:input.organizationId,action:'business_services_selected',objectType:'business_organization',objectId:input.organizationId,after:{serviceCodes:codes}});
+    return {ok:true as const};
+  });
 }

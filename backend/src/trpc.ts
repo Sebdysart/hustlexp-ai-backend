@@ -9,6 +9,7 @@
  * @see ARCHITECTURE.md §1
  */
 
+import { BUSINESS_ELIGIBILITY_APPLICATION_CODES } from './services/BusinessTaskEligibilityService.js';
 import { initTRPC, TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { db } from './db.js';
@@ -35,7 +36,8 @@ export type { AuthedContext, Context } from './trpc-context.js';
 function publicApplicationCode(cause: unknown): string | undefined {
   if (typeof cause !== 'object' || cause === null || Array.isArray(cause)) return undefined;
   const code = (cause as { applicationCode?: unknown }).applicationCode;
-  return code === PAYMENT_CREATION_FROZEN_CODE || code === 'QUOTE_PAYMENT_MANUAL_COMPENSATION_REQUIRED'
+  return code === PAYMENT_CREATION_FROZEN_CODE || code === 'QUOTE_PAYMENT_MANUAL_COMPENSATION_REQUIRED' ||
+    (typeof code === 'string' && (Object.values(BUSINESS_ELIGIBILITY_APPLICATION_CODES) as string[]).includes(code))
     ? code : undefined;
 }
 

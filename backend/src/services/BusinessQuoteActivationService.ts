@@ -1,3 +1,4 @@
+import { evaluateBusinessTaskEligibility, persistBusinessQuoteEligibilityDecision } from './BusinessTaskEligibilityService.js';
 import type { QueryFn } from '../db.js';
 import { NotificationService } from './NotificationService.js';
 
@@ -73,8 +74,8 @@ export async function activatePendingBusinessQuotesInTransaction(
       `SELECT poster_user_id, status, quote_id, task_id FROM task_drafts WHERE id = $1 FOR UPDATE`,
       [quote.task_draft_id],
     )).rows[0];
-    const version = (await query<{ eligible: boolean }>(
-      `SELECT (qv.status = 'draft' AND qv.expires_at > NOW()
+    const version = (await query<{ eligible: boolean; id: string }>(
+      `SELECT qv.id, (qv.status = 'draft' AND qv.expires_at > NOW()
                  AND qv.arrival_window_end > NOW()
                  AND qv.dispatch_expires_at > NOW()) AS eligible
        FROM quotes q JOIN quote_versions qv ON qv.id = q.active_version_id AND qv.quote_id = q.id
@@ -89,6 +90,15 @@ export async function activatePendingBusinessQuotesInTransaction(
       await query(`UPDATE quotes SET status = $3, updated_at = NOW() WHERE id = $1 AND status = $2`,
         [quote.id, PENDING_BUSINESS_VERIFICATION, status]);
       continue;
+    }
+    const decision = await query<{id: string}>('SELECT id FROM business_quote_eligibility_decisions WHERE quote_id=$1',[quote.id]);
+    if (!decision.rows[0]) {
+      // Legacy pending quotes get a first decision before publication. Existing
+      // snapshots are historical and are not rechecked for ordinary later expiry.
+      const eligibility = await evaluateBusinessTaskEligibility(query,{organizationId,taskDraftId:quote.task_draft_id,action:'SUBMIT_QUOTE'});
+      if (!eligibility.eligible) continue;
+      await query('UPDATE quotes SET provider_service_profile_id=$2 WHERE id=$1',[quote.id,eligibility.serviceProfileId]);
+      await persistBusinessQuoteEligibilityDecision(query,eligibility,{organizationId,taskDraftId:quote.task_draft_id,quoteId:quote.id,quoteVersionId:version.id});
     }
     if (await publishBusinessQuoteInTransaction(query, {
       quoteId: quote.id, taskDraftId: quote.task_draft_id,

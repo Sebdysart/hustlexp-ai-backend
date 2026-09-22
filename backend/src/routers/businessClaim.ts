@@ -221,6 +221,7 @@ export const businessClaimRouter = router({
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
           message: result.error.message,
+          cause: { applicationCode: result.error.code },
         });
       }
 
@@ -250,6 +251,7 @@ export const businessClaimRouter = router({
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
           message: result.error.message,
+          cause: { applicationCode: result.error.code },
         });
       }
 
@@ -501,6 +503,7 @@ listClaimedDrafts: protectedProcedure
         throw new TRPCError({
           code,
           message: result.error.message,
+          cause: { applicationCode: result.error.code },
         });
       }
 

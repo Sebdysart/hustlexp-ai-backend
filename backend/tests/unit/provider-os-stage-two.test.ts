@@ -73,8 +73,25 @@ describe('Provider OS history and media authority', () => {
 });
 
 it.each(['provider_os', 'direct_proposal', 'claim_link'] as const)('persists server origin %s on canonical quote and version snapshot', async (acquisitionOrigin) => {
-  mocks.query.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [{ id: 'quote' }] })
-    .mockResolvedValueOnce({ rows: [{ id: 'version' }] }).mockResolvedValue({ rows: [] });
+  // Keep the real shared eligibility engine: these database facts describe an
+  // explicitly selected service with an approved, unrestricted local policy.
+  mocks.query.mockImplementation(async (sql: string) => {
+    if (sql.includes('FROM business_organizations')) return { rows: [{ id: 'org' }] };
+    if (sql.includes('SELECT category,region_code FROM task_drafts')) return { rows: [{ category: 'cleaning', region_code: 'US-WA' }] };
+    if (sql.includes('FROM service_categories')) return { rows: [{ id: 'category', code: 'cleaning', display_name: 'Cleaning', status: 'ACTIVE' }] };
+    if (sql.includes('FROM business_service_profiles')) return { rows: [{ id: 'profile', service_code: 'cleaning', service_category_id: 'category',
+      selected_by_business: true, eligibility_status: 'DECLARED', eligibility_reviewed_policy_id: null,
+      eligibility_reviewed_at: null, eligibility_reviewed_by: null }] };
+    if (sql.includes('FROM service_category_policies')) return { rows: [{ id: 'policy', service_category_id: 'category',
+      jurisdiction_code: 'US-WA', policy_status: 'UNRESTRICTED', policy_version: 1,
+      effective_from: '2020-01-01T00:00:00Z', effective_to: null, manual_review_required: false }] };
+    if (sql.includes('INSERT INTO quotes')) return { rows: [{ id: 'quote' }] };
+    if (sql.includes('INSERT INTO quote_versions')) return { rows: [{ id: 'version' }] };
+    if (sql.includes('INSERT INTO business_quote_eligibility_decisions')) return { rows: [{ id: 'decision' }] };
+    if (sql.includes('SELECT id FROM quotes') || sql.includes('FROM service_credential_requirements') ||
+      sql.includes('FROM business_credentials c') || sql.includes('UPDATE quotes SET active_version_id')) return { rows: [] };
+    throw new Error(`Unexpected shared quote SQL: ${sql}`);
+  });
   mocks.publish.mockResolvedValue(true);
   const result = await createBusinessQuoteInTransaction(mocks.query, {
     acquisitionOrigin, draft: { id: 'draft', title: 'Work', scope_summary: 'Scope', poster_user_id: 'poster' },
@@ -82,10 +99,16 @@ it.each(['provider_os', 'direct_proposal', 'claim_link'] as const)('persists ser
     arrivalWindowStart: '2026-10-01T12:00:00Z', arrivalWindowEnd: '2026-10-02T23:59:59Z', quoteExpiresAt: new Date('2026-10-01'),
   });
   expect(result.success).toBe(true);
-  expect(mocks.query.mock.calls[1][0]).toContain('acquisition_origin');
-  expect(mocks.query.mock.calls[1][1][5]).toBe(acquisitionOrigin);
-  expect(JSON.parse(mocks.query.mock.calls[2][1][4]).acquisition_origin).toBe(acquisitionOrigin);
-  expect(mocks.publish).toHaveBeenCalled();
+  const quoteInsert = mocks.query.mock.calls.find(([sql]) => sql.includes('INSERT INTO quotes'))!;
+  const versionInsert = mocks.query.mock.calls.find(([sql]) => sql.includes('INSERT INTO quote_versions'))!;
+  const decisionIndex = mocks.query.mock.calls.findIndex(([sql]) => sql.includes('INSERT INTO business_quote_eligibility_decisions'));
+  expect(quoteInsert[0]).toContain('acquisition_origin');
+  expect(quoteInsert[1][5]).toBe(acquisitionOrigin);
+  expect(quoteInsert[1][6]).toBe('profile');
+  expect(JSON.parse(versionInsert[1][4]).acquisition_origin).toBe(acquisitionOrigin);
+  expect(decisionIndex).toBeGreaterThan(-1);
+  expect(mocks.query.mock.invocationCallOrder[decisionIndex]).toBeLessThan(mocks.publish.mock.invocationCallOrder[0]);
+  expect(mocks.publish).toHaveBeenCalledWith(mocks.query, expect.objectContaining({ quoteId: 'quote', taskDraftId: 'draft' }));
 });
 
 it('registers the additive migration after ownership and photo-audit prerequisites without guessing legacy origin', () => {

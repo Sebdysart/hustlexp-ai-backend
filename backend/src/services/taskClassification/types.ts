@@ -1,4 +1,5 @@
-export type TaskCategory = 'yard' | 'cleaning' | 'moving' | 'assembly' | 'delivery' | 'handyman' | 'home_services' | 'auto' | 'events' | 'pet_care' | 'painting' | 'plumbing' | 'electrical' | 'other';
+import type { ServiceCategoryCode as TaskCategory } from '../../contracts/serviceCategories.js';
+export type { ServiceCategoryCode as TaskCategory } from '../../contracts/serviceCategories.js';
 export type ServiceTaskCategory = Exclude<TaskCategory, 'other'>;
 export interface ClassifierModelArtifact { format_version: 1; classifier: 'linear_svc'; training_embedding_model: string; runtime_embedding_model: string; embedding_dimensions: number; ambiguity_threshold: number; training_examples: number; classes: ServiceTaskCategory[]; weights: number[][]; bias: number[]; }
 export interface ClassificationCandidate { category: ServiceTaskCategory; score: number; }

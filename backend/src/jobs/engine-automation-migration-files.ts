@@ -161,6 +161,9 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20261005_tilled_paid_reservation_outcome', fileName: '20261005_tilled_paid_reservation_outcome.sql' },
   { name: '20261005_tilled_completion_compatibility', fileName: '20261005_tilled_completion_compatibility.sql' },
   { name: '20261006_outbox_dispatch_lease', fileName: '20261006_outbox_dispatch_lease.sql' },
+  { name: '20261007_business_service_category_policy', fileName: '20261007_business_service_category_policy.sql' },
+  { name: '20261007_business_credentials_evidence', fileName: '20261007_business_credentials_evidence.sql' },
+  { name: '20261008_business_quote_eligibility', fileName: '20261008_business_quote_eligibility.sql' },
 ] as const;
 
 

@@ -32,6 +32,7 @@ import {
   SUPPORTED_SANITIZED_IMAGE_TYPES,
 } from '../services/MediaSanitizationService.js';
 import { assertProviderOsDraftPhotoAuthority } from '../services/ProviderOsDraftPhotoAuthority.js';
+import { requireBusinessManagementAuthority } from '../services/BusinessManagementAuthority.js';
 import { listDeliveredTaskDraftPhotos } from '../services/TaskDraftPhotoReadService.js';
 
 const log = logger.child({ router: 'upload' });
@@ -148,9 +149,10 @@ async function assertUploadAuthority(
   }
 }
 
-type RouterUploadPurpose = 'proof' | 'message' | 'task_draft_photo';
+type RouterUploadPurpose = 'proof' | 'message' | 'task_draft_photo' | 'business_credential';
 
 function canonicalPurpose(purpose: RouterUploadPurpose): MediaUploadPurpose {
+  if (purpose === 'business_credential') return 'BUSINESS_CREDENTIAL';
   if (purpose === 'message') return 'MESSAGE';
   if (purpose === 'task_draft_photo') return 'TASK_DRAFT_PHOTO';
   return 'PROOF';
@@ -251,6 +253,7 @@ export const uploadRouter = router({
       z.object({
         taskId: z.string().uuid().optional(),
         taskDraftId: z.string().uuid().optional(),
+        organizationId: z.string().uuid().optional(),
         filename: z
           .string()
           .min(1)
@@ -265,10 +268,14 @@ export const uploadRouter = router({
           .number()
           .min(1, 'File cannot be empty')
           .max(MAX_FILE_SIZE, `File size must be under ${MAX_FILE_SIZE / 1024 / 1024}MB`),
-        purpose: z.enum(['proof', 'message', 'task_draft_photo']).optional().default('proof'),
+        purpose: z.enum(['proof', 'message', 'task_draft_photo', 'business_credential']).optional().default('proof'),
         sequenceNumber: z.number().int().min(0).max(7).optional(),
       }).superRefine((value, ctx) => {
-        if (value.purpose === 'task_draft_photo') {
+        if (value.purpose === 'business_credential') {
+          if (!value.organizationId || value.taskId || value.taskDraftId || value.sequenceNumber !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['organizationId'], message: 'Credential uploads require only an organization target.' });
+        } else if (value.organizationId) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['organizationId'], message: 'Organization target is only valid for credential evidence.' });
+        } else if (value.purpose === 'task_draft_photo') {
           if (!value.taskDraftId) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['taskDraftId'], message: 'taskDraftId is required.' });
           if (value.taskId) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['taskId'], message: 'taskId is not valid for draft photos.' });
           if (value.sequenceNumber === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['sequenceNumber'], message: 'sequenceNumber is required.' });
@@ -280,7 +287,9 @@ export const uploadRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      if (input.purpose === 'task_draft_photo') {
+      if (input.purpose === 'business_credential') {
+        await requireBusinessManagementAuthority(db.query, ctx.user.id, input.organizationId!, 'MANAGE_SERVICES');
+      } else if (input.purpose === 'task_draft_photo') {
         await assertDraftPhotoAuthority(input.taskDraftId!, ctx.user.id);
         const count = await db.query<{ count: string }>(
           `SELECT COUNT(*)::TEXT AS count FROM task_draft_photos WHERE task_draft_id=$1`,
@@ -299,7 +308,7 @@ export const uploadRouter = router({
         .toLowerCase()
         .replace(/[^a-z0-9]/g, '')
         .slice(0, 4);
-      const targetId = input.taskDraftId ?? input.taskId!;
+      const targetId = input.organizationId ?? input.taskDraftId ?? input.taskId!;
       const key = `quarantine/${input.purpose}/${targetId}/${ctx.user.id}/${receiptId}${ext ? '.' + ext : ''}`;
       const expiresAt = new Date(Date.now() + PRESIGN_EXPIRY * 1000);
       const receiptExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
@@ -313,7 +322,7 @@ export const uploadRouter = router({
         ContentType: input.contentType,
         Metadata: {
           'uploaded-by': ctx.user.id,
-          ...(input.taskDraftId ? { 'task-draft-id': input.taskDraftId } : { 'task-id': input.taskId! }),
+          ...(input.organizationId ? { 'organization-id': input.organizationId } : input.taskDraftId ? { 'task-draft-id': input.taskDraftId } : { 'task-id': input.taskId! }),
           'receipt-id': receiptId,
           purpose: input.purpose,
         },
@@ -327,7 +336,7 @@ export const uploadRouter = router({
 
           unhoistableHeaders: new Set([
             'x-amz-meta-uploaded-by',
-            ...(input.taskDraftId ? ['x-amz-meta-task-draft-id'] : ['x-amz-meta-task-id']),
+            ...(input.organizationId ? ['x-amz-meta-organization-id'] : input.taskDraftId ? ['x-amz-meta-task-draft-id'] : ['x-amz-meta-task-id']),
             'x-amz-meta-receipt-id',
             'x-amz-meta-purpose',
           ]),
@@ -343,8 +352,8 @@ export const uploadRouter = router({
       await db.query(
         `INSERT INTO media_upload_receipts (
            id, task_id, task_draft_id, uploader_id, purpose, quarantine_key,
-           expected_content_type, expected_size_bytes, quarantine_expires_at, expires_at
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+           expected_content_type, expected_size_bytes, quarantine_expires_at, expires_at, organization_id
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
         [
           receiptId,
           input.taskId ?? null,
@@ -356,6 +365,7 @@ export const uploadRouter = router({
           input.fileSize,
           expiresAt,
           receiptExpiresAt,
+          input.organizationId ?? null,
         ]
       );
 
@@ -368,7 +378,9 @@ export const uploadRouter = router({
           'x-amz-meta-uploaded-by':
             ctx.user.id,
 
-          ...(input.taskDraftId
+          ...(input.organizationId
+            ? { 'x-amz-meta-organization-id': input.organizationId }
+            : input.taskDraftId
             ? { 'x-amz-meta-task-draft-id': input.taskDraftId }
             : { 'x-amz-meta-task-id': input.taskId! }),
 
@@ -386,11 +398,16 @@ export const uploadRouter = router({
       z.object({
         taskId: z.string().uuid().optional(),
         taskDraftId: z.string().uuid().optional(),
+        organizationId: z.string().uuid().optional(),
         receiptId: z.string().uuid(),
-        purpose: z.enum(['proof', 'message', 'task_draft_photo']).optional().default('proof'),
+        purpose: z.enum(['proof', 'message', 'task_draft_photo', 'business_credential']).optional().default('proof'),
         sequenceNumber: z.number().int().min(0).max(7).optional(),
       }).superRefine((value, ctx) => {
-        if (value.purpose === 'task_draft_photo') {
+        if (value.purpose === 'business_credential') {
+          if (!value.organizationId || value.taskId || value.taskDraftId || value.sequenceNumber !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['organizationId'], message: 'Credential uploads require only an organization target.' });
+        } else if (value.organizationId) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['organizationId'], message: 'Organization target is only valid for credential evidence.' });
+        } else if (value.purpose === 'task_draft_photo') {
           if (!value.taskDraftId) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['taskDraftId'], message: 'taskDraftId is required.' });
           if (value.taskId) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['taskId'], message: 'taskId is not valid for draft photos.' });
           if (value.sequenceNumber === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['sequenceNumber'], message: 'sequenceNumber is required.' });
@@ -400,12 +417,14 @@ export const uploadRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      if (input.purpose === 'task_draft_photo') await assertDraftPhotoAuthority(input.taskDraftId!, ctx.user.id);
+      if (input.purpose === 'business_credential') await requireBusinessManagementAuthority(db.query, ctx.user.id, input.organizationId!, 'MANAGE_SERVICES');
+      else if (input.purpose === 'task_draft_photo') await assertDraftPhotoAuthority(input.taskDraftId!, ctx.user.id);
       else await assertUploadAuthority(input.taskId!, ctx.user.id, input.purpose as 'proof' | 'message');
       const evidence = await finalizeMediaUpload({
         receiptId: input.receiptId,
         taskId: input.taskId,
         taskDraftId: input.taskDraftId,
+        organizationId: input.organizationId,
         uploaderId: ctx.user.id,
         purpose: canonicalPurpose(input.purpose),
       });

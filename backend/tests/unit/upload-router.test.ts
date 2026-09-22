@@ -101,6 +101,30 @@ function insertedQuarantineKey(): string {
   return String(call?.[1]?.[5] ?? '');
 }
 
+describe('private business credential upload authority', () => {
+  beforeEach(() => vi.clearAllMocks());
+  it('binds a fresh receipt to the exact organization and authenticated uploader', async () => {
+    mockDb.query.mockResolvedValueOnce({rows:[{id:TEST_UUID}]} as never).mockResolvedValueOnce({rows:[]} as never);
+    const result=await makeCaller().getPresignedUrl({organizationId:TEST_UUID,purpose:'business_credential',filename:'license.jpg',contentType:'image/jpeg',fileSize:512});
+    expect(result.uploadHeaders).toMatchObject({'x-amz-meta-organization-id':TEST_UUID,'x-amz-meta-purpose':'business_credential'});
+    const insert=mockDb.query.mock.calls.find(([sql])=>String(sql).includes('INSERT INTO media_upload_receipts'));
+    expect(insert?.[1]?.[1]).toBeNull();
+    expect(insert?.[1]?.[2]).toBeNull();
+    expect(insert?.[1]?.[4]).toBe('BUSINESS_CREDENTIAL');
+    expect(insert?.[1]?.[10]).toBe(TEST_UUID);
+    expect(mockDb.query.mock.calls[0]?.[1]).toEqual([TEST_UUID,'test-uid','MANAGE_SERVICES']);
+  });
+  it('does not create receipts for nonmembers or inactive accounts', async () => {
+    mockDb.query.mockResolvedValue({rows:[]} as never);
+    await expect(makeCaller().getPresignedUrl({organizationId:TEST_UUID,purpose:'business_credential',filename:'license.jpg',contentType:'image/jpeg',fileSize:512})).rejects.toMatchObject({code:'FORBIDDEN'});
+    expect(mockDb.query.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO media_upload_receipts'))).toBe(false);
+  });
+  it('rejects mixed organization and task targets', async () => {
+    await expect(makeCaller().getPresignedUrl({organizationId:TEST_UUID,taskId:TEST_UUID,purpose:'business_credential',filename:'license.jpg',contentType:'image/jpeg',fileSize:512})).rejects.toMatchObject({code:'BAD_REQUEST'});
+    expect(mockDb.query).not.toHaveBeenCalled();
+  });
+});
+
 describe('upload.getPresignedUrl', () => {
   beforeEach(() => vi.clearAllMocks());
 

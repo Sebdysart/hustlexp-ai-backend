@@ -17,7 +17,7 @@ const storageMocks = vi.hoisted(() => ({
   uploadFile: vi.fn(),
   deleteFile: vi.fn(),
 }));
-vi.mock('../../src/storage/r2', () => ({ r2: storageMocks }));
+vi.mock('../../src/storage/backblaze-b2', () => ({ backblazeB2: storageMocks }));
 
 import { db } from '../../src/db';
 import {
@@ -30,7 +30,7 @@ const RECEIPT_ID = 'a0000000-0000-4000-8000-000000000001';
 const TASK_ID = 'b0000000-0000-4000-8000-000000000001';
 const USER_ID = 'c0000000-0000-4000-8000-000000000001';
 const QUARANTINE_KEY = `quarantine/proof/${TASK_ID}/${USER_ID}/${RECEIPT_ID}.jpg`;
-const CANONICAL_KEY = `media/proof/${TASK_ID}/${USER_ID}/${RECEIPT_ID}.jpg`;
+const CANONICAL_KEY = `media/proof/tasks/${TASK_ID}/${USER_ID}/${RECEIPT_ID}.jpg`;
 
 function receipt(overrides: Record<string, unknown> = {}) {
   return {
@@ -69,6 +69,27 @@ describe('canonical media upload finalization', () => {
     delete process.env.R2_PUBLIC_URL;
     storageMocks.uploadFile.mockResolvedValue({});
     storageMocks.deleteFile.mockResolvedValue(undefined);
+  });
+
+  it('sanitizes private credential bytes under the exact organization and receipt', async () => {
+    const source=await privateJpeg();
+    const organizationId='d0000000-0000-4000-8000-000000000001';
+    const row=receipt({task_id:null,task_draft_id:null,organization_id:organizationId,purpose:'BUSINESS_CREDENTIAL',expected_size_bytes:source.length});
+    vi.mocked(db.query).mockResolvedValueOnce({rows:[row]} as never).mockResolvedValueOnce({rows:[{id:organizationId}]} as never)
+      .mockImplementationOnce(async(_sql,params)=>({rows:[receipt({...row,status:'FINALIZED',canonical_key:params?.[1],canonical_content_type:params?.[2],canonical_size_bytes:params?.[3],canonical_checksum_sha256:params?.[4],pixel_width:params?.[5],pixel_height:params?.[6],source_metadata_detected:params?.[7]})]} as never));
+    storageMocks.downloadFile.mockResolvedValue({data:source,size:source.length,contentType:'image/jpeg',metadata:{'receipt-id':RECEIPT_ID,'organization-id':organizationId,'uploaded-by':USER_ID,purpose:'business_credential'}});
+    const result=await finalizeMediaUpload({receiptId:RECEIPT_ID,organizationId,uploaderId:USER_ID,purpose:'BUSINESS_CREDENTIAL'},storageMocks as never);
+    expect(result.uploadReceiptId).toBe(RECEIPT_ID);
+    expect(storageMocks.uploadFile.mock.calls[0]?.[0]).toContain(`/businesses/${organizationId}/`);
+    expect(storageMocks.uploadFile.mock.calls[0]?.[3]).toMatchObject({'organization-id':organizationId,purpose:'business_credential',sanitized:'true'});
+    expect(result).not.toHaveProperty('canonical_key');
+    expect(result).not.toHaveProperty('url');
+  });
+
+  it('rejects credential finalization against a different organization before downloading', async () => {
+    vi.mocked(db.query).mockResolvedValue({rows:[receipt({task_id:null,task_draft_id:null,organization_id:'another-org',purpose:'BUSINESS_CREDENTIAL'})]} as never);
+    await expect(finalizeMediaUpload({receiptId:RECEIPT_ID,organizationId:'requested-org',uploaderId:USER_ID,purpose:'BUSINESS_CREDENTIAL'},storageMocks as never)).rejects.toMatchObject({code:'FORBIDDEN'});
+    expect(storageMocks.downloadFile).not.toHaveBeenCalled();
   });
 
   it('re-encodes quarantine bytes, deletes the raw object, and issues canonical evidence', async () => {
@@ -170,7 +191,7 @@ describe('canonical media upload finalization', () => {
   it('replays a finalized receipt without processing bytes again', async () => {
     const row = receipt({
       status: 'FINALIZED',
-      canonical_key: `media/proof/${TASK_ID}/${USER_ID}/${RECEIPT_ID}.jpg`,
+      canonical_key: `media/proof/tasks/${TASK_ID}/${USER_ID}/${RECEIPT_ID}.jpg`,
       canonical_url: null,
       canonical_content_type: 'image/jpeg',
       canonical_size_bytes: 300,
