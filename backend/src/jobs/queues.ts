@@ -4,7 +4,7 @@
  * SYSTEM GUARANTEES: Idempotency, Auditability, Backpressure
  * 
  * Queue topology by failure domain:
- * - critical_payments: Stripe webhooks, escrow state, XP awards (STRICT idempotency)
+ * - critical_payments: Payment bookkeeping, escrow state, XP awards (STRICT idempotency)
  * - critical_trust: Trust tier recalculations, fraud signals
  * - user_notifications: Email/SMS/push fanout (rate-limited)
  * - exports: CSV/PDF generation, R2 uploads, signed URL creation
@@ -94,10 +94,8 @@ export type QueueName =
   | 'user_notifications'
   | 'exports'
   | 'maintenance'
-  | 'tax_reporting'
   | 'biometric_analysis'
-  | 'expertise_recalc'
-  | 'xp_tax_reminders';
+  | 'expertise_recalc';
 
 interface QueueConfig {
   name: QueueName;
@@ -226,27 +224,6 @@ export const QUEUE_CONFIGS: Record<QueueName, QueueConfig> = {
     },
   },
 
-  tax_reporting: {
-    name: 'tax_reporting',
-    defaultJobOptions: {
-      attempts: 3,
-      backoff: {
-        type: 'exponential',
-        delay: 30000, // 30s, 60s, 120s
-      },
-      removeOnComplete: {
-        age: 7 * 24 * 60 * 60, // Keep completed jobs for 7 days
-        count: 50,
-      },
-      removeOnFail: {
-        age: 30 * 24 * 60 * 60, // Keep failed jobs for 30 days
-      },
-    },
-    workerOptions: {
-      maxStalledCount: 1,
-    },
-  },
-
   biometric_analysis: {
     name: 'biometric_analysis',
     defaultJobOptions: {
@@ -290,26 +267,7 @@ export const QUEUE_CONFIGS: Record<QueueName, QueueConfig> = {
     },
   },
 
-  xp_tax_reminders: {
-    name: 'xp_tax_reminders',
-    defaultJobOptions: {
-      attempts: 2,
-      backoff: {
-        type: 'fixed',
-        delay: 60000, // 1 minute
-      },
-      removeOnComplete: {
-        age: 24 * 60 * 60, // 24 hours
-        count: 10,
-      },
-      removeOnFail: {
-        age: 7 * 24 * 60 * 60, // 7 days
-      },
-    },
-    workerOptions: {
-      maxStalledCount: 1,
-    },
-  },
+
 };
 
 // ============================================================================
@@ -372,12 +330,24 @@ export async function enqueueJob(
   queueName: QueueName,
   jobName: string,
   data: Record<string, unknown>,
-  options: JobsOptions & { jobId: string },
+  options: JobsOptions & { jobId: string; retryTerminal?: boolean },
 ): Promise<Job> {
   if (!options?.jobId?.trim()) {
     throw new Error('QUEUE_JOB_ID_REQUIRED: one-off jobs require a deterministic jobId');
   }
-  return getQueue(queueName).add(jobName, data, options);
+  const queue = getQueue(queueName);
+  const { retryTerminal, ...jobOptions } = options;
+  if (retryTerminal) {
+    const existing = await queue.getJob(options.jobId);
+    if (existing) {
+      const state = await existing.getState();
+      // A retained failed/completed BullMQ job must not permanently suppress a
+      // still-unacknowledged DB event. Atomic BullMQ retry reuses the same ID.
+      if (state === 'failed' || state === 'completed') await existing.retry(state);
+      return existing;
+    }
+  }
+  return queue.add(jobName, data, jobOptions);
 }
 
 /**

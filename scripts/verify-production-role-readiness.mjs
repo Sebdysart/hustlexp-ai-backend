@@ -20,16 +20,6 @@ WHERE u.default_mode = 'poster'
   AND ${ACTIVE_USER}`,
   }),
   Object.freeze({
-    name: 'hustler',
-    sql: `SELECT COUNT(*)::int AS count
-FROM users u
-WHERE u.default_mode = 'worker'
-  AND ${ACTIVE_USER}
-  AND COALESCE(u.trust_hold, FALSE) IS FALSE
-  AND u.payouts_enabled IS TRUE
-  AND u.stripe_connect_id IS NOT NULL`,
-  }),
-  Object.freeze({
     name: 'business-client',
     sql: `SELECT COUNT(*)::int AS count
 FROM business_memberships membership
@@ -51,7 +41,12 @@ WHERE membership.status = 'ACTIVE'
   AND organization.status = 'ACTIVE'
   AND organization.provider_enabled IS TRUE
   AND organization.verification_status = 'VERIFIED'
-  AND organization.payout_status = 'ACTIVE'
+  AND EXISTS (
+    SELECT 1 FROM business_payment_accounts payment_account
+    WHERE payment_account.organization_id = organization.id
+      AND payment_account.provider = 'tilled' AND payment_account.environment = 'production'
+      AND payment_account.status = 'ACTIVE' AND payment_account.charges_enabled IS TRUE
+  )
   AND ${ACTIVE_USER}`,
   }),
   Object.freeze({

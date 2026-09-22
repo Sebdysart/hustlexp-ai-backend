@@ -4,6 +4,7 @@ import { db, type QueryFn } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { localCertificationPaymentEnabled } from './LocalCertificationPaymentConfig.js';
 import { providerOsProduct } from './ProviderOsProduct.js';
+import { newPaymentCreationFailure } from './NewPaymentCreationGuard.js';
 export { localCertificationPaymentEnabled } from './LocalCertificationPaymentConfig.js';
 
 const INTENT_RE = /^pi_hxos_test_[a-f0-9]{32}$/;
@@ -82,6 +83,8 @@ export const LocalCertificationPaymentProvider = {
     if (!localCertificationPaymentEnabled()) {
       return failure('LOCAL_TEST_PAYMENT_DISABLED', 'Local certification payments are disabled.');
     }
+    const frozen = newPaymentCreationFailure('escrow_funding');
+    if (frozen) return frozen;
     const { paymentIntentId, clientSecret } = identifiers(params.escrowId);
     try {
       const row = await db.transaction(async (query) => {

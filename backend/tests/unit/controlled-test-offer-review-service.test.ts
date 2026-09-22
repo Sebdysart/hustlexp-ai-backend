@@ -18,7 +18,6 @@ const enabled = {
   NODE_ENV: 'test',
   HXOS_ALLOW_LOCAL_TEST_OFFER_REVIEW: 'true',
   ENGINE_API_MODE: 'test',
-  STRIPE_MODE: 'test',
   HXOS_LOCAL_TEST_OFFER_REVIEW_SECRET: 'o'.repeat(64),
 };
 const taskId = '9feafefb-eb9b-4d02-a42b-5223c3552c0a';
@@ -99,7 +98,6 @@ describe('ControlledTestOfferReviewService', () => {
       { NODE_ENV: 'production' },
       { HXOS_ALLOW_LOCAL_TEST_OFFER_REVIEW: 'false' },
       { ENGINE_API_MODE: 'live' },
-      { STRIPE_MODE: 'live' },
       { HXOS_LOCAL_TEST_OFFER_REVIEW_SECRET: 'short' },
     ]) expect(controlledTestOfferReviewEnabled({ ...enabled, ...override })).toBe(false);
   });

@@ -2,7 +2,7 @@
  * Revenue Replay Script v1.0.0
  *
  * Generates a complete P&L from revenue_ledger alone — no joins to
- * escrows, tasks, or Stripe. Proves the ledger is self-contained.
+ * escrows, tasks, or payment processors. Proves the ledger is self-contained.
  *
  * Sprint 2 DONE criteria: "Financial replay script generates P&L"
  *

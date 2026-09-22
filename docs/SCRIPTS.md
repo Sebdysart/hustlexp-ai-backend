@@ -26,7 +26,6 @@ Do not run any item below from general onboarding, documentation review, or the 
 | Script | Classification | Why it is gated |
 |---|---|---|
 | `scripts/consolidate-migrations.ts` / `npm run db:migrate:consolidate` | `LEGACY_NON_EXECUTABLE` | Default source and target are both `backend/database/migrations`; it writes sequentially renamed copies and `registry.json`, which conflicts with exact-name ledger authority. Even `--dry-run` output is analysis only and cannot select or rename a migration. |
-| `scripts/epic03-stripe-test-cert.mjs`, `scripts/verify-stripe-webhook.sh` | `LEGACY_PROVIDER_EFFECT / EXPLICIT_AUTHORITY_REQUIRED` | Can contact Stripe or exercise processor-shaped certification paths. |
 | `scripts/repair-hustler-payouts.ts` | `DATABASE_OR_PROVIDER_REPAIR / EXPLICIT_AUTHORITY_REQUIRED` | Repairs payout state and may touch consequential financial records. |
 | `scripts/set-hustler-role.ts` | `IDENTITY_DATABASE_MUTATION / EXPLICIT_AUTHORITY_REQUIRED` | Changes a user role. |
 | `scripts/purge-env-from-history.sh` | `DESTRUCTIVE_REPOSITORY_HISTORY_OPERATION / FRESH_EXPLICIT_AUTHORITY_REQUIRED` | Rewrites Git history; normal execution is forbidden. |

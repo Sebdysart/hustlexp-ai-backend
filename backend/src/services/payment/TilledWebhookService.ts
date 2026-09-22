@@ -103,12 +103,11 @@ async function processEvent(event: StoredEvent): Promise<'PROCESSED' | 'DEFERRED
   const config = loadTilledConfig();
   const paymentResult = await db.query<BoundPayment>(`
     SELECT payment.id, payment.quote_id, payment.quote_version_id,
-      quote.task_draft_id, draft.poster_user_id, payment.business_organization_id,
+      quote.task_draft_id, payment.reserved_poster_id AS poster_user_id, payment.business_organization_id,
       payment.provider_merchant_id, payment.provider_payment_id,
       payment.amount_cents, payment.platform_fee_cents
     FROM quote_payments payment
     JOIN quotes quote ON quote.id = payment.quote_id
-      AND quote.active_version_id = payment.quote_version_id
     JOIN task_drafts draft ON draft.id = quote.task_draft_id
     WHERE payment.provider = 'tilled' AND payment.provider_environment = $1
       AND payment.provider_merchant_id = $2 AND payment.provider_payment_id = $3
@@ -143,7 +142,9 @@ async function processEvent(event: StoredEvent): Promise<'PROCESSED' | 'DEFERRED
     paymentIntentId: intentId,
     paymentMode: 'tilled',
   });
-  if (!finalized.success) throw new Error(finalized.error.code);
+  if (!finalized.success && finalized.error.code !== 'QUOTE_PAYMENT_MANUAL_COMPENSATION_REQUIRED') {
+    throw new Error(finalized.error.code);
+  }
   return 'PROCESSED';
 }
 

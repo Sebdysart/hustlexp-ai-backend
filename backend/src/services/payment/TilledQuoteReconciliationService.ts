@@ -35,19 +35,18 @@ export async function reconcileTilledQuotePayments(limit = 25): Promise<TilledRe
   const boundedLimit = Math.max(1, Math.min(100, Math.trunc(limit) || 25));
   const pending = await db.query<PendingTilledPayment>(`
     SELECT payment.id, payment.quote_id, payment.quote_version_id,
-      quote.task_draft_id, draft.poster_user_id,
+      quote.task_draft_id, payment.reserved_poster_id AS poster_user_id,
       payment.business_organization_id, payment.provider_merchant_id,
       payment.provider_payment_id, payment.amount_cents,
       payment.platform_fee_cents, payment.intent_creation_state
     FROM quote_payments payment
     JOIN quotes quote ON quote.id = payment.quote_id
-      AND quote.active_version_id = payment.quote_version_id
     JOIN task_drafts draft ON draft.id = quote.task_draft_id
     WHERE payment.provider = 'tilled' AND payment.status = 'PENDING'
       AND payment.provider_environment = $1
       AND payment.intent_creation_state IN ('BOUND', 'CREATING', 'RECONCILE_REQUIRED')
-      AND payment.business_organization_id = quote.business_organization_id
-      AND draft.poster_user_id IS NOT NULL
+      AND payment.finalization_state = 'PENDING'
+      AND payment.reserved_poster_id IS NOT NULL
       AND payment.updated_at < NOW() - INTERVAL '20 seconds'
     ORDER BY payment.updated_at, payment.id
     LIMIT $2`, [config.environment, boundedLimit]);
@@ -114,7 +113,10 @@ export async function reconcileTilledQuotePayments(limit = 25): Promise<TilledRe
         paymentMode: 'tilled',
       });
       if (finalized.success) result.finalized += 1;
-      else {
+      else if (finalized.error.code === 'QUOTE_PAYMENT_MANUAL_COMPENSATION_REQUIRED') {
+        logger.error({ provider: 'tilled', paymentId: payment.id }, 'Tilled payment requires manual compensation; no automatic refund performed');
+        result.deferred += 1;
+      } else {
         logger.warn({ provider: 'tilled', paymentId: payment.id, errorCode: finalized.error.code }, 'Tilled quote finalization deferred');
         result.deferred += 1;
       }

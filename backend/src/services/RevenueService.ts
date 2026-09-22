@@ -3,11 +3,11 @@
  *
  * Unified revenue tracking via the revenue_ledger table.
  * Logs all monetization events with full financial decomposition:
- * gross/net/fee/currency/escrow_id/stripe_event_id/stripe_charge_id.
+ * gross/net/fee/currency/escrow_id/provider metadata.
  *
  * v2.0.0 changes:
  * - logEvent now accepts gross_amount_cents, platform_fee_cents, net_amount_cents
- * - logEvent now accepts fee_basis_points, escrow_id, stripe_event_id, stripe_charge_id, currency
+ * - logEvent now accepts fee_basis_points, escrow_id and provider metadata, currency
  * - Every ledger entry is self-contained: P&L can be replayed from ledger alone
  *
  * @see revenue_ledger_v2.sql (v2 schema migration)
@@ -35,11 +35,11 @@ export type RevenueEventType =
   | 'xp_tax'
   | 'per_task_fee'
   | 'referral_payout'
-  | 'chargeback'            // Negative entry: Stripe dispute loss
+  | 'chargeback'            // Negative entry: provider dispute loss
   | 'chargeback_reversal'   // Positive entry: Dispute won, funds recovered
   | 'tip_received'           // Tip to worker (platform takes no cut; amountCents=0 is valid)
-  | 'failed_transfer'       // Negative entry: Stripe transfer to worker failed
-  | 'failed_payout'         // Negative entry: Stripe payout to bank failed
+  | 'failed_transfer'       // Negative entry: provider transfer failed
+  | 'failed_payout'         // Negative entry: provider payout failed
   | 'platform_fee_reversal'; // Negative entry: Platform fee reversed on refund
 
 interface LogEventParams {
@@ -54,17 +54,7 @@ interface LogEventParams {
   platformFeeCents?: number;     // Platform fee component (>= 0)
   netAmountCents?: number;       // Amount after fees
   feeBasisPoints?: number;       // Fee rate in basis points (1500 = 15%)
-  stripeProcessingFeeCents?: number; // Stripe's processing fee (from balance_transaction)
-
-  // === V2 FIELDS: Cross-references ===
-  escrowId?: string;             // Related escrow UUID
-  stripeEventId?: string;        // Stripe event that triggered this entry
-  stripeChargeId?: string;       // Stripe charge ID
-
-  // === V1 FIELDS: Existing Stripe references ===
-  stripePaymentIntentId?: string;
-  stripeSubscriptionId?: string;
-  stripeTransferId?: string;
+  escrowId?: string;
 
   metadata?: Record<string, unknown>;
 }
@@ -104,7 +94,7 @@ export const RevenueService = {
    * Log a revenue event to the unified ledger.
    *
    * V2: Now includes financial decomposition (gross/net/fee) and
-   * cross-references (escrow_id, stripe_event_id, stripe_charge_id).
+   * cross-references (escrow_id and provider metadata).
    *
    * For platform_fee events:
    *   grossAmountCents = task price (what the poster paid)
@@ -143,10 +133,8 @@ export const RevenueService = {
         `INSERT INTO revenue_ledger
            (event_type, user_id, task_id, amount_cents,
             currency, gross_amount_cents, platform_fee_cents, net_amount_cents,
-            fee_basis_points, stripe_processing_fee_cents,
-            escrow_id, stripe_event_id, stripe_charge_id,
-            stripe_payment_intent_id, stripe_subscription_id, stripe_transfer_id, metadata)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+            fee_basis_points, escrow_id, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
          RETURNING id`,
         [
           params.eventType,
@@ -158,13 +146,7 @@ export const RevenueService = {
           params.platformFeeCents ?? 0,                    // Default: no fee
           params.netAmountCents ?? params.amountCents,     // Default: net = amount
           params.feeBasisPoints ?? null,
-          params.stripeProcessingFeeCents ?? null,         // Populated from balance_transaction
           params.escrowId || null,
-          params.stripeEventId || null,
-          params.stripeChargeId || null,
-          params.stripePaymentIntentId || null,
-          params.stripeSubscriptionId || null,
-          params.stripeTransferId || null,
           JSON.stringify(params.metadata || {}),
         ]
       );
@@ -213,7 +195,7 @@ export const RevenueService = {
 
   /**
    * Get monthly P&L report from the ledger alone.
-   * No joins to escrows, tasks, or Stripe — proves ledger self-sufficiency.
+   * No joins to escrows, tasks, or a provider — proves ledger self-sufficiency.
    */
   getMonthlyPnl: async (
     months: number = 12

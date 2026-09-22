@@ -4,10 +4,9 @@ import type { EscrowState } from '../types.js';
 import { TERMINAL_ESCROW_STATES } from '../types.js';
 
 export interface CreateEscrowParams { taskId: string; amount: number }
-export interface FundEscrowParams { escrowId: string; stripePaymentIntentId: string }
+export interface FundEscrowParams { escrowId: string; providerPaymentId: string }
 export interface ReleaseEscrowParams {
   escrowId: string;
-  stripeTransferId?: string;
   localTestTransferId?: string;
   adminOverride?: boolean;
   reason?: string;

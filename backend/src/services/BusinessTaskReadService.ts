@@ -41,7 +41,7 @@ interface TaskRow {
   completed_at: Date | string | null;
   gross_payout_cents: number | string | null;
   escrow_state: string | null;
-  stripe_transfer_id: string | null;
+  provider_transfer_id: string | null;
   provider_transfer_status: string | null;
   fulfiller_name: string | null;
   acquisition_origin: string | null;
@@ -111,7 +111,7 @@ export async function listBusinessTasks(input: {
             CASE WHEN task.provider_assignment_id IS NOT NULL THEN task.hustler_payout_cents
                  ELSE COALESCE(version.hustler_payout_cents,task.hustler_payout_cents)
             END AS gross_payout_cents,
-            escrow.state AS escrow_state,escrow.stripe_transfer_id,escrow.provider_transfer_status,
+            escrow.state AS escrow_state,escrow.provider_transfer_id,escrow.provider_transfer_status,
             NULLIF(BTRIM(fulfiller.full_name),'') AS fulfiller_name,
             CASE WHEN task.provider_assignment_id IS NOT NULL THEN 'service_assignment'
                  ELSE quote.acquisition_origin END AS acquisition_origin,

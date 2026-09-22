@@ -1,6 +1,4 @@
-import { config } from '../config.js';
 import { db, type QueryFn } from '../db.js';
-import { computeFeeBreakdown } from '../lib/money.js';
 import { workerLogger } from '../logger.js';
 import { notifyAdmins } from '../services/AdminNotificationHelper.js';
 import { EscrowService } from '../services/EscrowService.js';
@@ -8,20 +6,15 @@ import {
   LocalCertificationPayoutProvider,
   localCertificationPayoutEnabled,
 } from '../services/LocalCertificationPayoutProvider.js';
-import { StripeService } from '../services/StripeService.js';
-import { loadCurrentTaskPayoutDestination } from '../services/TaskPayoutDestinationService.js';
+import { loadEscrowPaymentBinding } from '../services/EscrowPaymentBindingService.js';
 import { ErrorCodes } from '../types.js';
 
 const log = workerLogger.child({ worker: 'completion-release' });
 const TERMINAL_ESCROW_STATES = new Set(['RELEASED','REFUNDED','REFUND_PARTIAL']);
 const TERMINAL_RELEASE_CODES = new Set<string>([ErrorCodes.ESCROW_TERMINAL,ErrorCodes.INVALID_STATE]);
-const STRIPE_ACCOUNT_RESTRICTION_CODES = new Set([
-  'account_closed','account_invalid','account_deauthorized','transfer_not_reversible',
-]);
-
 interface EscrowSnapshot {
   id:string; task_id:string; state:string; version:number; amount:number;
-  platform_fee_cents:number|null; stripe_transfer_id:string|null;
+  platform_fee_cents:number|null;
 }
 interface TaskSnapshot {
   state: string;
@@ -36,12 +29,6 @@ interface TaskSnapshot {
 type CompletionContext =
   | { action:'noop' }
   | { action:'proceed'; escrow:EscrowSnapshot; task:TaskSnapshot };
-
-function stripeRestrictionCode(error:unknown):string|null {
-  if (!(error instanceof Error) || !('code' in error)) return null;
-  const code=(error as Error & {code?:string}).code;
-  return code && STRIPE_ACCOUNT_RESTRICTION_CODES.has(code) ? code : null;
-}
 
 async function escrowCanProceed(
   escrow:EscrowSnapshot,
@@ -70,11 +57,12 @@ async function escrowCanProceed(
 async function loadCompletionContext(escrowId:string,taskId:string):Promise<CompletionContext> {
   return db.transaction(async(query:QueryFn)=>{
     const escrowResult=await query<EscrowSnapshot>(
-      `SELECT id,task_id,state,version,amount,platform_fee_cents,stripe_transfer_id
+      `SELECT id,task_id,state,version,amount,platform_fee_cents
        FROM escrows WHERE id=$1 FOR UPDATE`,[escrowId],
     );
     const escrow=escrowResult.rows[0];
     if (!escrow) throw new Error(`Escrow ${escrowId} not found for completion release`);
+    if (escrow.task_id !== taskId) throw new Error('Completion task/escrow binding mismatch');
     if (!await escrowCanProceed(escrow,taskId)) return {action:'noop'};
     const taskResult=await query<TaskSnapshot>(
             `SELECT state,
@@ -218,242 +206,26 @@ async function processLocalTestBusinessPayout(
   );
 }
 
-async function loadStripeDestination(
-  escrow: EscrowSnapshot,
-  task: TaskSnapshot,
-  taskId: string,
-  payoutRecipientUserId: string,
-): Promise<string | null> {
-  const destination =
-    task.orchestration_mode === 'OPS_MANUAL'
-    && task.business_fulfiller_organization_id
-    && !task.worker_id
-      ? await loadCurrentTaskPayoutDestination(
-          db.query.bind(db),
-          {
-            kind: 'BUSINESS',
-            taskId,
-            businessOrganizationId:
-              task.business_fulfiller_organization_id,
-          },
-        )
-      : task.worker_id
-        ? await loadCurrentTaskPayoutDestination(
-            db.query.bind(db),
-            {
-              kind: 'WORKER',
-              taskId,
-              workerId: task.worker_id,
-              payoutRecipientUserId,
-            },
-          )
-        : null;
-
-  if (!destination) return null;
-
-  if (destination.ready && destination.stripeConnectId) {
-    return destination.stripeConnectId;
-  }
-
-  log.error(
-    {
-      escrowId: escrow.id,
-      taskId,
-      payoutRecipientUserId,
-      workerId: task.worker_id,
-      businessFulfillerOrganizationId:
-        task.business_fulfiller_organization_id,
-      reason: destination.reason,
-    },
-    'Payout destination is not current',
-  );
-
-  await notifyAdmins({
-    title: 'Payout blocked: destination is not current',
-    body:
-      `Task ${taskId} completed; escrow ${escrow.id} remains FUNDED because its payout evidence is not current. ` +
-      `Reconcile the provider destination before release.`,
-    deepLink: `/admin/escrows/${escrow.id}`,
-    priority: 'CRITICAL',
-    metadata: {
-      escrow_id: escrow.id,
-      task_id: taskId,
-      worker_id: task.worker_id,
-      business_fulfiller_organization_id:
-        task.business_fulfiller_organization_id,
-      payout_recipient_user_id: payoutRecipientUserId,
-      payout_block_reason: destination.reason,
-    },
-  });
-
-  return null;
-}
-
-async function createStripeTransfer(
-  escrow:EscrowSnapshot,
-  task:TaskSnapshot,
-  taskId:string,
-  payoutRecipientUserId:string,
-  stripeConnectId:string,
-):Promise<string|null> {
-  const money=computeFeeBreakdown(escrow.amount,config.stripe.platformFeePercent,escrow.platform_fee_cents);
-  try {
-    const transfer=await StripeService.createTransfer({
-      escrowId:escrow.id,taskId,workerId:payoutRecipientUserId,
-      workerStripeAccountId:stripeConnectId,amount:money.netPayoutCents,
-      description:'Task completion payout',idempotencyKeySuffix:'completion_release',
-    });
-    if (!transfer.success) throw new Error(`Completion release: failed to create transfer — ${transfer.error.message}`);
-    return transfer.data.transferId;
-  } catch(error) {
-    const code=stripeRestrictionCode(error);
-    if (!code) throw error;
-    log.error({ escrowId:escrow.id,payoutRecipientUserId,stripeCode:code },'Stripe account restricted');
-    await notifyAdmins({
-      title:'Payout blocked: Stripe account restriction',
-      body:`Completion release for escrow ${escrow.id} hit restriction '${code}'. Manual review required.`,
-      deepLink:`/admin/escrows/${escrow.id}`,
-      priority:'CRITICAL',
-      metadata:{ escrow_id:escrow.id,task_id:taskId,worker_id:task.worker_id,payout_recipient_user_id:payoutRecipientUserId,stripe_code:code },
-    });
-    return null;
-  }
-}
-
-async function persistTransferId(escrow:EscrowSnapshot,newTransferId:string):Promise<string> {
-  let concurrentTransferId:string|null=null;
-  await db.transaction(async(query:QueryFn)=>{
-    const lockedResult=await query<{id:string;version:number;stripe_transfer_id:string|null}>(
-      `SELECT id,version,stripe_transfer_id FROM escrows WHERE id=$1 FOR UPDATE NOWAIT`,[escrow.id],
-    );
-    const locked=lockedResult.rows[0];
-    if (!locked) throw new Error(`Escrow ${escrow.id} disappeared during T2 lock — retry`);
-    if (locked.stripe_transfer_id) {
-      concurrentTransferId=locked.stripe_transfer_id;
-      return;
-    }
-    if (locked.version!==escrow.version) {
-      throw new Error(`Version conflict in T2 for escrow ${escrow.id} (expected ${escrow.version}, got ${locked.version}) — retry`);
-    }
-    const update=await query(
-      `UPDATE escrows SET stripe_transfer_id=$1,version=version+1
-        WHERE id=$2 AND version=$3 RETURNING id`,[newTransferId,escrow.id,escrow.version],
-    );
-    if (!update.rows.length) throw new Error(`Concurrent version conflict storing transfer ${newTransferId} — retry`);
-  });
-  return concurrentTransferId ?? newTransferId;
-}
-
-async function resolveStripeTransfer(
-  escrow:EscrowSnapshot,
-  task:TaskSnapshot,
-  taskId:string,
-  payoutRecipientUserId:string,
-):Promise<string|null> {
-  if (escrow.stripe_transfer_id) return escrow.stripe_transfer_id;
-  const destination=await loadStripeDestination(escrow,task,taskId,payoutRecipientUserId);
-  if (!destination) return null;
-  const transferId=await createStripeTransfer(escrow,task,taskId,payoutRecipientUserId,destination);
-  return transferId ? persistTransferId(escrow,transferId) : null;
-}
-
-async function releaseAndNotify(
-  escrow:EscrowSnapshot,
-  taskId:string,
-  payoutRecipientUserId:string,
-  stripeTransferId:string,
-):Promise<void> {
-  const release=await EscrowService.release({ escrowId:escrow.id,stripeTransferId });
-  if (!release.success && TERMINAL_RELEASE_CODES.has(release.error.code)) return;
-  if (!release.success) throw new Error(`Completion release: EscrowService.release failed — ${release.error.message}`);
-  log.info({ escrowId:escrow.id,taskId,stripeTransferId },'Escrow RELEASED — payout complete');
-}
-
-export async function processCompletionRelease(input:{escrowId:string;taskId:string}):Promise<void> {
-  const context=await loadCompletionContext(input.escrowId,input.taskId);
-  if (context.action==='noop') return;
-  const {escrow,task}=context;
-  if ((task.payment_method ?? 'escrow')!=='escrow') return;
-  if (
-    task.orchestration_mode === 'OPS_MANUAL'
-    && task.business_fulfiller_organization_id
-    && !task.worker_id
-  ) {
-    const payoutRecipientUserId = await resolveBusinessPayoutRecipient(
-      task.business_fulfiller_organization_id,
-    );
-
-    if (process.env.PAYOUT_PROVIDER === 'local_test') {
-      await processLocalTestBusinessPayout(
-        escrow,
-        input.taskId,
-        task.business_fulfiller_organization_id,
-        payoutRecipientUserId,
-      );
-
-      return;
-    }
-
-    if (process.env.PAYOUT_PROVIDER === 'stripe') {
-      const transferId = await resolveStripeTransfer(
-        escrow,
-        task,
-        input.taskId,
-        payoutRecipientUserId,
-      );
-
-      if (!transferId) return;
-
-      await releaseAndNotify(
-        escrow,
-        input.taskId,
-        payoutRecipientUserId,
-        transferId,
-      );
-
-      return;
-    }
-
-    throw new Error(
-      `Task ${input.taskId} is an OPS_MANUAL Business task but no Business payout provider is configured`,
-    );
-  }
-  
-  if (!task.worker_id) {
-    throw new Error(
-      `Task ${input.taskId} is COMPLETED but has no recognized fulfiller payout identity`,
-    );
-  }
-
-  const payoutRecipientUserId =
-    task.payout_recipient_user_id ?? task.worker_id;
-
-  if (
-    task.automation_classification === 'CONTROLLED_TEST'
-    && localCertificationPayoutEnabled()
-  ) {
-    await processLocalTestPayout(
-      escrow,
-      input.taskId,
-      payoutRecipientUserId,
-    );
+export async function processCompletionRelease(input: { escrowId: string; taskId: string }): Promise<void> {
+  const context = await loadCompletionContext(input.escrowId, input.taskId);
+  if (context.action === 'noop') return;
+  const { escrow, task } = context;
+  const payment = await loadEscrowPaymentBinding(db.query.bind(db), escrow.id);
+  if (payment?.provider === 'tilled') {
+    // The merchant received the charge at checkout. Completion is bookkeeping only.
+    const release = await EscrowService.release({ escrowId: escrow.id });
+    if (!release.success && release.error.code !== ErrorCodes.ESCROW_TERMINAL) throw new Error(release.error.message);
     return;
   }
-
-  const transferId = await resolveStripeTransfer(
-    escrow,
-    task,
-    input.taskId,
-    payoutRecipientUserId,
-  );
-
-  if (!transferId) return;
-
-  await releaseAndNotify(
-    escrow,
-    input.taskId,
-    payoutRecipientUserId,
-    transferId,
-  );
+  if (payment && payment.provider !== 'local_test') throw new Error('Unsupported persisted payment provider');
+  if (task.automation_classification !== 'CONTROLLED_TEST' || !localCertificationPayoutEnabled()) {
+    throw new Error('No supported completion provider evidence; manual reconciliation required');
+  }
+  if (task.orchestration_mode === 'OPS_MANUAL' && task.business_fulfiller_organization_id && !task.worker_id) {
+    const recipient = await resolveBusinessPayoutRecipient(task.business_fulfiller_organization_id);
+    await processLocalTestBusinessPayout(escrow, input.taskId, task.business_fulfiller_organization_id, recipient);
+    return;
+  }
+  if (!task.worker_id) throw new Error('Controlled test completion requires its bound fulfiller');
+  await processLocalTestPayout(escrow, input.taskId, task.payout_recipient_user_id ?? task.worker_id);
 }
-

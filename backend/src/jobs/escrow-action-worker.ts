@@ -22,8 +22,8 @@ const FinancialJobPayloadSchema = z.object({
 
 async function loadLockedEscrow(query: QueryFn, escrowId: string): Promise<EscrowActionRow> {
   const result = await query<EscrowActionRow>(
-    `SELECT id, state, version, amount, platform_fee_cents, stripe_payment_intent_id,
-            stripe_transfer_id, stripe_refund_id
+    `SELECT id, state, version, amount, platform_fee_cents, provider_payment_id,
+            provider_transfer_id, provider_refund_id
        FROM escrows WHERE id = $1 FOR UPDATE`,
     [escrowId],
   );

@@ -32,7 +32,7 @@ describe('processEscrowReleaseReconciliationJob', () => {
       escrowId: 'escrow-1', transferId: 'tr-1', fromState: 'FUNDED', version: 4,
     }, 'signed');
     expect(mocks.reconcile).toHaveBeenCalledWith({
-      escrowId: 'escrow-1', expectedStripeTransferId: 'tr-1', fromState: 'FUNDED',
+      escrowId: 'escrow-1', expectedProviderTransferId: 'tr-1', fromState: 'FUNDED',
     });
   });
 

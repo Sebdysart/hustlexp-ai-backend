@@ -19,7 +19,6 @@ const enabled = {
   NODE_ENV: 'test',
   HXOS_ALLOW_LOCAL_TEST_LIQUIDITY: 'true',
   ENGINE_API_MODE: 'test',
-  STRIPE_MODE: 'test',
   HXOS_LOCAL_TEST_LIQUIDITY_SECRET: 'l'.repeat(64),
 };
 const original = { ...process.env };
@@ -126,7 +125,6 @@ describe('ControlledTestLiquidityService', () => {
       { NODE_ENV: 'production' },
       { HXOS_ALLOW_LOCAL_TEST_LIQUIDITY: 'false' },
       { ENGINE_API_MODE: 'live' },
-      { STRIPE_MODE: 'live' },
       { HXOS_LOCAL_TEST_LIQUIDITY_SECRET: 'short' },
     ]) {
       expect(controlledTestLiquidityEnabled({ ...enabled, ...override })).toBe(false);

@@ -68,29 +68,11 @@ describe('new-payment incident guard', () => {
     });
   });
 
-  it('guards every checked-in Stripe surface that can create new customer money', () => {
-    const stripeService = read('backend/src/services/StripeService.ts');
-    const tippingService = read('backend/src/services/TippingService.ts');
-    const subscriptionRouter = read('backend/src/routers/subscription.ts');
-
-    expect(stripeService).toContain("newPaymentCreationFailure('escrow_funding')");
-    expect(stripeService).toContain("newPaymentCreationFailure('xp_tax')");
-    expect(tippingService).toContain("newPaymentCreationFailure('tip')");
-    expect(subscriptionRouter).toContain("newPaymentCreationFailure('subscription')");
-
-    const escrowGuard = stripeService.indexOf("newPaymentCreationFailure('escrow_funding')");
-    const firstIntentCreate = stripeService.indexOf('paymentIntents.create(');
-    const taxGuard = stripeService.indexOf("newPaymentCreationFailure('xp_tax')");
-    const secondIntentCreate = stripeService.indexOf('paymentIntents.create(', firstIntentCreate + 1);
-    expect(escrowGuard).toBeLessThan(firstIntentCreate);
-    expect(taxGuard).toBeLessThan(secondIntentCreate);
-    expect(tippingService.indexOf("newPaymentCreationFailure('tip')"))
-      .toBeLessThan(tippingService.indexOf('paymentIntents.create('));
-    expect(subscriptionRouter.indexOf("newPaymentCreationFailure('subscription')"))
-      .toBeLessThan(subscriptionRouter.indexOf('subscriptions.create('));
-
-    const creatingCalls = [stripeService, tippingService, subscriptionRouter]
-      .flatMap((source) => source.match(/(?:paymentIntents|subscriptions)\.create\(/g) ?? []);
-    expect(creatingCalls).toHaveLength(4);
+  it('guards supported live checkout and controlled payment creation', () => {
+    const live = read('backend/src/services/payment/TilledQuoteCheckoutService.ts');
+    const controlled = read('backend/src/services/LocalCertificationPaymentProvider.ts');
+    expect(live).toContain("newPaymentCreationFailure('escrow_funding')");
+    expect(controlled).toContain("newPaymentCreationFailure('escrow_funding')");
+    expect(live.indexOf("newPaymentCreationFailure('escrow_funding')")).toBeLessThan(live.indexOf('TilledQuotePaymentProvider.createPaymentIntent(binding)'));
   });
 });

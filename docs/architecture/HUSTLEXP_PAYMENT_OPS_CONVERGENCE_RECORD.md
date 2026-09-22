@@ -1,3 +1,5 @@
+> Archived source-dated implementation evidence. Retired processor names and commands below are historical only; they do not describe supported runtime or executable launch procedures.
+
 # HustleXP Payment, Transaction, and `/OPS` Architecture Convergence Record
 
 Status: `PROPOSED_NOT_BUILT / DEV_SAFE / DOCUMENT_ACTION_EFFECTS_NONE`

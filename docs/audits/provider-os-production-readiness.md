@@ -1,3 +1,5 @@
+> Archived source-dated implementation evidence. Retired processor names and commands below are historical only; they do not describe supported runtime or executable launch procedures.
+
 # Provider OS composed backend and in-app notification audit
 
 Audit date: 2026-09-19. Backend starting commit: `cfe45abdece6a7cc60633efdb013638e8251a05b`, branch `feat/provider-os-foundation`. Frontend route source: the same feature branch, starting at `37e8846`.

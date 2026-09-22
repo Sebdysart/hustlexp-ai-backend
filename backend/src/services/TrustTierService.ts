@@ -154,13 +154,12 @@ export const TrustTierService = {
         identity_verification_environment: string | null;
         identity_verification_expires_at: Date | null;
         phone: string | null;
-        stripe_connect_id: string | null;
         payouts_enabled: boolean;
       }>(
         `SELECT is_verified, verified_at,
                 identity_verification_status,identity_verification_environment,
                 identity_verification_expires_at,
-                phone, stripe_connect_id, payouts_enabled
+                phone, payouts_enabled
          FROM users
          WHERE id = $1`,
         [userId]
@@ -185,7 +184,7 @@ export const TrustTierService = {
       if (!user.phone) {
         reasons.push('Phone verification required');
       }
-      if (!user.stripe_connect_id || !user.payouts_enabled) {
+      if (!user.payouts_enabled) {
         reasons.push('Payout onboarding required');
       }
 

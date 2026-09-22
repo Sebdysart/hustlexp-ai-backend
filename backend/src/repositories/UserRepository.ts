@@ -85,6 +85,9 @@ export class UserRepository extends BaseRepository<User> {
     },
     ctx?: RepositoryContext
   ): Promise<User | null> {
+    if (data.phone !== undefined) {
+      throw new Error('Phone identity must be verified through Firebase before it can be updated.');
+    }
     if (data.avatar_url !== undefined) {
       throw new Error('Direct avatar media is disabled; a finalized upload receipt is required.');
     }
@@ -100,10 +103,6 @@ export class UserRepository extends BaseRepository<User> {
     if (data.bio !== undefined) {
       setClauses.push(`bio = $${paramIndex++}`);
       params.push(data.bio);
-    }
-    if (data.phone !== undefined) {
-      setClauses.push(`phone = $${paramIndex++}`);
-      params.push(data.phone);
     }
     if (data.default_mode !== undefined) {
       setClauses.push(`default_mode = $${paramIndex++}`);

@@ -102,10 +102,10 @@ export function validateLiquidityPolicy(task: TaskReservationRow): ReservationEr
 export async function validateEntitlements(
   query: QueryFn,
   task: TaskReservationRow,
-  worker: WorkerReservationRow,
+  _worker: WorkerReservationRow,
   hustlerRef: string,
 ): Promise<ReservationError | null> {
-  if (task.risk_level !== 'HIGH' || worker.plan === 'pro') return null;
+  if (task.risk_level !== 'HIGH') return null;
   const entitlement = await query<{ exists: boolean }>(
     `SELECT EXISTS (
        SELECT 1 FROM plan_entitlements
@@ -115,5 +115,5 @@ export async function validateEntitlements(
   );
   return entitlement.rows[0]?.exists
     ? null
-    : reservationError('PLAN_REQUIRED', 'High-risk tasks require a Pro plan or active entitlement.');
+    : reservationError('PLAN_REQUIRED', 'High-risk tasks require an active risk entitlement.');
 }

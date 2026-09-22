@@ -914,9 +914,9 @@ export const webOpsRouter = router({
         e.provider_transfer_paid_at,
         e.payout_provider,
         e.provider_transfer_id,
-        e.stripe_payment_intent_id,
-        e.stripe_transfer_id,
-        e.stripe_refund_id
+        e.provider_payment_id,
+        e.provider_transfer_id,
+        e.provider_refund_id
 
 
       FROM tasks t

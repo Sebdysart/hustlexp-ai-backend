@@ -38,7 +38,7 @@ interface ExpiryTaskRow {
   refund_blocker: string | null;
   active_reservation: boolean;
   escrow_state: string | null;
-  stripe_refund_id: string | null;
+  provider_refund_id: string | null;
   payment_intent_canceled_at: Date | string | null;
 }
 
@@ -60,16 +60,16 @@ function failure<T>(code: string, message: string, details?: Record<string, unkn
 async function findPrior(query: QueryFn, idempotencyKey: string): Promise<PriorRequestRow | undefined> {
   const result = await query<PriorRequestRow>(
     `SELECT r.request_hash, r.task_id, r.result_code,
-            CASE WHEN e.state = 'REFUNDED' OR e.stripe_refund_id IS NOT NULL
+            CASE WHEN e.state = 'REFUNDED' OR e.provider_refund_id IS NOT NULL
                  THEN 'REFUNDED'
                  WHEN e.payment_intent_canceled_at IS NOT NULL THEN 'NOT_REQUIRED'
                  ELSE r.refund_state END AS refund_state,
-            CASE WHEN e.state = 'REFUNDED' OR e.stripe_refund_id IS NOT NULL
+            CASE WHEN e.state = 'REFUNDED' OR e.provider_refund_id IS NOT NULL
                        OR e.payment_intent_canceled_at IS NOT NULL
                  THEN NULL ELSE r.blocker_code END AS blocker_code
      FROM task_dispatch_expiry_requests r
      LEFT JOIN LATERAL (
-       SELECT state, stripe_refund_id, payment_intent_canceled_at FROM escrows
+       SELECT state, provider_refund_id, payment_intent_canceled_at FROM escrows
        WHERE task_id = r.task_id ORDER BY created_at DESC LIMIT 1
      ) e ON TRUE
      WHERE r.idempotency_key = $1`,
@@ -103,7 +103,7 @@ async function lockTask(query: QueryFn, taskId: string): Promise<ExpiryTaskRow |
               WHERE r.task_id = t.id AND r.status = 'ACTIVE'
             ) AS active_reservation,
             (SELECT e.state FROM escrows e WHERE e.task_id = t.id ORDER BY e.created_at DESC LIMIT 1) AS escrow_state,
-            (SELECT e.stripe_refund_id FROM escrows e WHERE e.task_id = t.id ORDER BY e.created_at DESC LIMIT 1) AS stripe_refund_id,
+            (SELECT e.provider_refund_id FROM escrows e WHERE e.task_id = t.id ORDER BY e.created_at DESC LIMIT 1) AS provider_refund_id,
             (SELECT e.payment_intent_canceled_at FROM escrows e WHERE e.task_id = t.id ORDER BY e.created_at DESC LIMIT 1) AS payment_intent_canceled_at
      FROM tasks t WHERE t.id = $1 FOR UPDATE OF t`,
     [taskId]
@@ -123,7 +123,7 @@ function validateExpirable(task: ExpiryTaskRow): ServiceResult<true> {
 }
 
 function reconciledRefund(task: ExpiryTaskRow): RefundPlan {
-  const refunded = task.escrow_state === 'REFUNDED' || task.stripe_refund_id;
+  const refunded = task.escrow_state === 'REFUNDED' || task.provider_refund_id;
   const canceled = Boolean(task.payment_intent_canceled_at);
   return {
     refundState: refunded ? 'REFUNDED' : canceled ? 'NOT_REQUIRED' : task.refund_state,
@@ -149,24 +149,24 @@ async function planRefund(query: QueryFn, taskId: string): Promise<ServiceResult
   const escrowResult = await query<{
     id: string;
     state: string;
-    stripe_payment_intent_id: string | null;
-    stripe_refund_id: string | null;
+    provider_payment_id: string | null;
+    provider_refund_id: string | null;
     payment_intent_canceled_at: Date | string | null;
   }>(
-    `SELECT id, state, stripe_payment_intent_id, stripe_refund_id, payment_intent_canceled_at
+    `SELECT id, state, provider_payment_id, provider_refund_id, payment_intent_canceled_at
      FROM escrows WHERE task_id = $1 ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
     [taskId]
   );
   const escrow = escrowResult.rows[0];
   if (!escrow) return { success: true, data: { refundState: 'NOT_REQUIRED', blockerCode: null } };
-  if (escrow.state === 'REFUNDED' || escrow.stripe_refund_id) {
+  if (escrow.state === 'REFUNDED' || escrow.provider_refund_id) {
     return { success: true, data: { refundState: 'REFUNDED', blockerCode: null } };
   }
   if (escrow.payment_intent_canceled_at) {
     return { success: true, data: { refundState: 'NOT_REQUIRED', blockerCode: null } };
   }
   if (escrow.state === 'PENDING') {
-    if (!escrow.stripe_payment_intent_id) {
+    if (!escrow.provider_payment_id) {
       return { success: true, data: { refundState: 'NOT_REQUIRED', blockerCode: null } };
     }
     await writeToOutbox({

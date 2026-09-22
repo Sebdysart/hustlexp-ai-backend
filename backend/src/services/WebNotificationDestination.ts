@@ -28,6 +28,7 @@ export function webNotificationDestination(value: unknown, taskViewer?: 'poster'
   if (taskId) return taskViewer === 'poster' ? `/dashboard/tasks/${taskId}` : taskViewer === 'provider' ? `/business/tasks/${taskId}` : null;
   if (pages.has(path) || detail.test(path)) return path;
   if (path === '/earnings' || /^\/(?:wallet\/|settings\/(?:payouts|payments|xp-tax))/.test(path)) return '/support';
+  // Historical persisted deep links remain safe to open after provider retirement.
   if (/^\/admin\/(?:escrows|stripe-events)\//.test(path)) return '/ops/tasks';
   if (new RegExp(`^/business/${uuid}/operations$`).test(path)) return '/business/dashboard';
   // Unsupported native-only features have no web action; never invent a page.

@@ -17,9 +17,9 @@ export interface EscrowActionRow {
   version: number;
   amount: number;
   platform_fee_cents: number | null;
-  stripe_payment_intent_id: string | null;
-  stripe_transfer_id: string | null;
-  stripe_refund_id: string | null;
+  provider_payment_id: string | null;
+  provider_transfer_id: string | null;
+  provider_refund_id: string | null;
 }
 
 export interface TaskPayoutRow {

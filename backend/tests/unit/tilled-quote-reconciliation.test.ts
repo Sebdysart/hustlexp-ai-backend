@@ -60,6 +60,9 @@ describe('Tilled quote reconciliation', () => {
       paymentIntentId: 'pi_one', paymentMode: 'tilled',
     });
     expect(vi.mocked(db.query).mock.calls[0]?.[1]).toEqual(['sandbox', 25]);
+    expect(vi.mocked(db.query).mock.calls[0]?.[0]).not.toContain('quote.active_version_id');
+    expect(vi.mocked(db.query).mock.calls[0]?.[0]).toContain('payment.reserved_poster_id AS poster_user_id');
+    expect(vi.mocked(db.query).mock.calls[0]?.[0]).toContain("payment.finalization_state = 'PENDING'");
   });
 
   it('never finalizes a processing payment', async () => {

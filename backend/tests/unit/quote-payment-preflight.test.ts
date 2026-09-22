@@ -26,7 +26,6 @@ const enabledEnvironment = {
   PAYMENT_PROVIDER: 'local_test',
   HXOS_ALLOW_LOCAL_TEST_PAYMENT: 'true',
   ENGINE_API_MODE: 'test',
-  STRIPE_MODE: 'test',
   HXOS_LOCAL_TEST_PAYMENT_SECRET: 'a'.repeat(32),
 };
 
@@ -34,7 +33,7 @@ describe('controlled-test quote payment authority', () => {
   it('requires every explicit server-side controlled-test setting', () => {
     expect(controlledTestQuotePaymentEnabled(enabledEnvironment)).toBe(true);
 
-    for (const key of Object.keys(enabledEnvironment)) {
+    for (const key of Object.keys(enabledEnvironment).filter((key) => key !== 'NODE_ENV')) {
       expect(
         controlledTestQuotePaymentEnabled({
           ...enabledEnvironment,

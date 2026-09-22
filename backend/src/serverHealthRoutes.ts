@@ -42,12 +42,7 @@ async function dependencyChecks() {
     checks.schema = { status: 'error', error: error instanceof Error ? error.message : 'Unknown' };
   }
   checks.firebase = { status: config.firebase.projectId ? 'configured' : 'missing' };
-  checks.stripe = {
-    status:
-      config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder')
-        ? 'configured'
-        : 'placeholder',
-  };
+  checks.tilled = { status: process.env.TILLED_SECRET_KEY ? 'configured' : 'missing' };
   return checks;
 }
 
@@ -58,7 +53,6 @@ async function circuitBreakerStates() {
     anthropic: breakers.anthropicBreaker.getState(),
     groq: breakers.groqBreaker.getState(),
     deepseek: breakers.deepseekBreaker.getState(),
-    stripe: breakers.stripeBreaker.getState(),
     sendgrid: breakers.sendgridBreaker.getState(),
     twilio: breakers.twilioBreaker.getState(),
     awsRekognition: breakers.awsRekognitionBreaker.getState(),

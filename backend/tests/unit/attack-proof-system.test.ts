@@ -13,8 +13,11 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+vi.mock('../../src/services/EscrowPaymentBindingService.js', () => ({ loadEscrowPaymentBinding: async () => ({ provider: 'local_test', status: 'SUCCEEDED' }) }));
+vi.mock('../../src/services/LocalCertificationPayoutProvider.js', () => ({ localCertificationPayoutEnabled: () => true, LocalCertificationPayoutProvider: { verifyPaidTransfer: async () => true } }));
+vi.mock('../../src/lib/task-lifecycle-notifications.js', () => ({ notifyPaymentReleased: vi.fn() }));
+vi.mock('../../src/services/EscrowRefundProvider.js', () => ({ recordManualRefundRequirement: vi.fn() }));
 
-const payoutDestination = vi.hoisted(() => vi.fn());
 
 // ---------------------------------------------------------------------------
 // Mocks — shared across ProofService and EscrowService suites
@@ -44,7 +47,7 @@ vi.mock('../../src/logger', () => ({
 
 vi.mock('../../src/config', () => ({
   config: {
-    stripe: { platformFeePercent: 15 },
+    payments: { platformFeePercent: 15 },
     redis: { restUrl: null, restToken: null },
     ai: {
       openai: { model: 'gpt-4o', apiKey: 'test-key' },
@@ -105,10 +108,6 @@ vi.mock('../../src/services/EarnedVerificationUnlockService', () => ({
   EarnedVerificationUnlockService: { recordEarnings: vi.fn().mockResolvedValue(undefined) },
 }));
 
-vi.mock('../../src/services/XPTaxService', () => ({
-  XPTaxService: { recordOfflinePayment: vi.fn().mockResolvedValue(undefined) },
-}));
-
 vi.mock('../../src/services/XPService', () => ({
   XPService: { awardXP: vi.fn().mockResolvedValue({ success: true }) },
 }));
@@ -119,10 +118,6 @@ vi.mock('../../src/services/SelfInsurancePoolService.js', () => ({
 
 vi.mock('../../src/services/RevenueService', () => ({
   RevenueService: { logEvent: vi.fn().mockResolvedValue({ success: true, data: { id: 'rev-1' } }) },
-}));
-
-vi.mock('../../src/services/TaskPayoutDestinationService.js', () => ({
-  loadCurrentTaskPayoutDestination: payoutDestination,
 }));
 
 // Mocks needed when TaskService is imported (it pulls in ScoperAIService → AIClient)
@@ -230,13 +225,6 @@ beforeEach(() => {
   vi.mocked(EarnedVerificationUnlockService.recordEarnings).mockResolvedValue(undefined);
   vi.mocked(XPService.awardXP).mockResolvedValue({ success: true } as never);
   vi.mocked(SelfInsurancePoolService.recordContribution).mockResolvedValue({ success: true } as never);
-  payoutDestination.mockImplementation(async (query,binding) => {
-    const result=await query('SELECT payouts_enabled,stripe_connect_id,stripe_connect_status FROM users WHERE id=$1',[binding.payoutRecipientUserId]);
-    const row=result.rows[0];
-    return row?.stripe_connect_id && row.payouts_enabled!==false
-      ? { ready:true,stripeConnectId:row.stripe_connect_id,reason:'READY' }
-      : { ready:false,stripeConnectId:null,reason:'PAYOUT_ACCOUNT_NOT_READY' };
-  });
   vi.mocked(BiometricVerificationService.analyzeProofSubmission).mockResolvedValue({ success: false } as never);
   vi.mocked(JudgeAIService.synthesizeVerdict).mockResolvedValue({
     success: true,
@@ -498,48 +486,12 @@ describe('Attack #10 — Abort on final step (2/3 completed)', () => {
 });
 
 describe('Attack #11 — prorate_on_abort=false, abort mid-task (should get $0)', () => {
-  /**
-   * When prorate_on_abort=false and Hustler aborts, Hustler should receive $0.
-   * The correct flow is: EscrowService.refund() is called, returning funds to Poster.
-   * We test that refund() correctly blocks release and only allows the refund path.
-   *
-   * VERDICT: SAFE — EscrowService state machine correctly prevents release from
-   * REFUNDED state (ESCROW_TERMINAL), and refund() transitions to REFUNDED (not RELEASED).
-   */
-  it('SAFE — refund transitions to REFUNDED, subsequent release is rejected', async () => {
-    // Step 1: refund succeeds
-    // refund() now does 2 pre-check queries (SELECT task_id, SELECT worker_id) before the UPDATE
-    const refunded = makeEscrow({ state: 'REFUNDED' });
-    mockDb.query
-      .mockResolvedValueOnce({ rows: [{ task_id: 'task-1' }], rowCount: 1 } as never) // pre-check: task_id
-      .mockResolvedValueOnce({ rows: [{ worker_id: null }], rowCount: 1 } as never)   // pre-check: worker_id (no worker yet)
-      .mockResolvedValueOnce({ rows: [{ id: 'esc-1', version: 1, state: 'FUNDED' }], rowCount: 1 } as never) // F-05: T2 FOR UPDATE NOWAIT
-      .mockResolvedValueOnce({ rows: [refunded], rowCount: 1 } as never)               // UPDATE
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);                      // logEscrowEvent
-
-    const refundResult = await EscrowService.refund({ escrowId: 'esc-1' });
-    expect(refundResult.success).toBe(true);
-    if (refundResult.success) expect(refundResult.data.state).toBe('REFUNDED');
-
-    vi.clearAllMocks();
-    mockIsInvariantViolation.mockReturnValue(false);
-
-    // Step 2: attacker tries to also release — should be blocked
-    const escrowRow = { id: 'esc-1', task_id: 'task-1', amount: 5000, state: 'FUNDED' }; // stale pre-read
-    const taskRow = makeTask();
-    const workerKyc = { payouts_enabled: true, stripe_connect_id: 'acct_test', stripe_connect_status: 'complete' };
-
-    mockDb.query
-      .mockResolvedValueOnce({ rows: [escrowRow], rowCount: 1 } as never)   // SELECT escrow (stale)
-      .mockResolvedValueOnce({ rows: [taskRow], rowCount: 1 } as never)     // SELECT task
-      .mockResolvedValueOnce({ rows: [workerKyc], rowCount: 1 } as never)   // KYC check
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)            // UPDATE — already REFUNDED, 0 rows
-      // getById fallback returns REFUNDED state
-      .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'REFUNDED', poster_id: 'poster-1', worker_id: 'hustler-1' })], rowCount: 1 } as never);
-
-    const releaseResult = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_proof' });
-    expect(releaseResult.success).toBe(false);
-    if (!releaseResult.success) expect(releaseResult.error.code).toBe('HX002'); // ESCROW_TERMINAL
+  it('requires manual refund review and never releases an already-refunded escrow', async () => {
+    mockDb.query.mockResolvedValueOnce({ rows: [makeEscrow({ state: 'FUNDED' })], rowCount: 1 } as never);
+    expect(await EscrowService.refund({ escrowId: 'esc-1' })).toMatchObject({ success: false, error: { code: 'MANUAL_REFUND_REQUIRED' } });
+    mockDb.query.mockReset();
+    mockDb.query.mockResolvedValueOnce({ rows: [makeEscrow({ state: 'REFUNDED' })], rowCount: 1 } as never);
+    expect(await EscrowService.release({ escrowId: 'esc-1', localTestTransferId: 'tr_test_proof' })).toMatchObject({ success: false, error: { code: 'HX002' } });
   });
 });
 
@@ -802,17 +754,15 @@ describe('Attack #19 — Double release (idempotency check)', () => {
   it('SAFE — second release call blocked with ESCROW_TERMINAL', async () => {
     // First release
     const escrowRow = { id: 'esc-1', task_id: 'task-1', amount: 5000, state: 'FUNDED' };
-    const taskRow = makeTask();
-    const workerKyc = { payouts_enabled: true, stripe_connect_id: 'acct_test', stripe_connect_status: 'complete' };
+    const taskRow = { ...makeTask(), state: 'COMPLETED', automation_classification: 'CONTROLLED_TEST' };
     const released = makeEscrow({ state: 'RELEASED' });
 
     mockDb.query
       .mockResolvedValueOnce({ rows: [escrowRow], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [taskRow], rowCount: 1 } as never)
-      .mockResolvedValueOnce({ rows: [workerKyc], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [released], rowCount: 1 } as never);
 
-    const first = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_proof' });
+    const first = await EscrowService.release({ escrowId: 'esc-1', localTestTransferId: 'tr_test_proof' });
     expect(first.success).toBe(true);
 
     // Reset mock queue between the two release() calls (resetAllMocks clears queued values)
@@ -821,23 +771,15 @@ describe('Attack #19 — Double release (idempotency check)', () => {
     vi.mocked(EarnedVerificationUnlockService.recordEarnings).mockResolvedValue(undefined);
     vi.mocked(XPService.awardXP).mockResolvedValue({ success: true } as never);
     vi.mocked(SelfInsurancePoolService.recordContribution).mockResolvedValue({ success: true } as never);
-    payoutDestination.mockImplementation(async (query,binding) => {
-      const result=await query('SELECT payouts_enabled,stripe_connect_id,stripe_connect_status FROM users WHERE id=$1',[binding.payoutRecipientUserId]);
-      const row=result.rows[0];
-      return row?.stripe_connect_id && row.payouts_enabled!==false
-        ? { ready:true,stripeConnectId:row.stripe_connect_id,reason:'READY' }
-        : { ready:false,stripeConnectId:null,reason:'PAYOUT_ACCOUNT_NOT_READY' };
-    });
 
     // Second release attempt — DB still shows RELEASED, UPDATE returns 0 rows
     mockDb.query
       .mockResolvedValueOnce({ rows: [{ ...escrowRow, state: 'RELEASED' }], rowCount: 1 } as never) // SELECT escrow
       .mockResolvedValueOnce({ rows: [taskRow], rowCount: 1 } as never)                            // SELECT task
-      .mockResolvedValueOnce({ rows: [workerKyc], rowCount: 1 } as never)                          // KYC
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)                                   // UPDATE (no FUNDED row matched)
       .mockResolvedValueOnce({ rows: [makeEscrow({ state: 'RELEASED', poster_id: 'poster-1', worker_id: 'hustler-1' })], rowCount: 1 } as never); // getById
 
-    const second = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_proof' });
+    const second = await EscrowService.release({ escrowId: 'esc-1', localTestTransferId: 'tr_test_proof' });
     expect(second.success).toBe(false);
     if (!second.success) expect(second.error.code).toBe('HX002'); // ESCROW_TERMINAL
   });
@@ -861,18 +803,16 @@ describe('Attack #20 — Release escrow for wrong beneficiary (worker_id mismatc
   it('SAFE — release() always pays the DB-stored worker_id, caller cannot override', async () => {
     const escrowRow = { id: 'esc-1', task_id: 'task-1', amount: 5000, state: 'FUNDED' };
     // DB says worker is hustler-1
-    const taskRow = { worker_id: 'hustler-1', price: 5000 };
-    const workerKyc = { payouts_enabled: true, stripe_connect_id: 'acct_correct', stripe_connect_status: 'complete' };
+    const taskRow = { worker_id: 'hustler-1', price: 5000, state: 'COMPLETED', automation_classification: 'CONTROLLED_TEST' };
     const released = makeEscrow({ state: 'RELEASED' });
 
     mockDb.query
       .mockResolvedValueOnce({ rows: [escrowRow], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [taskRow], rowCount: 1 } as never)     // task worker = hustler-1
-      .mockResolvedValueOnce({ rows: [workerKyc], rowCount: 1 } as never)   // KYC for hustler-1
       .mockResolvedValueOnce({ rows: [released], rowCount: 1 } as never);
 
     // release() has no hustlerId parameter — attacker cannot inject one
-    const result = await EscrowService.release({ escrowId: 'esc-1', stripeTransferId: 'tr_test_proof' });
+    const result = await EscrowService.release({ escrowId: 'esc-1', localTestTransferId: 'tr_test_proof' });
 
     expect(result.success).toBe(true);
     // Verify XP was awarded to the correct worker

@@ -5,7 +5,6 @@ const mocks = vi.hoisted(() => ({ query: vi.fn(), transaction: vi.fn(), notify: 
 vi.mock('../../src/db.js', () => ({ db: { query: mocks.query, transaction: mocks.transaction } }));
 vi.mock('../../src/auth/firebase.js', () => ({ firebaseAuth: {} }));
 vi.mock('../../src/services/NotificationService.js', () => ({ NotificationService: { createForOperationsInTransaction: mocks.notify, createInTransaction: mocks.notify } }));
-vi.mock('../../src/services/payment/StaxAssessmentPaymentProvider.js', () => ({ StaxAssessmentPaymentProvider: {} }));
 vi.mock('../../src/services/AnalyticsService.js', () => ({ AnalyticsService: { track: mocks.analytics } }));
 import { supportRouter } from '../../src/routers/support.js';
 import { businessAssessmentRouter } from '../../src/routers/businessAssessment.js';

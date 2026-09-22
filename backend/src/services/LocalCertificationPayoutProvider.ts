@@ -154,7 +154,7 @@ export function localCertificationPayoutEnabled(env: Environment = process.env):
   return env.NODE_ENV !== 'production'
     && env.HXOS_ALLOW_LOCAL_TEST_PAYOUT === 'true'
     && env.ENGINE_API_MODE === 'test'
-    && env.STRIPE_MODE === 'test'
+
     && secret(env).length >= 32;
 }
 
@@ -205,7 +205,7 @@ function expectedTransferAmount(context: TransferContextRow): number | null {
   if (context.platform_fee_cents == null || context.hustler_payout_cents == null) return null;
   const breakdown = computeFeeBreakdown(
     context.amount,
-    config.stripe.platformFeePercent,
+    config.payments.platformFeePercent,
     context.platform_fee_cents,
   );
   return breakdown.netPayoutCents;
@@ -726,7 +726,7 @@ export const LocalCertificationPayoutProvider = {
 
         const breakdown = computeFeeBreakdown(
           row.amount,
-          config.stripe.platformFeePercent,
+          config.payments.platformFeePercent,
           row.platform_fee_cents,
         );
 

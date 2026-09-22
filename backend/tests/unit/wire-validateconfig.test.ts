@@ -51,7 +51,6 @@ vi.mock('../../src/jobs/export-worker', () => ({ processExportJob: vi.fn() }));
 vi.mock('../../src/jobs/email-worker', () => ({ processEmailJob: vi.fn() }));
 vi.mock('../../src/jobs/biometric-analyzer-worker', () => ({ processBiometricAnalysisJob: vi.fn() }));
 vi.mock('../../src/jobs/expertise-recalc-worker', () => ({ processExpertiseRecalcJob: vi.fn() }));
-vi.mock('../../src/jobs/xp-tax-reminder-worker', () => ({ processXPTaxReminderJob: vi.fn() }));
 
 vi.mock('../../src/logger', () => ({
   logger: {
@@ -77,7 +76,6 @@ vi.mock('../../src/db', () => ({ db: { query: vi.fn(async () => ({ rows: [{ name
 // startWorkers() never touches it, while bootWorkerProcess() does.
 vi.mock('../../src/config', () => ({
   config: {
-    stripe: { secretKey: null },
     redis: { url: 'redis://localhost:6379' },
     firebase: { projectId: null, clientEmail: null, privateKey: null },
   },

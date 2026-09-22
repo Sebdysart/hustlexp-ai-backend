@@ -27,14 +27,6 @@ vi.mock('../../../src/services/EscrowService', () => ({
   },
 }));
 
-vi.mock('../../../src/services/StripeService', () => ({
-  StripeService: {
-    createPaymentIntent: vi.fn(),
-    createTransfer: vi.fn(),
-    createRefund: vi.fn(),
-  },
-}));
-
 vi.mock('../../../src/services/XPService', () => ({
   XPService: { awardXP: vi.fn() },
 }));

@@ -28,8 +28,8 @@ export interface RawLifecycleRow {
   payout_ready_at: Date | string | null;
   payout_ready_reason: string | null;
   escrow_state: string | null;
-  stripe_payment_intent_id: string | null;
-  stripe_refund_id: string | null;
+  provider_payment_id: string | null;
+  provider_refund_id: string | null;
   reservation_state: string | null;
   reserved_hustler_ref: string | null;
   proof_state: string | null;
@@ -150,7 +150,7 @@ export function decodeLifecycleCursor(value: string): LifecycleCursor {
 }
 
 function refundStateFor(row: RawLifecycleRow): RefundState {
-  if (row.escrow_state === 'REFUNDED' || row.stripe_refund_id) return 'REFUNDED';
+  if (row.escrow_state === 'REFUNDED' || row.provider_refund_id) return 'REFUNDED';
   return row.refund_state ?? 'NOT_REQUIRED';
 }
 
@@ -270,12 +270,12 @@ const LIFECYCLE_QUERY = `SELECT t.id,
         t.dispatch_expires_at, t.expiration_reason, t.refund_state, t.refund_blocker,
         t.started_at, t.completion_message_delivered_at, t.completion_confirmed_at,
         t.payout_ready_at, t.payout_ready_reason, t.automation_classification,
-        e.state AS escrow_state, e.stripe_payment_intent_id, e.stripe_refund_id,
+        e.state AS escrow_state, e.provider_payment_id, e.provider_refund_id,
         r.status AS reservation_state, r.hustler_id AS reserved_hustler_ref,
         p.state AS proof_state
  FROM tasks t
  LEFT JOIN LATERAL (
-   SELECT state, stripe_payment_intent_id, stripe_refund_id
+   SELECT state, provider_payment_id, provider_refund_id
    FROM escrows WHERE task_id = t.id ORDER BY created_at DESC LIMIT 1
  ) e ON TRUE
  LEFT JOIN task_reservations r ON r.task_id = t.id AND r.status = 'ACTIVE'

@@ -142,7 +142,6 @@ type HustlerCandidateRow = {
   account_status: string;
   default_mode: string;
   phone: string | null;
-  stripe_connect_id: string | null;
   payouts_enabled: boolean;
 
   trust_hold: boolean;
@@ -1016,9 +1015,7 @@ export class QuoteGenerationService {
           blockers.push('BLOCKED_TRUST');
         }
 
-        if (!candidate.stripe_connect_id || !candidate.payouts_enabled) {
-          blockers.push('BLOCKED_PAYOUT_DESTINATION');
-        }
+        blockers.push('BLOCKED_PAYOUT_DESTINATION'); // No supported live individual-worker payout rail.
       }
 
       // ------------------------------------------------------------
@@ -1522,7 +1519,6 @@ export class QuoteGenerationService {
           u.account_status,
           u.default_mode,
           u.phone,
-          u.stripe_connect_id,
           COALESCE(u.payouts_enabled, false) AS payouts_enabled,
           COALESCE(u.trust_hold, false) AS trust_hold,
           u.trust_hold_until,

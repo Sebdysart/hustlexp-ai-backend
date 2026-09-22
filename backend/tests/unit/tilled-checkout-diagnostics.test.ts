@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../src/db.js', () => ({ db: { query: vi.fn() } }));
+vi.mock('../../src/db.js', () => ({ db: { query: vi.fn(), transaction: vi.fn() } }));
 vi.mock('../../src/logger.js', () => {
   const logger = {
     info: vi.fn(),
@@ -46,11 +46,12 @@ vi.mock('../../src/services/payment/TilledQuotePaymentProvider.js', () => ({
 
 const { db } = await import('../../src/db.js');
 const { logger } = await import('../../src/logger.js');
+const { finalizePaidQuote } = await import('../../src/services/QuotePaymentFinalizationService.js');
 const { lockQuoteAddressForPayment } = await import('../../src/services/QuoteServiceAddressService.js');
 const { resolveTilledMerchantAccount } = await import('../../src/services/payment/TilledMerchantAccountService.js');
 const { tilledClient, TilledQuotePaymentProvider, validateTilledIntentBinding } =
   await import('../../src/services/payment/TilledQuotePaymentProvider.js');
-const { createOrResumeTilledCheckout } = await import('../../src/services/payment/TilledQuoteCheckoutService.js');
+const { createOrResumeTilledCheckout, finalizeTilledCheckout } = await import('../../src/services/payment/TilledQuoteCheckoutService.js');
 const { mapTilledCheckoutError } = await import('../../src/routers/quotePayment.js');
 const { TilledApiError } = await import('../../src/services/payment/TilledClient.js');
 
@@ -58,7 +59,7 @@ const input = { quoteId: 'quote-one', quoteVersionId: 'version-one', posterId: '
 const tomorrow = new Date(Date.now() + 24 * 60 * 60_000);
 const date = tomorrow.toISOString().slice(0, 10);
 const quote = {
-  quote_id: 'quote-one', task_draft_id: 'draft-one', quote_status: 'quote_ready',
+  active_version_id: 'version-one', quote_id: 'quote-one', task_draft_id: 'draft-one', quote_status: 'quote_ready',
   quote_environment: 'TEST', quote_is_test: true, selected_quote_id: 'quote-one',
   business_organization_id: 'org-one', total_cents: 12000, hustler_payout_cents: 10000,
   expires_at: new Date(Date.now() + 24 * 60 * 60_000),
@@ -74,7 +75,8 @@ const payment = {
   provider_merchant_id: 'acct_one', business_organization_id: 'org-one',
   amount_cents: 12000, platform_fee_cents: 2000,
   provider_environment: 'sandbox', provider_status: null,
-  intent_creation_state: 'RESERVED', status: 'PENDING',
+  intent_creation_state: 'RESERVED', status: 'PENDING', reserved_poster_id: 'poster-one',
+  reserved_at: new Date(), finalization_state: 'PENDING',
 };
 const intent = {
   id: 'pi_one', account_id: 'acct_one', amount: 12000, amount_received: 0,
@@ -93,6 +95,7 @@ beforeEach(() => {
   vi.stubEnv('TILLED_SECRET_KEY', 'test-secret');
   vi.stubEnv('TILLED_PUBLISHABLE_KEY', 'test-public');
   vi.stubEnv('HX_PAYMENT_CREATION_MODE', 'enabled');
+  vi.mocked(db.transaction).mockImplementation(async (callback) => callback(db.query));
   storedPayment = null;
   failBind = false;
   vi.mocked(resolveTilledMerchantAccount).mockResolvedValue({
@@ -152,10 +155,10 @@ describe('Tilled checkout diagnostics before durable reservation', () => {
 
     expect(reservation).toBeDefined();
     const [sql, values] = reservation!;
-    expect(String(sql)).toMatch(/VALUES \(\$1, \$2, 'tilled', 'tilled_reservation:' \|\| \$8::text \|\| ':' \|\| \$9::text/);
+    expect(String(sql)).toMatch(/SELECT \$1, \$2, 'tilled', 'tilled_reservation:' \|\| \$8::text \|\| ':' \|\| \$9::text/);
     expect(values).toEqual([
       input.quoteId, input.quoteVersionId, 12000, 2000,
-      'org-one', 'acct_one', 'sandbox', input.quoteId, input.quoteVersionId,
+      'org-one', 'acct_one', 'sandbox', input.quoteId, input.quoteVersionId, input.posterId,
     ]);
   });
 
@@ -210,6 +213,8 @@ describe('Tilled checkout diagnostics before durable reservation', () => {
     vi.mocked(db.query).mockImplementationOnce(async () => ({ rows: [quote] } as never))
       .mockImplementationOnce(async () => ({ rows: [] } as never))
       .mockImplementationOnce(async () => ({ rows: [] } as never))
+      .mockImplementationOnce(async () => ({ rows: [{ id: 'org-one' }] } as never))
+      .mockImplementationOnce(async () => ({ rows: [{ id: 'quote-one' }] } as never))
       .mockImplementationOnce(async () => { throw new Error('simulated insert failure'); });
     await expect(createOrResumeTilledCheckout(input)).rejects.toThrow('simulated insert failure');
     expect(logger.error).toHaveBeenCalledWith(expect.objectContaining({
@@ -252,5 +257,50 @@ describe('Tilled provider failure and safe retry', () => {
     expect(mapTilledCheckoutError(new TilledApiError('INVALID_PROVIDER_RESPONSE'))?.code)
       .toBe('BAD_GATEWAY');
     expect(mapTilledCheckoutError(new Error('unexpected bug'))).toBeNull();
+  });
+});
+
+
+describe('Tilled browser recovery after quote changes', () => {
+  it('exposes a stable manual-review code on checkout replay without offering another payment', async () => {
+    storedPayment = { ...payment, finalization_state: 'MANUAL_COMPENSATION_REQUIRED', status: 'SUCCEEDED' };
+    await expect(createOrResumeTilledCheckout(input)).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      cause: { applicationCode: 'QUOTE_PAYMENT_MANUAL_COMPENSATION_REQUIRED' },
+    });
+    expect(TilledQuotePaymentProvider.createPaymentIntent).not.toHaveBeenCalled();
+    expect(tilledClient).not.toHaveBeenCalled();
+  });
+
+  it('exposes the same manual-review code when provider success cannot materialize', async () => {
+    storedPayment = { ...payment, intent_creation_state: 'BOUND', provider_payment_id: 'pi_one' };
+    vi.mocked(finalizePaidQuote).mockResolvedValue({ success: false, error: {
+      code: 'QUOTE_PAYMENT_MANUAL_COMPENSATION_REQUIRED',
+      message: 'Your payment was received and requires support review. Do not pay again.',
+    } });
+    await expect(finalizeTilledCheckout(input)).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      cause: { applicationCode: 'QUOTE_PAYMENT_MANUAL_COMPENSATION_REQUIRED' },
+    });
+  });
+
+  it('finalizes a bound successful payment after expiry and active version replacement without creating another intent', async () => {
+    storedPayment = { ...payment, intent_creation_state: 'BOUND', provider_payment_id: 'pi_one' };
+    const staleQuote = { ...quote, active_version_id: 'replacement-version', expires_at: new Date('2020-01-01'), quote_status: 'expired' };
+    vi.mocked(db.query).mockResolvedValueOnce({ rows: [staleQuote] } as never);
+    vi.mocked(tilledClient).mockReturnValue({ getPaymentIntent: vi.fn().mockResolvedValue({ ...intent, status: 'succeeded', amount_received: 12000 }) } as never);
+    vi.mocked(finalizePaidQuote).mockResolvedValue({ success: true, data: { taskId: 'canonical-task' } } as never);
+    expect(await createOrResumeTilledCheckout(input)).toEqual({ finalized: true, taskId: 'canonical-task', replayed: true });
+    expect(TilledQuotePaymentProvider.createPaymentIntent).not.toHaveBeenCalled();
+    expect(lockQuoteAddressForPayment).not.toHaveBeenCalled();
+    expect(resolveTilledMerchantAccount).not.toHaveBeenCalled();
+  });
+
+  it('does not offer unpaid checkout confirmation after the reserved version was replaced', async () => {
+    storedPayment = { ...payment, intent_creation_state: 'BOUND', provider_payment_id: 'pi_one' };
+    vi.mocked(db.query).mockResolvedValueOnce({ rows: [{ ...quote, active_version_id: 'replacement-version' }] } as never);
+    await expect(createOrResumeTilledCheckout(input)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect(TilledQuotePaymentProvider.createPaymentIntent).not.toHaveBeenCalled();
+    expect(finalizePaidQuote).not.toHaveBeenCalled();
   });
 });

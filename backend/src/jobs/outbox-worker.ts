@@ -44,10 +44,6 @@ export const FINANCIAL_EVENT_TYPES = new Set([
   'escrow.completion_release_requested',
   'escrow.refund_requested',
   'escrow.partial_refund_requested',
-  // Stripe event forwarding — both job types route through critical_payments and can
-  // trigger real escrow state transitions (PENDING→FUNDED, FUNDED→RELEASED, etc.)
-  'payment.stripe_event_received',
-  'stripe.event_received',
   // Instant task jobs — routed through critical_payments queue; signing prevents
   // a compromised Redis node from injecting fraudulent matching/notification jobs
   'task.instant_matching_started',
@@ -166,7 +162,7 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
             outbox_idempotency_key: event.idempotency_key,
             payload: jobPayload,
           },
-          { jobId: bullMqJobId(event.idempotency_key),
+          { jobId: bullMqJobId(event.idempotency_key), retryTerminal: true,
             ...(event.idempotency_key.startsWith('provider_os:v2:') || event.event_type === 'notification.create_requested'
               ? { removeOnComplete: true, removeOnFail: true } : {}),
           }
@@ -202,8 +198,10 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
         await db.query(
           `UPDATE outbox_events
            SET status = CASE WHEN attempts < $1 THEN 'pending' ELSE 'failed' END,
-               error_message = $2
-           WHERE id = $3`,
+               error_message = $2,
+               available_at = NOW() + LEAST(300, POWER(2, attempts) * 5) * INTERVAL '1 second',
+               updated_at = NOW()
+           WHERE id = $3 AND status = 'enqueued'`,
           [MAX_OUTBOX_ATTEMPTS, errorMessage, event.id]
         );
 
@@ -263,8 +261,9 @@ export async function markOutboxEventFailed(
     `UPDATE outbox_events
      SET status = CASE WHEN attempts < $3 THEN 'pending' ELSE 'failed' END,
          error_message = $1,
+         available_at = NOW() + LEAST(300, POWER(2, attempts) * 5) * INTERVAL '1 second',
          updated_at = NOW()
-     WHERE idempotency_key = $2`,
+     WHERE idempotency_key = $2 AND status = 'enqueued'`,
     [errorMessage, idempotencyKey, MAX_OUTBOX_ATTEMPTS]
   );
 }
@@ -275,21 +274,28 @@ export interface OutboxWorkerHandles {
   trustTierInterval: NodeJS.Timeout;
 }
 
+/** Recover the DB-commit/queue-add crash window for every outbox event.
+ * Logical identity remains the original idempotency key; consumers must commit
+ * their own durable result before acknowledging this at-least-once delivery. */
+export async function recoverExpiredOutboxLeases(batchSize = 100): Promise<void> {
+  await db.query(`WITH expired AS (
+    SELECT id FROM outbox_events
+    WHERE status = 'enqueued'
+      AND COALESCE(enqueued_at, created_at) < NOW() - INTERVAL '10 minutes'
+    ORDER BY COALESCE(enqueued_at, created_at), id LIMIT $2 FOR UPDATE SKIP LOCKED
+  ) UPDATE outbox_events event SET
+    status = CASE WHEN event.attempts < $1 THEN 'pending' ELSE 'failed' END,
+    available_at = NOW() + LEAST(300, POWER(2, event.attempts) * 5) * INTERVAL '1 second',
+    error_message = 'outbox_dispatch_lease_expired',
+    updated_at = NOW()
+    FROM expired WHERE event.id = expired.id`, [MAX_OUTBOX_ATTEMPTS, batchSize]);
+}
+
 async function pollOutbox() {
   try {
-    // Recover ledger-backed premium and notification-request dispatch leases.
-    // Their DB ledgers remain authoritative; terminal queue jobs are removable.
-    await db.query(`WITH expired AS (
-      SELECT id FROM outbox_events
-      WHERE (left(idempotency_key, 15) = 'provider_os:v2:' OR event_type = 'notification.create_requested') AND status = 'enqueued'
-        AND enqueued_at < NOW() - INTERVAL '10 minutes'
-      ORDER BY enqueued_at LIMIT 100 FOR UPDATE SKIP LOCKED
-    ) UPDATE outbox_events event SET
-      status = CASE WHEN event.attempts < $1 THEN 'pending' ELSE 'failed' END,
-      error_message = 'notification_dispatch_lease_expired'
-      FROM expired WHERE event.id = expired.id`, [MAX_OUTBOX_ATTEMPTS]);
+    await recoverExpiredOutboxLeases();
   } catch (error) {
-    log.error({ err: error }, 'Notification dispatch recovery failed; ordinary outbox continues');
+    log.error({ err: error }, 'Outbox dispatch recovery failed; ordinary outbox continues');
   }
   return processOutboxEvents(100);
 }

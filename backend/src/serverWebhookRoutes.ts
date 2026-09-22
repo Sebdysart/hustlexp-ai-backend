@@ -34,31 +34,6 @@ function signatureMatches(provided: string, rawBody: string, secret: string): bo
   return timingSafeEqual(paddedProvided, paddedExpected);
 }
 
-async function stripeWebhook(context: Context) {
-  const signature = context.req.header('stripe-signature');
-  const rawBody = await context.req.text();
-  if (!signature) return context.json({ error: 'Missing stripe-signature header' }, 400);
-  const { StripeWebhookService } = await import('./services/StripeWebhookService.js');
-  const result = await StripeWebhookService.processWebhook(rawBody, signature);
-  if (!result.success) {
-    const verificationCodes = [
-      'WEBHOOK_VERIFICATION_FAILED',
-      'WEBHOOK_DESTINATION_MISMATCH',
-      'WEBHOOK_SECRET_MISSING',
-      'STRIPE_NOT_CONFIGURED',
-    ];
-    if (verificationCodes.includes(result.error?.code || '')) {
-      return context.json({ error: result.error?.message }, 400);
-    }
-    return context.json({ error: 'Webhook processing failed' }, 500);
-  }
-  return context.json({
-    received: true,
-    eventId: result.stripeEventId,
-    stored: result.stripeEventId !== undefined,
-  }, 200);
-}
-
 async function verifiedCheckrPayload(context: Context): Promise<CheckrPayload | Response> {
   const secret = process.env.CHECKR_WEBHOOK_SECRET;
   if (!secret) {
@@ -125,7 +100,6 @@ async function checkrWebhook(context: Context) {
 }
 
 export function registerWebhookRoutes(app: HustleApp): void {
-  app.post('/webhooks/stripe', stripeWebhook);
   app.post('/webhooks/checkr', checkrWebhook);
   app.post('/webhooks/tilled', async (context) => {
     const rawBody = await context.req.text();

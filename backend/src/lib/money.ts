@@ -3,7 +3,7 @@
  *
  * AUDIT FIX H3/M10/M11 (2026-06-11): the platform fee was computed
  * independently in 7+ places with INCONSISTENT rounding — Math.floor in
- * StripeService vs Math.round in EscrowService and both payment workers —
+ * legacy providers vs Math.round in EscrowService and both payment workers —
  * so the same gross amount produced fees differing by 1¢ depending on code
  * path, breaking revenue-ledger reconciliation. The XP formula (price/10)
  * was likewise duplicated across TaskService/XPTaxService/ScoperAIService.
@@ -51,7 +51,7 @@ export function clampFeePercent(feePercent: number | undefined | null): number {
  */
 export function computePlatformFeeCents(
   grossCents: number,
-  feePercent: number = config.stripe.platformFeePercent
+  feePercent: number = config.payments.platformFeePercent
 ): number {
   assertIntegerCents(grossCents, 'grossCents');
   const pct = clampFeePercent(feePercent);
@@ -105,7 +105,7 @@ export function feeBasisPoints(grossCents: number, platformFeeCents: number): nu
  */
 export function computeFeeBreakdown(
   grossCents: number,
-  feePercent: number = config.stripe.platformFeePercent,
+  feePercent: number = config.payments.platformFeePercent,
   canonicalPlatformFeeCents?: number | null,
 ): FeeBreakdown {
   const platformFeeCents = resolvePlatformFeeCents(grossCents, feePercent, canonicalPlatformFeeCents);

@@ -141,7 +141,7 @@ function calculateSecuritySurface(files: string[]): number {
   const hasPayment = files.some(f =>
     f.includes('Payment') ||
     f.includes('Escrow') ||
-    f.includes('Stripe') ||
+    f.includes('Tilled') ||
     f.includes('escrow') ||
     f.includes('payment')
   );

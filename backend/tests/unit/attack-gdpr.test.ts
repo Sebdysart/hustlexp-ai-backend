@@ -9,8 +9,11 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+vi.mock('../../src/services/EscrowPaymentBindingService.js', () => ({ loadEscrowPaymentBinding: async () => ({ provider: 'local_test', status: 'SUCCEEDED' }) }));
+vi.mock('../../src/services/LocalCertificationPayoutProvider.js', () => ({ localCertificationPayoutEnabled: () => true, LocalCertificationPayoutProvider: { verifyPaidTransfer: async () => true } }));
+vi.mock('../../src/lib/task-lifecycle-notifications.js', () => ({ notifyPaymentReleased: vi.fn() }));
+vi.mock('../../src/services/EscrowRefundProvider.js', () => ({ recordManualRefundRequirement: vi.fn() }));
 
-const payoutDestination = vi.hoisted(() => vi.fn());
 
 // ---------------------------------------------------------------------------
 // SHARED DB / SERVICE MOCKS
@@ -41,7 +44,7 @@ vi.mock('../../src/logger', () => {
 
 vi.mock('../../src/config', () => ({
   config: {
-    stripe: { platformFeePercent: 15 },
+    payments: { platformFeePercent: 15 },
     redis: { restUrl: null, restToken: null, url: null },
   },
 }));
@@ -77,10 +80,6 @@ vi.mock('../../src/services/EarnedVerificationUnlockService', () => ({
   EarnedVerificationUnlockService: { recordEarnings: vi.fn().mockResolvedValue(undefined) },
 }));
 
-vi.mock('../../src/services/XPTaxService', () => ({
-  XPTaxService: { recordOfflinePayment: vi.fn().mockResolvedValue(undefined) },
-}));
-
 vi.mock('../../src/services/XPService', () => ({
   XPService: { awardXP: vi.fn().mockResolvedValue({ success: true, data: {} }), clawbackXP: vi.fn().mockResolvedValue(undefined) },
 }));
@@ -91,10 +90,6 @@ vi.mock('../../src/services/SelfInsurancePoolService', () => ({
 
 vi.mock('../../src/services/RevenueService', () => ({
   RevenueService: { logEvent: vi.fn().mockResolvedValue({ success: true, data: { id: 'rev-1' } }) },
-}));
-
-vi.mock('../../src/services/TaskPayoutDestinationService.js', () => ({
-  loadCurrentTaskPayoutDestination: payoutDestination,
 }));
 
 vi.mock('../../src/services/AlphaInstrumentation', () => ({
@@ -143,13 +138,6 @@ function setupTransaction() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  payoutDestination.mockImplementation(async (query,binding) => {
-    const result=await query('SELECT payouts_enabled,stripe_connect_id,stripe_connect_status FROM users WHERE id=$1',[binding.payoutRecipientUserId]);
-    const row=result.rows[0];
-    return row?.stripe_connect_id && row.payouts_enabled!==false
-      ? { ready:true,stripeConnectId:row.stripe_connect_id,reason:'READY' }
-      : { ready:false,stripeConnectId:null,reason:'PAYOUT_ACCOUNT_NOT_READY' };
-  });
   // D53-4: reset in-memory rate-limit Map so each test starts with an empty bucket
   _resetGDPRRateLimitMapForTesting();
 });
@@ -346,15 +334,14 @@ describe('Attack 7: Deletion timing — task completes, XP queued, deletion race
       // fetch escrow (inside transaction)
       .mockResolvedValueOnce({ rows: [{ id: escrowId, task_id: 'task-race', amount: 5000, state: 'FUNDED', version: 1 }], rowCount: 1 })
       // fetch task — valid worker
-      .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1', price: 5000 }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-1', price: 5000, state: 'COMPLETED', automation_classification: 'CONTROLLED_TEST' }], rowCount: 1 })
       // KYC check — passes
-      .mockResolvedValueOnce({ rows: [{ payouts_enabled: true, stripe_connect_id: 'acct_test', stripe_connect_status: 'active' }], rowCount: 1 })
       // UPDATE escrows SET state = RELEASED
       .mockResolvedValueOnce({ rows: [{ id: escrowId, state: 'RELEASED', task_id: 'task-race', amount: 5000, version: 2 }], rowCount: 1 })
       // logEscrowEvent
       .mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
-    const result = await EscrowService.release({ escrowId, stripeTransferId: 'tr_test_gdpr' });
+    const result = await EscrowService.release({ escrowId, localTestTransferId: 'tr_test_gdpr' });
 
     expect(result.success).toBe(true);
     expect(XPService.awardXP).toHaveBeenCalledWith(

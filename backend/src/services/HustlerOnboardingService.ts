@@ -1,6 +1,5 @@
 import { db } from '../db.js';
 import type { ServiceResult } from '../types.js';
-import { StripeConnectService } from './StripeConnectService.js';
 import { WorkerSkillService } from './WorkerSkillService.js';
 import { getPrivateIdentityVerificationStatus } from './PrivateIdentityVerificationService.js';
 import { getCapabilityProfile } from './CapabilityProfileService.js';
@@ -103,9 +102,6 @@ export async function getHustlerOnboardingStatus(
     const identityResult =
       await getPrivateIdentityVerificationStatus(userId);
 
-    const stripeResult =
-      await StripeConnectService.getOnboardingStatus(userId);
-
     const skillsResult =
       await WorkerSkillService.getWorkerSkills(userId);
 
@@ -139,10 +135,7 @@ export async function getHustlerOnboardingStatus(
       blockers.push('IDENTITY_VERIFICATION_REQUIRED');
     }
 
-    const payoutsComplete =
-      stripeResult.success
-      && stripeResult.data.isOnboarded
-      && stripeResult.data.payoutsEnabled;
+    const payoutsComplete = false;
 
     if (!payoutsComplete) {
       blockers.push('PAYOUT_ONBOARDING_REQUIRED');
@@ -200,17 +193,9 @@ export async function getHustlerOnboardingStatus(
           },
 
           payouts: {
-            status: payoutsComplete
-              ? 'COMPLETE'
-              : stripeResult.success && stripeResult.data.accountId
-                ? 'PENDING'
-                : 'NOT_STARTED',
-            onboardingComplete: stripeResult.success
-              ? stripeResult.data.isOnboarded
-              : false,
-            payoutsEnabled: stripeResult.success
-              ? stripeResult.data.payoutsEnabled
-              : false,
+            status: 'BLOCKED',
+            onboardingComplete: false,
+            payoutsEnabled: false,
           },
 
           skills: {

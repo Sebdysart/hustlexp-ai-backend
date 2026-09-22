@@ -72,7 +72,7 @@ export type BehaviorEvent = z.infer<typeof behaviorEventSchema>;
 const staticRoutes = new Set(['/', '/earn', '/auth-debug', '/get-help', '/task-preview', '/dashboard', '/sign-in', '/auth/callback',
   '/onboarding/account', '/support', '/support/new', '/business/signup', '/business/dashboard',
   '/business/proposals', '/business/onboarding/company', '/business/onboarding/location', '/business/onboarding/services',
-  '/ops', '/ops/analytics', '/ops/drafts', '/ops/tasks', '/ops/posters', '/ops/businesses', '/ops/support', '/test/stax']);
+  '/ops', '/ops/analytics', '/ops/drafts', '/ops/tasks', '/ops/posters', '/ops/businesses', '/ops/support']);
 export function sanitizeAnalyticsRoute(value?: string): string | null {
   if (!value) return null;
   const path = value.split(/[?#]/)[0];

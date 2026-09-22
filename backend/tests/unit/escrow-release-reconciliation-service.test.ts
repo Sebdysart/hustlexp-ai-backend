@@ -4,12 +4,11 @@ const mocks = vi.hoisted(() => ({
   query: vi.fn(),
   insurance: vi.fn(),
   earnings: vi.fn(),
-  tax: vi.fn(),
   xp: vi.fn(),
   progress: vi.fn(),
 }));
 
-vi.mock('../../src/config.js', () => ({ config: { stripe: { platformFeePercent: 20 } } }));
+vi.mock('../../src/config.js', () => ({ config: { payments: { platformFeePercent: 20 } } }));
 vi.mock('../../src/db.js', () => ({ db: { query: mocks.query } }));
 vi.mock('../../src/logger.js', () => ({
   logger: { child: () => ({ info: vi.fn(), error: vi.fn(), warn: vi.fn() }) },
@@ -19,9 +18,6 @@ vi.mock('../../src/services/SelfInsurancePoolService.js', () => ({
 }));
 vi.mock('../../src/services/EarnedVerificationUnlockService.js', () => ({
   EarnedVerificationUnlockService: { recordEarnings: mocks.earnings },
-}));
-vi.mock('../../src/services/XPTaxService.js', () => ({
-  XPTaxService: { recordOfflinePayment: mocks.tax },
 }));
 vi.mock('../../src/services/XPService.js', () => ({ XPService: { awardXP: mocks.xp } }));
 vi.mock('../../src/services/TaskProgressService.js', () => ({
@@ -33,7 +29,7 @@ import { EscrowReleaseReconciliationService } from '../../src/services/EscrowRel
 function releasedRow(overrides: Record<string, unknown> = {}) {
   return {
     id: 'escrow-1', task_id: 'task-1', state: 'RELEASED', amount: 5000,
-    platform_fee_cents: 1000, stripe_transfer_id: 'tr_exact',
+    platform_fee_cents: 1000, provider_transfer_id: 'tr_exact',
     worker_id: 'worker-1', payment_method: 'escrow', ...overrides,
   };
 }
@@ -42,12 +38,24 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.insurance.mockResolvedValue({ success: true, data: undefined });
   mocks.earnings.mockResolvedValue({ success: true, data: undefined });
-  mocks.tax.mockResolvedValue({ success: true, data: undefined });
   mocks.xp.mockResolvedValue({ success: true, data: { id: 'xp-1' } });
   mocks.progress.mockResolvedValue({ success: true, data: { id: 'task-1', progress_state: 'CLOSED' } });
 });
 
 describe('EscrowReleaseReconciliationService', () => {
+  it('reconciles a Tilled business using frozen economics without worker transfers or deductions', async () => {
+    mocks.query.mockResolvedValueOnce({ rows: [releasedRow({
+      worker_id: 'crew-member', business_fulfiller_organization_id: 'org-1', payout_provider: 'TILLED',
+      platform_fee_cents: null, platform_margin_cents: 700, hustler_payout_cents: 4300,
+      provider_transfer_id: null,
+    })], rowCount: 1 }).mockResolvedValueOnce({ rows: [], rowCount: 1 });
+    expect(await EscrowReleaseReconciliationService.reconcile({ escrowId: 'escrow-1' }))
+      .toMatchObject({ success: true, data: { platformFeeCents: 700, netPayoutCents: 4300, insuranceContributionCents: 0 } });
+    expect(mocks.earnings).not.toHaveBeenCalled();
+    expect(mocks.insurance).not.toHaveBeenCalled();
+    expect(mocks.xp).not.toHaveBeenCalled();
+  });
+
   it('reports the full frozen business payout without worker insurance', async () => {
     mocks.query
       .mockResolvedValueOnce({ rows: [releasedRow({
@@ -68,13 +76,13 @@ describe('EscrowReleaseReconciliationService', () => {
       .mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
     const result = await EscrowReleaseReconciliationService.reconcile({
-      escrowId: 'escrow-1', expectedStripeTransferId: 'tr_exact', fromState: 'FUNDED',
+      escrowId: 'escrow-1', expectedProviderTransferId: 'tr_exact', fromState: 'FUNDED',
     });
 
     expect(result).toEqual({
       success: true,
       data: {
-        escrowId: 'escrow-1', taskId: 'task-1', workerId: 'worker-1',
+        escrowId: 'escrow-1', taskId: 'task-1', workerId: 'worker-1', businessFulfillerOrganizationId: undefined,
         grossAmountCents: 5000, platformFeeCents: 1000,
         insuranceContributionCents: 100, netPayoutCents: 3900,
       },
@@ -106,7 +114,7 @@ describe('EscrowReleaseReconciliationService', () => {
     mocks.query.mockResolvedValueOnce({ rows: [releasedRow()], rowCount: 1 });
 
     await expect(EscrowReleaseReconciliationService.reconcile({
-      escrowId: 'escrow-1', expectedStripeTransferId: 'tr_other',
+      escrowId: 'escrow-1', expectedProviderTransferId: 'tr_other',
     })).resolves.toMatchObject({ success: false, error: { code: 'CONFLICT' } });
     expect(mocks.insurance).not.toHaveBeenCalled();
     expect(mocks.earnings).not.toHaveBeenCalled();

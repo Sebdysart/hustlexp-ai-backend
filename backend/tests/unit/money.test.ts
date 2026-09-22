@@ -7,7 +7,7 @@
 import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('../../src/config', () => ({
-  config: { stripe: { platformFeePercent: 15 } },
+  config: { payments: { platformFeePercent: 15 } },
 }));
 
 import {

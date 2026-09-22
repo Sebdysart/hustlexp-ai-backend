@@ -1,3 +1,4 @@
+// Current completion/refund provider behavior: completion-release-worker.test.ts and stage-one-refunds.test.ts.
 /**
  * Spec Alignment Stress Tests
  *
@@ -13,7 +14,6 @@ import { XPService } from '../../src/services/XPService';
 import { EscrowService } from '../../src/services/EscrowService';
 import { TaskService } from '../../src/services/TaskService';
 
-const payoutDestination = vi.hoisted(() => vi.fn());
 
 // Mock database for unit tests
 vi.mock('../../src/db', () => {
@@ -75,20 +75,9 @@ vi.mock('../../src/services/RevenueService', () => ({
   RevenueService: { logEvent: vi.fn().mockResolvedValue({ success: true, data: { id: 'rev-1' } }) },
 }));
 
-vi.mock('../../src/services/TaskPayoutDestinationService.js', () => ({
-  loadCurrentTaskPayoutDestination: payoutDestination,
-}));
-
 const { db } = await import('../../src/db');
 
 beforeEach(() => {
-  payoutDestination.mockImplementation(async (query,binding) => {
-    const result=await query('SELECT payouts_enabled,stripe_connect_id,stripe_connect_status FROM users WHERE id=$1',[binding.payoutRecipientUserId]);
-    const row=result.rows[0];
-    return row?.stripe_connect_id && row.payouts_enabled!==false
-      ? { ready:true,stripeConnectId:row.stripe_connect_id,reason:'READY' }
-      : { ready:false,stripeConnectId:null,reason:'PAYOUT_ACCOUNT_NOT_READY' };
-  });
 });
 
 describe('SPEC ALIGNMENT: Provider trust progression (Local Work Network §5)', () => {
@@ -384,107 +373,6 @@ describe('SPEC ALIGNMENT: Escrow State Machine (PRODUCT_SPEC §4.2, §4.3)', () 
   beforeEach(() => {
     vi.clearAllMocks();
     db.query.mockReset();
-  });
-
-  describe('LOCKED_DISPUTE → RELEASED Transition', () => {
-    // SPEC: Worker can receive funds after dispute resolved in their favor
-
-    it('should allow releasing escrow from LOCKED_DISPUTE state', async () => {
-      // Mock 1: SELECT escrow by ID (returns LOCKED_DISPUTE state)
-      db.query.mockResolvedValueOnce({
-        rowCount: 1,
-        rows: [{
-          id: 'escrow-1',
-          task_id: 'task-1',
-          amount: 1000,
-          state: 'LOCKED_DISPUTE',
-        }],
-      });
-
-      // Mock 2: authoritative worker-favor dispute resolution.
-      db.query.mockResolvedValueOnce({
-        rowCount: 1,
-        rows: [{ resolved_dispute_id: 'dispute-worker-win-1' }],
-      });
-
-      // Mock 3: SELECT task for worker_id and price
-      db.query.mockResolvedValueOnce({
-        rowCount: 1,
-        rows: [{
-          worker_id: 'worker-1',
-          price: 1000,
-        }],
-      });
-
-      // Mock 4: SELECT worker KYC info (KYC gate - added for 72-hour fixes)
-      db.query.mockResolvedValueOnce({
-        rowCount: 1,
-        rows: [{
-          payouts_enabled: true,
-          stripe_connect_id: 'acct_worker1',
-          stripe_connect_status: 'enabled',
-        }],
-      });
-
-      // Mock 5: UPDATE escrow to RELEASED (the actual state transition)
-      db.query.mockResolvedValueOnce({
-        rowCount: 1,
-        rows: [{
-          id: 'escrow-1',
-          task_id: 'task-1',
-          amount: 1000,
-          state: 'RELEASED',
-          released_at: new Date(),
-          stripe_transfer_id: null,
-        }],
-      });
-
-      // Mock 6+: Downstream service calls (earnings tracking, XP, etc.)
-      db.query.mockResolvedValue({ rowCount: 0, rows: [] });
-
-      const result = await EscrowService.release({ escrowId: 'escrow-1', stripeTransferId: 'tr_test_spec_align' });
-      expect(result.success).toBe(true);
-      expect(result.data?.state).toBe('RELEASED');
-    });
-
-    it('should include LOCKED_DISPUTE in valid source states for release', async () => {
-      // Mock 1: SELECT escrow (returns escrow with a non-terminal state)
-      db.query.mockResolvedValueOnce({
-        rowCount: 1,
-        rows: [{ id: 'escrow-1', task_id: 'task-1', amount: 1000, state: 'FUNDED' }],
-      });
-
-      // Mock 2: SELECT task for worker_id
-      db.query.mockResolvedValueOnce({
-        rowCount: 1,
-        rows: [{ worker_id: 'worker-1', price: 1000 }],
-      });
-
-      // Mock 3: SELECT worker KYC info (KYC gate)
-      db.query.mockResolvedValueOnce({
-        rowCount: 1,
-        rows: [{
-          payouts_enabled: true,
-          stripe_connect_id: 'acct_worker1',
-          stripe_connect_status: 'enabled',
-        }],
-      });
-
-      // Mock 4: UPDATE escrow (returns empty = no transition, triggers fallback)
-      db.query.mockResolvedValueOnce({
-        rowCount: 1,
-        rows: [{ id: 'escrow-1', task_id: 'task-1', amount: 1000, state: 'RELEASED', released_at: new Date() }],
-      });
-
-      // Mock 5+: Downstream service calls
-      db.query.mockResolvedValue({ rowCount: 0, rows: [] });
-
-      await EscrowService.release({ escrowId: 'escrow-1', stripeTransferId: 'tr_test_locked_disp' });
-
-      // The UPDATE query is the 4th db.query call (index 3) after adding KYC gate
-      const updateSql = db.query.mock.calls[3][0];
-      expect(updateSql).toContain("state IN ('FUNDED', 'LOCKED_DISPUTE')");
-    });
   });
 
   describe('Valid Escrow Transitions', () => {

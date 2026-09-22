@@ -50,7 +50,6 @@ export interface WorkerReservationRow {
   is_minor: boolean;
   account_status: string;
   plan: string;
-  stripe_connect_id: string | null;
   payouts_enabled: boolean;
   local_test_payout_ready: boolean;
   background_check_valid: boolean;

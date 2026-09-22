@@ -10,7 +10,7 @@ Production effects authorized by this repository documentation: `NONE`
 
 Documentation publication and backend implementation use separate candidates. Do not place runtime changes in a documentation branch. The reserved implementation branch is `codex/task-first-fake-fse-postgres-authority-rebuild`; do not create or populate it until persistent targets are closed and a fresh revision lock authorizes its exact base, tree, paths, and migration identity.
 
-This repository is the target owner of HustleXP's canonical marketplace lifecycle. Existing code includes legacy task, escrow, Stripe, admin, and Supabase-bridge behavior that is being contained and converged; repository presence is not proof that a path is authorized, deployed, or safe.
+This repository is the target owner of HustleXP's canonical marketplace lifecycle. Existing code includes legacy task, escrow, admin, and Supabase-bridge behavior that is being contained and converged; repository presence is not proof that a path is authorized, deployed, or safe.
 
 ## Current decision
 

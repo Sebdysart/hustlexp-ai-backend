@@ -23,9 +23,6 @@ import { taskDiscoveryRouter } from './taskDiscovery.js';
 import { taskExternalBridgeRouter } from './taskExternalBridge.js';
 import { instantRouter } from './instant.js';
 import { liveRouter } from './live.js';
-import { stripeConnectRouter } from './stripeConnect.js';
-import { hustlerWalletRouter } from './hustlerWallet.js';
-import { xpTaxRouter } from './xpTax.js';
 import { skillsRouter } from './skills.js';
 import { referralRouter } from './referral.js';
 import { geofenceRouter } from './geofence.js';
@@ -35,7 +32,6 @@ import { insuranceRouter } from './insurance.js';
 import { challengesRouter } from './challenges.js';
 import { capabilityRouter } from './capability.js';
 import { batchingRouter } from './batching.js';
-import { tippingRouter } from './tipping.js';
 import { expertiseSupplyRouter } from './expertiseSupply.js';
 import { biometricRouter } from './biometric.js';
 import { aiRouter } from './ai.js';
@@ -49,7 +45,6 @@ import { hustlerOnboardingRouter } from './hustlerOnboarding.js';
 import { recurringTaskRouter } from './recurringTask.js';
 import { featuredRouter } from './featured.js';
 import { pricingRouter } from './pricing.js';
-import { subscriptionRouter } from './subscription.js';
 
 // ── SHARED DOMAIN ───────────────────────────────────────────────────────
 // Both roles use these. Mixed routers (task, escrow, squad) contain
@@ -125,9 +120,6 @@ export const appRouter = router({
   externalTaskBridge: taskExternalBridgeRouter,
   instant: instantRouter,
   live: liveRouter,
-  stripeConnect: stripeConnectRouter,
-  wallet: hustlerWalletRouter,
-  xpTax: xpTaxRouter,
   skills: skillsRouter,
   referral: referralRouter,
   geofence: geofenceRouter,
@@ -137,7 +129,6 @@ export const appRouter = router({
   challenges: challengesRouter,
   capability: capabilityRouter,
   batching: batchingRouter,
-  tipping: tippingRouter,
   expertiseSupply: expertiseSupplyRouter,
   biometric: biometricRouter,
   ai: aiRouter,
@@ -149,7 +140,6 @@ export const appRouter = router({
   recurringTask: recurringTaskRouter,
   featured: featuredRouter,
   pricing: pricingRouter,
-  subscription: subscriptionRouter,
 
   // ── Shared Domain (per-procedure role guards inside) ───────────────────
   task: taskRouter,

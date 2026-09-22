@@ -1,3 +1,5 @@
+> Archived source-dated implementation evidence. Retired processor names and commands below are historical only; they do not describe supported runtime or executable launch procedures.
+
 # In-app notification producer inventory
 
 Source audit of the feature branch, 2026-09-19. This inventories shared-writer calls and lifecycle/admin wrappers; dynamic inputs are expanded by their caller rows. It does not imply every optional native feature is deployed. No new notification categories were introduced.

@@ -20,7 +20,6 @@ const enabled = {
   NODE_ENV: 'test',
   HXOS_ALLOW_LOCAL_TEST_PROVIDER_CAPABILITY: 'true',
   ENGINE_API_MODE: 'test',
-  STRIPE_MODE: 'test',
   HXOS_LOCAL_TEST_PROVIDER_CAPABILITY_SECRET: 'c'.repeat(64),
 };
 const taskId = '9feafefb-eb9b-4d02-a42b-5223c3552c0a';
@@ -61,7 +60,6 @@ describe('ControlledTestProviderCapabilityService', () => {
       { NODE_ENV: 'production' },
       { HXOS_ALLOW_LOCAL_TEST_PROVIDER_CAPABILITY: 'false' },
       { ENGINE_API_MODE: 'live' },
-      { STRIPE_MODE: 'live' },
       { HXOS_LOCAL_TEST_PROVIDER_CAPABILITY_SECRET: 'short' },
     ]) expect(controlledTestProviderCapabilityEnabled({ ...enabled, ...override })).toBe(false);
   });

@@ -90,6 +90,20 @@ describe('pending phone draft ownership', () => {
     );
   });
 
+  it('does not bind ownership if account eligibility changes before the phone write', async () => {
+    mocks.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM pending_phone_draft_claims')) return { rows: [{
+        id: 'claim-1', task_draft_id: 'draft-1', intended_phone_e164: '+12065550123',
+        status: 'OPEN', expires_at: new Date(Date.now() + 60_000), claimed_by_user_id: null,
+      }], rowCount: 1 };
+      if (sql.includes('FROM users WHERE id=')) return { rows: [{ id: 'user-1', firebase_uid: 'firebase-1', phone: null }], rowCount: 1 };
+      return { rows: [], rowCount: 0 };
+    });
+    await expect(claimPendingPhoneDraft({ rawToken: 'token', userId: 'user-1', verifiedPhone: '+12065550123' }))
+      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect(mocks.query.mock.calls.some(([sql]) => String(sql).includes('UPDATE task_drafts'))).toBe(false);
+  });
+
   it('rejects the wrong verified phone without binding ownership', async () => {
     mocks.query.mockImplementation(async (sql: string) => {
       if (sql.includes('pending_phone_draft_claims')) return { rows: [{

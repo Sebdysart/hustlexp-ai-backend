@@ -84,7 +84,7 @@ export function localCertificationScreeningEnabled(env: Environment = process.en
   return env.NODE_ENV !== 'production'
     && env.HXOS_ALLOW_LOCAL_TEST_SCREENING === 'true'
     && env.ENGINE_API_MODE === 'test'
-    && env.STRIPE_MODE === 'test'
+
     && secret(env).length >= 32;
 }
 

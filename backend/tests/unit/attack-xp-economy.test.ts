@@ -45,7 +45,7 @@ vi.mock('../../src/services/AlphaInstrumentation', () => ({
 vi.mock('../../src/config', () => ({
   config: {
     redis: { restUrl: '', restToken: '' },
-    stripe: { platformFeePercent: 15 },
+    payments: { platformFeePercent: 15 },
   },
 }));
 
@@ -59,10 +59,6 @@ vi.mock('@upstash/redis', () => ({
 
 vi.mock('../../src/services/EarnedVerificationUnlockService', () => ({
   EarnedVerificationUnlockService: { recordEarnings: vi.fn().mockResolvedValue(undefined) },
-}));
-
-vi.mock('../../src/services/XPTaxService', () => ({
-  XPTaxService: { recordOfflinePayment: vi.fn().mockResolvedValue({ success: true }) },
 }));
 
 vi.mock('../../src/services/SelfInsurancePoolService', () => ({

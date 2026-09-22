@@ -1,10 +1,10 @@
 # Provider OS controlled product purchases
 
-This stage implements only the existing controlled/local-test adapter, per the revised request. It does not integrate Stripe or any external rail, charge real money, or establish approved production pricing. Production-shaped controlled certification is available only with the existing `HXOS_ALLOW_LOCAL_TEST_PAYMENT_IN_PRODUCTION=true` override and all normal controlled-test gates. Real-money production purchasing remains unavailable.
+This stage implements only the existing controlled/local-test adapter, per the revised request. It does not integrate any external rail, charge real money, or establish approved production pricing. Production-shaped controlled certification is available only with the existing `HXOS_ALLOW_LOCAL_TEST_PAYMENT_IN_PRODUCTION=true` override and all normal controlled-test gates. Real-money production purchasing remains unavailable.
 
 ## Architecture and payment reconnaissance
 
-Inspected QuotePaymentProvider, StripeQuotePaymentProvider, StaxQuotePaymentProvider, PaymentProviderResolver, StaxAssessmentPaymentProvider/businessAssessment, LocalCertificationPaymentProvider, ControlledTestQuotePaymentService, subscription router/configuration, shared Stripe client, webhook/event processing, and frontend QuotePayment. Existing generic/task payment interfaces require task/escrow or quote identities; assessments and user subscription plans are also unsuitable business-product owners.
+The original implementation inspected the quote, assessment, controlled-test payment, and webhook boundaries. Current runtime uses the supported payment abstractions and LocalCertificationPaymentProvider; retired adapters are removed. Existing generic/task payment interfaces require task/escrow or quote identities; assessments and user subscription plans are also unsuitable business-product owners.
 
 The selected rail is LocalCertificationPaymentProvider. Its existing task methods, gates and task tables are preserved. Three standalone methods create, confirm and verify product intents using its existing HMAC/secret helpers and controlled-test gate. They use a separate durable provider ledger, never fabricated tasks or escrow. A small StandaloneProductPaymentProvider interface and ControlledProductPaymentProvider adapter separate orchestration from this implementation.
 
@@ -25,7 +25,7 @@ No default price or duration. All of the following are required:
 
 - `NODE_ENV=production` additionally requires `HXOS_ALLOW_LOCAL_TEST_PAYMENT_IN_PRODUCTION=true`. Missing/false rejects purchasing. Outside production this override is not required. Both the catalog and provider execution reuse the existing `localCertificationPaymentEnabled` helper; no new environment variable or boolean parser is introduced.
 - `PAYMENT_PROVIDER=local_test`
-- Existing gate: `HXOS_ALLOW_LOCAL_TEST_PAYMENT=true`, `ENGINE_API_MODE=test`, `STRIPE_MODE=test`, and `HXOS_LOCAL_TEST_PAYMENT_SECRET` at least 32 trimmed characters. `STRIPE_MODE` is an existing safety sentinel only; no Stripe client or credentials are used.
+- Existing gate: `HXOS_ALLOW_LOCAL_TEST_PAYMENT=true`, `ENGINE_API_MODE=test`, and `HXOS_LOCAL_TEST_PAYMENT_SECRET` at least 32 trimmed characters. No retired processor mode sentinel or credentials are required.
 - `PROVIDER_OS_TEST_PURCHASE_ENABLED=true`
 - `PROVIDER_OS_TEST_AMOUNT_CENTS`: explicit positive integer, maximum 99,999,999.
 - `PROVIDER_OS_TEST_CURRENCY=usd`
@@ -79,7 +79,7 @@ The existing dashboard/access entry links inactive businesses to this page. The 
 
 ## Separation and remaining work
 
-No changes to Stripe/Stax clients, webhooks, quote_payments, assessment_payments, escrow, task fees, payouts, Connect, quote verification policy, payment materialization, addresses, proof/completion or premium SMS. Existing LocalCertificationPaymentProvider task methods and their tables remain unchanged; only separate product methods were added. Premium notifications continue reading effective entitlement normally. Manual Ops access remains.
+This controlled-product path does not change quote_payments, assessment_payments, escrow compatibility records, task fees, quote verification policy, payment materialization, addresses, proof/completion or premium SMS. Existing LocalCertificationPaymentProvider task methods and their tables remain unchanged; only separate product methods were added. Premium notifications continue reading effective entitlement normally. Manual Ops access remains.
 
 This is a certification path, not production monetization. Remaining work: approved production product price/period; a deliberately selected real provider integration with server verification/webhook/reconciliation; refunds/cancellations for real product purchases; recurring billing only if later requested. No real-provider credentials are needed now. Existing accepted canonical work remains accessible independently of premium entitlement.
 

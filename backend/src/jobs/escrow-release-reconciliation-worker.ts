@@ -25,7 +25,7 @@ export async function processEscrowReleaseReconciliationJob(job: Job): Promise<v
 
   const result = await EscrowReleaseReconciliationService.reconcile({
     escrowId: payload.escrowId,
-    expectedStripeTransferId: payload.transferId,
+    expectedProviderTransferId: payload.transferId,
     fromState: payload.fromState,
   });
   if (!result.success) {

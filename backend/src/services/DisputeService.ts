@@ -300,17 +300,17 @@ export const DisputeService = {
         }
 
         // Lock escrow: FUNDED or RELEASED → LOCKED_DISPUTE (versioned)
-        // BUG FIX (HIGH - Part A): When the escrow is RELEASED a Stripe transfer has
-        // already been sent to the worker. We clear stripe_transfer_id so that the
+        // BUG FIX (HIGH - Part A): When the escrow is RELEASED provider bookkeeping has
+        // already completed. We clear provider_transfer_id so that the
         // escrow-action-worker's handleReleaseRequest idempotency guard (which checks
-        // for a non-null stripe_transfer_id) does NOT fire and skip payment if the
+        // for a non-null provider_transfer_id) does NOT fire and skip payment if the
         // dispute is later resolved in the worker's favour. The original transfer ID
         // is preserved in an escrow_events row below so the refund path can reverse it
         // if the poster wins.
         const escrowUpdate = await query<Escrow>(
           `UPDATE escrows
            SET state = 'LOCKED_DISPUTE',
-               stripe_transfer_id = NULL,
+               provider_transfer_id = NULL,
                version = version + 1
            WHERE id = $1 AND state IN ('FUNDED', 'RELEASED')
            RETURNING *`,
@@ -325,13 +325,13 @@ export const DisputeService = {
         // transfer ID into escrow_events so handleRefundRequest can reverse it if the
         // poster wins the dispute. We use escrow_events (which has a JSONB metadata
         // column) because the disputes table has no metadata column.
-        if (escrow.stripe_transfer_id) {
+        if (escrow.provider_transfer_id) {
           await query(
             `INSERT INTO escrow_events (escrow_id, from_state, to_state, actor_id, actor_type, metadata)
              VALUES ($1, 'RELEASED', 'LOCKED_DISPUTE', NULL, 'system', $2)`,
             [escrowId, JSON.stringify({
               event_type: 'dispute_locked_after_release',
-              original_transfer_id: escrow.stripe_transfer_id,
+              original_transfer_id: escrow.provider_transfer_id,
             })]
           );
         }

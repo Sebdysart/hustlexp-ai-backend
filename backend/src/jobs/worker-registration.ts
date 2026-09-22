@@ -7,7 +7,6 @@ import { processEmailJob } from './email-worker.js';
 import { processExpertiseRecalcJob } from './expertise-recalc-worker.js';
 import { processExportJob } from './export-worker.js';
 import { createWorker } from './queues.js';
-import { processXPTaxReminderJob } from './xp-tax-reminder-worker.js';
 import { markOutboxEventProcessed } from './outbox-worker.js';
 
 type JobHandler = (job: Job) => Promise<void>;
@@ -107,10 +106,23 @@ function inferredNotificationHandler(job: Job): JobHandler | undefined {
   return undefined;
 }
 
+async function acknowledgeOutboxJob(job: Job): Promise<void> {
+  const key = job.data?.outbox_idempotency_key;
+  if (typeof key === 'string' && key.length > 0) await markOutboxEventProcessed(key);
+}
+
+// Delivery workers own their acknowledgements because they can intentionally
+// defer or suppress work. These simple handlers complete when they return.
+const simpleNotificationEvents = new Set([
+  'task.instant_available', 'task.progress_updated', 'escrow.funded',
+  'escrow.refunded', 'escrow.payment_failed', 'escrow.transfer_failed',
+]);
+
 async function processNotificationJob(job: Job): Promise<void> {
   const handler = notificationHandlers[job.name] ?? inferredNotificationHandler(job);
   if (handler) {
     await handler(job);
+    if (simpleNotificationEvents.has(job.name)) await acknowledgeOutboxJob(job);
     return;
   }
   log.info({ eventType: job.name }, 'Notification type not yet implemented');
@@ -130,27 +142,17 @@ const paymentHandlers: Record<string, JobHandler> = {
   },
   'escrow.partial_refund_requested': async (job) => (await import('./escrow-action-worker.js')).processEscrowActionJob(job),
   'escrow.completion_release_requested': async (job) => (await import('./completion-release-worker.js')).processCompletionReleaseJob(job),
-  'stripe.event_received': async (job) => (await import('./stripe-event-dispatcher.js')).processStripeEventDispatchJob(job),
   'task.instant_matching_started': async (job) => (await import('./instant-matching-worker.js')).processInstantMatchingJob(job),
   'task.instant_surge_evaluate': async (job) => (await import('./instant-surge-worker.js')).processInstantSurgeJob(job),
 };
 
 async function processPaymentQueueJob(job: Job): Promise<void> {
-  const handler = job.name.startsWith('payment.')
-    ? async (target: Job) => (await import('./payment-worker.js')).processPaymentJob(target)
-    : paymentHandlers[job.name];
+  const handler = paymentHandlers[job.name];
 
   if (handler) {
     await handler(job);
 
-    const outboxIdempotencyKey = job.data?.outbox_idempotency_key;
-
-    if (
-      typeof outboxIdempotencyKey === 'string'
-      && outboxIdempotencyKey.length > 0
-    ) {
-      await markOutboxEventProcessed(outboxIdempotencyKey);
-    }
+    await acknowledgeOutboxJob(job);
 
     return;
   }
@@ -175,6 +177,7 @@ async function processTrustQueueJob(job: Job): Promise<void> {
   const handler = trustHandlers[job.name];
   if (handler) {
     await handler(job);
+    await acknowledgeOutboxJob(job);
     return;
   }
   const error = new Error(`Unknown event type in critical_trust queue: ${job.name}`);
@@ -202,16 +205,10 @@ export function registerWorkers(active: Worker[]): void {
   addWorker(active, createWorker('maintenance', async (job) => (await import('./maintenance-worker.js')).processMaintenanceJob(job), {
     concurrency: 1, removeOnComplete: { count: 100, age: 86400 }, removeOnFail: { age: 7 * 86400 },
   }));
-  addWorker(active, createWorker('tax_reporting', async (job) => (await import('./tax-reporting-worker.js')).processTaxReportingJob(job), {
-    concurrency: 1, removeOnComplete: { count: 50, age: 7 * 86400 }, removeOnFail: { age: 30 * 86400 },
-  }));
   addWorker(active, createWorker('biometric_analysis', processBiometricAnalysisJob, {
     concurrency: 3, removeOnComplete: { count: 500, age: 43200 }, removeOnFail: { age: 3 * 86400 },
   }));
   addWorker(active, createWorker('expertise_recalc', processExpertiseRecalcJob, {
-    concurrency: 1, removeOnComplete: { count: 10, age: 86400 }, removeOnFail: { age: 7 * 86400 },
-  }));
-  addWorker(active, createWorker('xp_tax_reminders', processXPTaxReminderJob, {
     concurrency: 1, removeOnComplete: { count: 10, age: 86400 }, removeOnFail: { age: 7 * 86400 },
   }));
   log.info('All BullMQ workers registered');

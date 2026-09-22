@@ -260,11 +260,9 @@ describe('UserRepository.updateProfile', () => {
     expect(mockQuery).not.toHaveBeenCalled();
   });
 
-  it('updates phone', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [mockUser], rowCount: 1 });
-    await repo.updateProfile('user-1', { phone: '+1234567890' });
-    const sql = mockQuery.mock.calls[0][0] as string;
-    expect(sql).toContain('phone = $1');
+  it('rejects unverified phone profile writes before database access', async () => {
+    await expect(repo.updateProfile('user-1', { phone: '+12065550123' })).rejects.toThrow('verified through Firebase');
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 
   it('updates default_mode', async () => {
@@ -276,17 +274,15 @@ describe('UserRepository.updateProfile', () => {
 
   it('updates multiple fields at once', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [mockUser], rowCount: 1 });
-    await repo.updateProfile('user-1', { full_name: 'Bob', bio: 'My bio', phone: '555-1234' });
+    await repo.updateProfile('user-1', { full_name: 'Bob', bio: 'My bio' });
 
     const sql = mockQuery.mock.calls[0][0] as string;
     expect(sql).toContain('full_name = $1');
     expect(sql).toContain('bio = $2');
-    expect(sql).toContain('phone = $3');
 
     const params = mockQuery.mock.calls[0][1] as unknown[];
     expect(params[0]).toBe('Bob');
     expect(params[1]).toBe('My bio');
-    expect(params[2]).toBe('555-1234');
   });
 
   it('returns null when user not found after update', async () => {

@@ -123,8 +123,6 @@ function registerSpecificRateLimits(app: HustleApp): void {
   auth.forEach((path) => app.use(path, rateLimitMiddleware('auth')));
   const financial = [
     '/trpc/escrow.release*',
-    '/trpc/stripe.*',
-    '/trpc/stripeConnect.*',
     '/trpc/subscription.*',
     '/trpc/fraud.*',
   ];

@@ -4,8 +4,6 @@ import { db } from '../db.js';
 import { isExactCanonicalPaymentAmount } from '../services/EscrowPaymentPolicy.js';
 import { EscrowService } from '../services/EscrowService.js';
 import {
-  isLocalCertificationPaymentIntentId,
-  localCertificationPaymentEnabled,
   LocalCertificationPaymentProvider,
 } from '../services/LocalCertificationPaymentProvider.js';
 import { paymentCreationErrorCause } from '../services/NewPaymentCreationGuard.js';
@@ -184,7 +182,7 @@ export const escrowPaymentProcedures = {
       );
 
       const verified = await provider.verifySucceededPayment({
-        paymentIntentId: input.stripePaymentIntentId,
+        paymentIntentId: input.providerPaymentId,
         escrowId: input.escrowId,
         taskId: escrow.task_id,
         posterId: ctx.user.id,
@@ -202,10 +200,10 @@ export const escrowPaymentProcedures = {
         `
         SELECT id
         FROM escrows
-        WHERE stripe_payment_intent_id = $1
+        WHERE provider_payment_id = $1
           AND id != $2
         `,
-        [input.stripePaymentIntentId, input.escrowId],
+        [input.providerPaymentId, input.escrowId],
       );
 
       if (duplicate.rows[0]) {
@@ -217,7 +215,7 @@ export const escrowPaymentProcedures = {
 
       const funded = await EscrowService.fund({
         escrowId: input.escrowId,
-        stripePaymentIntentId: input.stripePaymentIntentId,
+        providerPaymentId: input.providerPaymentId,
       });
 
       if (!funded.success) {

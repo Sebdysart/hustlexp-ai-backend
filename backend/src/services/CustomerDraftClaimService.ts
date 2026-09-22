@@ -1,3 +1,4 @@
+import { prepareVerifiedPhoneAssignment } from '../auth/verified-phone.js';
 import crypto from 'node:crypto';
 import { TRPCError } from '@trpc/server';
 
@@ -160,8 +161,8 @@ export async function claimPendingPhoneDraft(input: {
       return { expired: true as const };
     }
 
-    const user = (await query<{ id: string; phone: string | null }>(
-      `SELECT id, phone FROM users WHERE id=$1 AND account_status='ACTIVE' FOR UPDATE`,
+    const user = (await query<{ id: string; firebase_uid: string; phone: string | null; phone_verified_at: Date | null }>(
+      `SELECT id, firebase_uid, phone, phone_verified_at FROM users WHERE id=$1 AND account_status='ACTIVE'`,
       [input.userId],
     )).rows[0];
     if (!user) {
@@ -177,23 +178,18 @@ export async function claimPendingPhoneDraft(input: {
         message: 'The verified phone number does not match this request.',
       });
     }
-    const collision = await query<{ id: string }>(
-      'SELECT id FROM users WHERE phone=$1 AND id<>$2 LIMIT 1',
-      [verifiedPhone, user.id],
-    );
-    if (collision.rows.length) {
-      throw new TRPCError({
-        code: 'CONFLICT',
-        message: 'This verified phone number is linked to another account.',
-      });
+    await prepareVerifiedPhoneAssignment(query, user.firebase_uid, verifiedPhone);
+    if (user.phone_verified_at && user.phone && normalizePhoneToE164(user.phone) !== verifiedPhone) {
+      throw new TRPCError({ code: 'CONFLICT', message: 'This account is already linked to a different phone number.' });
     }
-    if (user.phone && normalizePhoneToE164(user.phone) !== verifiedPhone) {
-      throw new TRPCError({
-        code: 'CONFLICT',
-        message: 'This account is already linked to a different phone number.',
-      });
+    const phoneWrite = await query(`UPDATE users SET
+      contact_phone = CASE WHEN phone_verified_at IS NULL AND phone IS DISTINCT FROM $2 THEN COALESCE(contact_phone, phone) ELSE contact_phone END,
+      phone=$2, phone_verified_at=NOW(), updated_at=NOW()
+      WHERE id=$1 AND account_status='ACTIVE'
+        AND (phone_verified_at IS NULL OR phone IS NULL OR phone=$2)`, [user.id, verifiedPhone]);
+    if (phoneWrite.rowCount !== 1) {
+      throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Account eligibility changed. Sign in again before claiming this request.' });
     }
-    await query('UPDATE users SET phone=$2, updated_at=NOW() WHERE id=$1 AND phone IS NULL', [user.id, verifiedPhone]);
 
     const draft = (await query<{ poster_user_id: string | null; lead_id: string | null }>(
       'SELECT poster_user_id, lead_id FROM task_drafts WHERE id=$1 FOR UPDATE',

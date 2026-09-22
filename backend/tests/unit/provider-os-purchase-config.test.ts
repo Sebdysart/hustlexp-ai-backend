@@ -5,7 +5,6 @@ import { providerOsProduct } from '../../src/services/ProviderOsProduct.js';
 const testEnv = {
   NODE_ENV: 'test',
   ENGINE_API_MODE: 'test',
-  STRIPE_MODE: 'test',
   PAYMENT_PROVIDER: 'local_test',
   HXOS_ALLOW_LOCAL_TEST_PAYMENT: 'true',
   HXOS_LOCAL_TEST_PAYMENT_SECRET: 'controlled-product-test-secret-32-characters',
@@ -38,10 +37,9 @@ describe('Provider OS controlled test catalog', () => {
     expect(providerOsProduct({ ...productionEnv, HXOS_ALLOW_LOCAL_TEST_PAYMENT_IN_PRODUCTION: override })).toBeNull();
   });
   it.each([
-    { PAYMENT_PROVIDER: 'stripe' },
+    { PAYMENT_PROVIDER: 'unsupported' },
     { HXOS_ALLOW_LOCAL_TEST_PAYMENT: 'false' },
     { ENGINE_API_MODE: 'live' },
-    { STRIPE_MODE: 'live' },
     { HXOS_LOCAL_TEST_PAYMENT_SECRET: 'invalid' },
     { PROVIDER_OS_TEST_PURCHASE_ENABLED: 'false' },
     { PROVIDER_OS_TEST_AMOUNT_CENTS: '' },

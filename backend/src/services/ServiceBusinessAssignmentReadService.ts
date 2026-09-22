@@ -69,19 +69,23 @@ interface ServiceBusinessAssignmentRow {
   fulfiller_name: string;
   payout_cents: number | string;
   escrow_state: string;
-  stripe_transfer_id: string | null;
+  provider_transfer_id: string | null;
   provider_transfer_status: string | null;
   accepted_at: string | Date;
   completed_at: string | Date | null;
 }
 
 export function assignmentPayoutState(
-  row: { escrow_state: string | null; stripe_transfer_id: string | null;
+  row: { escrow_state: string | null; provider_transfer_id: string | null;
     provider_transfer_status: string | null; task_state: string },
 ): ServiceBusinessAssignment['payoutState'] {
+  if (row.escrow_state === 'RELEASED' && row.provider_transfer_status === 'not_applicable') {
+    // The successful merchant charge is known; this does not claim a bank payout.
+    return 'MERCHANT_PAYMENT_CONFIRMED';
+  }
   if (
     row.escrow_state === 'RELEASED'
-    && (row.stripe_transfer_id !== null || row.provider_transfer_status === 'paid')
+    && (row.provider_transfer_id !== null || row.provider_transfer_status === 'paid')
   ) return 'CONNECTED_BALANCE_CONFIRMED';
   if (row.escrow_state === 'LOCKED_DISPUTE' || row.task_state === 'DISPUTED') return 'HELD';
   if (row.escrow_state === 'REFUND_PARTIAL') return 'PARTIALLY_SETTLED_OR_REFUNDED';
@@ -112,7 +116,7 @@ export async function listServiceBusinessAssignments(
               task.state AS task_state,task.progress_state,
               COALESCE(NULLIF(BTRIM(fulfiller.full_name),''),'Verified crew member') AS fulfiller_name,
               task.hustler_payout_cents AS payout_cents,
-              escrow.state AS escrow_state,escrow.stripe_transfer_id,
+              escrow.state AS escrow_state,escrow.provider_transfer_id,
               escrow.provider_transfer_status,task.accepted_at,task.completed_at
          FROM business_service_task_assignments assignment
          JOIN tasks task ON task.id=assignment.task_id

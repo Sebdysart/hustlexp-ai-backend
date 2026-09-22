@@ -178,7 +178,7 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
  *
  * Runs fail-fast config validation BEFORE starting any workers. In production
  * validateConfig() calls process.exit(1) on missing/invalid required vars
- * (DATABASE_URL, Redis TCP for BullMQ, QUEUE_HMAC_SECRET, Stripe, Firebase,
+ * (DATABASE_URL, Redis TCP for BullMQ, QUEUE_HMAC_SECRET, Tilled, Firebase,
  * TAX_TIN_ENCRYPTION_KEY); in dev/test it is a no-op that never exits.
  *
  * IMPORTANT: validateConfig() is intentionally NOT called inside startWorkers().

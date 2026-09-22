@@ -1,3 +1,4 @@
+import { prepareVerifiedPhoneAssignment } from '../auth/verified-phone.js';
 /**
  * User Router v1.0.0
  * 
@@ -258,6 +259,7 @@ export const userRouter = router({
     }))
     .mutation(async ({ input }) => {
       try {
+      return await db.transaction(async (query) => {
       // --------------------------------------------------------------------------
       // FIREBASE TOKEN OWNERSHIP VERIFICATION (SEC FIX)
       // The caller must prove they own the Firebase UID by supplying a valid
@@ -352,24 +354,15 @@ export const userRouter = router({
       // receive trust_tier=0 which restricts access to high-value task categories.
       // Product decision: phone requirement deferred post-beta.
       if (verifiedPhone) {
-        const bannedPhone = await db.query<{ id: string }>(
+        await prepareVerifiedPhoneAssignment(query, input.firebaseUid, verifiedPhone);
+        const bannedPhone = await query<{ id: string }>(
           `SELECT id FROM users WHERE phone = $1 AND is_banned = true`,
           [verifiedPhone]
         );
         if (bannedPhone.rows.length > 0) {
           throw new TRPCError({ code: 'FORBIDDEN', message: 'Account registration not permitted.' });
         }
-        const phoneOwner = await db.query<{ id: string; firebase_uid: string | null }>(
-          'SELECT id, firebase_uid FROM users WHERE phone = $1 LIMIT 1',
-          [verifiedPhone],
-        );
-        if (phoneOwner.rows[0]?.firebase_uid !== undefined
-          && phoneOwner.rows[0].firebase_uid !== input.firebaseUid) {
-          throw new TRPCError({
-            code: 'CONFLICT',
-            message: 'This verified phone number is already linked to another HustleXP account.',
-          });
-        }
+
       }
 
       // FIX 4: Ban evasion via fresh Firebase UID — check if this Firebase UID
@@ -384,7 +377,7 @@ export const userRouter = router({
       // re-register with the same email. The corrected logic only excludes a DELETED
       // row when it is NOT banned — a legitimately erased non-banned user. A row that
       // is DELETED AND banned still triggers the FORBIDDEN guard.
-      const bannedByEmail = verifiedEmail ? await db.query<{ id: string }>(
+      const bannedByEmail = verifiedEmail ? await query<{ id: string }>(
         `SELECT id FROM users WHERE email = $1
           AND (is_banned = true OR account_status = 'SUSPENDED')
           AND NOT (account_status = 'DELETED' AND is_banned = false)`,
@@ -406,7 +399,7 @@ export const userRouter = router({
         let user = candidate;
 
         if (!user.firebase_uid && decodedToken.email) {
-          const linked = await db.query<User>(
+          const linked = await query<User>(
             `UPDATE users
                 SET firebase_uid = $2,
                     updated_at = NOW()
@@ -427,11 +420,13 @@ export const userRouter = router({
         }
 
         if (user.onboarding_completed_at == null) {
-          const completed = await db.query<User>(
+          const completed = await query<User>(
             `UPDATE users
                 SET full_name = $2,
                     email = COALESCE(email, $3),
-                    phone = COALESCE(phone, $4),
+                    contact_phone = CASE WHEN phone_verified_at IS NULL AND $4::text IS NOT NULL AND phone IS DISTINCT FROM $4 THEN COALESCE(contact_phone, phone) ELSE contact_phone END,
+                    phone = COALESCE($4, phone),
+                    phone_verified_at = CASE WHEN $4::text IS NOT NULL THEN NOW() ELSE phone_verified_at END,
                     date_of_birth = $5,
                     is_minor = $6,
                     default_mode = $7,
@@ -461,7 +456,7 @@ export const userRouter = router({
           }
           user = completedUser;
         } else if (user.default_mode !== dbMode) {
-          const updated = await db.query<User>(
+          const updated = await query<User>(
             `UPDATE users
                 SET default_mode = $2,
                     updated_at = NOW()
@@ -489,11 +484,11 @@ export const userRouter = router({
       // to claim another user's profile just by knowing their email address.
       // Check if user already exists
       const existing = verifiedEmail
-        ? await db.query<User>(
+        ? await query<User>(
             'SELECT * FROM users WHERE firebase_uid = $1 OR email = $2',
             [input.firebaseUid, verifiedEmail]
           )
-        : await db.query<User>(
+        : await query<User>(
             'SELECT * FROM users WHERE firebase_uid = $1',
             [input.firebaseUid]
           );
@@ -521,7 +516,7 @@ export const userRouter = router({
         // return 0 rows — permanently blocking re-registration and leaking the
         // anonymized profile back to the caller via the fallback SELECT.
         if (existingUser.account_status === 'DELETED') {
-          await db.query('DELETE FROM users WHERE id = $1', [existingUser.id]);
+          await query('DELETE FROM users WHERE id = $1', [existingUser.id]);
           existingUser = null;
         }
 
@@ -535,11 +530,12 @@ export const userRouter = router({
       // the usefulness of burner-email ban evasion without a phone number.
       const initialTrustTier = verifiedPhone ? 1 : 0;
 
-      const result = await db.query<User>(
+      const result = await query<User>(
         `INSERT INTO users (
             firebase_uid,
             email,
             phone,
+            phone_verified_at,
             full_name,
             default_mode,
             date_of_birth,
@@ -551,6 +547,7 @@ export const userRouter = router({
             $1,
             $2,
             $3,
+            CASE WHEN $3::text IS NOT NULL THEN NOW() END,
             $4,
             $5,
             $6,
@@ -566,7 +563,7 @@ export const userRouter = router({
       if (result.rows.length === 0) {
         // Concurrent registration — another request inserted the same firebase_uid first.
         // Fetch the row that won the race and return it.
-        const existing = await db.query<User>(
+        const existing = await query<User>(
           'SELECT * FROM users WHERE firebase_uid = $1',
           [input.firebaseUid]
         );
@@ -595,6 +592,7 @@ export const userRouter = router({
       const newUser = result.rows[0];
       await invalidateAuthCacheForUser(newUser.id, input.firebaseUid, false);
       return await toMobileUser(newUser);
+      });
       } catch (error) {
         log.error(
           {
@@ -644,8 +642,10 @@ export const userRouter = router({
         });
       }
       if (input.phone !== undefined) {
-        updates.push(`phone = $${paramIndex++}`);
-        values.push(input.phone);
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Phone numbers must be verified through Firebase Phone Authentication before they can be linked to an account.',
+        });
       }
       if (input.defaultMode !== undefined) {
         const newMode = normalizeRole(input.defaultMode);

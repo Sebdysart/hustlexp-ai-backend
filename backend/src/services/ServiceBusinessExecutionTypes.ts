@@ -62,6 +62,7 @@ export interface ServiceBusinessAssignment {
     | 'NOT_AVAILABLE'
     | 'PENDING_CLEARANCE'
     | 'CONNECTED_BALANCE_CONFIRMED'
+    | 'MERCHANT_PAYMENT_CONFIRMED'
     | 'HELD'
     | 'PARTIALLY_SETTLED_OR_REFUNDED'
     | 'REFUNDED_OR_REVERSED';

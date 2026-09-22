@@ -1,3 +1,5 @@
+> Archived source-dated implementation evidence. Retired processor names and commands below are historical only; they do not describe supported runtime or executable launch procedures.
+
 # HustleXP current backend checkpoint
 
 Status: `CURRENT_IMPLEMENTATION_INVENTORY / SOURCE_DATED / NOT_PRODUCTION_AUTHORITY`

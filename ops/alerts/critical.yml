@@ -23,20 +23,8 @@ groups:
           sla: money
         annotations:
           summary: "Escrow {{ $labels.escrow_id }} stuck in FUNDED for >24h"
-          description: "Funded escrow has not progressed to RELEASED or REFUNDED. May indicate stuck task or failed Stripe transfer."
+          description: "Compatibility financial state has not progressed. Inspect canonical task and payment state; task completion does not trigger another provider transfer."
           runbook: "https://wiki.hustlexp.com/runbooks/escrow-stuck-funded"
-
-      - alert: StripeWebhookFailures
-        expr: |
-          rate(stripe_webhook_errors_total{app="hustlexp"}[5m]) > 0.1
-        for: 5m
-        labels:
-          severity: critical
-          team: backend
-          sla: money
-        annotations:
-          summary: "Stripe webhook processing failures detected"
-          description: "More than 0.1 webhook failures per second. May cause escrow state drift."
 
       - alert: EscrowInvariantViolation
         expr: |

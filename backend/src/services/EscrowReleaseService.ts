@@ -13,12 +13,6 @@ function invalidInput(params:ReleaseEscrowParams):ServiceResult<Escrow>|null {
       code:ErrorCodes.INVALID_INPUT,message:'Admin escrow release requires an attributable reason',
     } };
   }
-  if (!params.adminOverride && Boolean(params.stripeTransferId)===Boolean(params.localTestTransferId)) {
-    return { success:false,error:{
-      code:ErrorCodes.INVALID_STATE,
-      message:'Exactly one verified payout-provider transfer is required to release escrow',
-    } };
-  }
   if (params.localTestTransferId && !localCertificationPayoutEnabled()) {
     return { success:false,error:{ code:ErrorCodes.INVALID_STATE,message:'Local certification payouts are disabled' } };
   }

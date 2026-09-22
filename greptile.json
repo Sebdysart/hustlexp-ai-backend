@@ -32,7 +32,7 @@
     "XP can only be awarded after escrow is RELEASED — enforced by xp_requires_released_escrow trigger",
     "Trust scores must be recalculated on every rating event — never cache stale trust data",
     "All tRPC procedures handling money must use protectedProcedure with role validation",
-    "Circuit breakers must wrap all external service calls (Stripe, OpenAI, Twilio, etc.)",
+    "Circuit breakers must wrap all external service calls (Tilled, OpenAI, Twilio, etc.)",
     "Error codes must use HX-series format (HX001-HX999) from error-code-registry.ts",
     "Task state machine: open→assigned→in_progress→completed or open→assigned→cancelled. Proof required for completion",
     "Never store raw PII in logs — use structured logging with field-level redaction",

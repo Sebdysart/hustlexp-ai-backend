@@ -4,7 +4,8 @@ import { Client } from 'pg';
 const m=vi.hoisted(()=>({query:vi.fn(),transaction:vi.fn(),notice:vi.fn(),verify:vi.fn()}));
 vi.mock('../../src/db.js',()=>({db:{query:m.query,transaction:m.transaction}}));
 vi.mock('../../src/services/NotificationService.js',()=>({NotificationService:{createInTransaction:m.notice,createForBusinessInTransaction:m.notice}}));
-vi.mock('../../src/services/payment/StaxQuotePaymentProvider.js',()=>({StaxQuotePaymentProvider:{verifySucceededPayment:m.verify}}));
+vi.mock('../../src/services/payment/TilledQuotePaymentProvider.js',()=>({TilledQuotePaymentProvider:{verifySucceededPayment:m.verify}}));
+vi.mock('../../src/services/payment/TilledConfig.js',()=>({loadTilledConfig:()=>({environment:'sandbox'})}));
 vi.mock('../../src/services/EscrowService.js',()=>({EscrowService:{}}));
 vi.mock('../../src/services/TaskCreateService.js',()=>({TaskCreateService:{}}));
 vi.mock('../../src/services/BusinessQuoteActivationService.js',()=>({isBusinessQuoteProviderVerified:vi.fn()}));
@@ -31,8 +32,8 @@ describe.skipIf(!url)('ordinary notification commit boundaries (isolated Postgre
     if(!['localhost','127.0.0.1'].includes(parsed.hostname)||parsed.port!=='55439') throw new Error('Isolated test database required');
     await client.connect();await q(`CREATE SCHEMA ${schema}`);await q(`SET search_path TO ${schema}`);
     await q(`CREATE TABLE notice_fixture(key TEXT PRIMARY KEY);
-      CREATE TABLE quote_payments(quote_id UUID,quote_version_id UUID,provider_payment_id TEXT,task_id UUID,status TEXT,updated_at TIMESTAMPTZ);
-      CREATE TABLE quotes(id UUID PRIMARY KEY,status TEXT,updated_at TIMESTAMPTZ);
+      CREATE TABLE quote_payments(quote_id UUID,quote_version_id UUID,provider_payment_id TEXT,task_id UUID,status TEXT,updated_at TIMESTAMPTZ,finalization_state TEXT,finalization_reason TEXT,provider TEXT,provider_succeeded_at TIMESTAMPTZ,provider_status TEXT);
+      CREATE TABLE quotes(id UUID PRIMARY KEY,status TEXT,updated_at TIMESTAMPTZ,active_version_id UUID);
       CREATE TABLE quote_versions(id UUID PRIMARY KEY,quote_id UUID,status TEXT,updated_at TIMESTAMPTZ);
       CREATE TABLE verification_earnings_tracking(user_id UUID PRIMARY KEY,total_net_earnings_cents INT DEFAULT 0,earned_unlock_threshold_cents INT DEFAULT 4000,unlock_notified_at TIMESTAMPTZ);
       CREATE TABLE verification_earnings_ledger(id UUID DEFAULT gen_random_uuid(),user_id UUID,task_id UUID,escrow_id UUID UNIQUE,net_payout_cents INT,cumulative_earnings_before_cents INT,cumulative_earnings_after_cents INT);`);
@@ -40,12 +41,13 @@ describe.skipIf(!url)('ordinary notification commit boundaries (isolated Postgre
   });
   afterAll(async()=>{await q(`DROP SCHEMA ${schema} CASCADE`);await client.end();});
   it('retries ordinary paid notices with the existing materialized task, without losing or duplicating notices',async()=>{
-    await q("INSERT INTO quote_payments VALUES($1,$2,'payment',$3,'PENDING',NOW())",[quote,version,task]);
-    await q("INSERT INTO quotes VALUES($1,'quote_send_ready',NOW())",[quote]);
+    await q("INSERT INTO quote_payments(quote_id,quote_version_id,provider_payment_id,task_id,status,updated_at) VALUES($1,$2,'payment',$3,'PENDING',NOW())",[quote,version,task]);
+    await q("INSERT INTO quotes(id,status,updated_at) VALUES($1,'quote_send_ready',NOW())",[quote]);
     await q("INSERT INTO quote_versions VALUES($1,$2,'draft',NOW())",[version,quote]);
     // Only materialization/provider lookup are stubbed. The final paid-state/notice SQL runs on PostgreSQL.
     m.query.mockImplementation(async(sql:string,values?:unknown[])=>{
-      if(sql.includes('q.id AS quote_id')) return {rows:[{quote_status:'quote_send_ready',selected_quote_id:quote,provider_payment_id:'payment',payment_amount_cents:1000,payment_platform_fee_cents:100,payment_provider:'stax',total_cents:1000,hustler_payout_cents:900,poster_user_id:actor,business_organization_id:organization}]};
+      if(sql.includes('q.id AS quote_id')) return {rows:[{quote_status:'quote_send_ready',selected_quote_id:quote,provider_payment_id:'payment',payment_amount_cents:1000,payment_platform_fee_cents:100,payment_provider:'tilled',payment_id:quote,task_draft_id:quote,reserved_poster_id:actor,reserved_at:new Date(),currency:'usd',intent_creation_state:'BOUND',payment_business_organization_id:organization,provider_environment:'sandbox',provider_merchant_id:'acct_one',total_cents:1000,hustler_payout_cents:900,poster_user_id:actor,business_organization_id:organization}]};
+      if(sql.includes("SET provider_status = 'succeeded'")) return {rows:[]};
       if(sql.includes('FROM escrows')) return {rows:[{state:'FUNDED'}]};
       if(sql.includes('UPDATE tasks')) return {rows:[{id:task}],rowCount:1};
       return q(sql,values);
@@ -53,7 +55,7 @@ describe.skipIf(!url)('ordinary notification commit boundaries (isolated Postgre
     const run=()=>{
       let count=0;
       m.transaction.mockImplementation(async fn=>++count===1?{taskId:task,escrowId:escrow,replayed:true}:transaction(fn));
-      return finalizePaidQuote({quoteId:quote,quoteVersionId:version,posterId:actor,paymentIntentId:'payment',paymentMode:'stax'});
+      return finalizePaidQuote({quoteId:quote,quoteVersionId:version,posterId:actor,paymentIntentId:'payment',paymentMode:'tilled'});
     };
     m.notice.mockImplementationOnce(storeNotice).mockRejectedValueOnce(new Error('notice storage unavailable'));
     expect((await run()).success).toBe(false);

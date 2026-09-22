@@ -31,6 +31,7 @@ vi.mock('../../src/db', () => {
   return {
     db: {
       query: queryFn,
+      transaction: vi.fn((fn: (q: typeof queryFn) => Promise<unknown>) => fn(queryFn)),
       // T53-2: serializableTransaction delegates to queryFn so existing
       // mock sequences work unchanged. Tests that need to verify it is
       // called can inspect mockDb.serializableTransaction directly.
@@ -679,7 +680,8 @@ describe('user.register', () => {
         full_name: 'Phone Customer',
         default_mode: 'poster',
       });
-      // Banned phone, phone owner, existing Firebase UID, insert, stats.
+      // Phone lock, phone owner, banned phone, existing Firebase UID, insert, stats.
+      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
       mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
@@ -695,7 +697,7 @@ describe('user.register', () => {
         phone: '+12065550999',
       });
 
-      const [, params] = (mockDb.query as any).mock.calls[3];
+      const [, params] = (mockDb.query as any).mock.calls[4];
       expect(params).toContain(null);
       expect(params).toContain('+12065550123');
       expect(params).not.toContain('+12065550999');
@@ -1137,6 +1139,11 @@ describe('user.register', () => {
 // ===========================================================================
 
 describe('user.updateProfile', () => {
+  it('rejects arbitrary phone assignment without writing identity data', async () => {
+    await expect(makeUserCaller().updateProfile({ phone: '+12065550123' })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect(mockDb.query.mock.calls.some(([sql]) => /UPDATE users/.test(String(sql)))).toBe(false);
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockDb.query.mockReset();

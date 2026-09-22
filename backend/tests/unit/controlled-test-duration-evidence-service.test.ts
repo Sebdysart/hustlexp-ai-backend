@@ -18,7 +18,6 @@ const enabled = {
   NODE_ENV: 'test',
   HXOS_ALLOW_LOCAL_TEST_DURATION_EVIDENCE: 'true',
   ENGINE_API_MODE: 'test',
-  STRIPE_MODE: 'test',
   HXOS_LOCAL_TEST_DURATION_EVIDENCE_SECRET: 'd'.repeat(64),
 };
 const params = {
@@ -51,7 +50,6 @@ describe('ControlledTestDurationEvidenceService', () => {
       { NODE_ENV: 'production' },
       { HXOS_ALLOW_LOCAL_TEST_DURATION_EVIDENCE: 'false' },
       { ENGINE_API_MODE: 'live' },
-      { STRIPE_MODE: 'live' },
       { HXOS_LOCAL_TEST_DURATION_EVIDENCE_SECRET: 'short' },
     ]) expect(controlledTestDurationEvidenceEnabled({ ...enabled, ...override })).toBe(false);
   });

@@ -16,6 +16,7 @@ interface CheckoutQuote {
   quote_id: string;
   task_draft_id: string;
   quote_status: string;
+  active_version_id: string | null;
   quote_environment: string | null;
   quote_is_test: boolean;
   selected_quote_id: string | null;
@@ -53,6 +54,9 @@ interface CheckoutPayment {
   provider_status: string | null;
   intent_creation_state: string | null;
   status: string;
+  reserved_poster_id: string | null;
+  reserved_at: Date | null;
+  finalization_state: string;
 }
 
 export interface TilledCheckoutResult {
@@ -74,7 +78,7 @@ export interface TilledFinalizedCheckoutResult {
   replayed: true;
 }
 
-function blocked(message: string, cause?: { applicationCode: 'PAYMENT_CREATION_FROZEN' }): never {
+function blocked(message: string, cause?: { applicationCode: 'PAYMENT_CREATION_FROZEN' | 'QUOTE_PAYMENT_MANUAL_COMPENSATION_REQUIRED' }): never {
   throw new TRPCError({ code: 'PRECONDITION_FAILED', message, ...(cause ? { cause } : {}) });
 }
 
@@ -90,7 +94,7 @@ function sanitizedDiagnostic(value: string | undefined): string | undefined {
 
 async function readCheckoutQuote(quoteId: string, quoteVersionId: string, posterId: string): Promise<CheckoutQuote> {
   const result = await db.query<CheckoutQuote>(`
-    SELECT q.id AS quote_id, q.task_draft_id, q.status AS quote_status,
+    SELECT q.id AS quote_id, q.task_draft_id, q.status AS quote_status, q.active_version_id,
       q.environment AS quote_environment, q.is_test AS quote_is_test,
       d.quote_id AS selected_quote_id, q.business_organization_id,
       qv.total_cents, qv.hustler_payout_cents, qv.expires_at,
@@ -101,7 +105,7 @@ async function readCheckoutQuote(quoteId: string, quoteVersionId: string, poster
       d.category, d.region_code, d.region_policy_id, d.region_policy_version,
       d.region_policy_hash, d.region_policy_snapshot, d.validated_risk_level
     FROM quotes q
-    JOIN quote_versions qv ON qv.id = q.active_version_id AND qv.quote_id = q.id
+    JOIN quote_versions qv ON qv.id = $2 AND qv.quote_id = q.id
     JOIN task_drafts d ON d.id = q.task_draft_id
     WHERE q.id = $1 AND qv.id = $2 AND d.poster_user_id = $3
     LIMIT 1`, [quoteId, quoteVersionId, posterId]);
@@ -168,7 +172,8 @@ async function readPayment(quoteId: string, quoteVersionId: string): Promise<Che
   const result = await db.query<CheckoutPayment>(`
     SELECT id, quote_id, quote_version_id, task_id, provider, provider_payment_id,
       provider_merchant_id, business_organization_id, amount_cents, platform_fee_cents,
-      provider_environment, provider_status, intent_creation_state, status
+      provider_environment, provider_status, intent_creation_state, status,
+      reserved_poster_id, reserved_at, finalization_state
     FROM quote_payments WHERE quote_id = $1 AND quote_version_id = $2 LIMIT 1`,
     [quoteId, quoteVersionId]);
   return result.rows[0] ?? null;
@@ -212,7 +217,11 @@ export async function createOrResumeTilledCheckout(input: {
   mark('load_local_payment');
   const existing = await readPayment(input.quoteId, input.quoteVersionId);
   diagnostic.local_payment_id = existing?.id;
-  if (quote.quote_status === 'paid') {
+  if (existing?.finalization_state === 'MANUAL_COMPENSATION_REQUIRED') {
+    blocked('Your payment was received and requires support review. Do not pay again.',
+      { applicationCode: 'QUOTE_PAYMENT_MANUAL_COMPENSATION_REQUIRED' });
+  }
+  if (quote.quote_status === 'paid' || (existing?.status === 'SUCCEEDED' && existing.task_id)) {
     if (!existing || existing.provider !== 'tilled' || existing.status !== 'SUCCEEDED'
       || !existing.task_id || existing.intent_creation_state !== 'BOUND') {
       blocked('This quote has already been paid. Open the task from your dashboard.');
@@ -231,10 +240,22 @@ export async function createOrResumeTilledCheckout(input: {
     : quote.quote_environment === 'TEST' || quote.quote_is_test === true) {
     blocked('This quote and payment environment do not match.');
   }
+  // Already-created provider intents are recoverable even if a quote expires
+  // or is revised. Only an unstarted reservation may create a new provider intent.
+  const resumingIntent = existing && ['BOUND', 'CREATING', 'RECONCILE_REQUIRED'].includes(existing.intent_creation_state ?? '');
+  if (resumingIntent && (existing.reserved_poster_id !== input.posterId || !existing.reserved_at)) {
+    blocked('Payment reservation ownership could not be verified. Contact support.');
+  }
   mark('validate_quote');
-  const economics = await validatePayableQuote(quote);
+  if (!resumingIntent && quote.active_version_id !== input.quoteVersionId) blocked('This quote version is no longer active.');
+  const economics = resumingIntent
+    ? { amountCents: Number(existing.amount_cents), platformFeeCents: Number(existing.platform_fee_cents),
+      organizationId: existing.business_organization_id! }
+    : await validatePayableQuote(quote);
   mark('resolve_merchant_account');
-  const merchant = await resolveTilledMerchantAccount(economics.organizationId, config.environment, false);
+  const merchant = resumingIntent && existing.provider_merchant_id
+    ? { accountId: existing.provider_merchant_id, status: 'RESERVED', chargesEnabled: false }
+    : await resolveTilledMerchantAccount(economics.organizationId, config.environment, false);
   if (!merchant) blocked('Business payment account is not configured for this environment.');
   diagnostic.provider_account_id = merchant.accountId;
   if ((!existing || existing.intent_creation_state === 'RESERVED')
@@ -242,26 +263,53 @@ export async function createOrResumeTilledCheckout(input: {
     blocked('Business payment account is not active for charges.');
   }
   mark('lock_service_address');
-  await lockQuoteAddressForPayment(input.quoteId, input.quoteVersionId, input.posterId);
+  if (!resumingIntent) await lockQuoteAddressForPayment(input.quoteId, input.quoteVersionId, input.posterId);
   let payment = existing;
   if (!payment) {
     mark('validate_payment_creation');
     const frozen = newPaymentCreationFailure('escrow_funding');
     if (frozen) blocked(frozen.error.message, paymentCreationErrorCause(frozen.error.code));
     mark('reserve_local_payment');
-    await db.query(`INSERT INTO quote_payments (
+    await db.transaction(async (query) => {
+      // Match organization-first publication locking, then serialize checkout
+      // creation for this draft before checking for any other live obligation.
+      await query('SELECT id FROM business_organizations WHERE id = $1 FOR SHARE', [economics.organizationId]);
+      await query(`SELECT q.id FROM quotes q JOIN task_drafts d ON d.id = q.task_draft_id
+        WHERE q.id = $1 FOR UPDATE OF q, d`, [input.quoteId]);
+      await query(`WITH eligible AS (
+        SELECT q.id FROM quotes q
+        JOIN quote_versions qv ON qv.id = q.active_version_id AND qv.quote_id = q.id
+        JOIN task_drafts d ON d.id = q.task_draft_id
+        JOIN business_organizations org ON org.id = q.business_organization_id
+        JOIN business_payment_accounts account ON account.organization_id = org.id
+          AND account.provider = 'tilled' AND account.environment = $7 AND account.provider_account_id = $6
+        WHERE q.id = $1 AND qv.id = $2 AND d.poster_user_id = $10 AND d.quote_id = q.id
+          AND q.status IN ('quote_ready', 'quote_send_ready') AND qv.expires_at > NOW()
+          AND qv.total_cents = $3 AND qv.total_cents - qv.hustler_payout_cents = $4
+          AND org.id = $5 AND org.status = 'ACTIVE' AND org.provider_enabled AND org.verification_status = 'VERIFIED'
+          AND account.status = 'ACTIVE' AND account.charges_enabled
+          AND NOT EXISTS (
+            SELECT 1 FROM quote_payments prior JOIN quotes prior_quote ON prior_quote.id = prior.quote_id
+            WHERE prior_quote.task_draft_id = d.id AND prior.status IN ('PENDING', 'SUCCEEDED')
+          )
+        FOR UPDATE OF q, qv, d, account
+      ) INSERT INTO quote_payments (
         quote_id, quote_version_id, provider, provider_payment_id, amount_cents,
         platform_fee_cents, business_organization_id, provider_merchant_id,
-        provider_environment, intent_creation_state, status)
-      VALUES ($1, $2, 'tilled', 'tilled_reservation:' || $8::text || ':' || $9::text,
-        $3, $4, $5, $6, $7, 'RESERVED', 'PENDING')
+        provider_environment, intent_creation_state, status, reserved_poster_id, reserved_at, currency)
+      SELECT $1, $2, 'tilled', 'tilled_reservation:' || $8::text || ':' || $9::text,
+        $3, $4, $5, $6, $7, 'RESERVED', 'PENDING', $10, NOW(), 'usd' FROM eligible
       ON CONFLICT (quote_id, quote_version_id) DO NOTHING`,
       [input.quoteId, input.quoteVersionId, economics.amountCents, economics.platformFeeCents,
         economics.organizationId, merchant.accountId, config.environment,
-        input.quoteId, input.quoteVersionId]);
+        input.quoteId, input.quoteVersionId, input.posterId]);
+    });
     payment = await readPayment(input.quoteId, input.quoteVersionId);
   }
-  if (!payment) blocked('Payment reservation could not be created.');
+  if (!payment) blocked('Payment reservation could not be created. Another payment may require review; contact support before paying again.');
+  if (payment.reserved_poster_id !== input.posterId || !payment.reserved_at) {
+    blocked('Payment reservation ownership could not be verified. Contact support.');
+  }
   diagnostic.local_payment_id = payment.id;
   mark('validate_payment_binding');
   assertPaymentBinding(payment, economics.organizationId, merchant.accountId, config.environment,
@@ -336,7 +384,18 @@ export async function createOrResumeTilledCheckout(input: {
 
   mark('validate_provider_intent');
   const verified = validateTilledIntentBinding(intent, { ...binding, paymentIntentId: intent.id }, false);
-  if (!verified.success || !intent.client_secret) blocked('Payment details could not be verified. Contact support.');
+  if (!verified.success) blocked('Payment details could not be verified. Contact support.');
+  if (intent.status === 'succeeded') {
+    const completed = await finalizeTilledCheckout(input);
+    return { finalized: true, taskId: completed.taskId, replayed: true };
+  }
+  // Do not offer a fresh confirmation against an expired/revised quote. Recovery
+  // of an already-successful intent above is deliberately independent of these gates.
+  if (resumingIntent) {
+    if (quote.active_version_id !== input.quoteVersionId) blocked('This quote version changed. Contact support before paying.');
+    await validatePayableQuote(quote);
+  }
+  if (!intent.client_secret) blocked('Payment details could not be verified. Contact support.');
   mark('serialize_checkout_response');
   return {
     finalized: false, provider: 'tilled', environment: config.environment, localPaymentId: payment.id,
@@ -379,6 +438,8 @@ export async function finalizeTilledCheckout(input: { quoteId: string; quoteVers
     posterId: input.posterId, paymentIntentId: payment.provider_payment_id,
     paymentMode: 'tilled',
   });
-  if (!result.success) blocked(result.error.message);
+  if (!result.success) blocked(result.error.message,
+    result.error.code === 'QUOTE_PAYMENT_MANUAL_COMPENSATION_REQUIRED'
+      ? { applicationCode: 'QUOTE_PAYMENT_MANUAL_COMPENSATION_REQUIRED' } : undefined);
   return result.data;
 }

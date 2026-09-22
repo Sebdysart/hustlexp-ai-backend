@@ -94,6 +94,9 @@ describe('publicTRPCErrorShape', () => {
       },
     });
     expect(publicTRPCErrorShape(shape, {
+      cause: { applicationCode: 'QUOTE_PAYMENT_MANUAL_COMPENSATION_REQUIRED' },
+    }).data.applicationCode).toBe('QUOTE_PAYMENT_MANUAL_COMPENSATION_REQUIRED');
+    expect(publicTRPCErrorShape(shape, {
       cause: { applicationCode: 'PRIVATE_PROVIDER_FAILURE' },
     }).data).not.toHaveProperty('applicationCode');
   });
@@ -346,35 +349,35 @@ describe('Schemas.createTask', () => {
 });
 
 describe('Schemas.fundEscrow', () => {
-  it('accepts valid escrowId and stripePaymentIntentId', () => {
+  it('accepts valid escrowId and providerPaymentId', () => {
     const result = Schemas.fundEscrow.parse({
       escrowId: '550e8400-e29b-41d4-a716-446655440000',
-      stripePaymentIntentId: 'pi_test123',
+      providerPaymentId: 'pi_test123',
     });
     expect(result.escrowId).toBe('550e8400-e29b-41d4-a716-446655440000');
-    expect(result.stripePaymentIntentId).toBe('pi_test123');
+    expect(result.providerPaymentId).toBe('pi_test123');
   });
 
   it('rejects invalid escrowId', () => {
-    expect(() => Schemas.fundEscrow.parse({ escrowId: 'not-uuid', stripePaymentIntentId: 'pi_test' })).toThrow();
+    expect(() => Schemas.fundEscrow.parse({ escrowId: 'not-uuid', providerPaymentId: 'pi_test' })).toThrow();
   });
 });
 
 describe('Schemas.releaseEscrow', () => {
-  it('accepts with required stripeTransferId', () => {
+  it('accepts with required providerTransferId', () => {
     const result = Schemas.releaseEscrow.parse({
       escrowId: '550e8400-e29b-41d4-a716-446655440000',
-      stripeTransferId: 'tr_123',
+      providerTransferId: 'tr_123',
     });
-    expect(result.stripeTransferId).toBe('tr_123');
+    expect(result.providerTransferId).toBe('tr_123');
   });
 
-  it('accepts with provided stripeTransferId', () => {
+  it('accepts with provided providerTransferId', () => {
     const result = Schemas.releaseEscrow.parse({
       escrowId: '550e8400-e29b-41d4-a716-446655440000',
-      stripeTransferId: 'tr_123',
+      providerTransferId: 'tr_123',
     });
-    expect(result.stripeTransferId).toBe('tr_123');
+    expect(result.providerTransferId).toBe('tr_123');
   });
 });
 

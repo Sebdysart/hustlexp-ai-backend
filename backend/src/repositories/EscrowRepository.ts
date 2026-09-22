@@ -55,21 +55,21 @@ export class EscrowRepository extends BaseRepository<Escrow> {
       id: string;
       task_id: string;
       amount: number;
-      stripe_payment_intent_id?: string;
+      provider_payment_id?: string;
     },
     ctx?: RepositoryContext
   ): Promise<Escrow> {
     const query = this.getQuery(ctx);
     const result = await query<Escrow>(
       `INSERT INTO ${this.tableName} (
-        id, task_id, amount, stripe_payment_intent_id, state, created_at, updated_at
+        id, task_id, amount, provider_payment_id, state, created_at, updated_at
       ) VALUES ($1, $2, $3, $4, 'PENDING', NOW(), NOW())
       RETURNING *`,
       [
         data.id,
         data.task_id,
         data.amount,
-        data.stripe_payment_intent_id ?? null,
+        data.provider_payment_id ?? null,
       ]
     );
     return result.rows[0];
@@ -97,18 +97,18 @@ export class EscrowRepository extends BaseRepository<Escrow> {
    */
   async markFunded(
     escrowId: string,
-    stripePaymentIntentId: string,
+    providerPaymentId: string,
     ctx?: RepositoryContext
   ): Promise<Escrow | null> {
     const query = this.getQuery(ctx);
     const result = await query<Escrow>(
       `UPDATE ${this.tableName} SET
         state = 'FUNDED',
-        stripe_payment_intent_id = $1,
+        provider_payment_id = $1,
         funded_at = NOW(),
         updated_at = NOW()
       WHERE id = $2 RETURNING *`,
-      [stripePaymentIntentId, escrowId]
+      [providerPaymentId, escrowId]
     );
     return result.rows[0] ?? null;
   }
@@ -118,18 +118,18 @@ export class EscrowRepository extends BaseRepository<Escrow> {
    */
   async markReleased(
     escrowId: string,
-    stripeTransferId?: string,
+    providerTransferId?: string,
     ctx?: RepositoryContext
   ): Promise<Escrow | null> {
     const query = this.getQuery(ctx);
     const result = await query<Escrow>(
       `UPDATE ${this.tableName} SET
         state = 'RELEASED',
-        stripe_transfer_id = $1,
+        provider_transfer_id = $1,
         released_at = NOW(),
         updated_at = NOW()
       WHERE id = $2 RETURNING *`,
-      [stripeTransferId ?? null, escrowId]
+      [providerTransferId ?? null, escrowId]
     );
     return result.rows[0] ?? null;
   }

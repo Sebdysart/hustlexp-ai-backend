@@ -98,6 +98,8 @@ describe('Tilled webhook processing', () => {
     vi.mocked(finalizePaidQuote).mockResolvedValue({ success: true, data: { taskId: 'task-one' } } as never);
     expect(await processPendingTilledWebhookEvents()).toBe(1);
     expect(tilledClient().getPaymentIntent).toHaveBeenCalledWith('acct_one', 'pi_one');
+    expect(vi.mocked(db.query).mock.calls[1]?.[0]).not.toContain('quote.active_version_id');
+    expect(vi.mocked(db.query).mock.calls[1]?.[0]).toContain('payment.reserved_poster_id AS poster_user_id');
     expect(finalizePaidQuote).toHaveBeenCalledWith({
       quoteId: 'quote-one', quoteVersionId: 'version-one', posterId: 'poster-one',
       paymentIntentId: 'pi_one', paymentMode: 'tilled',
@@ -131,4 +133,21 @@ describe('Tilled webhook processing', () => {
     expect(finalizePaidQuote).not.toHaveBeenCalled();
     expect(vi.mocked(db.query).mock.calls.at(-1)?.[1]).toEqual([event.id, 'PAYMENT_ACCOUNT_MISMATCH']);
   });
+});
+
+
+it('acknowledges a durable manual-compensation decision instead of endlessly retrying paid finalization', async () => {
+  enableTilled();
+  vi.mocked(db.query)
+    .mockResolvedValueOnce({ rows: [{ ...event, provider_event_id: event.id,
+      provider_account_id: event.account_id, event_type: event.type, payload: event }] } as never)
+    .mockResolvedValueOnce({ rows: [payment] } as never)
+    .mockResolvedValueOnce({ rows: [] } as never)
+    .mockResolvedValueOnce({ rows: [] } as never);
+  vi.mocked(tilledClient).mockReturnValue({ getPaymentIntent: vi.fn().mockResolvedValue(intent) } as never);
+  vi.mocked(finalizePaidQuote).mockResolvedValue({ success: false, error: {
+    code: 'QUOTE_PAYMENT_MANUAL_COMPENSATION_REQUIRED', message: 'Contact support.',
+  } });
+  expect(await processPendingTilledWebhookEvents()).toBe(1);
+  expect(vi.mocked(db.query).mock.calls.at(-1)?.[1]).toEqual([event.id, 'PROCESSED']);
 });

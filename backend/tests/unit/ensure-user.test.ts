@@ -5,7 +5,7 @@ const { query, getFirebaseUserRecord } = vi.hoisted(() => ({
   getFirebaseUserRecord: vi.fn(),
 }));
 
-vi.mock('../../src/db.js', () => ({ db: { query } }));
+vi.mock('../../src/db.js', () => ({ db: { query, transaction: (fn: (q: typeof query) => unknown) => fn(query) } }));
 vi.mock('../../src/auth/firebase.js', () => ({ getFirebaseUserRecord }));
 vi.mock('../../src/logger.js', () => ({
   logger: { child: () => ({ info: vi.fn(), warn: vi.fn() }) },
@@ -32,7 +32,7 @@ describe('ensureUserRowForFirebaseUid adult safety', () => {
     });
 
     const [sql, params] = query.mock.calls[0];
-    expect(String(sql)).toContain('VALUES ($1, $2, $3, $4, $5, $6::date, true, $7)');
+    expect(String(sql)).toContain('VALUES ($1, $2, $3, $4, $5, $6::date, true, $7,');
     expect(params).toEqual(['firebase-1', 'adult-check@example.com', null, 'Adult Check', 'worker', '1990-01-01', 0]);
   });
 
@@ -43,20 +43,21 @@ describe('ensureUserRowForFirebaseUid adult safety', () => {
     });
     query
       .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [{ id: 'user-phone', email: null, phone: '+12065550123' }] });
 
     await expect(ensureUserRowForFirebaseUid('firebase-phone')).resolves.toMatchObject({
       id: 'user-phone', email: null, phone: '+12065550123',
     });
 
-    expect(query.mock.calls[1][1]).toEqual([
+    expect(query.mock.calls[2][1]).toEqual([
       'firebase-phone', null, '+12065550123', 'HustleXP customer', 'poster', '1990-01-01', 1,
     ]);
   });
 
   it('rejects a verified phone already bound to another Firebase user', async () => {
     getFirebaseUserRecord.mockResolvedValue({ phoneNumber: '+12065550123' });
-    query.mockResolvedValueOnce({ rows: [{ id: 'other-user' }] });
+    query.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [{ id: 'other-user', firebase_uid: 'other-firebase', phone_verified_at: new Date() }] });
 
     await expect(ensureUserRowForFirebaseUid('firebase-phone')).rejects.toMatchObject({
       applicationCode: 'PHONE_ALREADY_LINKED',

@@ -36,7 +36,7 @@ describe('HustlerIdentityLinkService', () => {
     });
   });
 
-  it('atomically links the phone without treating a phone claim as complete verification', async () => {
+  it('records roster contact without assigning a verified authentication phone', async () => {
     query
       .mockResolvedValueOnce({ rows: [user] })
       .mockResolvedValueOnce({ rows: [] })
@@ -49,8 +49,9 @@ describe('HustlerIdentityLinkService', () => {
       data: { engineHustlerRef: input.engineHustlerRef, trustTier: 0, idempotencyReplayed: false },
     });
     expect(serializableTransaction).toHaveBeenCalledOnce();
+    expect(query.mock.calls.some(([sql]) => /SET phone\s*=/.test(String(sql)))).toBe(false);
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('UPDATE users SET phone = $1'),
+      expect.stringContaining('UPDATE users SET contact_phone = $1'),
       [input.phoneE164, input.engineHustlerRef],
     );
     expect(query.mock.calls.some(([sql]) => String(sql).includes('trust_tier ='))).toBe(false);

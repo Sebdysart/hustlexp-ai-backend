@@ -19,6 +19,7 @@ import { db } from '../../src/db';
 import { TaskReservationService, buildReservationRequestHash } from '../../src/services/TaskReservationService';
 
 const query = vi.mocked(db.query);
+const controlQuery = vi.fn();
 const TASK_ID = '550e8400-e29b-41d4-a716-446655440000';
 const WORKER_ID = '550e8400-e29b-41d4-a716-446655440001';
 const ACTOR_ID = '550e8400-e29b-41d4-a716-446655440002';
@@ -47,7 +48,16 @@ const originalEnv = { ...process.env };
 beforeEach(() => {
   vi.clearAllMocks();
   query.mockReset();
-  vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(query));
+  controlQuery.mockReset();
+  Object.assign(process.env, {
+    NODE_ENV: 'test', ENGINE_API_MODE: 'test', HXOS_ALLOW_LOCAL_TEST_PAYOUT: 'true',
+    HXOS_LOCAL_TEST_PAYOUT_SECRET: 'p'.repeat(64), HXOS_ALLOW_LOCAL_TEST_LIQUIDITY: 'true',
+    HXOS_LOCAL_TEST_LIQUIDITY_SECRET: 'l'.repeat(64),
+  });
+  vi.mocked(db.transaction).mockImplementation(async (fn: any) => fn(async (sql: string, params?: unknown[]) => {
+    if (sql.includes('set_config(')) { controlQuery(sql, params); return { rows: [], rowCount: 1 }; }
+    return query(sql, params);
+  }));
 });
 
 afterEach(() => {
@@ -65,12 +75,12 @@ function eligibleTask(overrides: Record<string, unknown> = {}) {
     sensitive: false,
     trust_tier_required: 2,
     escrow_state: 'FUNDED',
-    automation_classification: 'PRODUCTION',
+    automation_classification: 'CONTROLLED_TEST',
     background_check_required: false,
     liquidity_cell_id: '550e8400-e29b-41d4-a716-446655440010',
-    liquidity_environment: 'PRODUCTION',
-    liquidity_is_test: false,
-    local_test_liquidity_ready: false,
+    liquidity_environment: 'CONTROLLED_TEST',
+    liquidity_is_test: true,
+    local_test_liquidity_ready: true,
     offer_decision_ready: true,
     ...overrides,
   };
@@ -86,9 +96,8 @@ function eligibleWorker(overrides: Record<string, unknown> = {}) {
     is_minor: false,
     account_status: 'ACTIVE',
     plan: 'free',
-    stripe_connect_id: 'acct_ready_for_payouts',
     payouts_enabled: true,
-    local_test_payout_ready: false,
+    local_test_payout_ready: true,
     background_check_valid: false,
     background_check_expires_at: null,
     background_check_environment: null,
@@ -132,7 +141,7 @@ describe('TaskReservationService.reserve', () => {
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({ rows: [eligibleTask()], rowCount: 1 } as never)
       .mockResolvedValueOnce({
-        rows: [eligibleWorker({ stripe_connect_id: null, payouts_enabled: false })],
+        rows: [eligibleWorker({ local_test_payout_ready: false, payouts_enabled: false })],
         rowCount: 1,
       } as never)
       .mockResolvedValueOnce({ rows: [{
@@ -348,7 +357,7 @@ describe('TaskReservationService.reserve', () => {
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({ rows: [eligibleTask()], rowCount: 1 } as never)
-      .mockResolvedValueOnce({ rows: [eligibleWorker({ stripe_connect_id: null, payouts_enabled: false })], rowCount: 1 } as never);
+      .mockResolvedValueOnce({ rows: [eligibleWorker({ local_test_payout_ready: false, payouts_enabled: false })], rowCount: 1 } as never);
 
     const result = await TaskReservationService.reserve(params);
 
@@ -413,7 +422,7 @@ describe('TaskReservationService.reserve', () => {
     expect(result.error.code).toBe('TASK_RISK_BLOCKED');
   });
 
-  it('enforces the existing Pro-plan gate for high-risk tasks', async () => {
+  it('enforces an actual risk entitlement rather than a historical Pro plan', async () => {
     query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
@@ -454,11 +463,11 @@ describe('TaskReservationService.reserve', () => {
     });
   });
 
-  it('rejects controlled-TEST screening provenance on a production task', async () => {
+  it('rejects production individual-worker reservations even with old payout evidence', async () => {
     query
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
-      .mockResolvedValueOnce({ rows: [eligibleTask({ background_check_required: true })], rowCount: 1 } as never)
+      .mockResolvedValueOnce({ rows: [eligibleTask({ automation_classification: 'PRODUCTION', background_check_required: true })], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [eligibleWorker({
         background_check_valid: true,
         background_check_expires_at: '2099-01-01T00:00:00.000Z',
@@ -469,7 +478,7 @@ describe('TaskReservationService.reserve', () => {
 
     await expect(TaskReservationService.reserve(params)).resolves.toMatchObject({
       success: false,
-      error: { code: 'TEST_SCREENING_PRODUCTION_FORBIDDEN' },
+      error: { code: 'PAYOUT_ACCOUNT_REQUIRED' },
     });
   });
 
@@ -478,7 +487,6 @@ describe('TaskReservationService.reserve', () => {
       NODE_ENV: 'test',
       HXOS_ALLOW_LOCAL_TEST_SCREENING: 'true',
       ENGINE_API_MODE: 'test',
-      STRIPE_MODE: 'test',
       HXOS_LOCAL_TEST_SCREENING_SECRET: 's'.repeat(64),
       HXOS_ALLOW_LOCAL_TEST_LIQUIDITY: 'true',
       HXOS_LOCAL_TEST_LIQUIDITY_SECRET: 'l'.repeat(64),
@@ -500,8 +508,6 @@ describe('TaskReservationService.reserve', () => {
         background_check_is_test: true,
         background_check_source_ready: true,
       })], rowCount: 1 } as never)
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
       .mockResolvedValueOnce({ rows: [{ id: TASK_ID, state: 'ACCEPTED', worker_id: WORKER_ID }], rowCount: 1 } as never)
       .mockResolvedValueOnce({ rows: [{ id: 'reservation-1' }], rowCount: 1 } as never)
@@ -511,10 +517,10 @@ describe('TaskReservationService.reserve', () => {
       success: true,
       data: { reservationId: 'reservation-1' },
     });
-    expect(query.mock.calls.some(([sql]) => String(sql).includes(
+    expect(controlQuery.mock.calls.some(([sql]) => String(sql).includes(
       "set_config('hustlexp.local_test_screening_enabled', 'true', true)",
     ))).toBe(true);
-    expect(query.mock.calls.some(([sql]) => String(sql).includes(
+    expect(controlQuery.mock.calls.some(([sql]) => String(sql).includes(
       "set_config('hustlexp.local_test_liquidity_enabled', 'true', true)",
     ))).toBe(true);
   });
@@ -524,7 +530,6 @@ describe('TaskReservationService.reserve', () => {
       NODE_ENV: 'test',
       HXOS_ALLOW_LOCAL_TEST_LIQUIDITY: 'true',
       ENGINE_API_MODE: 'test',
-      STRIPE_MODE: 'test',
       HXOS_LOCAL_TEST_LIQUIDITY_SECRET: 'l'.repeat(64),
     });
     query

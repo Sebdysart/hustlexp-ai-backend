@@ -35,7 +35,8 @@ export type { AuthedContext, Context } from './trpc-context.js';
 function publicApplicationCode(cause: unknown): string | undefined {
   if (typeof cause !== 'object' || cause === null || Array.isArray(cause)) return undefined;
   const code = (cause as { applicationCode?: unknown }).applicationCode;
-  return code === PAYMENT_CREATION_FROZEN_CODE ? code : undefined;
+  return code === PAYMENT_CREATION_FROZEN_CODE || code === 'QUOTE_PAYMENT_MANUAL_COMPENSATION_REQUIRED'
+    ? code : undefined;
 }
 
 export function publicTRPCErrorShape<T extends { message: string; data: { code?: string; stack?: string } }>(
@@ -333,16 +334,16 @@ export const Schemas = {
   // Escrow
   fundEscrow: z.object({
     escrowId: z.string().uuid(),
-    stripePaymentIntentId: z.string().min(1).max(255),
+    providerPaymentId: z.string().min(1).max(255),
   }),
 
   releaseEscrow: z.object({
     escrowId: z.string().uuid(),
-    // stripeTransferId is required for poster-initiated releases so the caller
-    // must have already created the Stripe transfer before marking escrow as
+    // providerTransferId is required for poster-initiated releases so the caller
+    // must have already created the provider transfer before marking escrow as
     // released.  Admin override releases use the separate adminRelease procedure
     // where this field remains optional.
-    stripeTransferId: z.string().min(1).max(255),
+    providerTransferId: z.string().min(1).max(255),
   }),
   
   // Proof

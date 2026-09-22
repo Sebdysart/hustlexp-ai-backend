@@ -157,6 +157,10 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20261001_business_quote_list_indexes', fileName: '20261001_business_quote_list_indexes.sql' },
   { name: '20261002_phone_draft_claims', fileName: '20261002_phone_draft_claims.sql' },
   { name: '20261003_remove_pending_phone_claim_sms', fileName: '20261003_remove_pending_phone_claim_sms.sql' },
+  { name: '20261004_verified_phone_identity', fileName: '20261004_verified_phone_identity.sql' },
+  { name: '20261005_tilled_paid_reservation_outcome', fileName: '20261005_tilled_paid_reservation_outcome.sql' },
+  { name: '20261005_tilled_completion_compatibility', fileName: '20261005_tilled_completion_compatibility.sql' },
+  { name: '20261006_outbox_dispatch_lease', fileName: '20261006_outbox_dispatch_lease.sql' },
 ] as const;
 
 

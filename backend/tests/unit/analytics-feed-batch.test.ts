@@ -6,7 +6,6 @@
  *  2. TaskBatchingService       (0%  coverage)
  *  3. FeedQueryService          (0%  coverage)
  *  4. AnomalyDetectionService   (38% coverage — class methods not yet tested)
- *  5. XPTaxService              (3%  coverage)
  *  6. InstantRateLimiter        (0%  coverage)
  *  7. InstantModeKillSwitch     (0%  coverage)
  *  8. TaskRiskClassifier        (38% coverage — toLegacyRiskLevel not yet tested)
@@ -86,12 +85,7 @@ vi.mock('../../src/services/AIObservabilityService', () => ({
   aiObservationHash: vi.fn(() => 'a'.repeat(64)),
 }));
 
-vi.mock('../../src/services/StripeService', () => ({
-  StripeService: {
-    isConfigured: vi.fn(() => true),
-    verifyPaymentIntent: vi.fn(),
-  },
-}));
+
 
 vi.mock('openai', () => {
   const mockCreate = vi.fn();
@@ -112,13 +106,11 @@ import { db, isInvariantViolation } from '../../src/db';
 import { GDPRService } from '../../src/services/GDPRService';
 import { isEligible } from '../../src/services/EligibilityResolverService';
 import { AIClient } from '../../src/services/AIClient';
-import { StripeService } from '../../src/services/StripeService';
 
 import { AnalyticsService } from '../../src/services/AnalyticsService';
 import { TaskBatchingService } from '../../src/services/TaskBatchingService';
 import { queryFeed, getNearbyTasks, getTasksByTrade } from '../../src/services/FeedQueryService';
 import { AnomalyDetectionService } from '../../src/services/AnomalyDetectionService';
-import { XPTaxService } from '../../src/services/XPTaxService';
 import { InstantRateLimiter } from '../../src/services/InstantRateLimiter';
 import { InstantModeKillSwitch } from '../../src/services/InstantModeKillSwitch';
 import { TaskRiskClassifier, TaskRisk } from '../../src/services/TaskRiskClassifier';
@@ -129,7 +121,6 @@ const mockDb = vi.mocked(db);
 const mockGDPR = vi.mocked(GDPRService);
 const mockIsEligible = vi.mocked(isEligible);
 const mockAIClient = vi.mocked(AIClient);
-const mockStripe = vi.mocked(StripeService);
 const mockIsInvariantViolation = vi.mocked(isInvariantViolation);
 
 beforeEach(() => {
@@ -141,8 +132,6 @@ beforeEach(() => {
   vi.mocked(isInvariantViolation).mockReturnValue(false);
   // isEligible is the default for feed tests — all tasks eligible unless overridden.
   mockIsEligible.mockReturnValue({ eligible: true, code: 'HX200', reasons: [] });
-  // Stripe configured by default so payTax tests hit the verification path.
-  mockStripe.isConfigured.mockReturnValue(true);
   // AIClient not configured by default (avoids real AI calls).
   mockAIClient.isConfigured.mockReturnValue(false);
   mockAIObservationRecord.mockResolvedValue({
@@ -1124,262 +1113,6 @@ describe('AnomalyDetectionService.runDetectors', () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(Array.isArray(result.data)).toBe(true);
-    }
-  });
-});
-
-// ============================================================================
-// 5. XPTaxService
-// ============================================================================
-
-describe('XPTaxService.calculateTax', () => {
-  it('returns 0 for escrow payments', () => {
-    expect(XPTaxService.calculateTax(10000, 'escrow')).toBe(0);
-  });
-
-  it('returns 10% for offline_cash payments', () => {
-    expect(XPTaxService.calculateTax(10000, 'offline_cash')).toBe(1000);
-  });
-
-  it('returns 10% for offline_venmo payments', () => {
-    expect(XPTaxService.calculateTax(5000, 'offline_venmo')).toBe(500);
-  });
-
-  it('returns 10% for offline_cashapp payments', () => {
-    expect(XPTaxService.calculateTax(7500, 'offline_cashapp')).toBe(750);
-  });
-
-  it('rounds to nearest cent', () => {
-    // 10% of 33 = 3.3 → rounds to 3
-    expect(XPTaxService.calculateTax(33, 'offline_cash')).toBe(3);
-  });
-});
-
-describe('XPTaxService.recordOfflinePayment', () => {
-  it('inserts tax ledger entry and updates status', async () => {
-    mockDb.query
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT xp_tax_ledger
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 }); // INSERT/UPDATE user_xp_tax_status
-
-    const result = await XPTaxService.recordOfflinePayment(
-      'user-1',
-      'task-1',
-      'offline_cash',
-      10000
-    );
-
-    expect(result.success).toBe(true);
-    expect(mockDb.query).toHaveBeenCalledTimes(2);
-    expect(mockDb.query).toHaveBeenCalledWith(
-      expect.stringContaining('INSERT INTO xp_tax_ledger'),
-      expect.arrayContaining(['user-1', 'task-1', 10000, 10.0])
-    );
-  });
-
-  it('returns error when db throws on first query', async () => {
-    mockDb.query.mockRejectedValueOnce(new Error('insert fail'));
-
-    const result = await XPTaxService.recordOfflinePayment(
-      'user-1',
-      'task-1',
-      'offline_cash',
-      10000
-    );
-
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error.code).toBe('RECORD_OFFLINE_PAYMENT_FAILED');
-    }
-  });
-});
-
-describe('XPTaxService.checkTaxStatus', () => {
-  it('returns zero status when no record exists', async () => {
-    mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
-
-    const result = await XPTaxService.checkTaxStatus('user-1');
-
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.unpaid_tax_cents).toBe(0);
-      expect(result.data.blocked).toBe(false);
-    }
-  });
-
-  it('returns blocked when unpaid tax exists', async () => {
-    mockDb.query.mockResolvedValueOnce({
-      rows: [{ total_unpaid_tax_cents: 500, total_xp_held_back: 50 }],
-      rowCount: 1,
-    });
-
-    const result = await XPTaxService.checkTaxStatus('user-1');
-
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.unpaid_tax_cents).toBe(500);
-      expect(result.data.blocked).toBe(true);
-    }
-  });
-
-  it('returns error on db failure', async () => {
-    mockDb.query.mockRejectedValueOnce(new Error('db fail'));
-
-    const result = await XPTaxService.checkTaxStatus('user-1');
-
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error.code).toBe('CHECK_TAX_STATUS_FAILED');
-    }
-  });
-});
-
-describe('XPTaxService.getTaxHistory', () => {
-  it('returns tax history for a user', async () => {
-    const rows = [
-      {
-        id: 'ledger-1',
-        user_id: 'user-1',
-        task_id: 'task-1',
-        gross_payout_cents: 10000,
-        tax_percentage: 10,
-        tax_amount_cents: 1000,
-        net_payout_cents: 10000,
-        payment_method: 'offline_cash',
-        tax_paid: false,
-        tax_paid_at: null,
-        xp_held_back: true,
-        xp_released: false,
-        xp_released_at: null,
-        created_at: new Date(),
-      },
-    ];
-    mockDb.query.mockResolvedValueOnce({ rows, rowCount: 1 });
-
-    const result = await XPTaxService.getTaxHistory('user-1');
-
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data).toHaveLength(1);
-      expect(result.data[0].id).toBe('ledger-1');
-    }
-  });
-
-  it('returns error on db failure', async () => {
-    mockDb.query.mockRejectedValueOnce(new Error('fail'));
-
-    const result = await XPTaxService.getTaxHistory('user-1');
-
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error.code).toBe('GET_TAX_HISTORY_FAILED');
-    }
-  });
-});
-
-describe('XPTaxService.payTax', () => {
-  it('returns XP_TAX_PAYMENT_UNAVAILABLE when Stripe is not configured (FIX 4)', async () => {
-    // FIX 4: payTax hard-blocks when Stripe is not configured (no dev-mode bypass)
-    vi.mocked(mockStripe.isConfigured).mockReturnValueOnce(false);
-
-    const result = await XPTaxService.payTax('user-1', 'pi_test_123');
-
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error.code).toBe('XP_TAX_PAYMENT_UNAVAILABLE');
-    }
-  });
-
-  it('returns PAYMENT_NOT_SUCCEEDED when Stripe PI status is not succeeded', async () => {
-    // Idempotency check: no existing payment with this intent ID
-    mockDb.query.mockResolvedValueOnce({ rows: [] });
-    mockStripe.verifyPaymentIntent.mockResolvedValueOnce({
-      success: true,
-      data: {
-        status: 'requires_payment_method',
-        amountCents: 1000,
-        metadata: { type: 'xp_tax' },
-      },
-    });
-
-    const result = await XPTaxService.payTax('user-1', 'pi_test_123');
-
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error.code).toBe('PAYMENT_NOT_SUCCEEDED');
-    }
-  });
-
-  it('returns INVALID_PAYMENT_TYPE when PI metadata type is wrong', async () => {
-    // Idempotency check: no existing payment with this intent ID
-    mockDb.query.mockResolvedValueOnce({ rows: [] });
-    mockStripe.verifyPaymentIntent.mockResolvedValueOnce({
-      success: true,
-      data: {
-        status: 'succeeded',
-        amountCents: 1000,
-        metadata: { type: 'task_payment' },
-      },
-    });
-
-    const result = await XPTaxService.payTax('user-1', 'pi_test_123');
-
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error.code).toBe('INVALID_PAYMENT_TYPE');
-    }
-  });
-
-  it('returns error on db failure', async () => {
-    // Idempotency check: no existing payment with this intent ID
-    mockDb.query.mockResolvedValueOnce({ rows: [] });
-    mockStripe.verifyPaymentIntent.mockRejectedValueOnce(new Error('Stripe crash'));
-
-    const result = await XPTaxService.payTax('user-1', 'pi_test_123');
-
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error.code).toBe('PAY_TAX_FAILED');
-    }
-  });
-});
-
-describe('XPTaxService.adminForgiveTax', () => {
-  it('forgives unpaid taxes and logs admin action', async () => {
-    // F58-2 FIX: adminForgiveTax now first SELECTs the XP sum, then (if > 0)
-    // credits users.xp_total, then marks ledger rows paid, then resets summary.
-    // Updated mock sequence (all inside serializableTransaction + admin_actions outside):
-    // 1. SELECT SUM(gross_payout_cents/10) → total_xp to credit
-    // 2. UPDATE users SET xp_total = xp_total + N  (skipped when total_xp = 0)
-    // 3. UPDATE xp_tax_ledger SET tax_paid = TRUE
-    // 4. UPDATE user_xp_tax_status SET total_unpaid_tax_cents = 0
-    // 5. INSERT admin_actions (fire-and-forget, outside transaction)
-    mockDb.query
-      .mockResolvedValueOnce({ rows: [{ total_xp: 0 }], rowCount: 1 })  // SELECT SUM (F58-2) — 0 so no UPDATE users
-      .mockResolvedValueOnce({ rows: [], rowCount: 5 })                   // UPDATE xp_tax_ledger
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 })                   // UPDATE user_xp_tax_status
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 });                  // INSERT admin_actions
-
-    const result = await XPTaxService.adminForgiveTax(
-      'user-1',
-      'admin-1',
-      'User hardship waiver'
-    );
-
-    expect(result.success).toBe(true);
-    expect(mockDb.query).toHaveBeenCalledWith(
-      expect.stringContaining('UPDATE xp_tax_ledger'),
-      ['user-1']
-    );
-  });
-
-  it('returns error when db throws on first query', async () => {
-    mockDb.query.mockRejectedValueOnce(new Error('update fail'));
-
-    const result = await XPTaxService.adminForgiveTax('user-1', 'admin-1', 'test');
-
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error.code).toBe('ADMIN_FORGIVE_FAILED');
     }
   });
 });

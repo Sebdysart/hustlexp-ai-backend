@@ -79,7 +79,7 @@ requirePattern('E2 unfilled expiry command', automation, /expireUnfilled\s*:/);
 requirePattern('E2 bounded expiry scheduler', automation, /expireDue\s*:/);
 requirePattern('E2 repeatable expiry scheduler registration', workers, /dispatch\.expire_unfilled/);
 requirePattern('E2 idempotency witness schema', migration, /task_dispatch_expiry_requests/);
-requirePattern('E2 pending PaymentIntent cancel service', pendingPaymentCancellation, /StripePaymentIntentCancellationService\.cancel/);
+requirePattern('E2 pending payment cancellation records manual review', pendingPaymentCancellation, /recordManualRefundRequirement/);
 requirePattern('E2 pending PaymentIntent provider evidence', pendingPaymentCancellationMigration, /payment_intent_canceled_at/);
 requirePattern('E2 pending PaymentIntent cancellation outbox', pendingPaymentCancellationMigration, /cancel_pending_payment_intent/);
 requirePattern('E2 no-payment expiry reconciliation', noPaymentReconcileMigration, /refund_state = 'NOT_REQUIRED'/);

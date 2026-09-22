@@ -11,7 +11,6 @@ const enabled = {
   NODE_ENV: 'test',
   HXOS_ALLOW_LOCAL_TEST_AUTH: 'true',
   ENGINE_API_MODE: 'test',
-  STRIPE_MODE: 'test',
   HXOS_LOCAL_TEST_AUTH_SECRET: SECRET,
 };
 
@@ -50,7 +49,6 @@ describe('local certification identity token', () => {
       { NODE_ENV: 'production' },
       { HXOS_ALLOW_LOCAL_TEST_AUTH: 'false' },
       { ENGINE_API_MODE: 'live' },
-      { STRIPE_MODE: 'live' },
       { HXOS_LOCAL_TEST_AUTH_SECRET: 'weak' },
     ]) {
       expect(localCertificationAuthEnabled({ ...enabled, ...override })).toBe(false);

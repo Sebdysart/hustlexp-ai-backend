@@ -30,7 +30,6 @@ describe.skipIf(!databaseUrl)(
     const env = {
       NODE_ENV: 'test',
       ENGINE_API_MODE: 'test',
-      STRIPE_MODE: 'test',
       PAYMENT_PROVIDER: 'local_test',
       HX_PAYMENT_CREATION_MODE: 'enabled',
       HXOS_ALLOW_LOCAL_TEST_PAYMENT: 'true',

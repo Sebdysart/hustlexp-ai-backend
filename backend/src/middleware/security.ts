@@ -116,7 +116,7 @@ const RATE_LIMITS = {
   auth: { limit: 20, windowSeconds: 60 },        // 20 auth attempts/min (brute force protection)
   browse: { limit: 30, windowSeconds: 60 },      // 30 public browse requests/min — IP-based DoS protection
   escrow: { limit: 30, windowSeconds: 60 },      // 30 escrow ops/min
-  financial: { limit: 10, windowSeconds: 60 },   // 10 financial ops/min (escrow release, stripe)
+  financial: { limit: 10, windowSeconds: 60 },   // 10 financial ops/min (payment operations)
   live: { limit: 20, windowSeconds: 60 },        // 20 live mode requests/min — multi-table JOIN, geo amplification risk
   mutation: { limit: 60, windowSeconds: 60 },    // 60 mutation ops/min (write-heavy routes)
   task: { limit: 60, windowSeconds: 60 },        // 60 task ops/min

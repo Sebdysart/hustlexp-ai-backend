@@ -55,12 +55,8 @@ vi.mock('../../src/services/EscrowService', () => ({
   },
 }));
 
-vi.mock('../../src/services/StripeService', () => ({
-  StripeService: {
-    isConfigured: vi.fn(),
-    createPaymentIntent: vi.fn(),
-  },
-}));
+const mockPaymentProvider = vi.hoisted(() => ({ createPaymentIntent: vi.fn() }));
+vi.mock('../../src/services/payment/PaymentProviderResolver.js', () => ({ resolvePaymentProvider: () => mockPaymentProvider }));
 
 vi.mock('../../src/services/XPService', () => ({
   XPService: {
@@ -73,7 +69,7 @@ vi.mock('../../src/services/XPService', () => ({
 
 vi.mock('../../src/config', () => ({
   config: {
-    stripe: { platformFeePercent: 15 },
+    payments: { platformFeePercent: 15 },
     redis: { restUrl: null, restToken: null },
   },
 }));
@@ -86,9 +82,7 @@ vi.mock('../../src/services/EarnedVerificationUnlockService', () => ({
   EarnedVerificationUnlockService: { recordEarnings: vi.fn().mockResolvedValue(undefined) },
 }));
 
-vi.mock('../../src/services/XPTaxService', () => ({
-  XPTaxService: { recordOfflinePayment: vi.fn().mockResolvedValue(undefined) },
-}));
+
 
 vi.mock('../../src/cache/db-cache', () => ({
   cachedDbQuery: vi.fn(),
@@ -104,14 +98,12 @@ vi.mock('../../src/cache/db-cache', () => ({
 
 import { db } from '../../src/db';
 import { EscrowService } from '../../src/services/EscrowService';
-import { StripeService } from '../../src/services/StripeService';
 import { XPService } from '../../src/services/XPService';
 import { escrowRouter } from '../../src/routers/escrow';
 import { userRouter } from '../../src/routers/user';
 
 const mockDb = vi.mocked(db);
 const mockEscrowService = vi.mocked(EscrowService);
-const mockStripeService = vi.mocked(StripeService);
 const mockXPService = vi.mocked(XPService);
 
 // ---------------------------------------------------------------------------
@@ -187,7 +179,6 @@ beforeEach(() => {
 
 describe('REG-2 — FIXED: Null task price is rejected (not silently coerced to 0)', () => {
   it('FIXED — throws BAD_REQUEST when task price is null', async () => {
-    mockStripeService.isConfigured.mockReturnValue(true);
     // Task exists but price is null
     mockDb.query.mockResolvedValueOnce({ rows: [{ price: null }], rowCount: 1 } as any);
 
@@ -198,30 +189,28 @@ describe('REG-2 — FIXED: Null task price is rejected (not silently coerced to 
         message: expect.stringContaining('Task price has not been set'),
       });
 
-    // Stripe was NOT called — we short-circuited before reaching it
-    expect(mockStripeService.createPaymentIntent).not.toHaveBeenCalled();
+    // controlled payment provider was NOT called — we short-circuited before reaching it
+    expect(mockPaymentProvider.createPaymentIntent).not.toHaveBeenCalled();
   });
 
-  it('FIXED — Stripe is called normally when price is set (non-regression)', async () => {
-    mockStripeService.isConfigured.mockReturnValue(true);
+  it('FIXED — controlled payment provider is called normally when price is set (non-regression)', async () => {
     // 1. Task price lookup — tasks.price is canonical integer USD cents.
     mockDb.query.mockResolvedValueOnce({ rows: [{ price: 5000 }], rowCount: 1 } as any);
     // 2. Escrow lookup (added in R17 fix: scopes PI idempotency key to escrowId)
     mockDb.query.mockResolvedValueOnce({ rows: [{ id: ESCROW_ID }], rowCount: 1 } as any);
-    mockStripeService.createPaymentIntent.mockResolvedValueOnce({
+    mockPaymentProvider.createPaymentIntent.mockResolvedValueOnce({
       success: true,
-      data: { paymentIntentId: 'pi_abc', clientSecret: 'cs_abc', amount: 5000 },
+      data: { paymentIntentId: 'pi_abc', clientSecret: 'cs_abc', amountCents: 5000 },
     });
 
     const caller = makePosterCaller();
     const result = await caller.createPaymentIntent({ taskId: TASK_ID, amount: 5000 });
 
     expect(result).toHaveProperty('paymentIntentId', 'pi_abc');
-    expect(mockStripeService.createPaymentIntent).toHaveBeenCalledOnce();
+    expect(mockPaymentProvider.createPaymentIntent).toHaveBeenCalledOnce();
   });
 
   it('FIXED — throws NOT_FOUND when task does not exist', async () => {
-    mockStripeService.isConfigured.mockReturnValue(true);
     mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
     const caller = makePosterCaller();
