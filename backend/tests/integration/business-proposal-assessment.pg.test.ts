@@ -122,7 +122,7 @@ describe.skipIf(!testUrl)('businessProposal.requestAssessment (isolated PostgreS
     expect((await fixture.query('SELECT id FROM business_assessment_requests')).rows).toHaveLength(0);
     expect((await fixture.query('SELECT id FROM notifications')).rows).toHaveLength(0);
     await fixture.query(readFileSync(
-      'backend/database/migrations/20260923_business_proposal_assessment_source.sql', 'utf8',
+      'backend/database/migrations/20260920_business_proposal_assessment_source.sql', 'utf8',
     ));
     const result = await request(proposalId);
     expect(result.status).toBe('PENDING_ADMIN');

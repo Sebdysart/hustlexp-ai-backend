@@ -62,7 +62,7 @@ describe.skipIf(!databaseUrl)(
         grant_source TEXT DEFAULT 'manual_ops' CONSTRAINT provider_os_entitlements_grant_source_check CHECK(grant_source='manual_ops'),
         granted_by_user_id UUID,granted_at TIMESTAMPTZ,changed_by_user_id UUID,suspended_at TIMESTAMPTZ,revoked_at TIMESTAMPTZ,reason TEXT,created_at TIMESTAMPTZ DEFAULT NOW(),updated_at TIMESTAMPTZ DEFAULT NOW());`);
       await query(
-        readFileSync('backend/database/migrations/20260921_provider_os_purchases.sql', 'utf8')
+        readFileSync('backend/database/migrations/20260919_provider_os_purchases.sql', 'utf8')
       );
       mocks.query.mockImplementation(query);
       mocks.transaction.mockImplementation(async (fn) => {

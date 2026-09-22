@@ -2,8 +2,8 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const read = (path: string) => readFileSync(path, 'utf8');
-const migration = read('backend/database/migrations/20261002_phone_draft_claims.sql');
-const smsCleanupMigration = read('backend/database/migrations/20261003_remove_pending_phone_claim_sms.sql');
+const migration = read('backend/database/migrations/20260922_phone_draft_claims.sql');
+const smsCleanupMigration = read('backend/database/migrations/20260922_remove_pending_phone_claim_sms.sql');
 const migrationFiles = read('backend/src/jobs/engine-automation-migration-files.ts');
 const claim = read('backend/src/services/CustomerDraftClaimService.ts');
 const ops = read('backend/src/routers/web/ops.ts');
@@ -83,7 +83,7 @@ describe('Ops phone draft ownership contract', () => {
     expect(smsCleanupMigration).toMatch(/drop column if exists recipient_context_id/i);
     expect(smsCleanupMigration).toMatch(/drop column if exists recipient_kind/i);
     expect(migrationFiles).toContain(
-      "{ name: '20261003_remove_pending_phone_claim_sms', fileName: '20261003_remove_pending_phone_claim_sms.sql' }",
+      "{ name: '20261003_remove_pending_phone_claim_sms', fileName: '20260922_remove_pending_phone_claim_sms.sql' }",
     );
   });
 

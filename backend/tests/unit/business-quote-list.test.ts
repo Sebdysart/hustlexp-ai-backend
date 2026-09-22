@@ -279,7 +279,7 @@ describe('canonical organization business quote list', () => {
       names.indexOf('20260930_tilled_merchant_invitations')
     );
     const migration = readFileSync(
-      'backend/database/migrations/20261001_business_quote_list_indexes.sql',
+      'backend/database/migrations/20260921_business_quote_list_indexes.sql',
       'utf8'
     );
     expect(migration).toContain('quotes_business_org_created_idx');

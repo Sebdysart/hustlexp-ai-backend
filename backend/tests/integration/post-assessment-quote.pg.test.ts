@@ -67,8 +67,8 @@ describe.skipIf(!testUrl)('post-assessment quote origins (isolated PostgreSQL)',
       '20261007_business_credentials_evidence',
       '20261008_business_quote_eligibility',
     ]) await fixture.query(readFileSync(`backend/database/migrations/${migration}.sql`, 'utf8'));
-    await fixture.query(readFileSync('backend/database/migrations/20260924_assessment_lifecycle_integrity.sql','utf8'));
-    await fixture.query(readFileSync('backend/database/migrations/20260925_provider_os_assessment_source.sql','utf8'));
+    await fixture.query(readFileSync('backend/database/migrations/20260920_assessment_lifecycle_integrity.sql','utf8'));
+    await fixture.query(readFileSync('backend/database/migrations/20260920_provider_os_assessment_source.sql','utf8'));
     await fixture.query('INSERT INTO users(id) VALUES($1),($2)',[actor,poster]);
     await fixture.query(`INSERT INTO business_organizations(id,legal_name,display_name,provider_enabled,verification_status,created_by,creation_idempotency_key)
       VALUES($1,'Assessment Business A','Assessment Business A',TRUE,'VERIFIED',$3,'pg:assessment:orgA'),

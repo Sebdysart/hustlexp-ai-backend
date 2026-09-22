@@ -23,7 +23,7 @@ describe.skipIf(!url)('notification intent transaction and replay (isolated Post
     await query(`CREATE TABLE domain_fixture(id UUID PRIMARY KEY);
       CREATE TABLE outbox_events(id UUID PRIMARY KEY DEFAULT gen_random_uuid(),event_type TEXT,aggregate_type TEXT,
       aggregate_id UUID,event_version INTEGER,idempotency_key VARCHAR(255) UNIQUE NOT NULL,payload JSONB,queue_name TEXT,status TEXT,enqueued_at TIMESTAMPTZ);`);
-    await query(readFileSync('backend/database/migrations/20260922_notification_request_dispatch.sql','utf8'));
+    await query(readFileSync('backend/database/migrations/20260919_notification_request_dispatch.sql','utf8'));
   });
   afterAll(async()=>{await query(`DROP SCHEMA ${schema} CASCADE`);await client.end();});
   async function mutate(fail=false){

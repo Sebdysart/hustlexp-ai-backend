@@ -50,7 +50,7 @@ describe.skipIf(!testUrl)('assessment controlled payment (isolated PostgreSQL)',
         amount_cents INTEGER NOT NULL,status TEXT NOT NULL,created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW(),UNIQUE(provider,provider_payment_id));
       CREATE TABLE notice_fixture(organization_id UUID,dedupe_key TEXT UNIQUE);`);
-    await fixture.query(readFileSync('backend/database/migrations/20260924_assessment_lifecycle_integrity.sql','utf8'));
+    await fixture.query(readFileSync('backend/database/migrations/20260920_assessment_lifecycle_integrity.sql','utf8'));
     await fixture.query('INSERT INTO users(id) VALUES($1),($2)',[actor,otherActor]);
     await fixture.query('INSERT INTO business_organizations(id) VALUES($1)',[org]);
     await fixture.query('INSERT INTO task_drafts(id,poster_user_id) VALUES($1,$2)',[draft,actor]);

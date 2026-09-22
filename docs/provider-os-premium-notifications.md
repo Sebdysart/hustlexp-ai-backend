@@ -6,7 +6,7 @@ handlers. Subscription billing remains out of scope.
 
 ## Durable capture
 
-Migration `20260920_provider_os_premium_events.sql` follows organization ownership
+Migration `20260919_provider_os_premium_events.sql` follows organization ownership
 and quote-origin migrations in the startup manifest. Historical migrations and
 the old `provider_os_notification_events` ledger remain unchanged.
 

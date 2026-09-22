@@ -123,7 +123,7 @@ it('registers forward migrations in dependency order with immutable/scope backst
  const names=REQUIRED_MIGRATION_FILES.map(m=>m.name as string);
  const category=names.indexOf('20261007_business_service_category_policy'); const credential=names.indexOf('20261007_business_credentials_evidence');const quote=names.indexOf('20261008_business_quote_eligibility');
  expect(category).toBeGreaterThan(names.indexOf('20261006_outbox_dispatch_lease'));expect(credential).toBeGreaterThan(category);expect(quote).toBeGreaterThan(credential);
- const sql=readFileSync('backend/database/migrations/20261008_business_quote_eligibility.sql','utf8');
+ const sql=readFileSync('backend/database/migrations/20260922_business_quote_eligibility.sql','utf8');
  expect(sql).toContain('BEFORE UPDATE OR DELETE ON business_quote_eligibility_decisions');expect(sql).toContain('quote_id UUID NOT NULL UNIQUE');
  expect(sql).toContain('d.category=NEW.primary_category');expect(sql).toContain('q.business_organization_id=NEW.business_organization_id');
  expect(sql).toContain('BEFORE UPDATE OF category ON task_drafts');

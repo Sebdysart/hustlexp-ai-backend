@@ -64,7 +64,7 @@ describe.skipIf(!databaseUrl)('Provider OS durable events (isolated PostgreSQL f
       CREATE TABLE sms_outbox(id UUID PRIMARY KEY DEFAULT gen_random_uuid(), user_id UUID NOT NULL, to_phone TEXT NOT NULL, body TEXT NOT NULL, idempotency_key TEXT UNIQUE, status TEXT DEFAULT 'pending', twilio_sid TEXT, error_message TEXT, retry_count INT DEFAULT 0, max_retries INT DEFAULT 3, available_at TIMESTAMPTZ DEFAULT NOW(), created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), sent_at TIMESTAMPTZ);
       CREATE TABLE outbox_events(id UUID PRIMARY KEY DEFAULT gen_random_uuid(), event_type TEXT, aggregate_type TEXT, aggregate_id UUID, event_version INT, idempotency_key TEXT UNIQUE, payload JSONB, queue_name TEXT, status TEXT DEFAULT 'pending', attempts INT DEFAULT 0, error_message TEXT, enqueued_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW(), available_at TIMESTAMPTZ DEFAULT NOW(), processed_at TIMESTAMPTZ);
     `);
-    await query(readFileSync('backend/database/migrations/20260920_provider_os_premium_events.sql', 'utf8'));
+    await query(readFileSync('backend/database/migrations/20260919_provider_os_premium_events.sql', 'utf8'));
     mocks.query.mockImplementation(query);
     mocks.transaction.mockImplementation(async (fn) => {
       await query('BEGIN');

@@ -1,6 +1,6 @@
 import {readFileSync} from 'node:fs';
 import {describe,expect,it} from 'vitest';
-const sql=readFileSync(new URL('../../database/migrations/20261007_business_credentials_evidence.sql',import.meta.url),'utf8');
+const sql=readFileSync(new URL('../../database/migrations/20260922_business_credentials_evidence.sql',import.meta.url),'utf8');
 describe('credential and business address schema contract',()=>{
   it('keeps one explicit business address without changing legacy operating locations',()=>{
     expect(sql).toContain("DEFAULT 'OPERATING_LOCATION'");

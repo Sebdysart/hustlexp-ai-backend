@@ -23,7 +23,7 @@ For delayed application/proof requests, current source rows must still belong to
 
 Transient storage failures leave the request unacknowledged for retry. Ineligible/deleted recipients, lost participation and disabled preferences are terminal skipped outcomes recorded in `outbox_events.error_message`; only stable reason codes are stored there. The notification key is unchanged on retry, including failure after the notification row is inserted but before request acknowledgment. Existing channel-delivery recovery continues independently.
 
-Lease recovery now includes these ledger-backed requests, in the same bounded SKIP LOCKED recovery loop as premium work. Completed/failed BullMQ copies are removable so a recovered durable request can reuse its job ID. Attempt exhaustion remains visible in the existing failed-outbox/operator path. A new forward migration, `20260922_notification_request_dispatch.sql`, adds the matching partial lease index and is registered after existing Provider OS migrations. No historical migration was edited.
+Lease recovery now includes these ledger-backed requests, in the same bounded SKIP LOCKED recovery loop as premium work. Completed/failed BullMQ copies are removable so a recovered durable request can reuse its job ID. Attempt exhaustion remains visible in the existing failed-outbox/operator path. A new forward migration, `20260919_notification_request_dispatch.sql`, adds the matching partial lease index and is registered after existing Provider OS migrations. No historical migration was edited.
 
 ## Validation
 

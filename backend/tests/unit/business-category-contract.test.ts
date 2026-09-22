@@ -16,7 +16,7 @@ describe('canonical service category contract', () => {
     expect(validateTaskIntake('other', {task_goal:'Organize the workshop',task_duration_estimate:'1_3_hours'}).readyForDraft).toBe(true);
   });
   it('seeds precisely the canonical registry and conservatively requires manual policy review', () => {
-    const sql = readFileSync(resolve('backend/database/migrations/20261007_business_service_category_policy.sql'), 'utf8');
+    const sql = readFileSync(resolve('backend/database/migrations/20260922_business_service_category_policy.sql'), 'utf8');
     for (const code of expected) expect(sql).toContain(`('${code}',`);
     expect(sql).toContain("'US-WA', 'MANUAL_REVIEW_REQUIRED'");
     expect(sql).not.toContain("'US-WA', 'UNRESTRICTED'");

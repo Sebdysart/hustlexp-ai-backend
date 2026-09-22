@@ -10,7 +10,7 @@ The selected rail is LocalCertificationPaymentProvider. Its existing task method
 
 ## Schema and migration
 
-New registered migration: `20260921_provider_os_purchases.sql`, after the existing Provider OS access, quote-origin and premium-event migrations. No historical migration is edited.
+New registered migration: `20260919_provider_os_purchases.sql`, after the existing Provider OS access, quote-origin and premium-event migrations. No historical migration is edited.
 
 - `provider_os_purchases`: organization, purchaser, product, provider IDs, amount/currency/period snapshot, test flag, pending/succeeded/failed/canceled status, payment/grant timestamps, review reason and next reconciliation time.
 - `hxos_local_test_product_intents`: independent provider payment state, immutable identity/price/period binding and hashed confirmation secret. No card credentials.

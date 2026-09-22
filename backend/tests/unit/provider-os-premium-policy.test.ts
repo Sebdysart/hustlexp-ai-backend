@@ -42,7 +42,7 @@ describe('premium SMS policy', () => {
   it('registers a new migration after ownership and quote provenance', () => {
     const names = REQUIRED_MIGRATION_FILES.map(m => m.name);
     expect(names.indexOf('20260920_provider_os_premium_events')).toBeGreaterThan(names.indexOf('20260919_provider_os_quote_origin'));
-    const sql = readFileSync('backend/database/migrations/20260920_provider_os_premium_events.sql', 'utf8');
+    const sql = readFileSync('backend/database/migrations/20260919_provider_os_premium_events.sql', 'utf8');
     expect(sql).toContain('AFTER INSERT ON provider_os_relationships');
     expect(sql).toContain('AFTER INSERT ON task_drafts');
     expect(sql).toContain('AFTER UPDATE OF quote_id ON task_drafts');
