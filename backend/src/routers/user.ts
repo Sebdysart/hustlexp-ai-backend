@@ -546,7 +546,7 @@ export const userRouter = router({
           VALUES (
             $1,
             $2,
-            $3,
+            $3::text,
             CASE WHEN $3::text IS NOT NULL THEN NOW() END,
             $4,
             $5,

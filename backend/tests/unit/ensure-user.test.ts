@@ -32,7 +32,7 @@ describe('ensureUserRowForFirebaseUid adult safety', () => {
     });
 
     const [sql, params] = query.mock.calls[0];
-    expect(String(sql)).toContain('VALUES ($1, $2, $3, $4, $5, $6::date, true, $7,');
+    expect(String(sql)).toContain('VALUES ($1, $2, $3::text, $4, $5, $6::date, true, $7,');
     expect(params).toEqual(['firebase-1', 'adult-check@example.com', null, 'Adult Check', 'worker', '1990-01-01', 0]);
   });
 

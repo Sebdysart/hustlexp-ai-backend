@@ -25,10 +25,12 @@ export async function ensureUserRowForFirebaseUid(firebaseUid: string): Promise<
       || (email ? email.split('@')[0] : 'HustleXP customer');
     const result = await db.transaction(async (query) => {
       if (phone) await prepareVerifiedPhoneAssignment(query, firebaseUid, phone);
+      // Type both uses of the nullable phone parameter: PostgreSQL cannot infer
+      // it consistently from the VARCHAR column and the verification CASE.
       return query<User>(
       `INSERT INTO users
          (firebase_uid, email, phone, full_name, default_mode, date_of_birth, is_minor, trust_tier, phone_verified_at)
-       VALUES ($1, $2, $3, $4, $5, $6::date, true, $7, CASE WHEN $3 IS NOT NULL THEN NOW() END)
+       VALUES ($1, $2, $3::text, $4, $5, $6::date, true, $7, CASE WHEN $3::text IS NOT NULL THEN NOW() END)
        ON CONFLICT (firebase_uid) DO UPDATE SET
          email = COALESCE(users.email, EXCLUDED.email),
          contact_phone = CASE WHEN users.phone_verified_at IS NULL AND users.phone IS DISTINCT FROM EXCLUDED.phone THEN COALESCE(users.contact_phone, users.phone) ELSE users.contact_phone END,
