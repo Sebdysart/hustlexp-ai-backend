@@ -15,6 +15,32 @@ export interface TilledPaymentIntent {
   platform_fee_amount?: number;
 }
 
+export type TilledRefundReason = 'duplicate' | 'fraudulent' | 'requested_by_customer';
+export type TilledRefundStatus = 'pending' | 'succeeded' | 'failed' | 'canceled' | 'requires_action';
+export interface TilledRefund {
+  id: string;
+  payment_intent_id: string;
+  charge_id: string;
+  amount: number;
+  status: TilledRefundStatus;
+  metadata?: Record<string, string>;
+  failure_code?: string | null;
+  failure_message?: string | null;
+}
+
+function isRefund(value: unknown): value is TilledRefund {
+  if (!value || typeof value !== 'object') return false;
+  const refund = value as Record<string, unknown>;
+  return typeof refund.id === 'string' && /^[A-Za-z0-9_:-]{3,100}$/.test(refund.id)
+    && typeof refund.payment_intent_id === 'string' && /^pi_[A-Za-z0-9_]+$/.test(refund.payment_intent_id)
+    && typeof refund.charge_id === 'string' && refund.charge_id.length > 0
+    && Number.isSafeInteger(refund.amount) && Number(refund.amount) > 0
+    && typeof refund.status === 'string'
+    && ['pending', 'succeeded', 'failed', 'canceled', 'requires_action'].includes(refund.status)
+    && (refund.metadata === undefined || (typeof refund.metadata === 'object' && refund.metadata !== null
+      && !Array.isArray(refund.metadata) && Object.values(refund.metadata).every((item) => typeof item === 'string')));
+}
+
 export class TilledApiError extends Error {
   constructor(
     public readonly code: string,
@@ -273,6 +299,46 @@ export class TilledClient {
       throw new TilledApiError('INVALID_PROVIDER_RESPONSE', undefined, { kind: 'invalid_response' });
     }
     return intent;
+  }
+
+  async createRefund(input: {
+    accountId: string; paymentIntentId: string; amountCents: number;
+    reason: TilledRefundReason; metadata: Record<string, string>;
+  }): Promise<TilledRefund> {
+    if (!Number.isSafeInteger(input.amountCents) || input.amountCents <= 0
+      || !/^pi_[A-Za-z0-9_]+$/.test(input.paymentIntentId)) {
+      throw new TilledApiError('INVALID_REFUND_REQUEST');
+    }
+    const refund = await this.request<unknown>(input.accountId, '/v1/refunds', {
+      method: 'POST', operation: 'create_refund', body: {
+        payment_intent_id: input.paymentIntentId,
+        amount: input.amountCents,
+        reason: input.reason,
+        refund_platform_fee: true,
+        metadata: input.metadata,
+      },
+    });
+    if (!isRefund(refund)) throw new TilledApiError('INVALID_PROVIDER_RESPONSE', undefined, { kind: 'invalid_response' });
+    return refund;
+  }
+
+  async getRefund(accountId: string, refundId: string): Promise<TilledRefund> {
+    if (!/^[A-Za-z0-9_:-]{3,100}$/.test(refundId)) throw new TilledApiError('INVALID_REFUND_ID');
+    const refund = await this.request<unknown>(accountId, `/v1/refunds/${encodeURIComponent(refundId)}`,
+      { operation: 'get_refund' });
+    if (!isRefund(refund)) throw new TilledApiError('INVALID_PROVIDER_RESPONSE', undefined, { kind: 'invalid_response' });
+    return refund;
+  }
+
+  async findRefundsByAttempt(accountId: string, attemptId: string): Promise<TilledRefund[]> {
+    const params = new URLSearchParams({ 'metadata[hustlexp_refund_attempt_id]': attemptId, limit: '2' });
+    const page = await this.request<unknown>(accountId, `/v1/refunds?${params.toString()}`,
+      { operation: 'list_refunds' });
+    if (!page || typeof page !== 'object' || !('items' in page)
+      || !Array.isArray(page.items) || !page.items.every(isRefund)) {
+      throw new TilledApiError('INVALID_PROVIDER_RESPONSE', undefined, { kind: 'invalid_response' });
+    }
+    return page.items.filter((refund) => refund.metadata?.hustlexp_refund_attempt_id === attemptId);
   }
 
   async createConnectedAccount(input: {

@@ -13,6 +13,7 @@ async function addRepeatable(
 export async function registerScheduledJobs(): Promise<void> {
   await addRepeatable('maintenance', 'assessment.reconcile_payments', {}, '* * * * *');
   await addRepeatable('maintenance', 'tilled.reconcile_quote_payments', { limit: 25 }, '* * * * *');
+  await addRepeatable('maintenance', 'tilled.reconcile_quote_refunds', { limit: 25 }, '* * * * *');
   await addRepeatable('maintenance', 'tilled.process_webhook_events', { limit: 25 }, '* * * * *');
   await addRepeatable('maintenance', 'provider_os.reconcile_purchases', {}, '* * * * *');
   await addRepeatable('maintenance', 'dispatch.expire_unfilled', { limit: 100 }, '* * * * *');

@@ -4,7 +4,6 @@ import { invalidateTask } from '../cache/db-cache.js';
 import { db } from '../db.js';
 import { ProofService } from '../services/ProofService.js';
 import { TaskService } from '../services/TaskService.js';
-import { VerifiedPosterCompletionService } from '../services/VerifiedPosterCompletionService.js';
 import { protectedProcedure, Schemas, type AuthedContext } from '../trpc.js';
 import { ErrorCodes } from '../types.js';
 
@@ -119,28 +118,6 @@ async function reviewProof(ctx: AuthedContext, input: ReviewProofInput) {
   return reviewed.data;
 }
 
-function completeErrorCode(code: string): 'NOT_FOUND' | 'FORBIDDEN' | 'PRECONDITION_FAILED' | 'BAD_REQUEST' {
-  if (code === ErrorCodes.NOT_FOUND) return 'NOT_FOUND';
-  if (code === ErrorCodes.FORBIDDEN) return 'FORBIDDEN';
-  if (code === 'HX301' || code === ErrorCodes.INV_3_VIOLATION) return 'PRECONDITION_FAILED';
-  return 'BAD_REQUEST';
-}
-
-async function completeTask(ctx: AuthedContext, taskId: string) {
-  const result = await VerifiedPosterCompletionService.confirm({
-    taskId,
-    providerConfirmationId: `web:${taskId}`,
-    actorId: ctx.user.id,
-    channel: 'WEB',
-    expectedPosterId: ctx.user.id,
-  });
-  if (!result.success) {
-    throw new TRPCError({ code: completeErrorCode(result.error.code), message: result.error.message });
-  }
-  await invalidateTask(taskId);
-  return result.data;
-}
-
 function cancelErrorCode(code: string): 'NOT_FOUND' | 'FORBIDDEN' | 'BAD_REQUEST' {
   if (code === ErrorCodes.NOT_FOUND) return 'NOT_FOUND';
   return code === ErrorCodes.FORBIDDEN ? 'FORBIDDEN' : 'BAD_REQUEST';
@@ -159,9 +136,6 @@ export const TaskReviewProcedures = {
   reviewProof: protectedProcedure
     .input(reviewProofInput)
     .mutation(async ({ ctx, input }) => reviewProof(ctx, input)),
-  complete: protectedProcedure
-    .input(z.object({ taskId: Schemas.uuid }))
-    .mutation(async ({ ctx, input }) => completeTask(ctx, input.taskId)),
   cancel: protectedProcedure
     .input(z.object({ taskId: Schemas.uuid, reason: z.string().trim().max(1000).optional() }))
     .mutation(async ({ ctx, input }) => cancelTask(ctx, input.taskId)),

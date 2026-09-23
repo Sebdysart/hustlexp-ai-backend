@@ -134,8 +134,13 @@ async function commitReview(
   params: ReviewProofParams,
   judgeVerdict: JudgeVerdict | null,
 ): Promise<Proof> {
-  const taskId = await lockProofForReview(query, params.proofId);
+  const proofTask = await query<{ task_id: string }>(
+    'SELECT task_id FROM proofs WHERE id = $1 AND rework_id IS NULL', [params.proofId]);
+  if (!proofTask.rows[0]) throw new TRPCError({ code: 'NOT_FOUND', message: 'Proof not found' });
+  const taskId = proofTask.rows[0].task_id;
   await assertTaskReviewState(query, taskId);
+  const lockedTaskId = await lockProofForReview(query, params.proofId);
+  if (lockedTaskId !== taskId) throw new TRPCError({ code: 'CONFLICT', message: 'Proof task changed' });
   if (judgeVerdict) {
     const audit = await JudgeAIService.logVerdict(
       params.proofId,
@@ -155,7 +160,8 @@ async function commitReview(
   }
   const result = await query<Proof>(
     `UPDATE proofs
-     SET state = $1, reviewed_by = $2, reviewed_at = NOW(), rejection_reason = $3
+     SET state = $1, reviewed_by = $2, reviewed_at = NOW(), rejection_reason = $3,
+         review_source = 'CUSTOMER'
      WHERE id = $4 AND rework_id IS NULL AND state = 'SUBMITTED'
      RETURNING *`,
     [params.decision, params.reviewerId, params.reason, params.proofId],

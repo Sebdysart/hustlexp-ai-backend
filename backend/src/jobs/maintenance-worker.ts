@@ -173,6 +173,11 @@ const MAINTENANCE_HANDLERS: Record<string, MaintenanceHandler> = {
     const result = await reconcileTilledQuotePayments(boundedJobLimit(job, 25));
     if (result.scanned > 0) log.info(result, 'Tilled quote payment reconciliation completed');
   },
+  'tilled.reconcile_quote_refunds': async (job) => {
+    const { reconcileQuoteRefunds } = await import('../services/payment/TilledQuoteRefundService.js');
+    const result = await reconcileQuoteRefunds(boundedJobLimit(job, 25));
+    if (result.scanned > 0) log.info(result, 'Tilled quote refund reconciliation completed');
+  },
   'assessment.reconcile_payments': async () => {
     const { reconcileAssessmentPayments } = await import('../services/AssessmentPaymentService.js');
     await reconcileAssessmentPayments();

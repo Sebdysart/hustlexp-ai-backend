@@ -211,6 +211,7 @@ export const disputeAdminProcedure = protectedProcedure.use(capabilityAdminMiddl
 export const trustAdminProcedure = protectedProcedure.use(capabilityAdminMiddleware('can_modify_trust'));
 export const safetyAdminProcedure = protectedProcedure.use(capabilityAdminMiddleware('can_manage_incidents'));
 export const operationsAdminProcedure = protectedProcedure.use(capabilityAdminMiddleware('can_manage_operations'));
+export const operationsFinancialAdminProcedure = operationsAdminProcedure.use(capabilityAdminMiddleware('can_access_financials'));
 
 const isAdminOrEngineBridge = t.middleware(async ({ ctx, next }) => {
   if (ctx.engineBridgeAuthorized === true && ctx.engineBridgeActorId) {

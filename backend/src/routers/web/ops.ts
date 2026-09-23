@@ -10,7 +10,7 @@
  */
 
 import { z } from 'zod';
-import { router, publicProcedure, operationsAdminProcedure } from '../../trpc.js';
+import { router, publicProcedure, operationsAdminProcedure, operationsFinancialAdminProcedure } from '../../trpc.js';
 import { db } from '../../db.js';
 import { logger } from '../../logger.js';
 import { TRPCError } from '@trpc/server';
@@ -43,6 +43,8 @@ import { opsBusinessCredentialProcedures } from './opsBusinessCredentials.js';
 import { opsBusinessEligibilityProcedures } from './opsBusinessEligibility.js';
 import { AnalyticsService } from '../../services/AnalyticsService.js';
 import { TaskReworkService } from '../../services/TaskReworkService.js';
+import { getQuoteRefundSummary, requestQuoteRefund } from '../../services/payment/TilledQuoteRefundService.js';
+import { completeTaskByOpsOverride, getOpsCompletionOverrideContext } from '../../services/OpsTaskCompletionOverrideService.js';
 
 const log = logger.child({ router: 'web.ops' });
 
@@ -881,6 +883,7 @@ export const webOpsRouter = router({
         fulfiller_org.verification_status AS fulfilling_business_verification_status,
 
         qp.status AS quote_payment_status,
+        qp.provider AS quote_payment_provider,
         qp.provider_payment_id AS quote_payment_intent_id,
         qp.updated_at AS quote_payment_updated_at,
 
@@ -912,9 +915,6 @@ export const webOpsRouter = router({
       LEFT JOIN quotes q
         ON q.id = d.quote_id
 
-      LEFT JOIN quote_versions qv
-        ON qv.id = q.active_version_id
-
       LEFT JOIN business_organizations quoting_org
         ON quoting_org.id = q.business_organization_id
 
@@ -924,6 +924,9 @@ export const webOpsRouter = router({
       LEFT JOIN quote_payments qp
         ON qp.task_id = t.id
         AND qp.quote_id = q.id
+
+      LEFT JOIN quote_versions qv
+        ON qv.id = COALESCE(qp.quote_version_id, q.active_version_id)
 
       LEFT JOIN escrows e
         ON e.task_id = t.id
@@ -949,6 +952,30 @@ export const webOpsRouter = router({
         },
       };
     }),
+
+  getTaskRefunds: operationsFinancialAdminProcedure
+    .input(z.object({ taskId: z.string().uuid() }).strict())
+    .query(({ input }) => getQuoteRefundSummary(input.taskId)),
+
+  requestTaskRefund: operationsFinancialAdminProcedure
+    .input(z.object({
+      taskId: z.string().uuid(),
+      fullRemaining: z.boolean(),
+      amountCents: z.number().int().positive().optional(),
+      tilledReason: z.enum(['duplicate', 'fraudulent', 'requested_by_customer']),
+      internalReason: z.string().trim().min(10).max(2000),
+    }).strict().refine((input) => input.fullRemaining ? input.amountCents === undefined
+      : input.amountCents !== undefined, 'Choose full remaining or a partial amount.'))
+    .mutation(({ ctx, input }) => requestQuoteRefund({ ...input, actorUserId: ctx.user.id })),
+
+  getTaskCompletionOverride: operationsAdminProcedure
+    .input(z.object({ taskId: z.string().uuid() }).strict())
+    .query(({ ctx, input }) => getOpsCompletionOverrideContext(input.taskId, ctx.user.id)),
+
+  overrideTaskCompletion: operationsAdminProcedure
+    .input(z.object({ taskId: z.string().uuid(), proofId: z.string().uuid(),
+      internalReason: z.string().trim().min(10).max(2000) }).strict())
+    .mutation(({ ctx, input }) => completeTaskByOpsOverride({ ...input, actorId: ctx.user.id })),
 
   listTaskReworks: operationsAdminProcedure
     .input(z.object({ taskId: z.string().uuid() }).strict())

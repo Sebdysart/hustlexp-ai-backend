@@ -10,7 +10,7 @@ export const metricDefinitions = {
   intake: 'Distinct intake_attempt_id starting in [start,end), observed through the report time. Completion means preview reached. Repeat views/edits do not create additional completions.',
   dropoff: 'Derived: last viewed question on an uncompleted attempt with no activity for 30 minutes. This is an inactivity indicator, not a confirmed abandonment reason. Newer attempts remain in progress.',
   funnel: 'Same first-start cohort. Only one committed draft with consistent authenticated/anonymous identities and canonical ownership is linked. Conflicting/multiple/missing links remain unresolved. Stages are independently observed as of report time; conditional rates use the intersection with the previous stage, not division of independent counts. Immature cohorts are not final conversion.',
-  marketplace: 'Draft-created cohort in [start,end); current canonical state. Paid includes subsequent refunds. Full/partial refund counts are distinct paid quotes linked via quote_payments.task_id to escrows in REFUNDED/REFUND_PARTIAL state. These are counts, not revenue adjustments. Values are customer quote cents, never revenue. Selection/approval latency is omitted: no reliable canonical customer-acceptance timestamp is available; quote_send_ready_at is mutable operational state.',
+  marketplace: 'Draft-created cohort in [start,end); current canonical state. Paid includes subsequent refunds. Full/partial refund counts use successful Tilled refund ledger amounts when present, otherwise legacy escrow states. These are counts, not revenue adjustments. Values are customer quote cents, never revenue. Selection/approval latency is omitted: no reliable canonical customer-acceptance timestamp is available; quote_send_ready_at is mutable operational state.',
   approval: 'Dated customer approval: task_drafts.quote_id plus scheduled_service_date. Quote generation can set quote_id without customer approval; those legacy/generated links are shown separately, not counted as approvals.',
   support: 'Thread-created cohort in [start,end); current statuses and time from creation to current resolved_at. Reopened threads count under their current status.',
   traffic: 'Browser telemetry in the selected server environment; internal/admin/configured IDs excluded by default. Canonical quote.is_test and quote.environment exclude known test quotes. Unmarked demo accounts cannot be reliably identified.',
@@ -142,10 +142,17 @@ export async function getProductAnalytics(input: z.infer<typeof analyticsRangeSc
       'approval_unknown',count(d.quote_id) FILTER(WHERE d.scheduled_service_date IS NULL),
       'quoted_drafts',count(*) FILTER(WHERE EXISTS(SELECT 1 FROM quotes q WHERE q.task_draft_id=d.id AND NOT q.is_test AND q.environment='PRODUCTION')),
       'paid_tasks',count(*) FILTER(WHERE EXISTS(SELECT 1 FROM quote_payments p WHERE p.quote_id=d.quote_id AND p.status IN ('SUCCEEDED','REFUNDED'))),
-      'fully_refunded_quotes',count(DISTINCT d.quote_id) FILTER(WHERE EXISTS(SELECT 1 FROM quote_payments p JOIN escrows e ON e.task_id=p.task_id
-        WHERE p.quote_id=d.quote_id AND p.status IN ('SUCCEEDED','REFUNDED') AND e.state='REFUNDED')),
-      'partially_refunded_quotes',count(DISTINCT d.quote_id) FILTER(WHERE EXISTS(SELECT 1 FROM quote_payments p JOIN escrows e ON e.task_id=p.task_id
-        WHERE p.quote_id=d.quote_id AND p.status IN ('SUCCEEDED','REFUNDED') AND e.state='REFUND_PARTIAL')),
+      'fully_refunded_quotes',count(DISTINCT d.quote_id) FILTER(WHERE EXISTS(SELECT 1 FROM quote_payments p
+        WHERE p.quote_id=d.quote_id AND p.status IN ('SUCCEEDED','REFUNDED') AND
+        (CASE WHEN EXISTS(SELECT 1 FROM quote_payment_refunds r WHERE r.quote_payment_id=p.id AND r.status='SUCCEEDED')
+          THEN COALESCE((SELECT SUM(r.amount_cents) FROM quote_payment_refunds r WHERE r.quote_payment_id=p.id AND r.status='SUCCEEDED'),0)>=p.amount_cents
+          ELSE EXISTS(SELECT 1 FROM escrows e WHERE e.task_id=p.task_id AND e.state='REFUNDED') END))),
+      'partially_refunded_quotes',count(DISTINCT d.quote_id) FILTER(WHERE EXISTS(SELECT 1 FROM quote_payments p
+        WHERE p.quote_id=d.quote_id AND p.status IN ('SUCCEEDED','REFUNDED') AND
+        (CASE WHEN EXISTS(SELECT 1 FROM quote_payment_refunds r WHERE r.quote_payment_id=p.id AND r.status='SUCCEEDED')
+          THEN COALESCE((SELECT SUM(r.amount_cents) FROM quote_payment_refunds r WHERE r.quote_payment_id=p.id AND r.status='SUCCEEDED'),0)>0
+            AND COALESCE((SELECT SUM(r.amount_cents) FROM quote_payment_refunds r WHERE r.quote_payment_id=p.id AND r.status='SUCCEEDED'),0)<p.amount_cents
+          ELSE EXISTS(SELECT 1 FROM escrows e WHERE e.task_id=p.task_id AND e.state='REFUND_PARTIAL') END))),
       'assigned_tasks',count(*) FILTER(WHERE t.worker_id IS NOT NULL OR t.state IN ('ACCEPTED','PROOF_SUBMITTED','COMPLETED')),
       'completed_tasks',count(*) FILTER(WHERE t.state='COMPLETED'),
       'mean_selected_quote_cents',avg(qv.total_cents) FILTER(WHERE d.scheduled_service_date IS NOT NULL),
