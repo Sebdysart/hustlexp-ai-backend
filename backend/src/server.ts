@@ -49,8 +49,8 @@ registerTrpcRoutes(app);
 registerAnimationRoutes(app);
 registerStateRoutes(app);
 
-app.use('/webhooks/*', publicIpRateLimitMiddleware());
-app.use('/webhooks/*', rateLimitMiddleware('general'));
+// Signed processor deliveries must reach authentication and durable receipt
+// even while Redis is unavailable. Global body limits still apply above.
 registerWebhookRoutes(app);
 registerErrorHandlers(app);
 

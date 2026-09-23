@@ -143,6 +143,7 @@ async function processPremiumSms(smsId: string): Promise<void> {
 // ============================================================================
 
 interface SMSJobData {
+  outbox_idempotency_key: string;
   aggregate_type: string;
   aggregate_id: string;
   event_version: number;
@@ -169,7 +170,7 @@ export async function processSMSJob(job: Job<SMSJobData>): Promise<void> {
   // Extract data from job payload (structured as outbox event)
   const { smsId, notificationId } = job.data.payload;
   const { toPhone, body } = job.data.payload;
-  const jobIdempotencyKey = job.id || `sms:${smsId}`;
+  const jobIdempotencyKey = job.data.outbox_idempotency_key;
   // Legacy premium rows stay suppressed. The ordinary marketplace SMS path below is unchanged.
   const principal = await db.query<{
     provider_os_event_id: string | null;

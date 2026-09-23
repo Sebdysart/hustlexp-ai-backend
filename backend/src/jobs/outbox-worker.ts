@@ -19,7 +19,7 @@
 
 import { createHash, randomUUID } from 'crypto';
 import { db } from '../db.js';
-import { enqueueJob, signJobPayload, type QueueName } from './queues.js';
+import { enqueueJob, signJobPayload, QUEUE_CONFIGS, type QueueName } from './queues.js';
 import { getClient as getRedisClient } from '../cache/redis.js';
 import { workerLogger } from '../logger.js';
 import { config } from '../config.js';
@@ -29,6 +29,14 @@ const log = workerLogger.child({ worker: 'outbox' });
 // Maximum delivery attempts before an outbox event is permanently failed.
 // Single source of truth — used by both processOutboxEvents and markOutboxEventFailed.
 const MAX_OUTBOX_ATTEMPTS = 5;
+const TRANSPORT_ERROR_PREFIX = 'transport_enqueue_failed:';
+
+function validOutboxEvent(event: OutboxEvent): boolean {
+  return Object.prototype.hasOwnProperty.call(QUEUE_CONFIGS, event.queue_name)
+    && typeof event.event_type === 'string' && event.event_type.length > 0
+    && typeof event.idempotency_key === 'string' && event.idempotency_key.length > 0
+    && typeof event.payload === 'object' && event.payload !== null && !Array.isArray(event.payload);
+}
 
 function bullMqJobId(idempotencyKey: string): string {
   return `outbox-${createHash('sha256')
@@ -144,6 +152,12 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
     for (const event of claimedEvents) {
       void AnalyticsService.observeOutbox(event);
       try {
+        if (!validOutboxEvent(event)) {
+          await db.query(`UPDATE outbox_events SET status = 'failed', error_message = 'poison:invalid_outbox_event',
+            updated_at = NOW() WHERE id = $1 AND status = 'enqueued'`, [event.id]);
+          failed++;
+          continue;
+        }
         // Sign financial job payloads to prevent Redis injection (Attack 12)
         let jobPayload: Record<string, unknown> = event.payload;
         if (FINANCIAL_EVENT_TYPES.has(event.event_type)) {
@@ -190,32 +204,22 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         errors.push({ eventId: event.id, error: errorMessage });
 
-        // The transaction already incremented attempts and set status='enqueued'.
-        // queue.add() failed, so roll back the status: if still below the max,
-        // reset to 'pending' so the next poll will retry; otherwise mark 'failed'.
-        // Note: `event.attempts` reflects the value at SELECT time (before the +1
-        // the transaction applied), so after the transaction attempts = event.attempts + 1.
+        // Queue transport failure is not poison work. Store a bounded failure
+        // count in the tagged error field, without consuming delivery attempts.
         await db.query(
           `UPDATE outbox_events
-           SET status = CASE WHEN attempts < $1 THEN 'pending' ELSE 'failed' END,
-               error_message = $2,
-               available_at = NOW() + LEAST(300, POWER(2, attempts) * 5) * INTERVAL '1 second',
+           SET status = 'pending',
+               attempts = GREATEST(attempts - 1, 0),
+               error_message = $1 || LEAST(8, CASE WHEN error_message ~ '^transport_enqueue_failed:[0-9]{1,2}$'
+                 THEN split_part(error_message, ':', 2)::integer + 1 ELSE 1 END)::text,
+               available_at = NOW() + LEAST(300, POWER(2, LEAST(8, CASE
+                 WHEN error_message ~ '^transport_enqueue_failed:[0-9]{1,2}$'
+                 THEN split_part(error_message, ':', 2)::integer + 1 ELSE 1 END)) * 5) * INTERVAL '1 second',
                updated_at = NOW()
-           WHERE id = $3 AND status = 'enqueued'`,
-          [MAX_OUTBOX_ATTEMPTS, errorMessage, event.id]
+           WHERE id = $2 AND status = 'enqueued'`,
+          [TRANSPORT_ERROR_PREFIX, event.id]
         );
-
-        if (event.attempts + 1 >= MAX_OUTBOX_ATTEMPTS) {
-          log.error(
-            { eventId: event.id, eventType: event.event_type, attempts: event.attempts + 1 },
-            'Outbox event permanently failed after max attempts — requires ops intervention'
-          );
-        } else {
-          log.warn(
-            { eventId: event.id, eventType: event.event_type, attempts: event.attempts + 1 },
-            'Outbox event queuing failed, will retry'
-          );
-        }
+        log.warn({ eventId: event.id, eventType: event.event_type }, 'Outbox queue transport failed; will retry');
       }
     }
 
@@ -263,7 +267,7 @@ export async function markOutboxEventFailed(
          error_message = $1,
          available_at = NOW() + LEAST(300, POWER(2, attempts) * 5) * INTERVAL '1 second',
          updated_at = NOW()
-     WHERE idempotency_key = $2 AND status = 'enqueued'`,
+     WHERE idempotency_key = $2 AND status IN ('enqueued', 'processing')`,
     [errorMessage, idempotencyKey, MAX_OUTBOX_ATTEMPTS]
   );
 }
@@ -274,21 +278,39 @@ export interface OutboxWorkerHandles {
   trustTierInterval: NodeJS.Timeout;
 }
 
+/** Explicit operator recovery for a known historical transport failure. The
+ * expected stored error must match exactly; this never scans all failed rows. */
+export async function recoverKnownTransportFailedOutboxEvent(
+  idempotencyKey: string, expectedError: string,
+): Promise<boolean> {
+  // Historical free-text failures have no reliable universal classifier.
+  // Require both an exact row match and a conservative transport signature.
+  const knownTransportError = /^(?:transport_enqueue_failed:\d{1,2}|connect ECONNREFUSED\b|connect ETIMEDOUT\b|read ECONNRESET\b|Connection is closed\.?$|Socket closed unexpectedly\.?$|MaxRetriesPerRequestError\b)/i;
+  if (!idempotencyKey || !knownTransportError.test(expectedError)) return false;
+  const result = await db.query(`UPDATE outbox_events SET status = 'pending', attempts = 0,
+    available_at = NOW(), error_message = 'transport_recovered_manually', updated_at = NOW()
+    WHERE idempotency_key = $1 AND status = 'failed' AND error_message = $2
+    RETURNING id`, [idempotencyKey, expectedError]);
+  return (result.rowCount ?? 0) > 0;
+}
+
 /** Recover the DB-commit/queue-add crash window for every outbox event.
  * Logical identity remains the original idempotency key; consumers must commit
  * their own durable result before acknowledging this at-least-once delivery. */
 export async function recoverExpiredOutboxLeases(batchSize = 100): Promise<void> {
   await db.query(`WITH expired AS (
     SELECT id FROM outbox_events
-    WHERE status = 'enqueued'
-      AND COALESCE(enqueued_at, created_at) < NOW() - INTERVAL '10 minutes'
-    ORDER BY COALESCE(enqueued_at, created_at), id LIMIT $2 FOR UPDATE SKIP LOCKED
+    WHERE (status = 'enqueued' AND COALESCE(enqueued_at, created_at) < NOW() - INTERVAL '10 minutes')
+       OR (status = 'processing' AND queue_name = 'user_notifications'
+           AND event_type LIKE 'push.%' AND updated_at < NOW() - INTERVAL '10 minutes')
+    ORDER BY COALESCE(enqueued_at, created_at), id LIMIT $1 FOR UPDATE SKIP LOCKED
   ) UPDATE outbox_events event SET
-    status = CASE WHEN event.attempts < $1 THEN 'pending' ELSE 'failed' END,
+    status = 'pending',
+    attempts = GREATEST(event.attempts - 1, 0),
     available_at = NOW() + LEAST(300, POWER(2, event.attempts) * 5) * INTERVAL '1 second',
     error_message = 'outbox_dispatch_lease_expired',
     updated_at = NOW()
-    FROM expired WHERE event.id = expired.id`, [MAX_OUTBOX_ATTEMPTS, batchSize]);
+    FROM expired WHERE event.id = expired.id`, [batchSize]);
 }
 
 async function pollOutbox() {

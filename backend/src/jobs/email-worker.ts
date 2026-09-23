@@ -49,6 +49,7 @@ if (config.identity.sendgrid.apiKey) {
 // ============================================================================
 
 interface EmailJobData {
+  outbox_idempotency_key: string;
   aggregate_type: string;
   aggregate_id: string;
   event_version: number;
@@ -188,7 +189,7 @@ export async function processEmailJob(job: Job<EmailJobData>): Promise<void> {
   // Extract data from job payload (structured as outbox event)
   const { emailId, toEmail, template, params } = job.data.payload;
   let userId = job.data.payload.userId;
-  const idempotencyKey = job.id || `email:${emailId}`;
+  const idempotencyKey = job.data.outbox_idempotency_key;
   const notificationId = typeof params?.notificationId === 'string' ? params.notificationId : null;
   
   try {

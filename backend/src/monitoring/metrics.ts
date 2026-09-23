@@ -49,6 +49,19 @@ const cacheOperationsTotal = new Counter({
   registers: [registry],
 });
 
+const rateLimiterEventsTotal = new Counter({
+  name: 'rate_limiter_events_total',
+  help: 'Limiter quota, backend, and fallback transitions',
+  labelNames: ['outcome'],
+  registers: [registry],
+});
+
+const rateLimiterFallbackActive = new Gauge({
+  name: 'rate_limiter_fallback_active',
+  help: 'Whether this process is using the emergency local limiter',
+  registers: [registry],
+});
+
 const apiErrorsTotal = new Counter({
   name: 'api_errors_total',
   help: 'Total number of API errors',
@@ -115,6 +128,8 @@ export {
   dbConnectionsActive,
   cacheOperationDuration,
   cacheOperationsTotal,
+  rateLimiterEventsTotal,
+  rateLimiterFallbackActive,
   apiErrorsTotal,
   activeUsers,
   escrowTotalValue,

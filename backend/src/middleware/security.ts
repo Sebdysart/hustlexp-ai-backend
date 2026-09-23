@@ -13,6 +13,7 @@ import { checkRateLimit, redis } from '../cache/redis.js';
 import { config } from '../config.js';
 import { firebaseAuth } from '../auth/firebase.js';
 import { logger } from '../logger.js';
+import { applyRateLimitPolicy, sensitiveRateLimitPath } from './rateLimitPolicy.js';
 
 const securityLog = logger.child({ module: 'security' });
 
@@ -152,7 +153,13 @@ export function rateLimitMiddleware(category: RateLimitCategory) {
     const identifier = `ip:${getTrustedClientIP(c)}`;
 
     const { limit, windowSeconds } = RATE_LIMITS[category];
-    const result = await checkRateLimit(identifier, category, limit, windowSeconds);
+    const result = applyRateLimitPolicy(
+      await checkRateLimit(identifier, category, limit, windowSeconds),
+      `${identifier}:${category}`, limit, windowSeconds,
+      sensitiveRateLimitPath(c.req.path) || category === 'ai' || category === 'financial',
+    );
+
+    if (result.status === 'unavailable') return c.json({ error: 'Service Unavailable', message: 'Rate limiting temporarily unavailable' }, 503);
 
     // Set rate-limit headers
     c.header('X-RateLimit-Limit', String(limit));
@@ -161,7 +168,7 @@ export function rateLimitMiddleware(category: RateLimitCategory) {
       c.header('X-RateLimit-Reset', String(result.resetAt));
     }
 
-    if (!result.allowed) {
+    if (result.status === 'limited') {
       c.header('Retry-After', String(windowSeconds));
       return c.json(
         {
@@ -335,7 +342,11 @@ export function aiRateLimitMiddleware(provider: keyof typeof AI_RATE_LIMITS) {
     // user per provider independently.
     const identifier = `ai:${provider}:${userId}`;
     const windowSeconds = limits.windowMs / 1000;
-    const result = await checkRateLimit(identifier, 'ai', limits.requests, windowSeconds);
+    const result = applyRateLimitPolicy(
+      await checkRateLimit(identifier, 'ai', limits.requests, windowSeconds),
+      identifier, limits.requests, windowSeconds, true,
+    );
+    if (result.status === 'unavailable') return c.json({ error: 'Service Unavailable', message: 'AI rate limiting temporarily unavailable' }, 503);
 
     c.header('X-RateLimit-Limit', limits.requests.toString());
     c.header('X-RateLimit-Remaining', Math.max(0, result.remaining).toString());
@@ -343,7 +354,7 @@ export function aiRateLimitMiddleware(provider: keyof typeof AI_RATE_LIMITS) {
       c.header('X-RateLimit-Reset', result.resetAt.toString());
     }
 
-    if (!result.allowed) {
+    if (result.status === 'limited') {
       c.header('Retry-After', String(windowSeconds));
       return c.json({
         error: 'AI rate limit exceeded',
@@ -397,9 +408,8 @@ const PUBLIC_IP_WINDOW_SECONDS = 60;   // per minute
  * (`aiRateLimitMiddleware`) uses a sliding window where burst prevention is
  * more critical.
  *
- * Behaviour when Redis is unavailable:
- *   - Production: FAIL CLOSED (429) — prevents bypass via Redis outage.
- *   - Development: ALLOW with a console warning.
+ * Redis failures use the bounded local budget for ordinary traffic; sensitive
+ * procedures return 503 until the shared limiter is available again.
  */
 export function publicIpRateLimitMiddleware() {
   return async (c: Context, next: Next) => {
@@ -424,10 +434,15 @@ export function publicIpRateLimitMiddleware() {
       const current = await redis.incrWithTtl(key, PUBLIC_IP_WINDOW_SECONDS);
 
       const remaining = Math.max(0, PUBLIC_IP_RATE_LIMIT - current);
+      const result = applyRateLimitPolicy(
+        { status: current > PUBLIC_IP_RATE_LIMIT ? 'limited' : 'allowed', remaining,
+          resetAt: Date.now() + PUBLIC_IP_WINDOW_SECONDS * 1000 },
+        key, PUBLIC_IP_RATE_LIMIT, PUBLIC_IP_WINDOW_SECONDS, sensitiveRateLimitPath(c.req.path),
+      );
       c.header('X-RateLimit-Limit', String(PUBLIC_IP_RATE_LIMIT));
       c.header('X-RateLimit-Remaining', String(remaining));
 
-      if (current > PUBLIC_IP_RATE_LIMIT) {
+      if (result.status === 'limited') {
         c.header('Retry-After', String(PUBLIC_IP_WINDOW_SECONDS));
         return c.json(
           {
@@ -438,17 +453,16 @@ export function publicIpRateLimitMiddleware() {
           429,
         );
       }
-    } catch (err) {
-      // Redis error — fail closed in production, open in dev.
-      if (config.app.isProduction) {
+    } catch {
+      const result = applyRateLimitPolicy(
+        { status: 'unavailable', remaining: 0 }, key, PUBLIC_IP_RATE_LIMIT,
+        PUBLIC_IP_WINDOW_SECONDS, sensitiveRateLimitPath(c.req.path),
+      );
+      if (result.status === 'unavailable') return c.json({ error: 'Service Unavailable', message: 'Rate limiting temporarily unavailable' }, 503);
+      if (result.status === 'limited') {
         c.header('Retry-After', String(PUBLIC_IP_WINDOW_SECONDS));
-        return c.json(
-          { error: 'Too Many Requests', message: 'Rate limiting unavailable', retryAfter: PUBLIC_IP_WINDOW_SECONDS },
-          429,
-        );
+        return c.json({ error: 'Too Many Requests', retryAfter: PUBLIC_IP_WINDOW_SECONDS }, 429);
       }
-      // Development: log and allow.
-      console.warn('[publicIpRateLimit] Redis error — allowing request in dev mode', err);
     }
 
     await next();

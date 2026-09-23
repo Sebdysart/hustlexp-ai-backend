@@ -1,6 +1,7 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { checkRateLimit } from '../cache/redis.js';
+import { enforceProcedureRateLimit } from '../middleware/rateLimitPolicy.js';
 import { db } from '../db.js';
 import { IncidentDiagnosisService } from '../services/IncidentDiagnosisService.js';
 import { safetyAdminProcedure } from '../trpc.js';
@@ -121,12 +122,7 @@ export const incidentAdminProcedures = {
     .input(z.object({ id: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
       const rateLimit = await checkRateLimit(ctx.user.id, 'incident_diagnose', 20, 60);
-      if (!rateLimit.allowed) {
-        throw new TRPCError({
-          code: 'TOO_MANY_REQUESTS',
-          message: 'Diagnosis rate limit exceeded. Maximum 20 diagnoses per minute.',
-        });
-      }
+      enforceProcedureRateLimit(rateLimit, `${ctx.user.id}:incident_diagnose`, 20, 60);
       const result = await IncidentDiagnosisService.diagnoseIncident(input.id);
       if (!result.success) throw new Error(result.error?.message || 'Diagnosis failed');
       return result.data;

@@ -13,6 +13,7 @@ import { z } from 'zod';
 import { router, publicProcedure, protectedProcedure, platformAdminProcedure, operationsAdminProcedure, Schemas } from '../trpc.js';
 import { behaviorEventSchema, analyticsRangeSchema } from '../services/analytics/contract.js';
 import { checkRateLimit } from '../cache/redis.js';
+import { applyRateLimitPolicy } from '../middleware/rateLimitPolicy.js';
 import { createHash } from 'node:crypto';
 import { AnalyticsService, type EventType } from '../services/AnalyticsService.js';
 import { db } from '../db.js';
@@ -21,8 +22,9 @@ export const analyticsRouter = router({
   collect: publicProcedure.input(z.unknown()).mutation(async ({ input, ctx }) => {
     const limiterKey = createHash('sha256').update(ctx.user?.id || ctx.ip || 'unknown').digest('hex');
     try {
-      const allowed = await checkRateLimit(limiterKey, 'product-analytics', 30, 60);
-      if (!allowed.allowed) {
+      const allowed = applyRateLimitPolicy(await checkRateLimit(limiterKey, 'product-analytics', 30, 60),
+        `${limiterKey}:product-analytics`, 30, 60, false);
+      if (allowed.status !== 'allowed') {
         void AnalyticsService.recordHealth('rate_limited');
         return { accepted: 0, available: false };
       }

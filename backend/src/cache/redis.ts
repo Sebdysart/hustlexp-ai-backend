@@ -9,6 +9,7 @@ export type RedisClient = Redis | null;
 
 // ─── Singleton Redis Client ────────────────────────────────────────────────
 let redisClient: Redis | null = null;
+let missingRedisLogged = false;
 
 /** Get shared Redis REST client; null if not configured (cache/rate-limit no-op). */
 export function getClient(): Redis | null {
@@ -26,7 +27,10 @@ export function getClient(): Redis | null {
       redisClient = null;
     }
   } else {
-    redisLog.warn('Redis REST not configured (UPSTASH_REDIS_REST_URL/TOKEN missing) — using stub fallbacks');
+    if (!missingRedisLogged) {
+      redisLog.warn('Redis REST not configured (UPSTASH_REDIS_REST_URL/TOKEN missing) — using stub fallbacks');
+      missingRedisLogged = true;
+    }
   }
 
   return redisClient;
@@ -196,10 +200,7 @@ export async function expire(key: string, ttl: number): Promise<void> {
 export async function incrWithTtl(key: string, windowSeconds: number): Promise<number> {
   const client = getClient();
   if (!client) {
-    if (config.app.isProduction) {
-      throw new Error('Redis unavailable — rate limiting fail-closed');
-    }
-    return 1; // dev/test: allow
+    throw new Error('Redis unavailable for rate limiting');
   }
 
   // Lua script: INCR the key, then EXPIRE only if this is the first increment
@@ -213,13 +214,10 @@ export async function incrWithTtl(key: string, windowSeconds: number): Promise<n
     return current
   `;
 
-  try {
-    const result = await client.eval(luaScript, [key], [String(windowSeconds)]);
-    return typeof result === 'number' ? result : Number(result);
-  } catch (error) {
-    redisLog.error({ err: error, key }, 'Redis incrWithTtl (Lua) error');
-    throw error; // Let callers decide fail-open vs fail-closed
-  }
+  const result = await client.eval(luaScript, [key], [String(windowSeconds)]);
+  const count = typeof result === 'number' ? result : typeof result === 'string' && /^\d+$/.test(result) ? Number(result) : NaN;
+  if (!Number.isSafeInteger(count) || count < 1) throw new Error('Malformed Redis limiter response');
+  return count;
 }
 
 export async function zadd(
@@ -271,39 +269,32 @@ export async function zrevrange(
   }
 }
 
+export type RateLimitResult =
+  | { status: 'allowed' | 'limited'; remaining: number; resetAt: number }
+  | { status: 'unavailable'; remaining: 0 };
+
 export async function checkRateLimit(
   userId: string,
   action: string,
   limit: number,
   window: number
-): Promise<{ allowed: boolean; remaining: number; resetAt?: number }> {
-  const limiter = getRateLimiter(window * 1000, limit);
-  if (!limiter) {
-    // FAIL CLOSED in production — deny if rate limiting is unavailable
-    if (config.app.isProduction) {
-      redisLog.error('Rate limiting unavailable (Redis not configured) — denying request');
-      return { allowed: false, remaining: 0, resetAt: Date.now() + window * 1000 };
-    }
-    // Allow in development with warning
-    redisLog.warn('Rate limiting disabled — Redis not configured (dev mode)');
-    return { allowed: true, remaining: limit };
-  }
-
+): Promise<RateLimitResult> {
   try {
+    const limiter = getRateLimiter(window * 1000, limit);
+    if (!limiter) return { status: 'unavailable', remaining: 0 };
     const identifier = CACHE_KEYS.rateLimit(userId, action);
     const result = await limiter.limit(identifier);
+    if (typeof result.success !== 'boolean' || !Number.isFinite(result.remaining)
+      || result.remaining < 0 || !Number.isFinite(result.reset) || result.reset <= 0) {
+      throw new Error('Malformed Redis limiter response');
+    }
     return {
-      allowed: result.success,
+      status: result.success ? 'allowed' : 'limited',
       remaining: result.remaining,
       resetAt: result.reset,
     };
-  } catch (error) {
-    redisLog.error({ err: error, userId, action }, 'Rate limit check error');
-    // FAIL CLOSED in production on Redis errors too
-    if (config.app.isProduction) {
-      return { allowed: false, remaining: 0, resetAt: Date.now() + window * 1000 };
-    }
-    return { allowed: true, remaining: limit };
+  } catch {
+    return { status: 'unavailable', remaining: 0 };
   }
 }
 

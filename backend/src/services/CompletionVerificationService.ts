@@ -35,12 +35,16 @@ export const CompletionVerificationService = {
         const proof = (await query<ProofRow>(`SELECT id, state FROM proofs WHERE task_id = $1 AND rework_id IS NULL ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, [taskId])).rows[0];
         if (!proof) return failure('PROOF_NOT_FOUND', 'No completion proof exists for this task.');
         if (proof.state !== 'SUBMITTED') return failure('PROOF_NOT_AWAITING_REVIEW', `Latest proof is ${proof.state}, expected SUBMITTED.`);
+        const existing = (await query<{ verified_at: Date | null }>(
+          `SELECT verified_at FROM task_completion_verifications WHERE task_id = $1 FOR UPDATE`, [taskId])).rows[0];
+        if (existing?.verified_at) return failure('COMPLETION_CODE_ALREADY_VERIFIED', 'This completion code has already been verified.');
         const code = generateCompletionCode();
         const expiresAt = completionCodeExpiresAt();
         const result = await query<{ expires_at: Date }>(`
           INSERT INTO task_completion_verifications (task_id, poster_user_id, business_organization_id, code_hash, expires_at)
           VALUES ($1, $2, $3, $4, $5)
           ON CONFLICT (task_id) DO UPDATE SET poster_user_id = EXCLUDED.poster_user_id, business_organization_id = EXCLUDED.business_organization_id, code_hash = EXCLUDED.code_hash, expires_at = EXCLUDED.expires_at, failed_attempts = 0, verified_at = NULL, verified_by_user_id = NULL, updated_at = NOW()
+          WHERE task_completion_verifications.verified_at IS NULL
           RETURNING expires_at`, [taskId, posterId, task.business_fulfiller_organization_id, hashTaskCompletionCode(taskId, code), expiresAt]);
         const stored = result.rows[0];
         if (!stored) return failure('COMPLETION_CODE_CREATE_FAILED', 'Unable to create the completion code.');
@@ -58,16 +62,21 @@ export const CompletionVerificationService = {
         if (!organizationId) return failure('BUSINESS_FULFILLER_MISSING', 'This task has no fulfilling business.');
         const member = (await query<{ user_id: string }>(`SELECT user_id FROM business_memberships WHERE organization_id = $1 AND user_id = $2 AND status = 'ACTIVE' LIMIT 1`, [organizationId, businessUserId])).rows[0];
         if (!member) return failure('BUSINESS_NOT_AUTHORIZED', 'You are not authorized to complete this business task.');
-        if (task.state === 'COMPLETED' && task.completed_at && task.payout_ready_at) return { success: true as const, data: { posterId: task.poster_id, proofId: '', replayedVerification: true, alreadyCompleted: true } };
-        if (task.state !== 'PROOF_SUBMITTED') return failure('TASK_NOT_READY_FOR_COMPLETION', 'This task is not awaiting completion verification.');
-        const proof = (await query<ProofRow>(`SELECT id, state FROM proofs WHERE task_id = $1 AND rework_id IS NULL ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, [taskId])).rows[0];
-        if (!proof) return failure('PROOF_NOT_FOUND', 'No completion proof exists for this task.');
-        if (!['SUBMITTED', 'ACCEPTED'].includes(proof.state)) return failure('PROOF_NOT_COMPLETABLE', `Latest proof is ${proof.state} and cannot be completed.`);
+        const alreadyCompleted = task.state === 'COMPLETED' && !!task.completed_at && !!task.payout_ready_at;
+        if (!alreadyCompleted && task.state !== 'PROOF_SUBMITTED') return failure('TASK_NOT_READY_FOR_COMPLETION', 'This task is not awaiting completion verification.');
+        const proof = alreadyCompleted ? undefined : (await query<ProofRow>(`SELECT id, state FROM proofs WHERE task_id = $1 AND rework_id IS NULL ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, [taskId])).rows[0];
+        if (!alreadyCompleted && !proof) return failure('PROOF_NOT_FOUND', 'No completion proof exists for this task.');
+        if (proof && !['SUBMITTED', 'ACCEPTED'].includes(proof.state)) return failure('PROOF_NOT_COMPLETABLE', `Latest proof is ${proof.state} and cannot be completed.`);
         const verification = (await query<VerificationRow>(`SELECT id, task_id, poster_user_id, business_organization_id, code_hash, expires_at, failed_attempts, verified_at FROM task_completion_verifications WHERE task_id = $1 FOR UPDATE`, [taskId])).rows[0];
         if (!verification) return failure('COMPLETION_CODE_NOT_CREATED', 'The customer has not generated a completion code yet.');
         if (verification.business_organization_id !== organizationId) return failure('COMPLETION_BUSINESS_MISMATCH', 'The completion code does not belong to this business task.');
         if (verification.poster_user_id !== task.poster_id) return failure('COMPLETION_POSTER_MISMATCH', 'The completion code does not belong to this task poster.');
-        if (verification.verified_at) return { success: true as const, data: { posterId: task.poster_id, proofId: proof.id, replayedVerification: true, alreadyCompleted: false } };
+        if (verification.verified_at) {
+          if (!completionCodeMatches(verification.code_hash, hashTaskCompletionCode(taskId, code)))
+            return failure('COMPLETION_CODE_INVALID', 'The completion code is incorrect.');
+          return { success: true as const, data: { posterId: task.poster_id, proofId: proof?.id ?? '', replayedVerification: true, alreadyCompleted } };
+        }
+        if (alreadyCompleted) return failure('TASK_ALREADY_COMPLETED', 'This task has already been completed.');
         if (verification.expires_at <= new Date()) return failure('COMPLETION_CODE_EXPIRED', 'This completion code has expired. Ask the customer to generate a new one.');
         if (verification.failed_attempts >= MAX_FAILED_ATTEMPTS) return failure('COMPLETION_CODE_LOCKED', 'Too many incorrect attempts. Ask the customer to generate a new completion code.');
         if (!completionCodeMatches(verification.code_hash, hashTaskCompletionCode(taskId, code))) {
@@ -76,7 +85,7 @@ export const CompletionVerificationService = {
           return failure(attempts >= MAX_FAILED_ATTEMPTS ? 'COMPLETION_CODE_LOCKED' : 'COMPLETION_CODE_INVALID', attempts >= MAX_FAILED_ATTEMPTS ? 'Too many incorrect attempts. Ask the customer to generate a new completion code.' : 'The completion code is incorrect.');
         }
         await query(`UPDATE task_completion_verifications SET verified_at = NOW(), verified_by_user_id = $2, updated_at = NOW() WHERE id = $1`, [verification.id, businessUserId]);
-        return { success: true as const, data: { posterId: task.poster_id, proofId: proof.id, replayedVerification: false, alreadyCompleted: false } };
+        return { success: true as const, data: { posterId: task.poster_id, proofId: proof!.id, replayedVerification: false, alreadyCompleted: false } };
       });
       if (!prepared.success) return prepared;
       const preparedData = prepared.data as { posterId: string; proofId: string; replayedVerification: boolean; alreadyCompleted: boolean };
