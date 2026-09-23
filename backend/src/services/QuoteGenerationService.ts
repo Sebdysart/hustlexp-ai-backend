@@ -1,5 +1,8 @@
 import crypto from 'node:crypto';
-import { db , type QueryFn} from '../db.js';
+import { db } from '../db.js';
+import { logger } from '../logger.js';
+
+const log = logger.child({ service: 'QuoteGenerationService' });
 import {
   computePreferredArrivalWindow,
 } from './QuoteTiming.js';
@@ -112,27 +115,6 @@ type PriceBookRow = {
   min_trust_tier: number;
 };
 
-type CandidateRow = {
-  id: string;
-  is_test: boolean;
-  created_by: string | null;
-  notes: string | null;
-  active_for_dispatch: boolean;
-  available: boolean;
-  status: string;
-  phone_e164: string | null;
-  categories_accepted: string[] | null;
-  home_zip: string | null;
-  radius_miles: number | null;
-  vehicle: string | null;
-  min_payout_cents: number | null;
-  trust_tier: number | null;
-  checkr_status: string | null;
-  tools_available: string[] | null;
-  same_day_available: boolean | null;
-  updated_at: Date;
-};
-
 type HustlerCandidateRow = {
   id: string;
   trust_tier: number;
@@ -225,26 +207,26 @@ export class QuoteGenerationService {
 
     try {
       return await db.transaction(async (query) => {
-        console.log('[quote-generation] step=load-draft');
+        log.info('[quote-generation] step=load-draft');
         const draft = await this.loadDraft(query, taskDraftId);
 
-        console.log('[quote-generation] step=validate-scope');
+        log.info('[quote-generation] step=validate-scope');
         this.assertDraftEligible(draft);
         const scope = this.validateScope(draft);
 
-        console.log('[quote-generation] step=load-price-book');
+        log.info('[quote-generation] step=load-price-book');
         const priceBook = await this.loadPriceBook(
           query,
           draft.category,
         );
 
-        console.log('[quote-generation] step=price-book-check');
+        log.info('[quote-generation] step=price-book-check');
         this.assertPriceBookUsable(
           priceBook,
           environment,
         );
 
-        console.log('[quote-generation] step=calculate-pricing');
+        log.info('[quote-generation] step=calculate-pricing');
         const pricing = await this.calculatePriceBook(
           query,
           draft,
@@ -252,12 +234,9 @@ export class QuoteGenerationService {
           environment,
         );
 
-        console.log(
-          '[quote-generation] price book decision',
-          pricing,
-        );
+        log.info({ pricing }, '[quote-generation] price book decision');
 
-        console.log(
+        log.info(
           '[quote-generation] step=supply-confidence',
         );
 
@@ -270,14 +249,11 @@ export class QuoteGenerationService {
             environment,
           );
 
-        console.log(
-          '[quote-generation] confidence',
-          confidence,
-        );
+        log.info({ confidence }, '[quote-generation] confidence');
 
         //this.assertConfidence(confidence);
         
-        console.log('[quote-generation] step=create-quote');
+        log.info('[quote-generation] step=create-quote');
 
         if (!record) {
           return this.previewQuote(
@@ -1913,28 +1889,6 @@ function resolveMinimumTrust(answers: JsonObject): number {
     || answers.indoor_outdoor === 'indoor'
     ? 2
     : 1;
-}
-
-function containsAll(
-  available: string[],
-  required: string[],
-): boolean {
-  return required.every((value) =>
-    available.includes(value),
-  );
-}
-
-function vehicleMatches(
-  vehicle: string,
-  required: 'none' | 'any_vehicle' | 'cargo_vehicle',
-): boolean {
-  if (required === 'none') return true;
-
-  if (required === 'any_vehicle') {
-    return vehicle !== 'none';
-  }
-
-  return ['suv', 'van', 'truck'].includes(vehicle);
 }
 
 function buildSupplyBlockers(

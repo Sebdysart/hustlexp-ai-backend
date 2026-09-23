@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { extractConstraintFacts, type ConstraintFactType } from './extractConstraintFacts.js';
-type ExpectedFact = { type: ConstraintFactType; value: boolean | number };
+import { extractConstraintFacts } from './extractConstraintFacts.js';
 const CASES = [
   { input: 'Clean the downstairs bathroom.', expected: [] },
   { input: 'Carry the couch upstairs.', expected: [{ type: 'stairs', value: true }] },

@@ -52,7 +52,7 @@ jobs:
           cache: npm
       - run: npm ci
       - name: "Lint — zero warnings (backend/src/)"
-        run: npx eslint backend/src/ --ext .ts --max-warnings 0
+        run: npm run lint
 
   test:
     name: "Tests — zero failures"

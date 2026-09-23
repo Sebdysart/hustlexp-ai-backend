@@ -115,29 +115,6 @@ const OBJECT_ALIASES: Array<{
   { pattern: /\bcats?\b/i, object: 'cat' },
 ];
 
-const NUMBER_WORDS: Record<string, number> = {
-  one: 1,
-  two: 2,
-  three: 3,
-  four: 4,
-  five: 5,
-  six: 6,
-  seven: 7,
-  eight: 8,
-  nine: 9,
-  ten: 10,
-  eleven: 11,
-  twelve: 12,
-  thirteen: 13,
-  fourteen: 14,
-  fifteen: 15,
-  sixteen: 16,
-  seventeen: 17,
-  eighteen: 18,
-  nineteen: 19,
-  twenty: 20,
-};
-
 function findNearestExplicitObject(
   text: string,
   actionIndex: number,
@@ -159,7 +136,7 @@ function findNearestExplicitObject(
 
     let searchFrom = 0;
 
-    while (true) {
+    for (;;) {
       const index = text.indexOf(evidence, searchFrom);
 
       if (index === -1) break;
@@ -178,53 +155,6 @@ function findNearestExplicitObject(
   }
 
   return best?.fact;
-}
-
-function findObjectAfterAction(
-  text: string,
-  actionEnd: number,
-): string | undefined {
-  let tail = text.slice(actionEnd, actionEnd + 100);
-
-  // Stop searching when another explicit action begins.
-  // Example:
-  // "move a couch and mount a tv"
-  //              ^ stop here for the move action
-  const nextActionPattern =
-    /\b(?:and|then|after(?:wards)?|before)\s+(?:pick\s*up|pickup|collect|grab|deliver|bring|transport|drop\s*off|move|carry|relocate|assemble|reassemble|build|put\s+together|install|mount|anchor|attach|clean|wash|scrub|vacuum|mop|haul\s+away|take\s+away|carry\s+away|remove|dispose\s+of|clear\s+out|walk|feed|watch|pet\s*sit|petsit|babysit|repair|fix)\b/i;
-
-  const nextActionMatch = tail.match(nextActionPattern);
-
-  if (
-    nextActionMatch &&
-    nextActionMatch.index !== undefined
-  ) {
-    tail = tail.slice(0, nextActionMatch.index);
-  }
-
-  let nearest:
-    | {
-        object: string;
-        index: number;
-      }
-    | undefined;
-
-  for (const alias of OBJECT_ALIASES) {
-    const match = tail.match(alias.pattern);
-
-    if (!match || match.index === undefined) {
-      continue;
-    }
-
-    if (!nearest || match.index < nearest.index) {
-      nearest = {
-        object: alias.object,
-        index: match.index,
-      };
-    }
-  }
-
-  return nearest?.object;
 }
 
 function findObjectAfterActionWithinClause(text: string, actionEnd: number, clauseEnd: number): string | undefined {

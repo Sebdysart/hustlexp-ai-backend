@@ -27,7 +27,7 @@
     "health": "curl http://localhost:3000/health",
     "package:role-fixture-evidence": "node scripts/package-role-fixture-evidence.mjs",
     "verify:alert-inventory": "node scripts/verify-alert-inventory.mjs",
-    "lint": "eslint backend/src --ext .ts",
+    "lint": "eslint backend/src --ext .ts --max-warnings 0",
     "lint:fix": "eslint backend/src --ext .ts --fix",
     "format": "prettier --write \"backend/src/**/*.ts\"",
     "format:check": "prettier --check \"backend/src/**/*.ts\"",

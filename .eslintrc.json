@@ -39,18 +39,21 @@
         "@typescript-eslint/no-this-alias": "off",
         "@typescript-eslint/no-unsafe-function-type": "off"
       }
+    },
+    {
+      "files": [
+        "backend/src/services/taskClassification/analyzeBlindHoldout.ts",
+        "backend/src/services/taskClassification/evaluate*.ts",
+        "backend/src/services/taskClassification/runClassifierHardeningExperiments.ts",
+        "backend/src/services/taskClassification/test*.ts",
+        "backend/src/services/taskIntake/test*.ts"
+      ],
+      "rules": { "no-console": "off" }
     }
   ],
   "ignorePatterns": [
     "dist",
     "node_modules",
-    "*.js",
-    "src/index.ts",
-    "src/routes/**/*",
-    "src/middleware/**/*",
-    "src/ai/orchestrator.ts",
-    "src/services/DisputeResolutionService.ts",
-    "src/services/TaskApplicationService.ts",
-    "src/services/TaxReportingService.ts"
+    "*.js"
   ]
 }

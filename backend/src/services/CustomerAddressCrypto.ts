@@ -1,8 +1,14 @@
 import { z } from 'zod';
 import { decryptTaskLocation, encryptTaskLocation, type StoredEncryptedTaskLocation } from './TaskLocationCrypto.js';
 
+const hasUnsupportedAddressCharacter = (value: string): boolean => [...value].some((character) => {
+  const code = character.codePointAt(0)!;
+  return code <= 0x1f || code === 0x7f || (code >= 0x202a && code <= 0x202e)
+    || (code >= 0x2066 && code <= 0x2069);
+});
+
 const addressText = (max: number) => z.string().trim().max(max).refine(
-  (value) => !/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/u.test(value),
+  (value) => !hasUnsupportedAddressCharacter(value),
   'Address contains unsupported characters.',
 );
 

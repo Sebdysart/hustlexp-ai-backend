@@ -17,37 +17,6 @@ function setCandidate(candidates: Candidate[], candidate: Candidate): void { con
 function removeCandidate(candidates: Candidate[], key: string): void { const index = candidates.findIndex((candidate) => candidate.key === key); if (index >= 0) candidates.splice(index, 1); }
 function numericFactsForRole(facts: NumericFact[], role: NumericFact['role']): NumericFact[] { return facts.filter((fact) => fact.role === role); }
 function sumNumericFacts(facts: NumericFact[], role: NumericFact['role']): number | undefined { const matching = numericFactsForRole(facts, role); return matching.length ? matching.reduce((total, fact) => total + fact.value, 0) : undefined; }
-function numberBefore(
-  text: string,
-  nouns: readonly string[],
-): {
-  value: number;
-  evidence: string;
-} | null {
-  const nounSet = new Set(
-    nouns.map((noun) => noun.toLowerCase()),
-  );
-  const tokens = text.match(/\d+|[a-z][\w'-]*/gi) ?? [];
-
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index].toLowerCase();
-    const value = /^\d+$/.test(token) ? Number(token) : WORDS[token];
-
-    if (!Number.isFinite(value)) continue;
-
-    const maxNounIndex = Math.min(index + 3, tokens.length - 1);
-    for (let nounIndex = index + 1; nounIndex <= maxNounIndex; nounIndex += 1) {
-      const possibleNoun = tokens[nounIndex].toLowerCase();
-      if (!nounSet.has(possibleNoun)) continue;
-      return {
-        value,
-        evidence: tokens.slice(index, nounIndex + 1).join(' '),
-      };
-    }
-  }
-
-  return null;
-}
 function stripObjectNoise(value: string): string { return value.toLowerCase().replace(/\b(?:ikea|new|old|large|small|huge|heavy|very heavy|extremely heavy)\b/gi, '').replace(/\b\d+(?:-\w+)?\b/gi, '').replace(/\b(?:across town|in my backyard|in the backyard|in my garage|in the garage|to my house|to my home|to my property)\b.*$/i, '').replace(/\b(?:that(?:'s| is)|which is|but)\b.*$/i, '').replace(/\s+/g, ' ').trim(); }
 function cleanObjectPhrase(value: string): string | null {
   let result = value
@@ -69,13 +38,7 @@ function cleanObjectPhrase(value: string): string | null {
 function extractActionObject(text: string, actions: readonly string[]) { const actionPattern = actions.map(escapeRegex).join('|'); const boundary = ['and', 'then', 'bring', 'deliver', 'transport', 'assemble', 'build', 'install', 'mount', 'anchor', 'attach', 'set up', 'put together', 'move', 'carry', 'take', 'from', 'to', 'into', 'onto', 'upstairs', 'downstairs', 'outside', 'inside', 'with', 'a vehicle', 'a truck', 'a van', 'no vehicle', 'vehicle is', 'truck is', 'van is'].map(escapeRegex).join('|'); const match = text.match(new RegExp('\\b(?:' + actionPattern + ')\\b\\s+(.{1,100}?)(?=\\s+(?:' + boundary + ')\\b|[.;]|$)', 'i')); if (!match) return null; const object = cleanObjectPhrase(match[1]); return object ? { object, evidence: match[0] } : null; }
 function enumCandidate(text: string, key: string, values: Array<[string, RegExp[]]>): Candidate | null { for (const [value, patterns] of values) for (const pattern of patterns) if (pattern.test(text)) return { key, value, confidence: 0.97, evidence: 'Explicit ' + value + ' reference' }; return null; }
 function extractAccess(text: string): Candidate | null { if (/\bupstairs\b/i.test(text)) return { key: 'access_restrictions', value: 'The task involves carrying or accessing items upstairs.', confidence: 0.96, evidence: 'upstairs' }; if (/\bdownstairs\b/i.test(text)) return { key: 'access_restrictions', value: 'The task involves carrying or accessing items downstairs.', confidence: 0.96, evidence: 'downstairs' }; return null; }
-function extractRoomCount(text: string): number | undefined { let total = 0; let found = false; const matches = text.matchAll(/\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten)[- ](?:bedrooms?|bathrooms?|rooms?)\b/gi); for (const match of matches) { const value = quantityFromToken(match[1]); if (value !== null) { total += value; found = true; } } if (/\bkitchen\b/i.test(text)) { total += 1; found = true; } return found ? total : undefined; }
 function extractAccessRestriction(text: string): string | undefined { const parts: string[] = []; if (/\bnarrow\s+(?:staircase|stairs|hallway|corridor|doorway)\b/i.test(text)) parts.push('Access is narrow and may restrict movement.'); if (/\bno elevator\b|\belevator unavailable\b/i.test(text)) parts.push('No elevator is available.'); if (/\bwater\s+(?:is\s+)?(?:currently\s+)?shut\s*off\b/i.test(text)) parts.push('Water is currently unavailable at the property.'); if (/\bno (?:outdoor )?power outlet\b|\bno electricity\b/i.test(text)) parts.push('Required electrical power may not be available.'); if (/\bunderground garage\b/i.test(text)) parts.push('The vehicle or work area is in an underground garage.'); return parts.length ? parts.join(' ') : undefined; }
-function extractCounts(text: string): Candidate[] {
-  const candidates: Candidate[] = [];
-  return candidates;
-}
-
 function cleanCompoundItem(value: string): string | null { const cleaned = value.replace(/^(?:my|our|the|some|this|that|these|those|new|old)\s+/i, '').replace(/\s+(?:up|down|upstairs|downstairs|inside|outside)$/i, '').replace(/\s+over\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:hours?|minutes?)\b.*$/i, '').replace(/\s+on\s+(?:floor\s+\d+|(?:the\s+)?(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+floor|drywall|brick|concrete|plaster)\b.*$/i, '').replace(/\s+/g, ' ').trim(); return !cleaned || cleaned.length > 80 ? null : cleaned; }
 function extractQuantifiedItems(raw: string): QuantifiedItem[] {
   const text = raw.toLowerCase().replace(/[;:]/g, ',').replace(/\s+/g, ' ').trim();
@@ -227,7 +190,6 @@ function renderAssemblyReference(fact: ObjectFact | undefined, fallback: string)
   if (!fact) return fallback;
   return normalizeAssemblyType(fact.evidence.replace(/^(?:a|an|the|my|some|several|\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+/i, ''));
 }
-function extractVehicleRequired(text: string): boolean | undefined { if (/\b(?:you(?:'ll| will)?|provider|worker|someone)\s+(?:will\s+)?need(?:s)?\s+(?:a|an)?\s*(?:truck|van|suv|car|vehicle)\b/i.test(text) || /\bneed someone with\s+(?:a|an)\s+(?:truck|van|suv|car|vehicle)\b/i.test(text) || /\bprobably need\s+(?:a|an)\s+(?:truck|van|suv|car|vehicle)\b/i.test(text)) return true; return undefined; } function implicitSingularPetCount(text: string): number { return /\b(?:a|one)\s+(?:parrot|bird|puppy|kitten|dog|cat)\b/i.test(text) ? 1 : 0; }
 function hasExplicitVehicleRequirement(text: string): boolean { return explicitlyRequiresVehicle(text); }
 function explicitlyRequiresVehicle(text: string): boolean { return /\byou['’]ll need (?:a|an) (?:truck|van|car|suv|vehicle)\b/i.test(text) || /\byou will need (?:a|an) (?:truck|van|car|suv|vehicle)\b/i.test(text) || /\bneed someone with (?:a|an) (?:truck|van|car|suv|vehicle)\b/i.test(text) || /\bprobably need (?:a|an) (?:truck|van|car|suv|vehicle)\b/i.test(text); }
 
