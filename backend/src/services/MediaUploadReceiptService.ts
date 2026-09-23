@@ -34,6 +34,7 @@ export async function consumeFinalizedMediaReceipt(
       checksumSha256: string;
     };
     taskId: string;
+    reworkId?: string;
     uploaderId: string;
     purpose: MediaUploadPurpose;
     consumerId: string;
@@ -61,6 +62,7 @@ export async function consumeFinalizedMediaReceipt(
         AND canonical_content_type=$4
         AND canonical_size_bytes=$7
         AND canonical_checksum_sha256=$8
+        AND rework_id IS NOT DISTINCT FROM $9::uuid
       RETURNING canonical_key, canonical_content_type,
                 canonical_size_bytes, canonical_checksum_sha256`,
     [
@@ -72,6 +74,7 @@ export async function consumeFinalizedMediaReceipt(
       params.consumerId,
       params.evidence.fileSizeBytes,
       params.evidence.checksumSha256.toLowerCase(),
+      params.reworkId ?? null,
     ],
   );
   const row = result.rows[0];
@@ -109,6 +112,7 @@ export async function consumeFinalizedMediaReceiptById(
         AND task_id=$2
         AND uploader_id=$3
         AND purpose=$4
+        AND rework_id IS NULL
         AND status='FINALIZED'
         AND expires_at > NOW()
         AND canonical_url IS NULL

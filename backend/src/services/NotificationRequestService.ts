@@ -56,7 +56,7 @@ export async function processNotificationRequest(job: {
   if (!skipped && params.category === 'proof_submitted' && typeof params.metadata?.proofId === 'string') {
     const source = await db.query(
       `SELECT p.id FROM proofs p JOIN tasks t ON t.id=p.task_id
-       WHERE p.id=$1 AND p.task_id=$2 AND t.poster_id=$3
+       WHERE p.id=$1 AND p.task_id=$2 AND p.rework_id IS NULL AND t.poster_id=$3
          AND p.state='SUBMITTED' AND t.state='PROOF_SUBMITTED'`,
       [params.metadata.proofId,params.taskId,params.userId],
     );
@@ -65,9 +65,9 @@ export async function processNotificationRequest(job: {
   if (!skipped && params.category === 'proof_rejected' && typeof params.metadata?.proofId === 'string') {
     const source = await db.query(
       `SELECT p.id FROM proofs p JOIN tasks t ON t.id=p.task_id
-       WHERE p.id=$1 AND p.task_id=$2 AND t.worker_id=$3 AND p.state='REJECTED'
+       WHERE p.id=$1 AND p.task_id=$2 AND p.rework_id IS NULL AND t.worker_id=$3 AND p.state='REJECTED'
          AND t.state IN ('ACCEPTED','IN_PROGRESS')
-         AND NOT EXISTS (SELECT 1 FROM proofs newer WHERE newer.task_id=p.task_id
+         AND NOT EXISTS (SELECT 1 FROM proofs newer WHERE newer.task_id=p.task_id AND newer.rework_id IS NULL
            AND (newer.created_at,newer.id) > (p.created_at,p.id))`,
       [params.metadata.proofId,params.taskId,params.userId],
     );

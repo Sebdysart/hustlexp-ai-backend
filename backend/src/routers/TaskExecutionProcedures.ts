@@ -87,6 +87,7 @@ getProof: protectedProcedure
         `SELECT p.* FROM proofs p
          JOIN tasks t ON t.id = p.task_id
          WHERE p.task_id = $1
+           AND p.rework_id IS NULL
            AND (t.poster_id = $2 OR t.worker_id = $2)
          ORDER BY p.created_at DESC
          LIMIT 1`,

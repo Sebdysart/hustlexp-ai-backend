@@ -280,7 +280,7 @@ const LIFECYCLE_QUERY = `SELECT t.id,
  ) e ON TRUE
  LEFT JOIN task_reservations r ON r.task_id = t.id AND r.status = 'ACTIVE'
  LEFT JOIN LATERAL (
-   SELECT state FROM proofs WHERE task_id = t.id ORDER BY created_at DESC LIMIT 1
+   SELECT state FROM proofs WHERE task_id = t.id AND rework_id IS NULL ORDER BY created_at DESC LIMIT 1
  ) p ON TRUE
  WHERE ($1::timestamptz IS NULL OR (t.created_at, t.id) < ($1::timestamptz, $2::uuid))
  ORDER BY t.created_at DESC, t.id DESC
@@ -312,7 +312,7 @@ const BRIDGE_TASK_STATE_QUERY = `SELECT t.id,
  ) r ON TRUE
  LEFT JOIN LATERAL (
    SELECT id, state, updated_at
-   FROM proofs WHERE task_id = t.id ORDER BY created_at DESC LIMIT 1
+   FROM proofs WHERE task_id = t.id AND rework_id IS NULL ORDER BY created_at DESC LIMIT 1
  ) p ON TRUE
  WHERE t.id = $1`;
 

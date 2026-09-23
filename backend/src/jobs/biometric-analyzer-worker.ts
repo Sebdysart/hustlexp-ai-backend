@@ -79,7 +79,7 @@ export const processBiometricAnalysisJob = async (job: Job<BiometricAnalysisJobD
          ORDER BY sequence_number ASC, created_at ASC, id ASC
          LIMIT 1
        ) pp ON TRUE
-       WHERE p.id = $1`,
+       WHERE p.id = $1 AND p.rework_id IS NULL`,
       [proof_id]
     );
     const proofMedia = existingAnalysis.rows[0];

@@ -19,6 +19,7 @@ export type MediaUploadPurpose = 'PROOF' | 'MESSAGE' | 'TASK_DRAFT_PHOTO' | 'BUS
 interface MediaUploadReceiptRow {
   id: string;
   task_id: string | null;
+  rework_id: string | null;
   task_draft_id: string | null;
   organization_id: string | null;
   uploader_id: string;
@@ -62,7 +63,7 @@ const CANONICAL_EXTENSION: Record<SanitizedImageContentType, 'jpg' | 'png' | 'we
 };
 
 function canonicalMediaKey(row: MediaUploadReceiptRow): string {
-  const target = row.organization_id ? `businesses/${row.organization_id}` : row.task_draft_id ? `task-drafts/${row.task_draft_id}` : `tasks/${row.task_id}`;
+  const target = row.organization_id ? `businesses/${row.organization_id}` : row.task_draft_id ? `task-drafts/${row.task_draft_id}` : row.rework_id ? `tasks/${row.task_id}/reworks/${row.rework_id}` : `tasks/${row.task_id}`;
   return `media/${row.purpose.toLowerCase()}/${target}/${row.uploader_id}/${row.id}.${CANONICAL_EXTENSION[row.expected_content_type]}`;
 }
 
@@ -99,7 +100,7 @@ function parsePositiveInteger(value: string | undefined): number | null {
 
 async function recoverCanonicalFinalization(
   row: MediaUploadReceiptRow,
-  params: { receiptId: string; taskId?: string; taskDraftId?: string; organizationId?: string; uploaderId: string; purpose: MediaUploadPurpose },
+  params: { receiptId: string; taskId?: string; reworkId?: string; taskDraftId?: string; organizationId?: string; uploaderId: string; purpose: MediaUploadPurpose },
   storage: MediaStorage,
 ): Promise<FinalizedMediaEvidence | null> {
   const canonicalKey = canonicalMediaKey(row);
@@ -184,13 +185,14 @@ async function recoverCanonicalFinalization(
 
 function assertReceiptAuthority(
   row: MediaUploadReceiptRow | undefined,
-  params: { receiptId: string; taskId?: string; taskDraftId?: string; organizationId?: string; uploaderId: string; purpose: MediaUploadPurpose },
+  params: { receiptId: string; taskId?: string; reworkId?: string; taskDraftId?: string; organizationId?: string; uploaderId: string; purpose: MediaUploadPurpose },
 ): asserts row is MediaUploadReceiptRow {
   if (!row) {
     throw new TRPCError({ code: 'NOT_FOUND', message: 'Upload receipt was not found.' });
   }
   if (row.id !== params.receiptId
       || (params.taskId !== undefined && row.task_id !== params.taskId)
+      || row.rework_id !== (params.reworkId ?? null)
       || (params.taskDraftId !== undefined && row.task_draft_id !== params.taskDraftId)
       || (params.organizationId !== undefined && row.organization_id !== params.organizationId)
       || row.uploader_id !== params.uploaderId
@@ -237,6 +239,7 @@ export async function finalizeMediaUpload(
   params: {
     receiptId: string;
     taskId?: string;
+    reworkId?: string;
     taskDraftId?: string;
     organizationId?: string;
     uploaderId: string;
@@ -264,7 +267,7 @@ export async function finalizeMediaUpload(
     if (owner.rows[0]?.poster_user_id !== params.uploaderId) throw new TRPCError({ code: 'FORBIDDEN', message: 'Only the draft owner can finalize draft photos.' });
   } else {
     if (!params.taskId || params.taskDraftId || params.organizationId) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Task upload finalization requires a task.' });
-    assertReceiptAuthority(row, { receiptId: params.receiptId, taskId: params.taskId, uploaderId: params.uploaderId, purpose: params.purpose });
+    assertReceiptAuthority(row, { receiptId: params.receiptId, taskId: params.taskId, reworkId: params.reworkId, uploaderId: params.uploaderId, purpose: params.purpose });
   }
 
   if (row.status === 'FINALIZED' || (params.purpose === 'TASK_DRAFT_PHOTO' && row.status === 'CONSUMED')) return finalizedEvidence(row);

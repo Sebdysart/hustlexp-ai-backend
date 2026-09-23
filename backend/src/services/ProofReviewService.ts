@@ -33,7 +33,7 @@ async function loadReviewProof(proofId: string): Promise<ProofWithSignals | null
        SELECT storage_key FROM proof_photos WHERE proof_id = p.id
        ORDER BY sequence_number ASC, created_at ASC, id ASC LIMIT 1
      ) pp ON TRUE
-     WHERE p.id = $1
+     WHERE p.id = $1 AND p.rework_id IS NULL
      LIMIT 1`,
     [proofId],
   );
@@ -105,7 +105,7 @@ async function attachPrivateReviewMedia(
 
 async function lockProofForReview(query: Query, proofId: string): Promise<string> {
   const result = await query<{ state: string; task_id: string }>(
-    `SELECT state, task_id FROM proofs WHERE id = $1 FOR UPDATE`,
+    `SELECT state, task_id FROM proofs WHERE id = $1 AND rework_id IS NULL FOR UPDATE`,
     [proofId],
   );
   if (!result.rows[0]) {
@@ -156,7 +156,7 @@ async function commitReview(
   const result = await query<Proof>(
     `UPDATE proofs
      SET state = $1, reviewed_by = $2, reviewed_at = NOW(), rejection_reason = $3
-     WHERE id = $4 AND state = 'SUBMITTED'
+     WHERE id = $4 AND rework_id IS NULL AND state = 'SUBMITTED'
      RETURNING *`,
     [params.decision, params.reviewerId, params.reason, params.proofId],
   );

@@ -43,7 +43,7 @@ async function acceptLatestProof(
   channel: 'SMS' | 'WEB' = 'SMS',
 ): Promise<ServiceResult<true>> {
   const proof = await db.query<{ id: string; state: string }>(
-    'SELECT id, state FROM proofs WHERE task_id = $1 ORDER BY created_at DESC LIMIT 1',
+    'SELECT id, state FROM proofs WHERE task_id = $1 AND rework_id IS NULL ORDER BY created_at DESC LIMIT 1',
     [taskId],
   );
   const latest = proof.rows[0];
@@ -64,7 +64,7 @@ async function acceptLatestProof(
     return reviewed.success ? { success: true, data: true } : reviewed;
   } catch (error) {
     if (!(error instanceof TRPCError) || error.code !== 'CONFLICT') throw error;
-    const raced = await db.query<{ state: string }>('SELECT state FROM proofs WHERE id = $1', [latest.id]);
+    const raced = await db.query<{ state: string }>('SELECT state FROM proofs WHERE id = $1 AND rework_id IS NULL', [latest.id]);
     return raced.rows[0]?.state === 'ACCEPTED'
       ? { success: true, data: true }
       : failure(ErrorCodes.INVALID_STATE, 'Proof review changed concurrently without being accepted');

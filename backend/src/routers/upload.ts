@@ -34,6 +34,7 @@ import {
 import { assertProviderOsDraftPhotoAuthority } from '../services/ProviderOsDraftPhotoAuthority.js';
 import { requireBusinessManagementAuthority } from '../services/BusinessManagementAuthority.js';
 import { listDeliveredTaskDraftPhotos } from '../services/TaskDraftPhotoReadService.js';
+import { TaskReworkService } from '../services/TaskReworkService.js';
 
 const log = logger.child({ router: 'upload' });
 
@@ -252,6 +253,7 @@ export const uploadRouter = router({
     .input(
       z.object({
         taskId: z.string().uuid().optional(),
+        reworkId: z.string().uuid().optional(),
         taskDraftId: z.string().uuid().optional(),
         organizationId: z.string().uuid().optional(),
         filename: z
@@ -271,6 +273,7 @@ export const uploadRouter = router({
         purpose: z.enum(['proof', 'message', 'task_draft_photo', 'business_credential']).optional().default('proof'),
         sequenceNumber: z.number().int().min(0).max(7).optional(),
       }).superRefine((value, ctx) => {
+        if (value.reworkId && (value.purpose !== 'proof' || !value.taskId)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reworkId'], message: 'Corrective uploads require a proof task target.' });
         if (value.purpose === 'business_credential') {
           if (!value.organizationId || value.taskId || value.taskDraftId || value.sequenceNumber !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['organizationId'], message: 'Credential uploads require only an organization target.' });
         } else if (value.organizationId) {
@@ -298,6 +301,8 @@ export const uploadRouter = router({
         if (Number(count.rows[0]?.count ?? 0) >= 8) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'A task draft can have at most 8 photos.' });
         const duplicate = await db.query('SELECT 1 FROM task_draft_photos WHERE task_draft_id=$1 AND sequence_number=$2', [input.taskDraftId, input.sequenceNumber]);
         if (duplicate.rows[0]) throw new TRPCError({ code: 'CONFLICT', message: 'That photo sequence position is already in use.' });
+      } else if (input.reworkId) {
+        await TaskReworkService.assertUpload(input.taskId!, input.reworkId, ctx.user.id);
       } else {
         await assertUploadAuthority(input.taskId!, ctx.user.id, input.purpose as 'proof' | 'message');
       }
@@ -308,7 +313,7 @@ export const uploadRouter = router({
         .toLowerCase()
         .replace(/[^a-z0-9]/g, '')
         .slice(0, 4);
-      const targetId = input.organizationId ?? input.taskDraftId ?? input.taskId!;
+      const targetId = input.organizationId ?? input.taskDraftId ?? input.reworkId ?? input.taskId!;
       const key = `quarantine/${input.purpose}/${targetId}/${ctx.user.id}/${receiptId}${ext ? '.' + ext : ''}`;
       const expiresAt = new Date(Date.now() + PRESIGN_EXPIRY * 1000);
       const receiptExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
@@ -352,8 +357,8 @@ export const uploadRouter = router({
       await db.query(
         `INSERT INTO media_upload_receipts (
            id, task_id, task_draft_id, uploader_id, purpose, quarantine_key,
-           expected_content_type, expected_size_bytes, quarantine_expires_at, expires_at, organization_id
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+           expected_content_type, expected_size_bytes, quarantine_expires_at, expires_at, organization_id, rework_id
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
         [
           receiptId,
           input.taskId ?? null,
@@ -366,6 +371,7 @@ export const uploadRouter = router({
           expiresAt,
           receiptExpiresAt,
           input.organizationId ?? null,
+          input.reworkId ?? null,
         ]
       );
 
@@ -397,12 +403,14 @@ export const uploadRouter = router({
     .input(
       z.object({
         taskId: z.string().uuid().optional(),
+        reworkId: z.string().uuid().optional(),
         taskDraftId: z.string().uuid().optional(),
         organizationId: z.string().uuid().optional(),
         receiptId: z.string().uuid(),
         purpose: z.enum(['proof', 'message', 'task_draft_photo', 'business_credential']).optional().default('proof'),
         sequenceNumber: z.number().int().min(0).max(7).optional(),
       }).superRefine((value, ctx) => {
+        if (value.reworkId && (value.purpose !== 'proof' || !value.taskId)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reworkId'], message: 'Corrective uploads require a proof task target.' });
         if (value.purpose === 'business_credential') {
           if (!value.organizationId || value.taskId || value.taskDraftId || value.sequenceNumber !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['organizationId'], message: 'Credential uploads require only an organization target.' });
         } else if (value.organizationId) {
@@ -419,10 +427,12 @@ export const uploadRouter = router({
     .mutation(async ({ ctx, input }) => {
       if (input.purpose === 'business_credential') await requireBusinessManagementAuthority(db.query, ctx.user.id, input.organizationId!, 'MANAGE_SERVICES');
       else if (input.purpose === 'task_draft_photo') await assertDraftPhotoAuthority(input.taskDraftId!, ctx.user.id);
+      else if (input.reworkId) await TaskReworkService.assertUpload(input.taskId!, input.reworkId, ctx.user.id);
       else await assertUploadAuthority(input.taskId!, ctx.user.id, input.purpose as 'proof' | 'message');
       const evidence = await finalizeMediaUpload({
         receiptId: input.receiptId,
         taskId: input.taskId,
+        reworkId: input.reworkId,
         taskDraftId: input.taskDraftId,
         organizationId: input.organizationId,
         uploaderId: ctx.user.id,

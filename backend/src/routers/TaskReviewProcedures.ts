@@ -48,7 +48,7 @@ async function verifyTaskReview(taskId: string, posterId: string): Promise<void>
 
 async function latestSubmittedProofId(taskId: string): Promise<string> {
   const result = await db.query<{ id: string }>(
-    `SELECT id FROM proofs WHERE task_id = $1 AND state = 'SUBMITTED' ORDER BY created_at DESC LIMIT 1`,
+    `SELECT id FROM proofs WHERE task_id = $1 AND rework_id IS NULL AND state = 'SUBMITTED' ORDER BY created_at DESC LIMIT 1`,
     [taskId],
   );
   if (!result.rows[0]) throw new TRPCError({ code: 'NOT_FOUND', message: 'No proof found for this task' });
@@ -57,7 +57,7 @@ async function latestSubmittedProofId(taskId: string): Promise<string> {
 
 async function verifyDirectProofOwner(proofId: string, posterId: string): Promise<void> {
   const result = await db.query<{ poster_id: string }>(
-    'SELECT t.poster_id FROM proofs p JOIN tasks t ON t.id = p.task_id WHERE p.id = $1',
+    'SELECT t.poster_id FROM proofs p JOIN tasks t ON t.id = p.task_id WHERE p.id = $1 AND p.rework_id IS NULL',
     [proofId],
   );
   if (!result.rows[0]) throw new TRPCError({ code: 'NOT_FOUND', message: 'Proof not found' });
@@ -75,7 +75,7 @@ async function resolveReviewProofId(input: ReviewProofInput, posterId: string): 
 }
 
 async function loadSubmittedProof(proofId: string) {
-  const state = await db.query<{ state: string }>('SELECT state FROM proofs WHERE id = $1', [proofId]);
+  const state = await db.query<{ state: string }>('SELECT state FROM proofs WHERE id = $1 AND rework_id IS NULL', [proofId]);
   if (state.rows[0]?.state !== 'SUBMITTED') {
     throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Proof is not in SUBMITTED state' });
   }

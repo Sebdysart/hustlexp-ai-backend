@@ -79,7 +79,7 @@ async function loadStats(hustlerId: string): Promise<ScoreStats> {
       COUNT(*) FILTER (WHERE p.state = 'ACCEPTED')::FLOAT /
         NULLIF(COUNT(*) FILTER (WHERE p.state IS NOT NULL), 0) * 100 as approval_rate
      FROM tasks t
-     LEFT JOIN proofs p ON p.task_id = t.id
+     LEFT JOIN proofs p ON p.task_id = t.id AND p.rework_id IS NULL
      WHERE t.worker_id = $1`,
     [hustlerId],
   );

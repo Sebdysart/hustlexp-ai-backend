@@ -110,7 +110,7 @@ async function validateProofAndFunding(
   taskId: string
 ): Promise<ServiceResult<{ escrowId: string }>> {
   const proof = await query<{ state: string }>(
-    `SELECT state FROM proofs WHERE task_id = $1 ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+    `SELECT state FROM proofs WHERE task_id = $1 AND rework_id IS NULL ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
     [taskId]
   );
   if (proof.rows[0]?.state !== 'ACCEPTED') {

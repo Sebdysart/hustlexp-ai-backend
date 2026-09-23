@@ -212,7 +212,7 @@ async function proposeChange(params: {
     const version = await activeVersion(query, task);
     const activeProof = await query<{ id: string }>(
       `SELECT id FROM proofs
-       WHERE task_id = $1 AND state IN ('PENDING', 'SUBMITTED')
+       WHERE task_id = $1 AND rework_id IS NULL AND state IN ('PENDING', 'SUBMITTED')
        LIMIT 1 FOR UPDATE`,
       [params.taskId],
     );
@@ -265,7 +265,7 @@ async function reviewChange(params: {
 
     const activeProof = await query<{ id: string }>(
       `SELECT id FROM proofs
-       WHERE task_id = $1 AND state IN ('PENDING', 'SUBMITTED')
+       WHERE task_id = $1 AND rework_id IS NULL AND state IN ('PENDING', 'SUBMITTED')
        LIMIT 1 FOR UPDATE`,
       [params.taskId],
     );

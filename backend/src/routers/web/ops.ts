@@ -42,6 +42,7 @@ import { recordOpsAudit } from '../../services/OpsAuditService.js';
 import { opsBusinessCredentialProcedures } from './opsBusinessCredentials.js';
 import { opsBusinessEligibilityProcedures } from './opsBusinessEligibility.js';
 import { AnalyticsService } from '../../services/AnalyticsService.js';
+import { TaskReworkService } from '../../services/TaskReworkService.js';
 
 const log = logger.child({ router: 'web.ops' });
 
@@ -948,6 +949,23 @@ export const webOpsRouter = router({
         },
       };
     }),
+
+  listTaskReworks: operationsAdminProcedure
+    .input(z.object({ taskId: z.string().uuid() }).strict())
+    .query(({ ctx, input }) => TaskReworkService.history(input.taskId, ctx.user.id, 'OPS')),
+
+  requestTaskRework: operationsAdminProcedure
+    .input(z.object({
+      taskId: z.string().uuid(),
+      reasonCategory: z.string().trim().min(2).max(80),
+      requestedCorrection: z.string().trim().min(10).max(4000),
+      supportThreadId: z.string().uuid().optional(),
+    }).strict())
+    .mutation(({ ctx, input }) => TaskReworkService.request({ ...input, actorId: ctx.user.id })),
+
+  cancelTaskRework: operationsAdminProcedure
+    .input(z.object({ reworkId: z.string().uuid() }).strict())
+    .mutation(({ ctx, input }) => TaskReworkService.cancel(input.reworkId, ctx.user.id)),
 
   listBusinesses: operationsAdminProcedure
     .input(
@@ -2326,7 +2344,8 @@ export const webOpsRouter = router({
       const threadResult = await db.query(`SELECT st.*, u.full_name AS opened_by_name, u.email AS opened_by_email FROM support_threads st LEFT JOIN users u ON u.id = st.opened_by_user_id WHERE st.id = $1 LIMIT 1`, [input.id]);
       if (!threadResult.rows[0]) throw new TRPCError({ code: 'NOT_FOUND', message: 'Support request not found.' });
       const messagesResult = await db.query(`SELECT sm.id, sm.sender_user_id, sm.sender_kind, sm.body, sm.created_at, u.full_name AS sender_name FROM support_messages sm LEFT JOIN users u ON u.id = sm.sender_user_id WHERE sm.thread_id = $1 ORDER BY sm.created_at ASC`, [input.id]);
-      return { ok: true as const, thread: threadResult.rows[0], messages: messagesResult.rows };
+      const reworksResult = await db.query('SELECT id,task_id,sequence_number,status FROM task_reworks WHERE support_thread_id=$1 ORDER BY sequence_number DESC', [input.id]);
+      return { ok: true as const, thread: threadResult.rows[0], messages: messagesResult.rows, reworks: reworksResult.rows };
     }),
 
   replySupportThread: operationsAdminProcedure

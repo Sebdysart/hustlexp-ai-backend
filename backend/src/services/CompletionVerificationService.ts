@@ -36,7 +36,7 @@ export const CompletionVerificationService = {
         if (task.state === 'COMPLETED') return failure('TASK_ALREADY_COMPLETED', 'This task has already been completed.');
         if (task.state !== 'PROOF_SUBMITTED') return failure('TASK_NOT_READY_FOR_COMPLETION', 'Completion verification is available only after proof has been submitted.');
         if (!task.business_fulfiller_organization_id) return failure('BUSINESS_FULFILLER_MISSING', 'This task is not associated with a fulfilling business.');
-        const proof = (await query<ProofRow>(`SELECT id, state FROM proofs WHERE task_id = $1 ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, [taskId])).rows[0];
+        const proof = (await query<ProofRow>(`SELECT id, state FROM proofs WHERE task_id = $1 AND rework_id IS NULL ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, [taskId])).rows[0];
         if (!proof) return failure('PROOF_NOT_FOUND', 'No completion proof exists for this task.');
         if (proof.state !== 'SUBMITTED') return failure('PROOF_NOT_AWAITING_REVIEW', `Latest proof is ${proof.state}, expected SUBMITTED.`);
         const code = crypto.randomInt(100000, 1000000).toString();
@@ -64,7 +64,7 @@ export const CompletionVerificationService = {
         if (!member) return failure('BUSINESS_NOT_AUTHORIZED', 'You are not authorized to complete this business task.');
         if (task.state === 'COMPLETED' && task.completed_at && task.payout_ready_at) return { success: true as const, data: { posterId: task.poster_id, proofId: '', replayedVerification: true, alreadyCompleted: true } };
         if (task.state !== 'PROOF_SUBMITTED') return failure('TASK_NOT_READY_FOR_COMPLETION', 'This task is not awaiting completion verification.');
-        const proof = (await query<ProofRow>(`SELECT id, state FROM proofs WHERE task_id = $1 ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, [taskId])).rows[0];
+        const proof = (await query<ProofRow>(`SELECT id, state FROM proofs WHERE task_id = $1 AND rework_id IS NULL ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, [taskId])).rows[0];
         if (!proof) return failure('PROOF_NOT_FOUND', 'No completion proof exists for this task.');
         if (!['SUBMITTED', 'ACCEPTED'].includes(proof.state)) return failure('PROOF_NOT_COMPLETABLE', `Latest proof is ${proof.state} and cannot be completed.`);
         const verification = (await query<VerificationRow>(`SELECT id, task_id, poster_user_id, business_organization_id, code_hash, expires_at, failed_attempts, verified_at FROM task_completion_verifications WHERE task_id = $1 FOR UPDATE`, [taskId])).rows[0];
@@ -86,7 +86,7 @@ export const CompletionVerificationService = {
       const preparedData = prepared.data as { posterId: string; proofId: string; replayedVerification: boolean; alreadyCompleted: boolean };
       if (preparedData.alreadyCompleted) return { success: true, data: { taskId, completed: true, replayed: true } };
       if (preparedData.proofId) {
-        const proof = (await db.query<{ state: string }>(`SELECT state FROM proofs WHERE id = $1`, [preparedData.proofId])).rows[0];
+        const proof = (await db.query<{ state: string }>(`SELECT state FROM proofs WHERE id = $1 AND rework_id IS NULL`, [preparedData.proofId])).rows[0];
         if (proof?.state === 'SUBMITTED') {
           const reviewed = await ProofService.review({ proofId: preparedData.proofId, reviewerId: preparedData.posterId, decision: 'ACCEPTED', reason: 'Poster confirmed completion by sharing the completion verification code.' });
           if (!reviewed.success) return reviewed;

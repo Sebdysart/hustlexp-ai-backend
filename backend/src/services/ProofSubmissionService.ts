@@ -246,7 +246,7 @@ async function replayedProof(
     reconciliation_contract_version: number;
   }>(
     `SELECT * FROM proofs
-     WHERE task_id = $1 AND client_submission_id = $2
+     WHERE task_id = $1 AND rework_id IS NULL AND client_submission_id = $2
      LIMIT 1`,
     [params.taskId, params.clientSubmissionId],
   );
@@ -284,7 +284,7 @@ async function assertOfflineSyncOrder(
   const last = await query<{ client_sequence: string | number | null }>(
     `SELECT MAX(client_sequence) AS client_sequence
        FROM proofs
-      WHERE task_id=$1 AND submitter_id=$2 AND sync_contract_version=1`,
+      WHERE task_id=$1 AND rework_id IS NULL AND submitter_id=$2 AND sync_contract_version=1`,
     [params.taskId, params.submitterId],
   );
   if (Number(params.clientSequence) <= Number(last.rows[0]?.client_sequence ?? 0)) {
@@ -298,7 +298,7 @@ async function assertOfflineSyncOrder(
 async function assertNoActiveProof(query: QueryFn, taskId: string): Promise<void> {
   const existing = await query(
     `SELECT id FROM proofs
-     WHERE task_id = $1 AND state IN ('pending', 'submitted', 'PENDING', 'SUBMITTED')
+     WHERE task_id = $1 AND rework_id IS NULL AND state IN ('pending', 'submitted', 'PENDING', 'SUBMITTED')
      FOR UPDATE`,
     [taskId],
   );

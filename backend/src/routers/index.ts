@@ -69,6 +69,7 @@ import { automationRouter } from './automation.js';
 import { businessWorkspaceRouter } from './businessWorkspace.js';
 import { serviceBusinessRouter } from './serviceBusiness.js';
 import { businessTaskRouter } from './businessTask.js';
+import { taskReworkRouter } from './taskRework.js';
 import { businessQuoteRouter } from './businessQuote.js';
 import { customerDraftClaimRouter } from './customerDraftClaim.js';
 
@@ -162,6 +163,7 @@ export const appRouter = router({
   businessWorkspace: businessWorkspaceRouter,
   serviceBusiness: serviceBusinessRouter,
   businessTask: businessTaskRouter,
+  taskRework: taskReworkRouter,
   businessQuote: businessQuoteRouter,
   customerDraftClaim: customerDraftClaimRouter,
 

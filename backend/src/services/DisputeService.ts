@@ -739,7 +739,7 @@ export const DisputeService = {
           // rejection leaves the proof in REJECTED state and the task transition to COMPLETED fails
           // (INV-3 fires), permanently blocking dispute resolution with a RELEASE outcome.
           await query(
-            `UPDATE proofs SET state = 'ACCEPTED', reviewed_at = NOW() WHERE task_id = $1 AND state IN ('SUBMITTED', 'REJECTED')`,
+            `UPDATE proofs SET state = 'ACCEPTED', reviewed_at = NOW() WHERE task_id = $1 AND rework_id IS NULL AND state IN ('SUBMITTED', 'REJECTED')`,
             [dispute.task_id]
           );
           // Transition task DISPUTED → COMPLETED.
