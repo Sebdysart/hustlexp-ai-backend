@@ -9,7 +9,7 @@ export const taskReworkRouter = router({
   getProof: protectedProcedure
     .input(z.object({ reworkId: z.string().uuid() }).strict())
     .query(({ ctx, input }) => TaskReworkService.proofForCustomer(input.reworkId, ctx.user.id)),
-  confirm: protectedProcedure
+  generateCompletionCode: protectedProcedure
     .input(z.object({ reworkId: z.string().uuid() }).strict())
-    .mutation(({ ctx, input }) => TaskReworkService.confirm(input.reworkId, ctx.user.id)),
+    .mutation(({ ctx, input }) => TaskReworkService.generateCompletionCode(input.reworkId, ctx.user.id)),
 });

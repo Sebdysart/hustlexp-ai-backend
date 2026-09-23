@@ -166,6 +166,7 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20261007_business_credentials_evidence', fileName: '20260922_business_credentials_evidence.sql' },
   { name: '20261008_business_quote_eligibility', fileName: '20260922_business_quote_eligibility.sql' },
   { name: '20260923_task_reworks', fileName: '20260923_task_reworks.sql' },
+  { name: '20260923_task_rework_completion_verifications', fileName: '20260923_task_rework_completion_verifications.sql' },
 ] as const;
 
 

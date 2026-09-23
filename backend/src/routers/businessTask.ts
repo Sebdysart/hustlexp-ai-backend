@@ -38,6 +38,9 @@ export const businessTaskRouter = router({
       }).strict()).max(10).default([]),
     }).strict())
     .mutation(({ ctx, input }) => TaskReworkService.submitProof({ ...input, actorId: ctx.user.id })),
+  verifyReworkCompletionCode: protectedProcedure
+    .input(z.object({ reworkId: z.string().uuid(), code: z.string().regex(/^\d{6}$/, 'Enter the 6-digit completion code.') }).strict())
+    .mutation(({ ctx, input }) => TaskReworkService.verifyCompletionCode(input.reworkId, ctx.user.id, input.code)),
   listForOrganization: protectedProcedure.input(listInput).query(async ({ ctx, input }) => {
     const states = input.states ?? DEFAULT_BUSINESS_TASK_STATES;
     let cursor: ReturnType<typeof decodeBusinessTaskCursor> | null = null;

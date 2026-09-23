@@ -1,13 +1,12 @@
-import crypto from 'node:crypto';
-
 import { db } from '../db.js';
 import type { QueryFn } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { ProofService } from './ProofService.js';
 import { TaskCompletionService } from './TaskCompletionService.js';
-
-const CODE_EXPIRY_MINUTES = 30;
-const MAX_FAILED_ATTEMPTS = 5;
+import {
+  MAX_FAILED_ATTEMPTS, completionCodeExpiresAt, completionCodeMatches,
+  generateCompletionCode, hashTaskCompletionCode,
+} from './CompletionCodePolicy.js';
 
 export interface GenerateCompletionCodeResult { taskId: string; code: string; expiresAt: string; }
 export interface VerifyCompletionCodeResult { taskId: string; completed: true; replayed: boolean; }
@@ -17,9 +16,6 @@ interface ProofRow { id: string; state: string; }
 interface VerificationRow { id: string; task_id: string; poster_user_id: string; business_organization_id: string; code_hash: string; expires_at: Date; failed_attempts: number; verified_at: Date | null; }
 
 function failure<T>(code: string, message: string): ServiceResult<T> { return { success: false, error: { code, message } }; }
-function secret(): string { const value = process.env.COMPLETION_VERIFICATION_SECRET; if (!value?.trim()) throw new Error('COMPLETION_VERIFICATION_SECRET is required.'); return value; }
-function hash(taskId: string, code: string): string { return crypto.createHmac('sha256', secret()).update(`${taskId}:${code}`).digest('hex'); }
-function matches(expected: string, actual: string): boolean { try { const a = Buffer.from(expected, 'hex'); const b = Buffer.from(actual, 'hex'); return a.length === 32 && a.length === b.length && crypto.timingSafeEqual(a, b); } catch { return false; } }
 
 async function loadTask(query: QueryFn, taskId: string): Promise<TaskRow | undefined> {
   const result = await query<TaskRow>(`SELECT id, poster_id, state, business_fulfiller_organization_id, completed_at, payout_ready_at FROM tasks WHERE id = $1 FOR UPDATE`, [taskId]);
@@ -39,13 +35,13 @@ export const CompletionVerificationService = {
         const proof = (await query<ProofRow>(`SELECT id, state FROM proofs WHERE task_id = $1 AND rework_id IS NULL ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, [taskId])).rows[0];
         if (!proof) return failure('PROOF_NOT_FOUND', 'No completion proof exists for this task.');
         if (proof.state !== 'SUBMITTED') return failure('PROOF_NOT_AWAITING_REVIEW', `Latest proof is ${proof.state}, expected SUBMITTED.`);
-        const code = crypto.randomInt(100000, 1000000).toString();
-        const expiresAt = new Date(Date.now() + CODE_EXPIRY_MINUTES * 60 * 1000);
+        const code = generateCompletionCode();
+        const expiresAt = completionCodeExpiresAt();
         const result = await query<{ expires_at: Date }>(`
           INSERT INTO task_completion_verifications (task_id, poster_user_id, business_organization_id, code_hash, expires_at)
           VALUES ($1, $2, $3, $4, $5)
           ON CONFLICT (task_id) DO UPDATE SET poster_user_id = EXCLUDED.poster_user_id, business_organization_id = EXCLUDED.business_organization_id, code_hash = EXCLUDED.code_hash, expires_at = EXCLUDED.expires_at, failed_attempts = 0, verified_at = NULL, verified_by_user_id = NULL, updated_at = NOW()
-          RETURNING expires_at`, [taskId, posterId, task.business_fulfiller_organization_id, hash(taskId, code), expiresAt]);
+          RETURNING expires_at`, [taskId, posterId, task.business_fulfiller_organization_id, hashTaskCompletionCode(taskId, code), expiresAt]);
         const stored = result.rows[0];
         if (!stored) return failure('COMPLETION_CODE_CREATE_FAILED', 'Unable to create the completion code.');
         return { success: true, data: { taskId, code, expiresAt: stored.expires_at.toISOString() } };
@@ -74,7 +70,7 @@ export const CompletionVerificationService = {
         if (verification.verified_at) return { success: true as const, data: { posterId: task.poster_id, proofId: proof.id, replayedVerification: true, alreadyCompleted: false } };
         if (verification.expires_at <= new Date()) return failure('COMPLETION_CODE_EXPIRED', 'This completion code has expired. Ask the customer to generate a new one.');
         if (verification.failed_attempts >= MAX_FAILED_ATTEMPTS) return failure('COMPLETION_CODE_LOCKED', 'Too many incorrect attempts. Ask the customer to generate a new completion code.');
-        if (!matches(verification.code_hash, hash(taskId, code))) {
+        if (!completionCodeMatches(verification.code_hash, hashTaskCompletionCode(taskId, code))) {
           const attempts = verification.failed_attempts + 1;
           await query(`UPDATE task_completion_verifications SET failed_attempts = $2, updated_at = NOW() WHERE id = $1`, [verification.id, attempts]);
           return failure(attempts >= MAX_FAILED_ATTEMPTS ? 'COMPLETION_CODE_LOCKED' : 'COMPLETION_CODE_INVALID', attempts >= MAX_FAILED_ATTEMPTS ? 'Too many incorrect attempts. Ask the customer to generate a new completion code.' : 'The completion code is incorrect.');

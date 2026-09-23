@@ -7,6 +7,10 @@ import { NotificationService } from './NotificationService.js';
 import { recordOpsAudit } from './OpsAuditService.js';
 import { ProofService } from './ProofService.js';
 import { projectProofPhotosForViewer } from './PrivateMediaDeliveryService.js';
+import {
+  MAX_FAILED_ATTEMPTS, completionCodeExpiresAt, completionCodeMatches,
+  generateCompletionCode, hashReworkCompletionCode,
+} from './CompletionCodePolicy.js';
 
 const log = logger.child({ service: 'TaskReworkService' });
 export const REWORK_STATUSES = ['REQUESTED', 'ACCEPTED', 'DECLINED', 'SCHEDULED', 'IN_PROGRESS', 'PROOF_SUBMITTED', 'COMPLETED', 'CANCELLED'] as const;
@@ -28,6 +32,11 @@ interface ParentRow {
   business_fulfiller_organization_id: string | null;
   provider_organization_id: string | null;
   provider_assignment_id: string | null;
+}
+
+interface ReworkVerificationRow {
+  id: string; task_id: string; poster_user_id: string; business_organization_id: string;
+  code_hash: string; expires_at: Date; failed_attempts: number; verified_at: Date | null;
 }
 
 const activeStatuses: ReworkStatus[] = ['REQUESTED', 'ACCEPTED', 'SCHEDULED', 'IN_PROGRESS', 'PROOF_SUBMITTED'];
@@ -314,18 +323,82 @@ export const TaskReworkService = {
     return { ...proof, photos: await projectProofPhotosForViewer({ taskId: row.task_id, proofId: proof.id, viewerId: actorId, photos: photos.data }), videos: [] };
   },
 
-  async confirm(reworkId: string, actorId: string) {
+  async generateCompletionCode(reworkId: string, actorId: string) {
     return db.transaction(async (query) => {
       const row = await lockRework(query, reworkId);
       await requireCustomer(query, row.task_id, actorId);
-      requireTransition(row, 'COMPLETED');
+      const task = await parent(query, row.task_id);
+      if (task.state !== 'COMPLETED' || row.status !== 'PROOF_SUBMITTED') {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Corrective proof is not awaiting completion.' });
+      }
       const proof = await query('SELECT 1 FROM proofs WHERE rework_id=$1 AND task_id=$2 AND state=\'SUBMITTED\' LIMIT 1', [row.id, row.task_id]);
       if (!proof.rows[0]) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Corrective proof is missing.' });
+      const previous = (await query<Pick<ReworkVerificationRow, 'code_hash' | 'verified_at'>>(
+        'SELECT code_hash,verified_at FROM task_rework_completion_verifications WHERE rework_id=$1 FOR UPDATE', [row.id],
+      )).rows[0];
+      if (previous?.verified_at) throw new TRPCError({ code: 'CONFLICT', message: 'This completion code has already been used.' });
+      let code = generateCompletionCode();
+      while (previous && completionCodeMatches(previous.code_hash, hashReworkCompletionCode(row.task_id, row.id, code))) {
+        code = generateCompletionCode();
+      }
+      const expiresAt = completionCodeExpiresAt();
+      const result = await query<{ expires_at: Date }>(
+        `INSERT INTO task_rework_completion_verifications
+           (rework_id,task_id,poster_user_id,business_organization_id,code_hash,expires_at)
+         VALUES($1,$2,$3,$4,$5,$6)
+         ON CONFLICT(rework_id) DO UPDATE SET
+           code_hash=EXCLUDED.code_hash, expires_at=EXCLUDED.expires_at,
+           failed_attempts=0, verified_at=NULL, verified_by_user_id=NULL, updated_at=NOW()
+         WHERE task_rework_completion_verifications.task_id=EXCLUDED.task_id
+           AND task_rework_completion_verifications.poster_user_id=EXCLUDED.poster_user_id
+           AND task_rework_completion_verifications.business_organization_id=EXCLUDED.business_organization_id
+           AND task_rework_completion_verifications.verified_at IS NULL
+         RETURNING expires_at`,
+        [row.id, row.task_id, actorId, row.business_organization_id,
+          hashReworkCompletionCode(row.task_id, row.id, code), expiresAt],
+      );
+      if (!result.rows[0]) throw new TRPCError({ code: 'CONFLICT', message: 'This completion code cannot be regenerated.' });
+      return { reworkId: row.id, code, expiresAt: result.rows[0].expires_at.toISOString() };
+    });
+  },
+
+  async verifyCompletionCode(reworkId: string, actorId: string, code: string) {
+    const outcome = await db.transaction(async (query) => {
+      const row = await lockRework(query, reworkId);
+      await requireBusiness(query, row, actorId);
+      requireTransition(row, 'COMPLETED');
+      const task = await parent(query, row.task_id);
+      if (task.state !== 'COMPLETED') throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Parent task is not completed.' });
+      const verification = (await query<ReworkVerificationRow>(
+        `SELECT id,task_id,poster_user_id,business_organization_id,code_hash,expires_at,failed_attempts,verified_at
+           FROM task_rework_completion_verifications WHERE rework_id=$1 FOR UPDATE`, [row.id],
+      )).rows[0];
+      if (!verification) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'The customer has not generated a corrective-work completion code.' });
+      if (verification.task_id !== row.task_id || verification.poster_user_id !== task.poster_id ||
+          verification.business_organization_id !== row.business_organization_id) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Completion code context does not match corrective work.' });
+      }
+      if (verification.verified_at) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This completion code has already been used.' });
+      if (verification.expires_at <= new Date()) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This completion code has expired. Ask the customer to generate a new one.' });
+      if (verification.failed_attempts >= MAX_FAILED_ATTEMPTS) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Too many incorrect attempts. Ask the customer to generate a new code.' });
+      if (!completionCodeMatches(verification.code_hash, hashReworkCompletionCode(row.task_id, row.id, code))) {
+        const attempts = verification.failed_attempts + 1;
+        await query('UPDATE task_rework_completion_verifications SET failed_attempts=$2, updated_at=NOW() WHERE id=$1', [verification.id, attempts]);
+        return { invalid: true as const, locked: attempts >= MAX_FAILED_ATTEMPTS };
+      }
+      await query(
+        `UPDATE task_rework_completion_verifications
+            SET verified_at=NOW(), verified_by_user_id=$2, updated_at=NOW() WHERE id=$1`,
+        [verification.id, actorId],
+      );
       const changed = await updateStatus(query, row, 'COMPLETED', ', customer_confirmed_at=NOW(), completed_at=NOW()');
       await event(query, changed, 'CUSTOMER_CONFIRMED');
       await notifyBusiness(query, changed, row.business_organization_id, 'TASK_REWORK_COMPLETED', 'Corrective work confirmed', 'The customer confirmed the corrective work is complete.');
-      return publicRework(changed);
+      return { invalid: false as const, rework: publicRework(changed) };
     });
+    if (outcome.invalid) throw new TRPCError({ code: 'BAD_REQUEST', message: outcome.locked
+      ? 'Too many incorrect attempts. Ask the customer to generate a new code.' : 'The completion code is incorrect.' });
+    return outcome.rework;
   },
 
   async cancel(reworkId: string, actorId: string) {
