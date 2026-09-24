@@ -59,7 +59,7 @@ describe('mobile push outbox isolation', () => {
     expect(payload.data.mobileOnly).toBe('true');
   });
 
-  it('applies default quiet hours before the user saves any preferences', async () => {
+  it('does not apply quiet hours before the user saves any preferences', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-09-24T06:00:00Z')); // 23:00 Pacific daylight time
     try {
@@ -77,9 +77,9 @@ describe('mobile push outbox isolation', () => {
         title: 'Update', message: 'A task changed.', actionUrl: '/dashboard',
       });
       const insert = query.mock.calls.find(([sql]) => sql.includes('INSERT INTO notifications'));
-      expect(insert?.[1]?.[20]).toBe(true);
+      expect(insert?.[1]?.[20]).toBe(false);
       expect(insert?.[1]?.[19]).toBeInstanceOf(Date);
-      expect((insert?.[1]?.[19] as Date).getTime()).toBeGreaterThan(Date.now());
+      expect((insert?.[1]?.[19] as Date).getTime()).toBe(Date.now());
     } finally {
       vi.useRealTimers();
     }

@@ -410,9 +410,8 @@ async function insertNotification(
   const pushEnabled = mobileVariantsForDestination(input.actionUrl).length > 0
     && preference?.push_enabled !== false
     && preference?.category_preferences?.[input.type]?.enabled !== false;
-  // Match getPreferences() and the database defaults when this user has not
-  // written a preference row yet.
-  const quietHoursEnd = pushEnabled && (preference?.quiet_hours_enabled ?? true)
+  // Only a saved preference row opts this user into quiet-hour scheduling.
+  const quietHoursEnd = pushEnabled && preference && (preference.quiet_hours_enabled ?? true)
     ? nextQuietHoursEnd(new Date(), preference?.quiet_hours_start ?? '22:00:00',
       preference?.quiet_hours_end ?? '07:00:00', preference?.quiet_hours_timezone ?? 'America/Los_Angeles')
     : null;
@@ -1280,7 +1279,7 @@ export const NotificationService = {
           data: {
             id: '',
             user_id: userId,
-            quiet_hours_enabled: true,
+            quiet_hours_enabled: false,
             quiet_hours_start: '22:00:00',
             quiet_hours_end: '07:00:00',
             quiet_hours_timezone: 'America/Los_Angeles',
