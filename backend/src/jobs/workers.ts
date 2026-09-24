@@ -32,6 +32,7 @@ import {
 import { db } from '../db.js';
 import { REQUIRED_MIGRATION_FILES } from './engine-automation-migration-files.js';
 import { verifyQueueRedisConnection } from './queues.js';
+import { buildIdentity } from '../buildIdentity.js';
 
 // Track all registered workers and outbox interval handles for graceful shutdown
 const activeWorkers: Worker[] = [];
@@ -188,6 +189,12 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
  * this process-entry guard means direct startWorkers() unit calls are unaffected.
  */
 export async function bootWorkerProcess(): Promise<void> {
+  log.info({
+    buildRevision: buildIdentity.revision,
+    pid: process.pid,
+    serviceRole: process.env.SERVICE_ROLE ?? null,
+    workerIdentity: 'hustlexp-worker',
+  }, 'Worker process starting');
   validateConfig();
   workerHealthServer = await startWorkerHealthServer({
     readinessCheck: () => outboxHandles !== null

@@ -24,6 +24,7 @@ import { getClient as getRedisClient } from '../cache/redis.js';
 import { workerLogger } from '../logger.js';
 import { config } from '../config.js';
 import { AnalyticsService } from '../services/AnalyticsService.js';
+import { buildIdentity } from '../buildIdentity.js';
 const log = workerLogger.child({ worker: 'outbox' });
 
 // Maximum delivery attempts before an outbox event is permanently failed.
@@ -151,6 +152,15 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
 
     for (const event of claimedEvents) {
       void AnalyticsService.observeOutbox(event);
+      let enqueueDiagnostic: {
+        eventId: string;
+        eventType: string;
+        queueName: QueueName;
+        jobId: string;
+        jobIdContainsColon: boolean;
+        buildRevision: string;
+        pid: number;
+      } | undefined;
       try {
         if (!validOutboxEvent(event)) {
           await db.query(`UPDATE outbox_events SET status = 'failed', error_message = 'poison:invalid_outbox_event',
@@ -166,6 +176,17 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
         }
 
         // Enqueue job with idempotency key (outside the transaction — no DB lock held)
+        const jobId = bullMqJobId(event.idempotency_key);
+        enqueueDiagnostic = {
+          eventId: event.id,
+          eventType: event.event_type,
+          queueName: event.queue_name,
+          jobId,
+          jobIdContainsColon: jobId.includes(':'),
+          buildRevision: buildIdentity.revision,
+          pid: process.pid,
+        };
+        log.info(enqueueDiagnostic, 'Outbox BullMQ enqueue starting');
         const job = await enqueueJob(
           event.queue_name,
           event.event_type,
@@ -176,7 +197,7 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
             outbox_idempotency_key: event.idempotency_key,
             payload: jobPayload,
           },
-          { jobId: bullMqJobId(event.idempotency_key), retryTerminal: true,
+          { jobId, retryTerminal: true,
             ...(event.idempotency_key.startsWith('provider_os:v2:') || event.event_type === 'notification.create_requested'
               ? { removeOnComplete: true, removeOnFail: true } : {}),
           }
@@ -202,6 +223,13 @@ export async function processOutboxEvents(batchSize: number = 100): Promise<{
       } catch (error) {
         failed++;
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        if (enqueueDiagnostic) {
+          log.error({
+            ...enqueueDiagnostic,
+            errorMessage,
+            errorStack: error instanceof Error ? error.stack : undefined,
+          }, 'Outbox BullMQ enqueue failed');
+        }
         errors.push({ eventId: event.id, error: errorMessage });
 
         // Queue transport failure is not poison work. Store a bounded failure
