@@ -12,7 +12,7 @@ export async function getAuthUser(context: Context): Promise<User | null> {
     const decoded = await firebaseAuth.verifyIdToken(header.slice(7), true);
     if (await redis.get(`auth:revoked:${decoded.uid}`)) return null;
     const result = await db.query<User>(
-      'SELECT id, firebase_uid, email, full_name, is_banned, account_status, default_mode, role, trust_tier, stripe_connect_id FROM users WHERE firebase_uid = $1',
+      'SELECT id, firebase_uid, email, full_name, is_banned, account_status, default_mode, role, trust_tier FROM users WHERE firebase_uid = $1',
       [decoded.uid],
     );
     const user = result.rows[0] || null;

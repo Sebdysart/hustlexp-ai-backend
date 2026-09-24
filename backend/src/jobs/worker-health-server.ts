@@ -20,6 +20,7 @@ interface WorkerHealthServerOptions {
   production?: boolean;
   identity?: BuildIdentity;
   trustedIdentity?: (identity: BuildIdentity) => boolean;
+  readinessCheck?: () => boolean;
 }
 
 function resolvePort(value: string | undefined): number {
@@ -71,7 +72,13 @@ export async function startWorkerHealthServer(
     }
 
     const trustedBuild = !production || trustedIdentity(identity);
-    const ready = state === 'ready' && trustedBuild;
+    let runtimeReady = true;
+    try {
+      runtimeReady = options.readinessCheck?.() ?? true;
+    } catch {
+      runtimeReady = false;
+    }
+    const ready = state === 'ready' && trustedBuild && runtimeReady;
     response.writeHead(ready ? 200 : 503);
     response.end(JSON.stringify({
       status: ready ? 'healthy' : 'unhealthy',
@@ -82,7 +89,16 @@ export async function startWorkerHealthServer(
     }));
   });
 
-  await listen(server, options.port ?? resolvePort(process.env.WORKER_PORT ?? process.env.PORT), options.host ?? '0.0.0.0');
+  await listen(
+    server,
+    options.port ??
+      resolvePort(
+        production
+          ? process.env.PORT
+          : process.env.WORKER_PORT ?? process.env.PORT,
+      ),
+    options.host ?? '0.0.0.0',
+  );
 
   return {
     server,

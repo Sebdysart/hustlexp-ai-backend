@@ -290,7 +290,7 @@ export const DynamicPricingService = {
         }
 
         // Sync the escrow amount to the bumped price — but only for PENDING escrows.
-        // A FUNDED escrow means Stripe has already captured the original amount; the
+        // A FUNDED escrow means the provider has already captured the original amount; the
         // poster would need to pay the difference out-of-band, which is a separate
         // flow. Updating the DB amount on a FUNDED escrow would cause a display/
         // release divergence (escrow.amount > actual collected funds), so we skip it.

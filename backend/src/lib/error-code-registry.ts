@@ -236,7 +236,7 @@ export const ERROR_CODES: Record<string, ErrorCodeDefinition> = {
   },
   HX305: {
     code: 'HX305',
-    message: 'Stripe Connect account not verified',
+    message: 'Payout account not verified',
     httpStatus: 403,
     userFacing: true,
     category: 'payment',

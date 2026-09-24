@@ -20,9 +20,6 @@ beforeAll(() => {
     FIREBASE_PROJECT_ID: 'test-project',
     FIREBASE_CLIENT_EMAIL: 'test@test.iam.gserviceaccount.com',
     FIREBASE_PRIVATE_KEY: 'test-key',
-    STRIPE_SECRET_KEY: 'sk_test_fake',
-    STRIPE_WEBHOOK_SECRET: 'whsec_test',
-    STRIPE_CONNECT_WEBHOOK_SECRET: 'whsec_connect_test',
     JWT_SECRET: 'test-jwt-secret',
     CORS_ORIGINS: 'http://localhost:3000',
   };

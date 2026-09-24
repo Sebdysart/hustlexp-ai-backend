@@ -1,18 +1,30 @@
 import { db } from '../db.js';
+import { logger } from '../logger.js';
+import { isBusinessQuoteProviderVerified } from './BusinessQuoteActivationService.js';
 import type { ServiceResult } from '../types.js';
 import { EscrowService } from './EscrowService.js';
 import { TaskCreateService } from './TaskCreateService.js';
+import { consumeQuoteServiceAddress, readQuoteServiceLocation } from './QuoteServiceAddressService.js';
 import {
   mapQuoteToCreateTaskParams,
   type MapQuoteToTaskParamsInput,
 } from './QuoteTaskParamsMapper.js';
-import { StripeQuotePaymentProvider } from './payment/StripeQuotePaymentProvider.js';
+import { TilledQuotePaymentProvider } from './payment/TilledQuotePaymentProvider.js';
+import { loadTilledConfig } from './payment/TilledConfig.js';
+import { NotificationService } from './NotificationService.js';
+import { AnalyticsService } from './AnalyticsService.js';
+import {
+  controlledTestQuotePaymentEnabled,
+  settleControlledTestQuotePayment,
+} from './ControlledTestQuotePaymentService.js';
+import { quotePaymentReplayDecision } from './QuotePaymentReplayPolicy.js';
 
 interface FinalizePaidQuoteInput {
   quoteId: string;
   quoteVersionId: string;
   posterId: string;
   paymentIntentId: string;
+  paymentMode: 'controlled_test' | 'tilled';
 }
 
 interface FinalizePaidQuoteResult {
@@ -57,14 +69,31 @@ interface DraftRow {
   category: string;
   title: string | null;
   scope_summary: string | null;
-  structured: Record<string, unknown> | null;
+  structured:
+    Record<string, unknown> | null;
   zip: string | null;
   region: string | null;
+  validated_risk_level:
+    | 'LOW'
+    | 'MEDIUM'
+    | 'HIGH'
+    | 'IN_HOME'
+    | null;
+  compliance_result: Record<string, unknown> | null;
+  region_code: string | null;
+  region_policy_id: string | null;
+  region_policy_version: string | null;
+  region_policy_hash: string | null;
+  region_policy_snapshot: Record<string, unknown> | null;
+
+  scheduled_service_date:
+    string | null;
 }
 
 interface LeadRow {
   id: string;
-  email: string;
+  email: string | null;
+  user_id: string | null;
 }
 
 interface QuotePaymentRow {
@@ -74,6 +103,32 @@ interface QuotePaymentRow {
   provider_payment_id: string;
   amount_cents: number;
   status: 'PENDING' | 'SUCCEEDED' | 'FAILED' | 'REFUNDED';
+  platform_fee_cents: number | null;
+  business_organization_id: string | null;
+  provider_merchant_id: string | null;
+  provider_environment: string | null;
+  reserved_poster_id: string | null;
+  reserved_at: Date | null;
+  currency: string;
+  intent_creation_state: string | null;
+  finalization_state: string;
+}
+
+export function leadOwnershipMatchesPoster(input: {
+  leadUserId: string | null;
+  leadEmail: string | null;
+  posterId: string;
+  posterEmail: string | null;
+}): boolean {
+  if (input.leadUserId) {
+    return input.leadUserId === input.posterId;
+  }
+
+  return Boolean(
+    input.leadEmail
+    && input.posterEmail
+    && input.posterEmail.trim().toLowerCase() === input.leadEmail.trim().toLowerCase(),
+  );
 }
 
 function fail<T>(
@@ -94,38 +149,88 @@ export async function finalizePaidQuote(
      * Step 1:
      * Validate the quote/payment outside the DB transaction.
      *
-     * We do not want an external Stripe call while holding DB locks.
+     * We do not want an external provider call while holding DB locks.
      */
-    const quoteContext = await db.query<{
-      quote_id: string;
-      quote_version_id: string;
-      poster_email: string;
-      lead_email: string;
-      total_cents: number;
-    }>(
-      `
-      SELECT
-        q.id AS quote_id,
-        qv.id AS quote_version_id,
-        u.email AS poster_email,
-        l.email AS lead_email,
-        qv.total_cents
-      FROM quotes q
-      JOIN quote_versions qv
-        ON qv.id = q.active_version_id
-       AND qv.quote_id = q.id
-      JOIN task_drafts d
-        ON d.id = q.task_draft_id
-      JOIN leads l
-        ON l.id = d.lead_id
-      JOIN users u
-        ON u.id = $3
-      WHERE q.id = $1
-        AND qv.id = $2
-      LIMIT 1
-      `,
-      [input.quoteId, input.quoteVersionId, input.posterId],
-    );
+      const quoteContext = await db.query<{
+        quote_id: string;
+        quote_status: string;
+        quote_version_id: string;
+        selected_quote_id: string | null;
+        total_cents: number;
+        hustler_payout_cents: number;
+        business_organization_id: string | null;
+        provider_payment_id: string | null;
+        payment_id: string | null;
+        task_draft_id: string;
+        payment_provider: string | null;
+        payment_status: string | null;
+        payment_task_id: string | null;
+        payment_amount_cents: number | null;
+        provider_merchant_id: string | null;
+        provider_environment: string | null;
+        payment_platform_fee_cents: number | null;
+        payment_business_organization_id: string | null;
+        reserved_poster_id: string | null;
+        reserved_at: Date | null;
+        currency: string;
+        intent_creation_state: string | null;
+        finalization_state: string;
+        assessment_credit_cents: number | null;
+        poster_user_id: string;
+        quote_environment: string | null;
+        quote_is_test: boolean;
+      }>(
+        `
+        SELECT
+          q.id AS quote_id,
+          q.task_draft_id,
+          q.status AS quote_status,
+          qv.id AS quote_version_id,
+          d.quote_id AS selected_quote_id,
+          qv.total_cents,
+          qv.hustler_payout_cents,
+          q.business_organization_id,
+          q.environment AS quote_environment,
+          q.is_test AS quote_is_test,
+          d.poster_user_id,
+          payment.provider AS payment_provider,
+          payment.id AS payment_id,
+          payment.status AS payment_status,
+          payment.provider_payment_id,
+          payment.task_id AS payment_task_id,
+          payment.amount_cents AS payment_amount_cents,
+          payment.platform_fee_cents AS payment_platform_fee_cents,
+          payment.provider_merchant_id,
+          payment.provider_environment,
+          payment.business_organization_id AS payment_business_organization_id,
+          payment.reserved_poster_id, payment.reserved_at, payment.currency,
+          payment.intent_creation_state, payment.finalization_state,
+          assessment_payment.amount_cents AS assessment_credit_cents
+        FROM quotes q
+        JOIN quote_versions qv
+          ON qv.id = $2 AND qv.quote_id = q.id
+        JOIN task_drafts d
+          ON d.id = q.task_draft_id
+        LEFT JOIN quote_payments payment
+          ON payment.quote_id = q.id
+         AND payment.quote_version_id = qv.id
+        LEFT JOIN business_assessment_requests assessment
+          ON (assessment.quote_id = q.id OR
+              (assessment.quote_id IS NULL AND EXISTS (
+                SELECT 1 FROM ops_business_claim_links legacy_claim
+                WHERE legacy_claim.id=assessment.claim_link_id AND legacy_claim.quote_id=q.id)))
+         AND assessment.status = 'COMPLETED'
+         AND assessment.quote_is_net_of_credit = FALSE
+        LEFT JOIN assessment_payments assessment_payment
+          ON assessment_payment.assessment_request_id = assessment.id
+         AND assessment_payment.status = 'SUCCEEDED'
+        WHERE q.id = $1
+          AND qv.id = $2
+          AND d.poster_user_id = $3
+        LIMIT 1
+        `,
+        [input.quoteId, input.quoteVersionId, input.posterId],
+      );
 
     const context = quoteContext.rows[0];
 
@@ -136,33 +241,95 @@ export async function finalizePaidQuote(
       );
     }
 
-    if (
-      context.poster_email.trim().toLowerCase()
-      !== context.lead_email.trim().toLowerCase()
-    ) {
+    if (input.paymentMode !== 'tilled' && context.selected_quote_id !== input.quoteId) {
       return fail(
-        'QUOTE_POSTER_MISMATCH',
-        'This quote does not belong to the authenticated poster.',
+        'QUOTE_NOT_ACCEPTED',
+        'This quote has not been accepted by the poster.',
       );
     }
+
+    if (!context.provider_payment_id || context.payment_amount_cents === null || context.payment_platform_fee_cents === null) {
+      return fail('QUOTE_PAYMENT_CONTEXT_MISSING', 'Quote payment binding is incomplete.');
+    }
+    if (context.provider_payment_id !== input.paymentIntentId) {
+      return fail('QUOTE_PAYMENT_ID_MISMATCH', 'The supplied payment does not match the stored quote payment.');
+    }
+
+    if (input.paymentMode !== 'tilled' && !['quote_ready', 'quote_send_ready', 'paid'].includes(context.quote_status)) {
+      return fail('QUOTE_NOT_PAYABLE', 'This quote is not available for payment.');
+    }
+    const expectedProvider = input.paymentMode === 'controlled_test'
+      ? 'local_test'
+      : 'tilled';
+
+    if (context.payment_provider !== expectedProvider) {
+      return fail(
+        'QUOTE_PAYMENT_PROVIDER_INVALID',
+        'The quote payment provider does not match this payment flow.',
+      );
+    }
+
+    if (input.paymentMode === 'controlled_test') {
+      if (
+        !controlledTestQuotePaymentEnabled()
+        || context.quote_environment !== 'TEST'
+        || context.quote_is_test !== true
+      ) {
+        return fail(
+          'CONTROLLED_TEST_PAYMENT_DISABLED',
+          'Controlled-test quote payment is not authorized for this quote.',
+        );
+      }
+    }
+    const assessmentCreditCents = input.paymentMode === 'tilled' ? 0 : Number(context.assessment_credit_cents ?? 0);
+    const quotePaymentAmountCents = Number(context.payment_amount_cents);
+        const totalCents = Number(context.total_cents);
+    const payoutCents = Number(context.hustler_payout_cents);
+    if (input.paymentMode === 'tilled' && totalCents - payoutCents !== Number(context.payment_platform_fee_cents)) {
+      return fail('QUOTE_PAYMENT_ECONOMICS_MISMATCH', 'The reserved payment economics do not match the quote version.');
+    }
+    if (!Number.isInteger(payoutCents) || payoutCents < 0) return fail('QUOTE_PAYOUT_INVALID', 'Quote payout is invalid.');
+    if (assessmentCreditCents + quotePaymentAmountCents !== totalCents) return fail('QUOTE_PAYMENT_TOTAL_MISMATCH', 'Assessment credit and final payment do not equal the quote total.');
 
     /*
      * Verify that the payment actually belongs to this quote.
      */
-    const verified =
-      await StripeQuotePaymentProvider.verifySucceededPayment({
+    if (input.paymentMode === 'tilled' && (context.reserved_poster_id !== input.posterId
+      || !context.reserved_at || context.currency !== 'usd' || context.intent_creation_state !== 'BOUND'
+      || !context.payment_business_organization_id)) {
+      return fail('QUOTE_PAYMENT_RESERVATION_MISMATCH', 'The payment reservation does not match this customer or quote.');
+    }
+    if (context.payment_status === 'REFUNDED') {
+      return fail('QUOTE_PAYMENT_REFUNDED', 'This payment was refunded. No new charge was created.');
+    }
+    if (context.finalization_state === 'MANUAL_COMPENSATION_REQUIRED') {
+      return fail('QUOTE_PAYMENT_MANUAL_COMPENSATION_REQUIRED', 'Your payment was received and requires support review. Do not pay again.');
+    }
+    if (input.paymentMode === 'tilled'
+      && !(context.quote_status === 'paid' && context.payment_status === 'SUCCEEDED' && context.payment_task_id)) {
+      const config = loadTilledConfig();
+      if (!context.payment_business_organization_id || !context.provider_merchant_id
+        || !context.payment_id || context.provider_environment !== config.environment) {
+        return fail('PAYMENT_ACCOUNT_MISMATCH', 'Payment account binding is incomplete.');
+      }
+      const verified = await TilledQuotePaymentProvider.verifySucceededPayment({
         paymentIntentId: input.paymentIntentId,
+        localPaymentId: context.payment_id,
+        taskDraftId: context.task_draft_id,
+        organizationId: context.payment_business_organization_id,
+        merchantAccountId: context.provider_merchant_id,
+        platformFeeCents: Number(context.payment_platform_fee_cents),
         quoteId: input.quoteId,
         quoteVersionId: input.quoteVersionId,
         posterId: input.posterId,
-        amountCents: Number(context.total_cents),
+        amountCents: quotePaymentAmountCents,
       });
-
-    if (!verified.success) {
-      return {
-        success: false,
-        error: verified.error,
-      };
+      if (!verified.success) return verified;
+      await db.query(
+        `UPDATE quote_payments SET provider_status = 'succeeded', provider_succeeded_at = COALESCE(provider_succeeded_at, NOW()), updated_at = NOW()
+         WHERE id = $1 AND provider = 'tilled' AND provider_payment_id = $2`,
+        [context.payment_id, input.paymentIntentId],
+      );
     }
 
     /*
@@ -170,45 +337,40 @@ export async function finalizePaidQuote(
      * Lock the quote and create/materialize the canonical task.
      */
     const materialized = await db.transaction(async (query) => {
-      const quoteResult = await query<QuoteRow>(
-        `
-        SELECT
-  	id,
-  	task_draft_id,
-  	active_version_id,
-  	status,
-  	environment,
-  	is_test,
-  	business_organization_id,
-  	business_location_id,
-  	provider_service_profile_id,
-  	claimed_by_user_id
-	FROM quotes
-	WHERE id = $1
-	FOR UPDATE
-        `,
-        [input.quoteId],
-      );
+    // Organization-first locking matches verification/quote publication. Keep
+    // eligibility stable until a task or compensation outcome has committed.
+    if (context.payment_business_organization_id) {
+      await query('SELECT id FROM business_organizations WHERE id = $1 FOR SHARE', [context.payment_business_organization_id]);
+    }
+    const quoteResult = await query<
+      QuoteRow & { selected_quote_id: string | null; poster_user_id: string | null; draft_task_id: string | null }
+    >(
+      `
+      SELECT
+        q.id,
+        q.task_draft_id,
+        q.active_version_id,
+        q.status,
+        q.environment,
+        q.is_test,
+        q.business_organization_id,
+        q.business_location_id,
+        q.provider_service_profile_id,
+        q.claimed_by_user_id,
+        d.quote_id AS selected_quote_id, d.poster_user_id, d.task_id AS draft_task_id
+      FROM quotes q
+      JOIN task_drafts d
+        ON d.id = q.task_draft_id
+      WHERE q.id = $1
+      FOR UPDATE OF q, d
+      `,
+      [input.quoteId],
+    );
 
 	const quote = quoteResult.rows[0];
 
 	if (!quote) {
 	  throw new Error('QUOTE_NOT_FOUND');
-	}
-
-	const hasBusinessClaim = Boolean(quote.business_organization_id);
-
-	if (hasBusinessClaim) {
-	  if (
-	    !quote.business_location_id ||
-	    !quote.provider_service_profile_id
-	  ) {
-	    throw new Error('BUSINESS_CLAIM_BINDING_INCOMPLETE');
-	  }
-	}
-
-	if (quote.active_version_id !== input.quoteVersionId) {
-	  throw new Error('QUOTE_VERSION_NOT_ACTIVE');
 	}
 
       const versionResult = await query<QuoteVersionRow>(
@@ -250,6 +412,11 @@ export async function finalizePaidQuote(
           provider,
           provider_payment_id,
           amount_cents,
+          platform_fee_cents,
+          business_organization_id,
+          provider_merchant_id,
+          provider_environment,
+          reserved_poster_id, reserved_at, currency, intent_creation_state, finalization_state,
           status
         FROM quote_payments
         WHERE quote_id = $1
@@ -260,6 +427,41 @@ export async function finalizePaidQuote(
       );
 
       const existingPayment = paymentResult.rows[0];
+
+      if (!existingPayment) {
+        throw new Error('QUOTE_PAYMENT_NOT_FOUND');
+      }
+
+      if (existingPayment.status === 'REFUNDED') {
+        throw new Error('QUOTE_PAYMENT_REFUNDED');
+      }
+
+      if (existingPayment.provider !== expectedProvider) {
+        throw new Error('QUOTE_PAYMENT_PROVIDER_INVALID');
+      }
+
+      if (existingPayment.provider_payment_id !== input.paymentIntentId) {
+        throw new Error('QUOTE_PAYMENT_IDEMPOTENCY_CONFLICT');
+      }
+
+      if (input.paymentMode === 'tilled') {
+        // The paid obligation is the locked local reservation, never today's
+        // active-version pointer. Verify the same binding again under row locks.
+        if (existingPayment.id !== context.payment_id
+          || existingPayment.reserved_poster_id !== input.posterId
+          || quote.poster_user_id !== input.posterId
+          || !existingPayment.reserved_at || existingPayment.currency !== 'usd'
+          || existingPayment.intent_creation_state !== 'BOUND'
+          || existingPayment.business_organization_id !== context.payment_business_organization_id
+          || existingPayment.provider_merchant_id !== context.provider_merchant_id
+          || existingPayment.provider_environment !== context.provider_environment
+          || Number(existingPayment.amount_cents) !== quotePaymentAmountCents
+          || Number(existingPayment.platform_fee_cents) !== Number(context.payment_platform_fee_cents)
+          || Number(version.total_cents) !== totalCents
+          || Number(version.hustler_payout_cents) !== payoutCents) {
+          throw new Error('QUOTE_PAYMENT_RESERVATION_MISMATCH');
+        }
+      }
 
       if (existingPayment?.status === 'SUCCEEDED' && existingPayment.task_id) {
         const escrowResult = await query<{ id: string }>(
@@ -283,18 +485,37 @@ export async function finalizePaidQuote(
           taskId: existingPayment.task_id,
           escrowId: escrow.id,
           replayed: true,
+          paymentSucceeded: true,
         };
       }
 
-      if (
-        existingPayment
-        && existingPayment.provider_payment_id !== input.paymentIntentId
-      ) {
-        throw new Error('QUOTE_PAYMENT_IDEMPOTENCY_CONFLICT');
-      }
-
-      if (version.expires_at <= new Date()) {
-        throw new Error('QUOTE_EXPIRED');
+      if (input.paymentMode === 'tilled') {
+        const reason = existingPayment.finalization_state === 'MANUAL_COMPENSATION_REQUIRED'
+          ? 'EXISTING_MANUAL_COMPENSATION'
+          : quote.draft_task_id && quote.draft_task_id !== existingPayment.task_id ? 'DRAFT_ALREADY_MATERIALIZED'
+          : quote.selected_quote_id !== input.quoteId ? 'QUOTE_SELECTION_CHANGED'
+          : quote.business_organization_id !== existingPayment.business_organization_id ? 'BUSINESS_BINDING_CHANGED'
+          : !quote.business_organization_id || !await isBusinessQuoteProviderVerified(query, quote.business_organization_id)
+            ? 'BUSINESS_NO_LONGER_ELIGIBLE' : null;
+        if (reason) {
+          // Commit the verified receipt and explicit manual outcome. No refund
+          // or task is invented, and retries cannot charge or materialize again.
+          await query(`UPDATE quote_payments SET status = 'SUCCEEDED',
+            provider_status = 'succeeded', provider_succeeded_at = COALESCE(provider_succeeded_at, NOW()),
+            finalization_state = 'MANUAL_COMPENSATION_REQUIRED',
+            finalization_reason = COALESCE(finalization_reason, $2), updated_at = NOW()
+            WHERE id = $1 AND provider_payment_id = $3`,
+          [existingPayment.id, reason, input.paymentIntentId]);
+          return { manualCompensation: true as const, reason };
+        }
+      } else {
+        if (quote.selected_quote_id !== input.quoteId) throw new Error('QUOTE_NOT_ACCEPTED');
+        if (quote.active_version_id !== input.quoteVersionId) throw new Error('QUOTE_VERSION_NOT_ACTIVE');
+        if (!['quote_send_ready', 'quote_ready'].includes(quote.status)) throw new Error('QUOTE_NOT_PAYABLE');
+        if (version.expires_at <= new Date()) throw new Error('QUOTE_EXPIRED');
+        if (quote.business_organization_id && !await isBusinessQuoteProviderVerified(query, quote.business_organization_id)) {
+          throw new Error('BUSINESS_NOT_VERIFIED');
+        }
       }
 
       /*
@@ -310,7 +531,15 @@ export async function finalizePaidQuote(
           scope_summary,
           structured,
           zip,
-          region
+          validated_risk_level,
+          compliance_result,
+          scheduled_service_date::text AS scheduled_service_date,
+          region,
+          region_code,
+          region_policy_id,
+          region_policy_version,
+          region_policy_hash,
+          region_policy_snapshot
         FROM task_drafts
         WHERE id = $1
         FOR UPDATE
@@ -330,7 +559,7 @@ export async function finalizePaidQuote(
 
       const leadResult = await query<LeadRow>(
         `
-        SELECT id, email
+        SELECT id, email, user_id
         FROM leads
         WHERE id = $1
         LIMIT 1
@@ -344,7 +573,7 @@ export async function finalizePaidQuote(
         throw new Error('LEAD_NOT_FOUND');
       }
 
-      const posterResult = await query<{ email: string }>(
+      const posterResult = await query<{ email: string | null }>(
         `
         SELECT email
         FROM users
@@ -360,48 +589,24 @@ export async function finalizePaidQuote(
         throw new Error('POSTER_NOT_FOUND');
       }
 
-      if (
-        poster.email.trim().toLowerCase()
-        !== lead.email.trim().toLowerCase()
-      ) {
+      const ownershipMatches = leadOwnershipMatchesPoster({
+        leadUserId: lead.user_id,
+        leadEmail: lead.email,
+        posterId: input.posterId,
+        posterEmail: poster.email,
+      });
+      if (!ownershipMatches) {
         throw new Error('QUOTE_POSTER_MISMATCH');
       }
 
-      /*
-       * Persist the payment binding before materialization.
-       * If task creation fails, the whole transaction rolls back.
-       */
-      await query(
-        `
-        INSERT INTO quote_payments (
-          quote_id,
-          quote_version_id,
-          provider,
-          provider_payment_id,
-          amount_cents,
-          status
-        )
-        VALUES ($1, $2, 'stripe', $3, $4, 'PENDING')
-        ON CONFLICT (quote_id, quote_version_id)
-        DO UPDATE SET
-          provider_payment_id = EXCLUDED.provider_payment_id,
-          amount_cents = EXCLUDED.amount_cents,
-          updated_at = NOW()
-        `,
-        [
-          input.quoteId,
-          input.quoteVersionId,
-          input.paymentIntentId,
-          version.total_cents,
-        ],
-      );
-
+      if (existingPayment.amount_cents !== quotePaymentAmountCents) throw new Error('QUOTE_PAYMENT_AMOUNT_MISMATCH');
+            
       const taskParamsInput: MapQuoteToTaskParamsInput = {
         posterId: input.posterId,
         draft,
         quoteVersion: version,
         automationClassification:
-          quote.environment === 'TEST'
+          (input.paymentMode === 'tilled' ? existingPayment.provider_environment === 'sandbox' : quote.environment === 'TEST')
             ? 'CONTROLLED_TEST'
             : 'PRODUCTION',
         clientIdempotencyKey: `quote-finalize:${input.quoteId}:v${input.quoteVersionId}`,
@@ -415,8 +620,12 @@ export async function finalizePaidQuote(
       const taskParams =
         mapQuoteToCreateTaskParams(taskParamsInput);
 
+      // Durable checkout payload enters the existing encrypted task vault in the
+      // same transaction as task creation, before funding/assignment can proceed.
+      taskParams.location = await readQuoteServiceLocation(query, input.quoteVersionId, input.posterId);
+
       const taskResult =
-        await TaskCreateService.createInTransaction(
+        await TaskCreateService.materializeQuotedTaskInTransaction(
           query,
           taskParams,
         );
@@ -428,6 +637,8 @@ export async function finalizePaidQuote(
       }
 
       const taskId = taskResult.data.id;
+
+      await consumeQuoteServiceAddress(query, input.quoteVersionId, input.posterId, taskId);
 
       /*
        * TaskCreateService already created the pending escrow.
@@ -477,13 +688,122 @@ export async function finalizePaidQuote(
           input.paymentIntentId,
         ],
       );
+      const draftUpdate = await query<{
+        task_id: string;
+      }>(
+        `
+        UPDATE task_drafts
+        SET
+          task_id = $2,
+          updated_at = NOW()
+        WHERE id = $1
+          AND (
+            task_id IS NULL
+            OR task_id = $2
+          )
+        RETURNING task_id
+        `,
+        [
+          draft.id,
+          taskId,
+        ],
+      );
+
+      if (!draftUpdate.rows[0]) {
+        throw new Error(
+          'Task draft is already linked to a different canonical task.',
+        );
+      }
 
       return {
         taskId,
         escrowId: escrow.id,
         replayed: taskResult.replayed === true,
+        paymentSucceeded: false,
       };
     });
+
+    if ('manualCompensation' in materialized) {
+      logger.error({ paymentId: context.payment_id, quoteId: input.quoteId, quoteVersionId: input.quoteVersionId,
+        organizationId: context.payment_business_organization_id, reason: materialized.reason },
+      'Verified Tilled payment requires manual compensation; no refund performed');
+      return fail('QUOTE_PAYMENT_MANUAL_COMPENSATION_REQUIRED', 'Your payment was received and requires support review. Do not pay again.');
+    }
+
+    if (materialized.paymentSucceeded) {
+      const replayState = await db.query<{ escrow_state: string; task_state: string }>(
+        `SELECT e.state AS escrow_state, t.state AS task_state
+         FROM escrows e JOIN tasks t ON t.id = e.task_id
+         WHERE e.id = $1 AND t.id = $2`,
+        [materialized.escrowId, materialized.taskId],
+      );
+      const state = replayState.rows[0];
+      if (!state) throw new Error('ESCROW_NOT_FOUND_FOR_REPLAY');
+      const decision = quotePaymentReplayDecision({
+        escrowState: state.escrow_state,
+        taskState: state.task_state,
+      });
+      if (decision === 'refunded') {
+        return fail('QUOTE_PAYMENT_REFUNDED', 'This payment was refunded. No new charge was created.');
+      }
+      if (decision === 'complete') {
+        return {
+          success: true,
+          data: {
+            taskId: materialized.taskId,
+            escrowId: materialized.escrowId,
+            quoteId: input.quoteId,
+            quoteVersionId: input.quoteVersionId,
+            paymentIntentId: input.paymentIntentId,
+            replayed: true,
+          },
+        };
+      }
+    }
+
+    let finalPaymentIntentId = input.paymentIntentId;
+
+    if (input.paymentMode === 'controlled_test') {
+      const settled = await settleControlledTestQuotePayment({
+        taskId: materialized.taskId,
+        escrowId: materialized.escrowId,
+        posterId: input.posterId,
+        amountCents: quotePaymentAmountCents,
+      });
+
+      if (!settled.success) {
+        return settled;
+      }
+
+      finalPaymentIntentId = settled.data.paymentIntentId;
+
+      const rebound = await db.query(
+        `
+        UPDATE quote_payments
+        SET
+          provider_payment_id = $1,
+          updated_at = NOW()
+        WHERE quote_id = $2
+          AND quote_version_id = $3
+          AND provider = 'local_test'
+          AND provider_payment_id IN ($1, $4)
+        RETURNING id
+        `,
+        [
+          finalPaymentIntentId,
+          input.quoteId,
+          input.quoteVersionId,
+          input.paymentIntentId,
+        ],
+      );
+
+      if (!rebound.rows[0]) {
+        return fail(
+          'QUOTE_PAYMENT_IDEMPOTENCY_CONFLICT',
+          'This quote is already bound to a different payment.',
+        );
+      }
+    }
 
     /*
     * Step 3:
@@ -518,7 +838,7 @@ export async function finalizePaidQuote(
     if (currentEscrowState === 'PENDING') {
       const funded = await EscrowService.fund({
         escrowId: materialized.escrowId,
-        stripePaymentIntentId: input.paymentIntentId,
+        providerPaymentId: finalPaymentIntentId,
       });
 
       if (!funded.success) {
@@ -577,50 +897,81 @@ export async function finalizePaidQuote(
      * Step 4:
      * Finalize the payment/quote state.
      */
-    await db.query(
-      `
-      UPDATE quote_payments
-      SET
-        status = 'SUCCEEDED',
-        updated_at = NOW()
-      WHERE quote_id = $1
-        AND quote_version_id = $2
-        AND provider_payment_id = $3
-        AND task_id = $4
-      `,
-      [
-        input.quoteId,
-        input.quoteVersionId,
-        input.paymentIntentId,
-        materialized.taskId,
-      ],
-    );
+    await db.transaction(async (notificationQuery) => {
+      // Match canonical quote/version/payment lock order when finalizers race.
+      await notificationQuery(
+        `
+        UPDATE quotes
+        SET
+          status = 'paid',
+          active_version_id = $2,
+          updated_at = NOW()
+        WHERE id = $1
+          AND status <> 'paid'
+        `,
+        [input.quoteId, input.quoteVersionId],
+      );
 
-    await db.query(
-      `
-      UPDATE quote_versions
-      SET
-        status = 'paid',
-        updated_at = NOW()
-      WHERE id = $1
-        AND quote_id = $2
-        AND status = 'draft'
-      `,
-      [input.quoteVersionId, input.quoteId],
-    );
+      await notificationQuery(
+        `
+        UPDATE quote_versions
+        SET
+          status = 'paid',
+          updated_at = NOW()
+        WHERE id = $1
+          AND quote_id = $2
+          AND status <> 'paid'
+        `,
+        [input.quoteVersionId, input.quoteId],
+      );
 
-    await db.query(
-      `
-      UPDATE quotes
-      SET
-        status = 'paid',
-        updated_at = NOW()
-      WHERE id = $1
-        AND status IN ('quote_ready', 'quote_send_ready')
-      `,
-      [input.quoteId],
-    );
+      await notificationQuery(
+        `
+        UPDATE quote_payments
+        SET
+          status = 'SUCCEEDED',
+          finalization_state = 'FINALIZED', finalization_reason = NULL,
+          updated_at = NOW()
+        WHERE quote_id = $1
+          AND quote_version_id = $2
+          AND provider_payment_id = $3
+          AND task_id = $4
+        `,
+        [
+          input.quoteId,
+          input.quoteVersionId,
+          finalPaymentIntentId,
+          materialized.taskId,
+        ],
+      );
 
+      await NotificationService.createInTransaction(notificationQuery, {
+        userId: context.poster_user_id,
+        type: 'PAYMENT_CONFIRMED',
+        title: 'Payment confirmed',
+        message: 'Your payment was confirmed and the task is ready.',
+        entityType: 'task',
+        entityId: materialized.taskId,
+        actionUrl: `/dashboard/tasks/${materialized.taskId}`,
+        dedupeKey: `quote-paid-poster:${input.quoteId}`,
+      });
+
+      if (context.business_organization_id) {
+        await NotificationService.createForBusinessInTransaction(notificationQuery, context.business_organization_id, {
+          type: 'CUSTOMER_PAYMENT_RECEIVED',
+          title: 'Customer payment confirmed',
+          message: 'The customer completed payment. The task is ready to begin.',
+          entityType: 'task',
+          entityId: materialized.taskId,
+          actionUrl: `/business/tasks/${materialized.taskId}`,
+          dedupeKey: `quote-paid-business:${input.quoteId}`,
+        });
+      }
+    });
+
+    void AnalyticsService.track({ event_name: 'payment_succeeded', deduplication_key: input.quoteVersionId,
+      user_id: context.poster_user_id, task_id: materialized.taskId, quote_id: input.quoteId,
+      business_organization_id: context.business_organization_id || undefined, outcome: 'committed' });
     return {
       success: true,
       data: {
@@ -628,7 +979,7 @@ export async function finalizePaidQuote(
         escrowId: materialized.escrowId,
         quoteId: input.quoteId,
         quoteVersionId: input.quoteVersionId,
-        paymentIntentId: input.paymentIntentId,
+        paymentIntentId: finalPaymentIntentId,
         replayed: materialized.replayed,
       },
     };
@@ -636,6 +987,10 @@ export async function finalizePaidQuote(
     const message = err instanceof Error ? err.message : String(err);
 
     const errors: Record<string, [string, string]> = {
+      QUOTE_PAYMENT_REFUNDED: ['QUOTE_PAYMENT_REFUNDED', 'This payment was refunded. No new charge was created.'],
+      QUOTE_PAYMENT_RESERVATION_MISMATCH: ['QUOTE_PAYMENT_RESERVATION_MISMATCH', 'The payment reservation does not match this customer or quote.'],
+      SERVICE_ADDRESS_REQUIRED: ['SERVICE_ADDRESS_REQUIRED', 'Confirm your service address on the payment page, then retry completion.'],
+      SERVICE_ADDRESS_UNAVAILABLE: ['SERVICE_ADDRESS_UNAVAILABLE', 'Your service address could not be loaded. Contact support before retrying payment.'],
       QUOTE_NOT_FOUND: [
         'QUOTE_NOT_FOUND',
         'Quote not found.',
@@ -704,11 +1059,30 @@ export async function finalizePaidQuote(
         rest.join(':') || 'Task creation failed.',
       );
     }
+    const message1 =
+        err instanceof Error
+          ? err.message
+          : String(err);
 
+      console.error(
+        'QUOTE FINALIZATION FAILED:',
+        {
+          quoteId: input.quoteId,
+          quoteVersionId: input.quoteVersionId,
+          paymentIntentId: input.paymentIntentId,
+          posterId: input.posterId,
+          error: message1,
+          stack:
+            err instanceof Error
+              ? err.stack
+              : undefined,
+        },
+      );
     return fail(
       'QUOTE_FINALIZATION_FAILED',
       'Unable to finalize the paid quote.',
     );
   }
 }
+
 

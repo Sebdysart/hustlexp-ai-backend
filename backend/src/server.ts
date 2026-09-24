@@ -49,16 +49,41 @@ registerTrpcRoutes(app);
 registerAnimationRoutes(app);
 registerStateRoutes(app);
 
-app.use('/webhooks/*', publicIpRateLimitMiddleware());
-app.use('/webhooks/*', rateLimitMiddleware('general'));
+// Signed processor deliveries must reach authentication and durable receipt
+// even while Redis is unavailable. Global body limits still apply above.
 registerWebhookRoutes(app);
 registerErrorHandlers(app);
 
-startServer().catch((error) => logger.fatal({ err: error }, 'Failed to start server'));
+async function main(): Promise<void> {
+  try {
+    await startServer();
 
-export default { port: config.app.port, fetch: app.fetch };
+    const server = serve({
+      fetch: app.fetch,
+      port: config.app.port,
+    });
 
-const server = serve({ fetch: app.fetch, port: config.app.port });
-installProcessHandlers(server);
+    installProcessHandlers(server);
+
+    logger.info(
+      { port: config.app.port },
+      'HustleXP backend HTTP server started',
+    );
+  } catch (error) {
+    logger.fatal(
+      { err: error },
+      'Failed to initialize HustleXP backend',
+    );
+
+    process.exit(1);
+  }
+}
+
+void main();
+
+export default {
+  port: config.app.port,
+  fetch: app.fetch,
+};
 
 export { app };

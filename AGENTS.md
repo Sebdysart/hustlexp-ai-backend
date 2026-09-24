@@ -16,7 +16,7 @@ All documented in `CLAUDE.md` and `package.json` scripts. Quick reference:
 - **Workers:** `npm run dev:workers` (BullMQ background workers, separate process)
 
 ### Non-obvious caveats
-- The dev server starts and serves HTTP/tRPC even without a database or external services configured. It logs errors for missing `DATABASE_URL`, Firebase, Stripe, and Redis but does **not** crash — requests that need those services will fail at call time.
+- The dev server starts and serves HTTP/tRPC even without a database or external services configured. It logs errors for missing `DATABASE_URL`, Firebase, Tilled, and Redis but does **not** crash — requests that need those services will fail at call time.
 - `/health` returns 503 without `DATABASE_URL`; use `/trpc/health.ping` to verify the tRPC layer is alive.
 - Unit tests (the vast majority, 218+ files) use `vi.mock()` and require **zero infrastructure** — only `npm install`. DB-dependent invariant/integration tests use `describe.skipIf(!hasDb)` and skip gracefully.
 - CI uses Node 20 (`ci.yml`), but Node 22 works fine locally.

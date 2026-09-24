@@ -17,10 +17,6 @@ const log = workerLogger.child({ worker: 'maintenance' });
 // TYPES
 // ============================================================================
 
-interface RecoveryStuckStripeEventsPayload {
-  timeoutMinutes?: number; // Default: 10 minutes
-}
-
 interface DispatchExpiryPayload {
   limit?: number;
 }
@@ -28,48 +24,6 @@ interface DispatchExpiryPayload {
 // ============================================================================
 // MAINTENANCE WORKERS
 // ============================================================================
-
-/**
- * Recover stuck stripe events (worker crashed after claiming but before finalizing)
- * 
- * Finds events where:
- * - result = 'processing'
- * - processed_at IS NULL (not finalized)
- * - claimed_at < NOW() - interval (stuck for > timeout)
- * 
- * Resets them to unclaimed state so they can be retried.
- */
-export async function recoverStuckStripeEvents(job: Job<RecoveryStuckStripeEventsPayload>): Promise<void> {
-  // Clamp timeoutMinutes to [1, 1440] — negative or zero values would cause the INTERVAL
-  // expression to recover events that haven't actually timed out (or recover all of them),
-  // and values above 1440 (24 h) are nonsensical for a maintenance window.
-  const timeoutMinutes = Math.max(1, Math.min(1440, Number(job.data?.timeoutMinutes) || 10));
-  
-  // Use parameterized query for safety (INTERVAL requires string concatenation, but timeout is validated as number)
-  const result = await db.query<{
-    stripe_event_id: string;
-    claimed_at: Date;
-  }>(
-    `UPDATE stripe_events
-     SET claimed_at = NULL,
-         result = NULL,
-         error_message = 'Recovered from stuck processing (worker crash)'
-     WHERE result = 'processing'
-       AND processed_at IS NULL
-       AND claimed_at < NOW() - INTERVAL '1 minute' * $1
-     RETURNING stripe_event_id, claimed_at`,
-    [timeoutMinutes]
-  );
-  
-  if (result.rowCount > 0) {
-    log.info({ recoveredCount: result.rowCount, timeoutMinutes }, 'Recovered stuck stripe events');
-    result.rows.forEach(row => {
-      log.info({ stripeEventId: row.stripe_event_id, stuckSince: row.claimed_at }, 'Recovered stuck stripe event');
-    });
-  } else {
-    log.info({ timeoutMinutes }, 'No stuck stripe events found');
-  }
-}
 
 /**
  * Clean up expired exports (files older than 30 days)
@@ -189,6 +143,13 @@ async function recoverNotificationDelivery(job: Job): Promise<void> {
   const { NotificationDeliveryRecoveryService } = await import('../services/NotificationDeliveryRecoveryService.js');
   const result = await NotificationDeliveryRecoveryService.recoverDue(boundedJobLimit(job, 100));
   log.info(result, 'Notification delivery recovery batch completed');
+  try {
+    const { checkExpoPushReceipts } = await import('../services/ExpoPushService.js');
+    await checkExpoPushReceipts();
+  } catch (error) {
+    // Receipt lookup is best effort; it must not break delivery recovery.
+    log.warn({ kind: error instanceof Error ? error.message : 'unknown' }, 'Expo receipt check failed');
+  }
 }
 
 async function releaseFocusDeferredNotifications(job: Job): Promise<void> {
@@ -206,15 +167,32 @@ async function createBusinessWeeklyDigests(job: Job): Promise<void> {
   log.info(result, 'Business operational digest batch completed');
 }
 
-async function processAnnualTaxFiling(job: Job): Promise<void> {
-  const { processTaxReportingJob } = await import('./tax-reporting-worker.js');
-  await processTaxReportingJob(job);
-}
-
 type MaintenanceHandler = (job: Job) => Promise<void>;
 
 const MAINTENANCE_HANDLERS: Record<string, MaintenanceHandler> = {
-  recover_stuck_stripe_events: (job) => recoverStuckStripeEvents(job as Job<RecoveryStuckStripeEventsPayload>),
+  'tilled.process_webhook_events': async (job) => {
+    const { processPendingTilledWebhookEvents } = await import('../services/payment/TilledWebhookService.js');
+    const processed = await processPendingTilledWebhookEvents(boundedJobLimit(job, 25));
+    if (processed > 0) log.info({ processed }, 'Tilled webhook event batch handled');
+  },
+  'tilled.reconcile_quote_payments': async (job) => {
+    const { reconcileTilledQuotePayments } = await import('../services/payment/TilledQuoteReconciliationService.js');
+    const result = await reconcileTilledQuotePayments(boundedJobLimit(job, 25));
+    if (result.scanned > 0) log.info(result, 'Tilled quote payment reconciliation completed');
+  },
+  'tilled.reconcile_quote_refunds': async (job) => {
+    const { reconcileQuoteRefunds } = await import('../services/payment/TilledQuoteRefundService.js');
+    const result = await reconcileQuoteRefunds(boundedJobLimit(job, 25));
+    if (result.scanned > 0) log.info(result, 'Tilled quote refund reconciliation completed');
+  },
+  'assessment.reconcile_payments': async () => {
+    const { reconcileAssessmentPayments } = await import('../services/AssessmentPaymentService.js');
+    await reconcileAssessmentPayments();
+  },
+  'provider_os.reconcile_purchases': async () => {
+    const { reconcileProviderOsPurchases } = await import('../services/ProviderOsPurchaseService.js');
+    await reconcileProviderOsPurchases();
+  },
   cleanup_expired_exports: cleanupExpiredExports,
   cleanup_expired_notifications: cleanupExpiredNotifications,
   'dispatch.expire_unfilled': expireUnfilledDispatch,
@@ -227,7 +205,6 @@ const MAINTENANCE_HANDLERS: Record<string, MaintenanceHandler> = {
   'notification.recover_due': recoverNotificationDelivery,
   'notification.release_focus_deferred': releaseFocusDeferredNotifications,
   'notification.business_weekly_digest': createBusinessWeeklyDigests,
-  'tax.annual_filing_requested': processAnnualTaxFiling,
 };
 
 /**

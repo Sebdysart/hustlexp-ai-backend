@@ -35,6 +35,7 @@ import { processPushJob } from '../../src/jobs/push-worker.js';
 const job = {
   id: 'push.send_requested:task:user:notification:1',
   data: {
+    outbox_idempotency_key: 'push.send_requested:task:user:notification:1',
     aggregate_type: 'push',
     aggregate_id: 'notification-1',
     event_version: 1,

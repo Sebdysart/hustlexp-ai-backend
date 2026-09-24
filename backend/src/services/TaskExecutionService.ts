@@ -1,9 +1,11 @@
+import { notifyProofRejected } from '../lib/task-lifecycle-notifications.js';
 import { db, type QueryFn } from '../db.js';
 import { writeToOutbox } from '../lib/outbox-helpers.js';
 import { taskLogger } from '../logger.js';
 import type { ServiceResult, Task } from '../types.js';
 import { ErrorCodes } from '../types.js';
 import { TaskCompletionService } from './TaskCompletionService.js';
+import { assertVerifiedProvider } from './BusinessWorkspacePolicy.js';
 const log = taskLogger.child({ service: 'TaskService' });
 
 interface StartWorkRow {
@@ -168,6 +170,37 @@ async function startManualBusinessWorkTransaction(
       error: {
         code: ErrorCodes.INVALID_STATE,
         message: 'Task is not an OPS_MANUAL Business task.',
+      },
+    };
+  }
+
+  const organizationResult = await query<{
+    status: string;
+    verification_status: string;
+    provider_enabled: boolean;
+  }>(
+    `SELECT status, verification_status, provider_enabled
+     FROM business_organizations
+     WHERE id = $1
+     FOR SHARE`,
+    [task.business_fulfiller_organization_id],
+  );
+  const organization = organizationResult.rows[0];
+  if (!organization) {
+    return { success: false, error: { code: ErrorCodes.FORBIDDEN, message: 'The fulfilling Business is unavailable.' } };
+  }
+  try {
+    assertVerifiedProvider({
+      status: organization.status,
+      verificationStatus: organization.verification_status,
+      providerEnabled: organization.provider_enabled,
+    });
+  } catch (error) {
+    return {
+      success: false,
+      error: {
+        code: ErrorCodes.FORBIDDEN,
+        message: error instanceof Error ? error.message : 'The fulfilling Business is not eligible for execution.',
       },
     };
   }
@@ -402,7 +435,7 @@ export const TaskExecutionService = {
         };
       }
     },
-  rejectProof: async (taskId: string, _reason: string): Promise<ServiceResult<Task>> => {
+  rejectProof: async (taskId: string, reason: string, proofId?: string): Promise<ServiceResult<Task>> => {
       try {
         return await db.transaction(async (query) => {
           // Acquire row-level lock before reading state
@@ -454,7 +487,11 @@ export const TaskExecutionService = {
             };
           }
 
-          return { success: true, data: result.rows[0] };
+          const task = result.rows[0];
+          if (task.worker_id && proofId) {
+            await notifyProofRejected(task.worker_id, taskId, task.title ?? 'your task', reason, proofId, query);
+          }
+          return { success: true, data: task };
         });
       } catch (error) {
         log.error({ err: error instanceof Error ? error.message : String(error) }, 'TaskService DB error');

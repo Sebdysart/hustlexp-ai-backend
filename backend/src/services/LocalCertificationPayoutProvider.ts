@@ -7,7 +7,6 @@ import type { ServiceResult } from '../types.js';
 const DESTINATION_RE = /^pd_hxos_test_[a-f0-9]{32}$/;
 const TRANSFER_RE = /^tr_hxos_test_[a-f0-9]{32}$/;
 
-const BUSINESS_DESTINATION_RE = /^pd_hxos_business_test_[a-f0-9]{32}$/;
 const BUSINESS_TRANSFER_RE = /^tr_hxos_business_test_[a-f0-9]{32}$/;
 
 type Environment = NodeJS.ProcessEnv | Record<string, string | undefined>;
@@ -155,7 +154,7 @@ export function localCertificationPayoutEnabled(env: Environment = process.env):
   return env.NODE_ENV !== 'production'
     && env.HXOS_ALLOW_LOCAL_TEST_PAYOUT === 'true'
     && env.ENGINE_API_MODE === 'test'
-    && env.STRIPE_MODE === 'test'
+
     && secret(env).length >= 32;
 }
 
@@ -206,7 +205,7 @@ function expectedTransferAmount(context: TransferContextRow): number | null {
   if (context.platform_fee_cents == null || context.hustler_payout_cents == null) return null;
   const breakdown = computeFeeBreakdown(
     context.amount,
-    config.stripe.platformFeePercent,
+    config.payments.platformFeePercent,
     context.platform_fee_cents,
   );
   return breakdown.netPayoutCents;
@@ -352,7 +351,7 @@ export const LocalCertificationPayoutProvider = {
   activateBusinessDestination: async (
     organizationId: string,
     payoutRecipientUserId: string,
-    actorId: string,
+    _actorId: string,
   ): Promise<ServiceResult<{
     destinationId: string;
     provider: 'LOCAL_CERTIFICATION_TEST';
@@ -727,11 +726,14 @@ export const LocalCertificationPayoutProvider = {
 
         const breakdown = computeFeeBreakdown(
           row.amount,
-          config.stripe.platformFeePercent,
+          config.payments.platformFeePercent,
           row.platform_fee_cents,
         );
 
-        if (breakdown.netPayoutCents <= 0) {
+        // The organization payout is the frozen quote payout. Worker
+        // self-insurance is not deducted from business fulfillment.
+        if (breakdown.netBeforeInsuranceCents !== row.hustler_payout_cents
+          || breakdown.netBeforeInsuranceCents <= 0) {
           return failure(
             'LOCAL_TEST_PAYOUT_PRECONDITION_FAILED',
             'Business local certification payout amount is invalid.',
@@ -758,7 +760,7 @@ export const LocalCertificationPayoutProvider = {
             params.organizationId,
             params.payoutRecipientUserId,
             row.destination_id,
-            breakdown.netPayoutCents,
+            breakdown.netBeforeInsuranceCents,
             params.idempotencyKey,
             hash,
           ],

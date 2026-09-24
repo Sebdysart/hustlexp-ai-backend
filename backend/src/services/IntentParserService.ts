@@ -170,8 +170,8 @@ Focus on:
       affectedInvariants.push('INV-1', 'INV-2'); // Escrow invariants
       suggestedTier = 'critical';
     }
-    if (lowerDesc.includes('stripe')) {
-      affectedServices.push('StripeService');
+    if (lowerDesc.includes('tilled')) {
+      affectedServices.push('TilledQuoteCheckoutService');
       suggestedTier = 'critical';
     }
     if (lowerDesc.includes('user') || lowerDesc.includes('profile')) {
@@ -228,18 +228,18 @@ Focus on:
 // ============================================================================
 
 const KNOWN_SERVICES = [
-  'EscrowService', 'TaskService', 'StripeService', 'UserService', 'AIService',
+  'EscrowService', 'TaskService', 'TilledQuoteCheckoutService', 'UserService', 'AIService',
   'ProofService', 'MessagingService', 'TrustService', 'ReputationAIService',
   'NotificationService', 'DisputeService', 'CapabilityProfileService',
-  'StripeConnectService', 'AIDecisionService', 'OnboardingAIService',
+  'TilledMerchantService', 'AIDecisionService', 'OnboardingAIService',
 ];
 
 const KNOWN_ROUTERS = [
-  'escrow', 'task', 'user', 'admin', 'ai', 'dispute', 'stripe',
+  'escrow', 'task', 'user', 'admin', 'ai', 'dispute', 'tilled',
   'notification', 'proof', 'analytics', 'fraud', 'moderation',
 ];
 
-const FINANCIAL_SERVICES = new Set(['EscrowService', 'StripeService', 'StripeConnectService']);
+const FINANCIAL_SERVICES = new Set(['EscrowService', 'TilledQuoteCheckoutService', 'TilledMerchantService']);
 const FINANCIAL_INVARIANTS = new Set(['INV-1', 'INV-2', 'INV-3', 'INV-4', 'INV-5']);
 
 /**
@@ -277,14 +277,14 @@ export function matchKeywords(description: string): {
     invariants.add('INV-1');
     invariants.add('INV-2');
   }
-  if (lower.includes('payment') || lower.includes('stripe') || lower.includes('charge')) {
+  if (lower.includes('payment') || lower.includes('tilled') || lower.includes('charge')) {
     services.add('EscrowService');
-    services.add('StripeService');
+    services.add('TilledQuoteCheckoutService');
     routers.add('escrow');
     invariants.add('INV-1');
   }
-  if (lower.includes('stripe')) {
-    services.add('StripeService');
+  if (lower.includes('tilled')) {
+    services.add('TilledQuoteCheckoutService');
   }
 
   // Task / proof

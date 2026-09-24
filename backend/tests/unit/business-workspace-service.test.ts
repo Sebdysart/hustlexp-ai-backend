@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   })),
 }));
 
+vi.mock('../../src/services/BusinessTestPayoutDestinationService.js', () => ({ ensureBusinessTestPayoutDestination: vi.fn().mockResolvedValue(undefined) }));
+
 vi.mock('../../src/db.js', () => ({ db: { query: mocks.query } }));
 vi.mock('../../src/services/TaskLocationCrypto.js', () => ({
   encryptTaskLocation: mocks.encryptTaskLocation,
@@ -34,7 +36,7 @@ const ORG = '10000000-0000-4000-8000-000000000001';
 const MEMBER = '20000000-0000-4000-8000-000000000001';
 
 describe('business workspace service boundary', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => { vi.clearAllMocks(); mocks.query.mockReset(); });
 
   it('creates a dual-mode workspace with the authenticated actor as owner', async () => {
     mocks.query.mockResolvedValueOnce({ rows: [{ organization_id: ORG, actor_role: 'OWNER' }] });
@@ -42,6 +44,7 @@ describe('business workspace service boundary', () => {
       actorId: ACTOR,
       legalName: 'Eastside Property Services LLC',
       displayName: 'Eastside Property Services',
+      washingtonUbi: '123456789', federalEin: '987654321',
       providerEnabled: true,
       clientEnabled: true,
       idempotencyKey: 'workspace:eps:001',
@@ -49,7 +52,7 @@ describe('business workspace service boundary', () => {
     expect(result).toEqual({ success: true, data: { id: ORG, role: 'OWNER' } });
     expect(mocks.query.mock.calls[0]?.[1]).toEqual([
       ACTOR, 'Eastside Property Services LLC', 'Eastside Property Services',
-      true, true, 'workspace:eps:001',
+      true, true, 'workspace:eps:001', '123456789', '987654321',
     ]);
   });
 

@@ -2,8 +2,17 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { protectedProcedure, router } from '../trpc.js';
 import type { ServiceResult } from '../types.js';
+import { db } from '../db.js';
+import { SERVICE_CATEGORY_CODES } from '../contracts/serviceCategories.js';
+import { serviceJurisdictionSchema } from '../contracts/serviceJurisdiction.js';
+import { requireBusinessManagementAuthority } from '../services/BusinessManagementAuthority.js';
+import { listBusinessServiceEligibility } from '../services/BusinessTaskEligibilityService.js';
+import { readBusinessCredentials, submitOrganizationCredential, getCredentialEvidence } from '../services/BusinessCredentialService.js';
 import { BUSINESS_ROLES } from '../services/BusinessWorkspacePolicy.js';
 import {
+  getBusinessAddress,
+  saveBusinessAddress,
+  selectBusinessServices,
   createBusinessLocation,
   createBusinessWorkspace,
   listBusinessLocations,
@@ -22,7 +31,6 @@ import {
   listMyBusinessSpendRequests,
   listBusinessServiceProfiles,
   requestBusinessSpend,
-  submitBusinessCredential,
   upsertBusinessBudgetPolicy,
 } from '../services/BusinessOperationsService.js';
 import {
@@ -55,6 +63,8 @@ const idempotencyKey = z.string().trim().min(8).max(128).regex(/^[A-Za-z0-9:_-]+
 const workspaceCreateInput = z.object({
   legalName: z.string().trim().min(2).max(200),
   displayName: z.string().trim().min(2).max(120),
+  washingtonUbi: z.string().trim().regex(/^\d{3}-?\d{3}-?\d{3}$/, 'Washington UBI must contain 9 digits.'),
+  federalEin: z.string().trim().regex(/^\d{2}-?\d{7}$/, 'EIN must contain 9 digits.'),
   providerEnabled: z.boolean(),
   clientEnabled: z.boolean(),
   idempotencyKey,
@@ -63,6 +73,7 @@ const workspaceCreateInput = z.object({
   { message: 'Choose at least one business mode.' },
 );
 
+const optionalCredentialText = z.string().trim().max(200).nullable().optional();
 const organizationInput = z.object({ organizationId: uuid }).strict();
 const nullableUuid = uuid.nullable();
 const moneyCents = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
@@ -200,7 +211,7 @@ export const businessWorkspaceRouter = router({
   createServiceProfile: protectedProcedure
     .input(z.object({
       organizationId: uuid,
-      serviceCode: z.string().trim().min(2).max(40).regex(/^[A-Z0-9_-]+$/),
+      serviceCode: z.string().trim().min(2).max(40).regex(/^[A-Za-z0-9_-]+$/),
       serviceName: z.string().trim().min(2).max(120),
       serviceDescription: z.string().trim().min(10).max(4000),
       serviceExclusions: stringList(50, 300),
@@ -227,16 +238,37 @@ export const businessWorkspaceRouter = router({
       await listBusinessServiceProfiles(ctx.user.id, input.organizationId),
     )),
 
-  submitCredential: protectedProcedure
-    .input(z.object({
-      organizationId: uuid,
-      membershipId: uuid,
-      credentialType: z.string().trim().regex(/^[A-Z0-9_-]{2,80}$/),
-      evidenceReference: z.string().trim().min(8).max(500),
-    }).strict())
-    .mutation(async ({ ctx, input }) => unwrapWorkspace(await submitBusinessCredential({
-      ...input, actorId: ctx.user.id,
-    }))),
+  getBusinessAddress: protectedProcedure.input(organizationInput)
+    .query(({ctx,input}) => getBusinessAddress(ctx.user.id,input.organizationId)),
+
+  saveBusinessAddress: protectedProcedure.input(z.object({
+    organizationId:uuid,exactAddress:z.string().trim().min(5).max(500),roughLocation:z.string().trim().min(2).max(120),
+    postalCode:z.string().regex(/^\d{5}(?:-\d{4})?$/),regionCode:z.string().regex(/^US-[A-Z]{2}$/),
+    timezone:z.string().trim().min(3).max(64).refine((value)=>{try {new Intl.DateTimeFormat('en-US',{timeZone:value}); return true;} catch {return false;}},'Select a valid time zone.'),
+  }).strict()).mutation(({ctx,input})=>saveBusinessAddress({...input,actorId:ctx.user.id})),
+
+  selectServices: protectedProcedure.input(z.object({organizationId:uuid,serviceCodes:z.array(z.enum(SERVICE_CATEGORY_CODES)).max(SERVICE_CATEGORY_CODES.length)}).strict())
+    .mutation(({ctx,input})=>selectBusinessServices({...input,actorId:ctx.user.id})),
+
+  getServiceEligibility: protectedProcedure.input(organizationInput).query(({ctx,input})=>db.transaction(async(query)=>{
+    await requireBusinessManagementAuthority(query,ctx.user.id,input.organizationId,'READ_WORKSPACE');
+    const address=await query<{region_code:string}>("SELECT region_code FROM business_locations WHERE organization_id=$1 AND purpose='BUSINESS_ADDRESS' AND status='ACTIVE'",[input.organizationId]);
+    const jurisdictionCode=address.rows[0]?.region_code??null;
+    return {organizationId:input.organizationId,jurisdictionCode,services:await listBusinessServiceEligibility(query,input.organizationId,jurisdictionCode)};
+  })),
+
+  getBusinessCredentials: protectedProcedure.input(organizationInput)
+    .query(({ctx,input})=>readBusinessCredentials(ctx.user.id,input.organizationId)),
+
+  getBusinessCredentialEvidence: protectedProcedure.input(z.object({organizationId:uuid,credentialId:uuid,evidenceId:uuid}).strict())
+    .query(({ctx,input})=>getCredentialEvidence({...input,actorId:ctx.user.id})),
+
+  submitCredential: protectedProcedure.input(z.object({
+    organizationId:uuid,membershipId:uuid.nullable().optional(),credentialTypeId:uuid,
+    credentialNumber:optionalCredentialText,issuingAuthority:optionalCredentialText,jurisdictionCode:serviceJurisdictionSchema,
+    issuedAt:z.string().date().nullable().optional(),expiresAt:z.string().date().nullable().optional(),
+    uploadReceiptIds:z.array(uuid).max(5),idempotencyKey,
+  }).strict()).mutation(({ctx,input})=>submitOrganizationCredential({...input,actorId:ctx.user.id})),
 
   assignServiceCrew: protectedProcedure
     .input(z.object({

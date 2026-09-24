@@ -43,7 +43,6 @@ export function localCertificationAuthEnabled(env: Environment = process.env): b
   return env.NODE_ENV !== 'production'
     && env.HXOS_ALLOW_LOCAL_TEST_AUTH === 'true'
     && env.ENGINE_API_MODE === 'test'
-    && env.STRIPE_MODE === 'test'
     && secret.length >= 32;
 }
 

@@ -1,3 +1,4 @@
+import { notifyTaskCompleted } from '../lib/task-lifecycle-notifications.js';
 import { createHash } from 'node:crypto';
 import { db, getErrorMessage, isInvariantViolation, type QueryFn } from '../db.js';
 import { writeToOutbox } from '../lib/outbox-helpers.js';
@@ -34,14 +35,14 @@ interface CompletionTransactionParams {
   taskId: string;
   posterId?: string;
   options: CompleteTaskOptions;
-  mode: 'POSTER_CONFIRMED' | 'UNATTENDED';
+  mode: 'POSTER_CONFIRMED' | 'UNATTENDED' | 'OPS_OVERRIDE';
   requestHash: string;
 }
 
 interface CompletionEvidenceParams {
   taskId: string;
   escrowId: string;
-  mode: 'POSTER_CONFIRMED' | 'UNATTENDED';
+  mode: 'POSTER_CONFIRMED' | 'UNATTENDED' | 'OPS_OVERRIDE';
   options: CompleteTaskOptions;
   requestHash: string;
 }
@@ -109,7 +110,7 @@ async function validateProofAndFunding(
   taskId: string
 ): Promise<ServiceResult<{ escrowId: string }>> {
   const proof = await query<{ state: string }>(
-    `SELECT state FROM proofs WHERE task_id = $1 ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+    `SELECT state FROM proofs WHERE task_id = $1 AND rework_id IS NULL ORDER BY created_at DESC, id DESC LIMIT 1 FOR UPDATE`,
     [taskId]
   );
   if (proof.rows[0]?.state !== 'ACCEPTED') {
@@ -138,7 +139,7 @@ function validateUnattended(context: CompletionContext): ServiceResult<true> {
 }
 
 function validateCompletionMode(
-  mode: 'POSTER_CONFIRMED' | 'UNATTENDED',
+  mode: 'POSTER_CONFIRMED' | 'UNATTENDED' | 'OPS_OVERRIDE',
   posterId: string | undefined
 ): ServiceResult<true> {
   if (mode === 'POSTER_CONFIRMED' && !posterId) {
@@ -156,7 +157,7 @@ async function unattendedPreflight(
 }
 
 function validateModePolicy(
-  mode: 'POSTER_CONFIRMED' | 'UNATTENDED',
+  mode: 'POSTER_CONFIRMED' | 'UNATTENDED' | 'OPS_OVERRIDE',
   context: CompletionContext
 ): ServiceResult<true> {
   return mode === 'UNATTENDED' ? validateUnattended(context) : { success: true, data: true };
@@ -169,7 +170,10 @@ async function persistCompletion(query: QueryFn, taskId: string, mode: string): 
          completed_at = NOW(),
          completion_confirmed_at = CASE WHEN $2 = 'POSTER_CONFIRMED' THEN NOW() ELSE completion_confirmed_at END,
          payout_ready_at = NOW(),
-         payout_ready_reason = CASE WHEN $2 = 'POSTER_CONFIRMED' THEN 'poster_confirmed' ELSE 'unattended_policy' END,
+         payout_ready_reason = CASE WHEN $2 = 'POSTER_CONFIRMED' THEN 'poster_confirmed'
+                                    WHEN $2 = 'OPS_OVERRIDE' THEN 'ops_override'
+                                    ELSE 'unattended_policy' END,
+         completion_source = $2,
          updated_at = NOW()
      WHERE id = $1 AND state = 'PROOF_SUBMITTED'
      RETURNING *`,
@@ -197,7 +201,8 @@ async function writeCompletionEvidence(
     payload: {
       escrow_id: escrowId,
       task_id: taskId,
-      reason: mode === 'POSTER_CONFIRMED' ? 'poster_confirmed_completion' : 'unattended_policy_completion',
+      reason: mode === 'POSTER_CONFIRMED' ? 'poster_confirmed_completion'
+        : mode === 'OPS_OVERRIDE' ? 'ops_override_completion' : 'unattended_policy_completion',
     },
     queueName: 'critical_payments',
     idempotencyKey: `completion-release:${taskId}`,
@@ -245,6 +250,9 @@ async function completeTransaction(
     outcomeType: 'TASK_COMPLETED',
     realizedValue: { taskState: 'COMPLETED', payoutReady: true },
   });
+  if (completed.data.worker_id && mode !== 'UNATTENDED') {
+    await notifyTaskCompleted(completed.data.worker_id, taskId, completed.data.title ?? 'your task', query);
+  }
   return completed;
 }
 
@@ -302,6 +310,9 @@ async function recordDeliveryTransaction(
 }
 
 export const TaskCompletionService = {
+  completeOpsOverrideInTransaction: async (query: QueryFn, taskId: string, actorId: string): Promise<ServiceResult<Task>> =>
+    completeTransaction(query, { taskId, options: { actorId }, mode: 'OPS_OVERRIDE',
+      requestHash: completionHash(taskId, 'OPS_OVERRIDE') }),
   complete: async (
     taskId: string,
     posterId?: string,

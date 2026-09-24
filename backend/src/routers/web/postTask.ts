@@ -1,230 +1,74 @@
-import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import crypto from 'node:crypto';
-import { router, publicProcedure } from '../../trpc.js';
-import { db } from '../../db.js';
-import { QuoteGenerationService } from '../../services/QuoteGenerationService.js';
+import { protectedProcedure, publicProcedure, router } from '../../trpc.js';
+import { classifyTask } from '../../services/taskClassification/classifyTask.js';
+import { extractIntakePrefill } from '../../services/taskIntake/extractPrefill.js';
+import { buildTaskFacts } from '../../services/taskIntake/buildTaskFacts.js';
+import { resolveIntakeProfile } from '../../services/taskIntake/resolveIntakeProfile.js';
+import {
+  CanonicalTaskDraftInputSchema,
+  createCanonicalTaskDraft,
+} from '../../services/CanonicalTaskDraftService.js';
 
-const PostTaskSchema = z.object({
-  lead: z.object({
-    submission_id: z.string().uuid(),
-    lead_type: z.enum(['poster', 'hustler', 'business', 'founder']),
-    email: z.string().email().max(254),
-    name: z.string().max(200).optional(),
-    phone: z.string().max(30).optional(),
-    region: z.string().max(100).optional(),
-    zip: z.string().max(20).optional(),
-    answers: z.record(z.unknown()).default({}),
-    utm: z.record(z.unknown()).default({}),
-    consent_version: z.literal('v1'),
-    ip_hash: z.string().optional(),
-  }),
-
-  task: z.object({
-    category: z.string().trim().min(1).max(100),
-    title: z.string().trim().min(1).max(255),
-    raw_input: z.string().optional(),
-    scope_summary: z.string().optional(),
-    structured: z.record(z.unknown()).default({}),
-    est_price_min_cents: z.number().int().nonnegative().optional(),
-    est_price_max_cents: z.number().int().nonnegative().optional(),
-    photo_count: z.number().int().nonnegative().default(0),
-    zip: z.string().max(20).optional(),
-    region: z.string().max(100).optional(),
-    source: z.string().default('website'),
-    utm: z.record(z.unknown()).default({}),
-    ip_hash: z.string().optional(),
-  }),
+const ClassifyIntakeSchema = z.object({
+  raw: z.string().trim().min(3).max(2000),
 });
 
-type PostTaskInput = z.infer<typeof PostTaskSchema>;
-
-function generateCardToken(): { raw: string; hash: string } {
-  const raw = crypto.randomBytes(32).toString('hex');
-  const hash = crypto.createHash('sha256').update(raw).digest('hex');
-  return { raw, hash };
-}
-
-async function handlePostTask({
-    input,
-    }: {
-    input: PostTaskInput;
-    }) {
-  const correlationId = crypto.randomUUID();
-  try {  
-    const result = await db.transaction(async (query) => {
-        // 1. Replay check.
-        const existingLead = await query<{ id: string }>(
-        `SELECT id
-        FROM leads
-        WHERE submission_id = $1
-        LIMIT 1`,
-        [input.lead.submission_id],
-        );
-
-        if (existingLead.rows[0]) {
-            const existingDraft = await query<{ id: string; quote_id: string | null }>(
-                `SELECT id, quote_id
-                FROM task_drafts
-                WHERE submission_id = $1
-                LIMIT 1`,
-                [input.lead.submission_id],
-            );
-
-        if (existingDraft.rows[0]) {
-            return {
-            leadId: existingLead.rows[0].id,
-            taskDraftId: existingDraft.rows[0].id,
-            quoteId: existingDraft.rows[0].quote_id,
-            replayed: true,
-            };
-        }
-
-        return {
-            leadId: existingLead.rows[0].id,
-            taskDraftId: null,
-            quoteId: null,
-            replayed: true,
-        };
-        }
-
-        // 2. Create lead.
-        const lead = await query<{ id: string }>(
-        `INSERT INTO leads (
-            submission_id,
-            lead_type,
-            email,
-            name,
-            phone,
-            region,
-            zip,
-            answers,
-            utm,
-            consent_version,
-            source,
-            ip_hash,
-            correlation_id
-        )
-        VALUES (
-            $1, $2, $3, $4, $5, $6, $7,
-            $8::jsonb, $9::jsonb, $10, 'website', $11, $12
-        )
-        RETURNING id`,
-        [
-            input.lead.submission_id,
-            input.lead.lead_type,
-            input.lead.email.trim().toLowerCase(),
-            input.lead.name?.trim() ?? null,
-            input.lead.phone?.trim() ?? null,
-            input.lead.region ?? null,
-            input.lead.zip ?? null,
-            JSON.stringify(input.lead.answers),
-            JSON.stringify(input.lead.utm),
-            input.lead.consent_version,
-            input.lead.ip_hash ?? null,
-            correlationId,
-        ],
-        );
-
-        const leadId = lead.rows[0]?.id;
-
-        if (!leadId) {
-        throw new TRPCError({
-            code: 'INTERNAL_SERVER_ERROR',
-            message: 'Failed to create lead',
+export const webPostTaskRouter = router({
+  classifyIntake: publicProcedure
+    .input(ClassifyIntakeSchema)
+    .mutation(async ({ input }) => {
+      const result = await classifyTask(input.raw);
+      const profileResolution = result.category
+        ? resolveIntakeProfile({ category: result.category, raw: input.raw, facts: buildTaskFacts(input.raw) })
+        : null;
+      const routedCategory = profileResolution?.category ?? result.category;
+      const routedSecondaryIntents = result.secondaryIntents.filter(
+        (intent) => intent !== routedCategory,
+      );
+      const prefill = routedCategory
+        ? extractIntakePrefill(
+            input.raw,
+            routedCategory,
+            routedSecondaryIntents,
+            profileResolution?.profile ?? null,
+          )
+        : { answers: {}, evidence: [] };
+      return {
+        category: routedCategory,
+        primaryCategory: routedCategory,
+        classifierCategory: result.category,
+        secondaryIntents: routedSecondaryIntents,
+        intakeProfile: profileResolution?.profile ?? null,
+        needsProfileClarification: profileResolution?.needsProfileClarification ?? false,
+        profileEvidence: profileResolution?.evidence ?? [],
+        needsClarification: result.needsClarification,
+        margin: result.margin,
+        threshold: result.threshold,
+        source: result.source,
+        overrideReason: result.overrideReason ?? null,
+        candidates: result.candidates.slice(0, 3).map((candidate) => ({
+          category: candidate.category,
+          score: candidate.score,
+        })),
+        prefilledAnswers: prefill.answers,
+        prefillEvidence: prefill.evidence,
+      };
+    }),
+  start: protectedProcedure
+    .input(CanonicalTaskDraftInputSchema)
+    .mutation(async ({ ctx, input }) => {
+      try {
+        const result = await createCanonicalTaskDraft({
+          input,
+          posterUserId: ctx.user.id,
+          actorUserId: ctx.user.id,
         });
-        }
-
-        // 3. Create task draft linked to lead.
-        const { raw: cardToken, hash: cardTokenHash } = generateCardToken();
-        const draft = await query<{
-            id: string;
-            quote_id: string | null;
-            }>(
-            `INSERT INTO task_drafts (
-                submission_id,
-                card_token_hash,
-                category,
-                title,
-                raw_input,
-                scope_summary,
-                structured,
-                est_price_min_cents,
-                est_price_max_cents,
-                photo_count,
-                zip,
-                region,
-                status,
-                source,
-                utm,
-                ip_hash,
-                lead_id
-            )
-            VALUES (
-                $1, $2, $3, $4, $5, $6, $7::jsonb,
-                $8, $9, $10, $11, $12,
-                'draft', $13, $14::jsonb, $15, $16
-            )
-            RETURNING id, quote_id`,
-            [
-                input.lead.submission_id,
-                cardTokenHash,
-                input.task.category,
-                input.task.title,
-                input.task.raw_input ?? null,
-                input.task.scope_summary ?? null,
-                JSON.stringify(input.task.structured),
-                input.task.est_price_min_cents ?? null,
-                input.task.est_price_max_cents ?? null,
-                input.task.photo_count,
-                input.task.zip ?? null,
-                input.task.region ?? null,
-                input.task.source,
-                JSON.stringify(input.task.utm),
-                input.task.ip_hash ?? null,
-                leadId,
-            ],
-        );
-
-        const taskDraftId = draft.rows[0]?.id;
-
-        if (!taskDraftId) {
-        throw new TRPCError({
-            code: 'INTERNAL_SERVER_ERROR',
-            message: 'Failed to create task draft',
-        });
-        }
-        
-        return {
-            leadId,
-            taskDraftId,
-            quoteId: draft.rows[0]?.quote_id ?? null,
-            cardToken,
-            replayed: false,
-        };
-    });
-    /* const quote = await QuoteGenerationService.generateForDraft(
-    result.taskDraftId,
-    {
-        executionEnvironment: 'TEST',
-        record: true,
-    },
-    ); */
-    return {
-        ok: true,
-        ...result,
-        correlation_id: correlationId,
-    };
-    } catch (error) {
+        return { ok: true, ...result };
+      } catch (error) {
         console.error('[webPostTask.start] DB/transaction failure:', error);
         throw error;
-    }
-}
-
-export const webPostTaskRouter = router({
-  start: publicProcedure
-    .input(PostTaskSchema)
-    .mutation(handlePostTask),
+      }
+    }),
 });
 
 export type WebPostTaskRouter = typeof webPostTaskRouter;

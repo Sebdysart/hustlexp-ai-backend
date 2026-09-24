@@ -88,7 +88,7 @@ export const biometricRouter = router({
                   ps.gps_coordinates,ps.gps_accuracy_meters,
                   t.location_lat,t.location_lng
            FROM tasks t
-           JOIN proofs p ON p.task_id=t.id AND p.id=$1
+           JOIN proofs p ON p.task_id=t.id AND p.id=$1 AND p.rework_id IS NULL
            JOIN LATERAL (
              SELECT id,gps_coordinates,gps_accuracy_meters,
                     biometric_signal_status

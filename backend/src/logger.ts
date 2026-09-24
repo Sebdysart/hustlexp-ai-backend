@@ -32,7 +32,7 @@ export const logger = pino({
       'token',
       'secret',
       'apiKey',
-      'stripe_secret',
+      'provider_secret',
       'firebase_uid',
     ],
     censor: '[REDACTED]',
@@ -69,5 +69,4 @@ export const taskLogger = logger.child({ module: 'task' });
 export const escrowLogger = logger.child({ module: 'escrow' });
 export const workerLogger = logger.child({ module: 'worker' });
 export const dbLogger = logger.child({ module: 'db' });
-export const stripeLogger = logger.child({ module: 'stripe' });
 export const aiLogger = logger.child({ module: 'ai' });

@@ -19,13 +19,6 @@ const proofPhotoEvidence = z.object({
   capturedAt: z.string().datetime().optional(),
 }).strict();
 
-async function notifyPosterOfProof(
-  task: { poster_id?: string | null; title?: string | null },
-  taskId: string,
-): Promise<void> {
-  if (task.poster_id) await notifyProofSubmitted(task.poster_id, taskId, task.title ?? 'your task');
-}
-
 export const TaskExecutionProcedures = {
 markTraveling: hustlerProcedure
     .input(z.object({ taskId: Schemas.uuid }))
@@ -94,6 +87,7 @@ getProof: protectedProcedure
         `SELECT p.* FROM proofs p
          JOIN tasks t ON t.id = p.task_id
          WHERE p.task_id = $1
+           AND p.rework_id IS NULL
            AND (t.poster_id = $2 OR t.worker_id = $2)
          ORDER BY p.created_at DESC
          LIMIT 1`,
@@ -109,14 +103,15 @@ getProof: protectedProcedure
         ProofService.getPhotos(proof.id),
         ProofService.getVideos(proof.id),
       ]);
-      const photos = photosRes.success
-        ? await projectProofPhotosForViewer({
-          taskId: input.taskId,
-          proofId: proof.id,
-          viewerId: ctx.user.id,
-          photos: photosRes.data,
-        })
-        : [];
+      if (!photosRes.success || !videosRes.success) {
+        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Unable to load completion proof media. Please try again.' });
+      }
+      const photos = await projectProofPhotosForViewer({
+        taskId: input.taskId,
+        proofId: proof.id,
+        viewerId: ctx.user.id,
+        photos: photosRes.data,
+      });
       return {
         ...proof,
         photos,
@@ -136,7 +131,7 @@ getProof: protectedProcedure
         })) : [],
       };
     }),
-submitProof: hustlerProcedure
+submitProof: protectedProcedure
     .input(z.object({
       taskId: z.string().uuid(),
       description: z.string().trim().max(2000).optional(),
@@ -300,16 +295,13 @@ submitProof: hustlerProcedure
         if (!taskResult.success) {
           throw new TRPCError({ code: 'BAD_REQUEST', message: taskResult.error.message });
         }
+        if (!proofResult.data.idempotency_replayed && taskResult.data.poster_id) {
+          await notifyProofSubmitted(taskResult.data.poster_id, input.taskId, taskResult.data.title ?? 'your task', proofResult.data.id, query);
+        }
         return { proofResult, taskResult };
       });
 
       await invalidateTask(input.taskId);
-
-      // Lifecycle notification (post-commit): tell the poster to review
-      if (!proofResult.data.idempotency_replayed) {
-        const provenTask = taskResult.data as { poster_id?: string | null; title?: string | null };
-        await notifyPosterOfProof(provenTask, input.taskId);
-      }
 
       return {
         task: taskResult.data,

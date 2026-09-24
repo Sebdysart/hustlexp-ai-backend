@@ -86,13 +86,13 @@ export async function resolveScreeningDispute(params: {
         `dispute-resolve:${params.idempotencyKey}`,
         status === 'CLEAR' ? 'Your dispute was corrected and the screening is clear.' : 'The dispute review upheld the report; appeal rights remain available after any final decision.'],
     );
+    if (status === 'CLEAR') {
+      await recomputeCapabilityProfile(row.worker_id, {
+        reason: 'background_check_dispute_corrected',
+        sourceVerificationId: row.background_check_id,
+      }, query);
+    }
     return { workerId: row.worker_id, checkId: row.background_check_id, status };
   });
-  if (result.status === 'CLEAR') {
-    await recomputeCapabilityProfile(result.workerId, {
-      reason: 'background_check_dispute_corrected',
-      sourceVerificationId: result.checkId,
-    });
-  }
   return { status: result.status };
 }

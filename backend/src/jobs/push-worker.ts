@@ -37,6 +37,7 @@ const log = workerLogger.child({ worker: 'push' });
 // ============================================================================
 
 interface PushJobData {
+  outbox_idempotency_key: string;
   aggregate_type: string;
   aggregate_id: string;
   event_version: number;
@@ -61,7 +62,7 @@ interface PushJobData {
  */
 export async function processPushJob(job: Job<PushJobData>): Promise<void> {
   const { notificationId, userId, title, body, data } = job.data.payload;
-  const idempotencyKey = job.id || `push:${notificationId}`;
+  const idempotencyKey = job.data.outbox_idempotency_key;
 
   try {
     // Structured log: job started
@@ -119,8 +120,8 @@ export async function processPushJob(job: Job<PushJobData>): Promise<void> {
     } else if (!result.success) {
       throw new Error(`Push provider failed: ${result.reason ?? 'unknown_provider_error'}`);
     } else {
-      // FCM multicast acceptance is provider acceptance, not device delivery.
-      await markNotificationProviderAccepted(notificationId, 'push', 'fcm', null);
+      // Expo/FCM ticket acceptance is provider acceptance, not device delivery.
+      await markNotificationProviderAccepted(notificationId, 'push', data?.mobileOnly === 'true' ? 'expo' : data?.notificationId ? 'fcm_or_expo' : 'fcm', null);
     }
 
     // Structured log: push result

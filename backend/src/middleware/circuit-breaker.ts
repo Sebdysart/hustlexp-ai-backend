@@ -256,13 +256,6 @@ export const awsRekognitionBreaker = new CircuitBreaker('aws-rekognition', {
   onStateChange: onCircuitStateChange,
 });
 
-/** Stripe breaker — 3 failures = 10s cooldown (critical path) */
-export const stripeBreaker = new CircuitBreaker('stripe', {
-  failureThreshold: 3,
-  resetTimeoutMs: 10_000,
-  onStateChange: onCircuitStateChange,
-});
-
 /** SendGrid breaker — 5 failures = 60s cooldown */
 export const sendgridBreaker = new CircuitBreaker('sendgrid', {
   failureThreshold: 5,

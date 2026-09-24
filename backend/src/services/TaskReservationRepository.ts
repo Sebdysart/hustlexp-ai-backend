@@ -136,7 +136,7 @@ async function fetchWorkerForReservation(
             COALESCE(users.trust_hold AND (users.trust_hold_until IS NULL OR users.trust_hold_until>NOW()),FALSE)
               AS active_trust_hold,
             users.is_banned,users.is_minor,users.account_status,users.plan,
-            users.stripe_connect_id,users.payouts_enabled,
+            users.payouts_enabled,
             COALESCE(profile.background_check_valid,FALSE) AS background_check_valid,
             profile.background_check_expires_at,profile.background_check_environment,
             COALESCE(profile.background_check_is_test,FALSE) AS background_check_is_test,
@@ -192,7 +192,6 @@ function payoutError(
   task: TaskReservationRow,
 ): ReservationError | null {
   if (params.serviceBusiness) return null;
-  if (worker.stripe_connect_id && worker.payouts_enabled) return null;
   if (localTestPayoutReady(worker,task)) return null;
   return reservationError(
     'PAYOUT_ACCOUNT_REQUIRED',

@@ -47,7 +47,7 @@ export function createTestEscrow(overrides?: Record<string, unknown>) {
     payeeId: crypto.randomUUID(),
     amount: 50.00,
     status: 'held',
-    stripePaymentIntentId: 'pi_test_' + Date.now(),
+    providerPaymentId: 'pi_test_' + Date.now(),
     createdAt: new Date(),
     ...overrides,
   };
@@ -151,22 +151,6 @@ export function createMockRedis() {
     pipeline: vi.fn(() => ({
       exec: vi.fn(() => Promise.resolve([])),
     })),
-  };
-}
-
-export function createMockStripe() {
-  return {
-    paymentIntents: {
-      create: vi.fn(),
-      retrieve: vi.fn(),
-      cancel: vi.fn(),
-    },
-    transfers: {
-      create: vi.fn(),
-    },
-    refunds: {
-      create: vi.fn(),
-    },
   };
 }
 

@@ -20,7 +20,7 @@ These invariants are enforced by PostgreSQL triggers. Any PR that modifies, disa
 
 - All admin endpoints must use `adminProcedure` (not `protectedProcedure`)
 - Never log passwords, tokens, API keys, or full credit card numbers
-- Stripe webhook handlers must verify signatures before processing
+- Payment-provider webhook handlers must verify signatures before processing
 - Rate limiting must be applied to all public-facing endpoints
 
 ## Architecture Rules

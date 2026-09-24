@@ -4,12 +4,10 @@ import { db } from '../db.js';
 import { isExactCanonicalPaymentAmount } from '../services/EscrowPaymentPolicy.js';
 import { EscrowService } from '../services/EscrowService.js';
 import {
-  isLocalCertificationPaymentIntentId,
-  localCertificationPaymentEnabled,
   LocalCertificationPaymentProvider,
 } from '../services/LocalCertificationPaymentProvider.js';
 import { paymentCreationErrorCause } from '../services/NewPaymentCreationGuard.js';
-import { resolvePaymentProvider } from '../services/payment/PaymentProviderResolver.js';
+import { resolvePaymentProvider, type PaymentProviderName } from '../services/payment/PaymentProviderResolver.js';
 import { posterProcedure, Schemas } from '../trpc.js';
 
 function canonicalPrice(raw: number | string | null): number | null {
@@ -99,12 +97,8 @@ export const escrowPaymentProcedures = {
         escrowRow.rows[0].platform_fee_cents,
       );
 
-      const useLocalCertificationProvider =
-        taskRow.rows[0].automation_classification === 'CONTROLLED_TEST'
-        && localCertificationPaymentEnabled();
-
       const provider = resolvePaymentProvider(
-        useLocalCertificationProvider ? 'local_test' : 'stripe',
+        process.env.PAYMENT_PROVIDER as PaymentProviderName,
       );
 
       const result = await provider.createPaymentIntent({
@@ -183,55 +177,33 @@ export const escrowPaymentProcedures = {
         task_id: string;
       };
 
-      if (isLocalCertificationPaymentIntentId(input.stripePaymentIntentId)) {
-        const verified =
-          await LocalCertificationPaymentProvider.verifySucceededIntent({
-            paymentIntentId: input.stripePaymentIntentId,
-            escrowId: input.escrowId,
-            taskId: escrow.task_id,
-            posterId: ctx.user.id,
-            amountCents: escrow.amount,
-          });
+      const provider = resolvePaymentProvider(
+        process.env.PAYMENT_PROVIDER as PaymentProviderName,
+      );
 
-        if (!verified.success) {
-          throw new TRPCError({
-            code: 'PRECONDITION_FAILED',
-            message: verified.error.message,
-          });
-        }
-      } else {
-        const providerName = isLocalCertificationPaymentIntentId(
-          input.stripePaymentIntentId,
-        )
-          ? 'local_test'
-          : 'stripe';
+      const verified = await provider.verifySucceededPayment({
+        paymentIntentId: input.providerPaymentId,
+        escrowId: input.escrowId,
+        taskId: escrow.task_id,
+        posterId: ctx.user.id,
+        amountCents: escrow.amount,
+      });
 
-        const provider = resolvePaymentProvider(providerName);
-
-        const verified = await provider.verifySucceededPayment({
-          paymentIntentId: input.stripePaymentIntentId,
-          escrowId: input.escrowId,
-          taskId: escrow.task_id,
-          posterId: ctx.user.id,
-          amountCents: escrow.amount,
+      if (!verified.success) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: verified.error.message,
         });
-
-        if (!verified.success) {
-          throw new TRPCError({
-            code: 'PRECONDITION_FAILED',
-            message: verified.error.message,
-          });
-        }
       }
 
       const duplicate = await db.query<{ id: string }>(
         `
         SELECT id
         FROM escrows
-        WHERE stripe_payment_intent_id = $1
+        WHERE provider_payment_id = $1
           AND id != $2
         `,
-        [input.stripePaymentIntentId, input.escrowId],
+        [input.providerPaymentId, input.escrowId],
       );
 
       if (duplicate.rows[0]) {
@@ -243,7 +215,7 @@ export const escrowPaymentProcedures = {
 
       const funded = await EscrowService.fund({
         escrowId: input.escrowId,
-        stripePaymentIntentId: input.stripePaymentIntentId,
+        providerPaymentId: input.providerPaymentId,
       });
 
       if (!funded.success) {

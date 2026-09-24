@@ -750,7 +750,7 @@ describe('NotificationService', () => {
         // Default values per service implementation
         expect(result.data.user_id).toBe(USER_ID);
         expect(result.data.id).toBe(''); // Empty id signals defaults
-        expect(result.data.quiet_hours_enabled).toBe(true);
+        expect(result.data.quiet_hours_enabled).toBe(false);
         expect(result.data.quiet_hours_start).toBe('22:00:00');
         expect(result.data.quiet_hours_end).toBe('07:00:00');
         expect(result.data.push_enabled).toBe(true);

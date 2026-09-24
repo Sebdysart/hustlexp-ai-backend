@@ -134,10 +134,10 @@ export const RUNTIME_CONTRACTS: Record<string, DegradationContract> = {
     alertThreshold: 5,
     maxDegradedDurationMs: 300_000,
   },
-  stripe: {
-    service: 'stripe',
+  tilled: {
+    service: 'tilled',
     tier: 'critical',
-    description: 'Stripe payment processing',
+    description: 'Tilled payment processing',
     healthyBehavior: 'Direct API call for payments',
     degradedBehavior: 'Queue for retry (no silent failure)',
     offlineBehavior: 'Block payment operations, alert immediately',

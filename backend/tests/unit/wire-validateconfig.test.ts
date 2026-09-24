@@ -32,6 +32,7 @@ vi.mock('../../src/jobs/queues', () => {
   const mockQueue = (name: string) => ({ name, add: vi.fn(async () => ({ id: `mock-${name}` })) });
   const queues: Record<string, ReturnType<typeof mockQueue>> = {};
   return {
+    verifyQueueRedisConnection: vi.fn(async () => undefined),
     getQueue: vi.fn((name: string) => (queues[name] ??= mockQueue(name))),
     enqueueRepeatableJob: vi.fn(async (queueName: string, jobName: string) => ({
       id: `mock-${queueName}-${jobName}`,
@@ -50,7 +51,6 @@ vi.mock('../../src/jobs/export-worker', () => ({ processExportJob: vi.fn() }));
 vi.mock('../../src/jobs/email-worker', () => ({ processEmailJob: vi.fn() }));
 vi.mock('../../src/jobs/biometric-analyzer-worker', () => ({ processBiometricAnalysisJob: vi.fn() }));
 vi.mock('../../src/jobs/expertise-recalc-worker', () => ({ processExpertiseRecalcJob: vi.fn() }));
-vi.mock('../../src/jobs/xp-tax-reminder-worker', () => ({ processXPTaxReminderJob: vi.fn() }));
 
 vi.mock('../../src/logger', () => ({
   logger: {
@@ -70,13 +70,12 @@ vi.mock('../../src/logger', () => ({
   },
 }));
 
-vi.mock('../../src/db', () => ({ db: { query: vi.fn() } }));
+vi.mock('../../src/db', () => ({ db: { query: vi.fn(async () => ({ rows: [{ name: 'migration-applied' }] })) } }));
 
 // Crucially: this mock DOES export validateConfig (as a spy). The fix must ensure
 // startWorkers() never touches it, while bootWorkerProcess() does.
 vi.mock('../../src/config', () => ({
   config: {
-    stripe: { secretKey: null },
     redis: { url: 'redis://localhost:6379' },
     firebase: { projectId: null, clientEmail: null, privateKey: null },
   },

@@ -363,6 +363,7 @@ export const taskExternalBridgeRouter = router({
           snapshot.task.link_kind === 'DIRECT_INVITE' ? 'SCOPE_ACCEPTED' : 'OFFER_SUBMITTED',
           ctx.user.id, snapshot.task.source_channel, termsHash],
       );
+        await notifyApplicationReceived(snapshot.task.poster_id, snapshot.task.task_id, snapshot.task.title, application.rows[0].id, query);
         return {
           offerId: offer.rows[0].id,
           status: 'SUBMITTED' as const,
@@ -373,7 +374,6 @@ export const taskExternalBridgeRouter = router({
           submissionKind: snapshot.task.link_kind === 'DIRECT_INVITE' ? 'DIRECT_ACCEPTANCE' as const : 'OPEN_OFFER' as const,
         };
       });
-      await notifyApplicationReceived(submitted.posterId, submitted.taskId, submitted.taskTitle);
       return {
         offerId: submitted.offerId,
         status: submitted.status,

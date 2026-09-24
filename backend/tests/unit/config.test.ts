@@ -34,25 +34,25 @@ describe('config — default values', () => {
     expect(config.database.pgbouncer).toBe(false);
   });
 
-  it('stripe legacy platformFeePercent fallback defaults to the 20% Price Book floor', async () => {
+  it('provider-neutral platformFeePercent fallback defaults to the 20% Price Book floor', async () => {
     delete process.env.PLATFORM_FEE_PERCENT;
     vi.resetModules();
     const { config } = await import('../../src/config');
-    expect(config.stripe.platformFeePercent).toBe(20);
+    expect(config.payments.platformFeePercent).toBe(20);
   });
 
-  it('stripe minimumTaskValueCents defaults to the canonical 1500-cent floor', async () => {
+  it('provider-neutral minimumTaskValueCents defaults to the canonical 1500-cent floor', async () => {
     delete process.env.MIN_TASK_VALUE_CENTS;
     vi.resetModules();
     const { config } = await import('../../src/config');
-    expect(config.stripe.minimumTaskValueCents).toBe(1500);
+    expect(config.payments.minimumTaskValueCents).toBe(1500);
   });
 
   it('does not allow an environment override below the canonical floor', async () => {
     process.env.MIN_TASK_VALUE_CENTS = '500';
     vi.resetModules();
     const { config } = await import('../../src/config');
-    expect(config.stripe.minimumTaskValueCents).toBe(1500);
+    expect(config.payments.minimumTaskValueCents).toBe(1500);
   });
 
   it('app port defaults to 3000', async () => {
@@ -248,7 +248,7 @@ describe('config — env var overrides', () => {
     process.env.PLATFORM_FEE_PERCENT = '20';
     vi.resetModules();
     const { config } = await import('../../src/config');
-    expect(config.stripe.platformFeePercent).toBe(20);
+    expect(config.payments.platformFeePercent).toBe(20);
   });
 
   it('reads BETA_ENABLED=true from env', async () => {
@@ -321,36 +321,6 @@ describe('config — env var overrides', () => {
 });
 
 // ============================================================================
-// Stripe plans configuration (hardcoded)
-// ============================================================================
-
-describe('config — stripe plans', () => {
-  it('premium monthly price is 1499 cents ($14.99)', async () => {
-    vi.resetModules();
-    const { config } = await import('../../src/config');
-    expect(config.stripe.plans.premium.monthlyPriceCents).toBe(1499);
-  });
-
-  it('premium yearly price is 14999 cents ($149.99)', async () => {
-    vi.resetModules();
-    const { config } = await import('../../src/config');
-    expect(config.stripe.plans.premium.yearlyPriceCents).toBe(14999);
-  });
-
-  it('pro monthly price is 2999 cents ($29.99)', async () => {
-    vi.resetModules();
-    const { config } = await import('../../src/config');
-    expect(config.stripe.plans.pro.monthlyPriceCents).toBe(2999);
-  });
-
-  it('pro yearly price is 29999 cents ($299.99)', async () => {
-    vi.resetModules();
-    const { config } = await import('../../src/config');
-    expect(config.stripe.plans.pro.yearlyPriceCents).toBe(29999);
-  });
-});
-
-// ============================================================================
 // Beta geographic configuration (hardcoded)
 // ============================================================================
 
@@ -386,8 +356,6 @@ describe('validateConfig', () => {
 
   beforeEach(() => {
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {}) as () => never);
-    process.env.STRIPE_WEBHOOK_SECRET = 'whsec_platform_test';
-    process.env.STRIPE_CONNECT_WEBHOOK_SECRET = 'whsec_connect_test';
     process.env.S3_ENDPOINT = 'https://storage.example.test';
     process.env.AWS_ACCESS_KEY_ID = 'test-access-key';
     process.env.AWS_SECRET_ACCESS_KEY = 'test-secret-key';
@@ -427,7 +395,6 @@ describe('validateConfig', () => {
     delete process.env.FIREBASE_PROJECT_ID;
     delete process.env.FIREBASE_PRIVATE_KEY;
     delete process.env.FIREBASE_CLIENT_EMAIL;
-    delete process.env.STRIPE_SECRET_KEY;
     delete process.env.UPSTASH_REDIS_REST_URL;
     delete process.env.UPSTASH_REDIS_URL;
     delete process.env.REDIS_URL;
@@ -439,7 +406,6 @@ describe('validateConfig', () => {
     expect(exitSpy).toHaveBeenCalledWith(1);
     expect(result.valid).toBe(false);
     expect(result.errors.some((e) => e.includes('FIREBASE_PROJECT_ID'))).toBe(true);
-    expect(result.errors.some((e) => e.includes('STRIPE_SECRET_KEY'))).toBe(true);
     expect(result.errors.some((e) => e.includes('TAX_TIN_ENCRYPTION_KEY'))).toBe(true);
   });
 
@@ -449,7 +415,6 @@ describe('validateConfig', () => {
     delete process.env.FIREBASE_PROJECT_ID;
     delete process.env.FIREBASE_PRIVATE_KEY;
     delete process.env.FIREBASE_CLIENT_EMAIL;
-    process.env.STRIPE_SECRET_KEY = 'sk_live_real_key';
     process.env.UPSTASH_REDIS_REST_URL = 'https://redis.upstash.io';
     process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
     process.env.QUEUE_HMAC_SECRET = 'real-hmac-secret';
@@ -478,7 +443,6 @@ describe('validateConfig', () => {
     process.env.FIREBASE_PROJECT_ID = 'test-project';
     process.env.FIREBASE_PRIVATE_KEY = 'key';
     process.env.FIREBASE_CLIENT_EMAIL = 'test@test.com';
-    process.env.STRIPE_SECRET_KEY = 'sk_live_real_key';
     process.env.UPSTASH_REDIS_REST_URL = 'https://redis.upstash.io';
     process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
     // Invalid key (not 64 hex chars)
@@ -496,7 +460,6 @@ describe('validateConfig', () => {
     process.env.FIREBASE_PROJECT_ID = 'test-project';
     process.env.FIREBASE_PRIVATE_KEY = 'key';
     process.env.FIREBASE_CLIENT_EMAIL = 'test@test.com';
-    process.env.STRIPE_SECRET_KEY = 'sk_live_real_key';
     process.env.UPSTASH_REDIS_REST_URL = 'https://redis.upstash.io';
     process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
     process.env.QUEUE_HMAC_SECRET = 'real-hmac-secret';
@@ -516,7 +479,6 @@ describe('validateConfig', () => {
     process.env.FIREBASE_PROJECT_ID = 'proj';
     process.env.FIREBASE_PRIVATE_KEY = 'key';
     process.env.FIREBASE_CLIENT_EMAIL = 'a@b.com';
-    process.env.STRIPE_SECRET_KEY = 'sk_live_real';
     process.env.UPSTASH_REDIS_REST_URL = 'https://redis.upstash.io';
     process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
     process.env.QUEUE_HMAC_SECRET = 'real-hmac-secret';
@@ -543,8 +505,6 @@ describe('validateConfig', () => {
     process.env.FIREBASE_PROJECT_ID = 'proj';
     process.env.FIREBASE_PRIVATE_KEY = 'key';
     process.env.FIREBASE_CLIENT_EMAIL = 'a@b.com';
-    process.env.STRIPE_SECRET_KEY = 'sk_live_real';
-    process.env.STRIPE_MODE = 'live';
     process.env.UPSTASH_REDIS_REST_URL = 'https://redis.upstash.io';
     process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
     process.env.QUEUE_HMAC_SECRET = 'real-hmac-secret';
@@ -568,7 +528,6 @@ describe('validateConfig', () => {
     process.env.FIREBASE_PROJECT_ID = 'proj';
     process.env.FIREBASE_PRIVATE_KEY = 'key';
     process.env.FIREBASE_CLIENT_EMAIL = 'a@b.com';
-    process.env.STRIPE_SECRET_KEY = 'sk_live_real';
     process.env.UPSTASH_REDIS_REST_URL = 'https://redis.upstash.io';
     process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
     process.env.QUEUE_HMAC_SECRET = 'real-hmac-secret';
@@ -594,92 +553,12 @@ describe('validateConfig', () => {
     expect(exitSpy).not.toHaveBeenCalled();
   });
 
-  it('flags STRIPE_SECRET_KEY with placeholder as error in production', async () => {
-    process.env.DATABASE_URL = 'postgres://prod';
-    process.env.NODE_ENV = 'production';
-    process.env.FIREBASE_PROJECT_ID = 'proj';
-    process.env.FIREBASE_PRIVATE_KEY = 'key';
-    process.env.FIREBASE_CLIENT_EMAIL = 'a@b.com';
-    process.env.STRIPE_SECRET_KEY = 'sk_live_placeholder'; // contains 'placeholder'
-    process.env.UPSTASH_REDIS_REST_URL = 'https://redis.io';
-    process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
-    process.env.TAX_TIN_ENCRYPTION_KEY = 'a'.repeat(64);
-    vi.resetModules();
-    const { validateConfig } = await import('../../src/config');
-    const result = validateConfig();
-    expect(exitSpy).toHaveBeenCalledWith(1);
-    expect(result.errors.some((e) => e.includes('STRIPE_SECRET_KEY'))).toBe(true);
-  });
-
-  it('fails production boot when the Connect webhook secret is missing', async () => {
-    process.env.DATABASE_URL = 'postgres://prod';
-    process.env.NODE_ENV = 'production';
-    process.env.FIREBASE_PROJECT_ID = 'proj';
-    process.env.FIREBASE_PRIVATE_KEY = 'key';
-    process.env.FIREBASE_CLIENT_EMAIL = 'a@b.com';
-    process.env.STRIPE_SECRET_KEY = 'sk_live_real';
-    delete process.env.STRIPE_CONNECT_WEBHOOK_SECRET;
-    process.env.UPSTASH_REDIS_REST_URL = 'https://redis.io';
-    process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
-    process.env.QUEUE_HMAC_SECRET = 'real-hmac-secret';
-    process.env.TAX_TIN_ENCRYPTION_KEY = 'a'.repeat(64);
-    vi.resetModules();
-    const { validateConfig } = await import('../../src/config');
-    const result = validateConfig();
-    expect(exitSpy).toHaveBeenCalledWith(1);
-    expect(result.errors).toContain('STRIPE_CONNECT_WEBHOOK_SECRET is required (not placeholder)');
-  });
-
-  it('fails production boot when Stripe webhook secrets are identical', async () => {
-    process.env.DATABASE_URL = 'postgres://prod';
-    process.env.NODE_ENV = 'production';
-    process.env.FIREBASE_PROJECT_ID = 'proj';
-    process.env.FIREBASE_PRIVATE_KEY = 'key';
-    process.env.FIREBASE_CLIENT_EMAIL = 'a@b.com';
-    process.env.STRIPE_SECRET_KEY = 'sk_live_real';
-    process.env.STRIPE_CONNECT_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
-    process.env.UPSTASH_REDIS_REST_URL = 'https://redis.io';
-    process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
-    process.env.QUEUE_HMAC_SECRET = 'real-hmac-secret';
-    process.env.TAX_TIN_ENCRYPTION_KEY = 'a'.repeat(64);
-    vi.resetModules();
-    const { validateConfig } = await import('../../src/config');
-    const result = validateConfig();
-    expect(exitSpy).toHaveBeenCalledWith(1);
-    expect(result.errors).toContain('Stripe platform and Connect webhook secrets must be distinct');
-  });
-
-  it.each([
-    ['test', 'sk_live_real', 'STRIPE_MODE=test'],
-    ['live', 'sk_test_real', 'STRIPE_MODE=live'],
-    ['preview', 'sk_live_real', 'STRIPE_MODE must be either test or live'],
-  ])('fails production boot for Stripe mode/key mismatch %s', async (mode, secret, expected) => {
-    process.env.DATABASE_URL = 'postgres://prod';
-    process.env.NODE_ENV = 'production';
-    process.env.FIREBASE_PROJECT_ID = 'proj';
-    process.env.FIREBASE_PRIVATE_KEY = 'key';
-    process.env.FIREBASE_CLIENT_EMAIL = 'a@b.com';
-    process.env.STRIPE_SECRET_KEY = secret;
-    process.env.STRIPE_MODE = mode;
-    process.env.UPSTASH_REDIS_REST_URL = 'https://redis.io';
-    process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
-    process.env.QUEUE_HMAC_SECRET = 'real-hmac-secret';
-    process.env.TAX_TIN_ENCRYPTION_KEY = 'a'.repeat(64);
-    vi.resetModules();
-    const { validateConfig } = await import('../../src/config');
-    const result = validateConfig();
-    expect(exitSpy).toHaveBeenCalledWith(1);
-    expect(result.errors.some((error) => error.includes(expected))).toBe(true);
-  });
-
   it('fails production boot for an invalid payment-creation mode', async () => {
     process.env.DATABASE_URL = 'postgres://prod';
     process.env.NODE_ENV = 'production';
     process.env.FIREBASE_PROJECT_ID = 'proj';
     process.env.FIREBASE_PRIVATE_KEY = 'key';
     process.env.FIREBASE_CLIENT_EMAIL = 'a@b.com';
-    process.env.STRIPE_SECRET_KEY = 'sk_live_real';
-    process.env.STRIPE_MODE = 'live';
     process.env.HX_PAYMENT_CREATION_MODE = 'open';
     process.env.UPSTASH_REDIS_REST_URL = 'https://redis.io';
     process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
@@ -694,17 +573,16 @@ describe('validateConfig', () => {
     expect(result.errors).toContain('HX_PAYMENT_CREATION_MODE must be either enabled or frozen');
   });
 
-  it.each([
-    ['test', 'sk_test_real'],
-    ['live', 'sk_live_real'],
-  ])('accepts a matching Stripe %s mode/key pair', async (mode, secret) => {
+  it.each(['api', 'worker'])('accepts production %s configuration without retired processor credentials', async (role) => {
+    process.env.SERVICE_ROLE = role;
+    for (const key of Object.keys(process.env)) {
+      if (/^(STRIPE|STAX)_/.test(key)) delete process.env[key];
+    }
     process.env.DATABASE_URL = 'postgres://prod';
     process.env.NODE_ENV = 'production';
     process.env.FIREBASE_PROJECT_ID = 'proj';
     process.env.FIREBASE_PRIVATE_KEY = 'key';
     process.env.FIREBASE_CLIENT_EMAIL = 'a@b.com';
-    process.env.STRIPE_SECRET_KEY = secret;
-    process.env.STRIPE_MODE = mode;
     process.env.UPSTASH_REDIS_REST_URL = 'https://redis.io';
     process.env.UPSTASH_REDIS_URL = 'redis://upstash:6379';
     process.env.QUEUE_HMAC_SECRET = 'real-hmac-secret';

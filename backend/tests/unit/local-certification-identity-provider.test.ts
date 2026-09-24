@@ -14,7 +14,6 @@ import {
 const original = { ...process.env };
 const enabled = {
   NODE_ENV: 'test', HXOS_ALLOW_LOCAL_TEST_IDENTITY: 'true', ENGINE_API_MODE: 'test',
-  STRIPE_MODE: 'test', HXOS_LOCAL_TEST_IDENTITY_SECRET: 'i'.repeat(64),
 };
 const userId = '85000000-0000-4000-8000-000000000001';
 const actorId = '85000000-0000-4000-8000-000000000002';

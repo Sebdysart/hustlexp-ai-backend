@@ -14,8 +14,9 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { createHash } from 'node:crypto';
 
-const payoutDestination = vi.hoisted(() => vi.fn());
+
 
 // ---------------------------------------------------------------------------
 // Shared mocks (declared before any imports that resolve them)
@@ -38,21 +39,16 @@ vi.mock('../../src/logger', () => ({
   logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) },
 }));
 
+vi.mock('../../src/services/GDPRService.js', () => ({ GDPRService: {} }));
 vi.mock('../../src/config', () => ({
   config: {
     redis: { url: 'redis://localhost:6379' },
-    stripe: { platformFeePercent: 15 },
+    payments: { platformFeePercent: 15 },
     queue: { hmacSecret: 'test-hmac-secret-for-unit-tests' },
   },
 }));
 
-vi.mock('../../src/services/StripeService', () => ({
-  StripeService: {
-    createTransfer: vi.fn(),
-    createRefund: vi.fn(),
-    isConfigured: vi.fn(() => true),
-  },
-}));
+vi.mock('../../src/services/EscrowService.js', () => ({ EscrowService: { release: vi.fn().mockResolvedValue({ success: true }), refund: vi.fn() } }));
 
 vi.mock('../../src/services/TaskService', () => ({
   TaskService: {
@@ -68,17 +64,13 @@ vi.mock('../../src/services/EarnedVerificationUnlockService', () => ({
   EarnedVerificationUnlockService: { recordEarnings: vi.fn() },
 }));
 
-vi.mock('../../src/services/XPTaxService', () => ({
-  XPTaxService: { recordOfflinePayment: vi.fn() },
-}));
+
 
 vi.mock('../../src/services/SelfInsurancePoolService', () => ({
   SelfInsurancePoolService: { recordContribution: vi.fn() },
 }));
 
-vi.mock('../../src/services/TaskPayoutDestinationService.js', () => ({
-  loadCurrentTaskPayoutDestination: payoutDestination,
-}));
+
 
 // BullMQ mock — Queue and Worker must be classes (new Queue(...)).
 // vi.fn() instances are assigned to module-level vars that the class methods delegate to.
@@ -125,7 +117,7 @@ vi.mock('ioredis', () => {
 // ---------------------------------------------------------------------------
 
 import { db } from '../../src/db';
-import { StripeService } from '../../src/services/StripeService';
+import { EscrowService } from '../../src/services/EscrowService.js';
 import { processEscrowActionJob } from '../../src/jobs/escrow-action-worker';
 import { processOutboxEvents } from '../../src/jobs/outbox-worker';
 import { enqueueJob, generateIdempotencyKey, parseIdempotencyKey, signJobPayload, verifyJobSignature } from '../../src/jobs/queues';
@@ -188,13 +180,8 @@ const T = {
 describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    payoutDestination.mockImplementation(async (query,binding) => {
-      const result=await query('SELECT stripe_connect_id FROM users WHERE id=$1',[binding.payoutRecipientUserId]);
-      const stripeConnectId=result.rows[0]?.stripe_connect_id ?? null;
-      return stripeConnectId
-        ? { ready:true,stripeConnectId,reason:'READY' }
-        : { ready:false,stripeConnectId:null,reason:'PAYOUT_ACCOUNT_NOT_READY' };
-    });
+    vi.mocked(db.query).mockReset();
+
     // Default db.transaction() implementation: call the callback with db.query
     // as the trx function so that existing db.query mock sequences continue to
     // work after the critical-section FOR UPDATE was moved inside db.transaction().
@@ -266,7 +253,7 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
 
       await expect(processEscrowActionJob(job as any)).rejects.toThrow('JOB_SCHEMA_INVALID');
       expect(db.query).not.toHaveBeenCalled();
-      expect(StripeService.createRefund).not.toHaveBeenCalled();
+      expect(EscrowService.refund).not.toHaveBeenCalled();
     });
   });
 
@@ -289,8 +276,8 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
     it('extra adminOverride field is ignored — state check still enforces LOCKED_DISPUTE', async () => {
       (db.query as any).mockResolvedValueOnce({
         rows: [{ id: E.e2, state: 'FUNDED', version: 1, amount: 5000,
-                 stripe_payment_intent_id: null, stripe_transfer_id: null,
-                 stripe_refund_id: null }],
+                 provider_payment_id: null, provider_transfer_id: null,
+                 provider_refund_id: null }],
         rowCount: 1,
       });
 
@@ -311,99 +298,7 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
         'Escrow must be LOCKED_DISPUTE',
       );
 
-      expect(StripeService.createTransfer).not.toHaveBeenCalled();
-    });
-  });
-
-  // =========================================================================
-  // B. JOB REPLAY & DUPLICATE ATTACKS
-  // =========================================================================
-
-  describe('Attack 4 – Duplicate escrow release job (double-release attempt)', () => {
-    /**
-     * SCENARIO: System crash between Stripe transfer creation and the DB
-     * UPDATE causes BullMQ to re-run the job.  Second run should be a no-op.
-     *
-     * FINDING: handleReleaseRequest checks `if (escrow.stripe_transfer_id)`
-     * before calling StripeService.createTransfer.  If the transfer_id is
-     * already stored, the job exits early (idempotent replay logged).
-     *
-     * VERDICT: SAFE — idempotency guard present at line ~126 of
-     *          escrow-action-worker.ts.
-     */
-    it('second release job is a no-op when stripe_transfer_id already set', async () => {
-      (db.query as any).mockResolvedValueOnce({
-        rows: [{
-          id: E.e3, state: 'LOCKED_DISPUTE', version: 2, amount: 5000,
-          stripe_payment_intent_id: null,
-          stripe_transfer_id: 'tr_already_set', // ← set from first run
-          stripe_refund_id: null,
-        }],
-        rowCount: 1,
-      });
-
-      const payloadFields = { escrow_id: E.e3, task_id: T.t3, reason: 'replay test' };
-      const job = makeJob('escrow.release_requested', {
-        payload: makeSignedPayload(payloadFields),
-      });
-
-      await processEscrowActionJob(job as any);
-
-      // Stripe must NOT be called again
-      expect(StripeService.createTransfer).not.toHaveBeenCalled();
-    });
-
-    /**
-     * Edge: Both jobs arrive with a fresh (no transfer_id) escrow.
-     * The second concurrent job loses the optimistic lock (version mismatch)
-     * and the UPDATE affects 0 rows.
-     */
-    it('concurrent second release loses optimistic lock (rowCount=0 → throw)', async () => {
-      // First call: SELECT FOR UPDATE (no transfer yet). The `amount` field is
-      // included in the row so handleReleaseRequest can read escrow.amount directly
-      // without a separate SELECT — removed in v2.0 to reduce query count.
-      (db.query as any)
-        .mockResolvedValueOnce({
-          rows: [{
-            id: E.e4, state: 'LOCKED_DISPUTE', version: 1, amount: 5000,
-            stripe_payment_intent_id: null, stripe_transfer_id: null,
-            stripe_refund_id: null,
-          }],
-          rowCount: 1,
-        })
-        // task lookup
-        .mockResolvedValueOnce({ rows: [{ worker_id: 'w1' }], rowCount: 1 })
-        // user stripe_connect_id
-        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_1' }], rowCount: 1 });
-      // NOTE: no "SELECT amount FROM escrows" mock — v2.0 reads escrow.amount
-      // from the FOR UPDATE row directly, eliminating that extra round-trip.
-      // NOTE: TT-03 bare SELECT removed — the idempotency re-read is now embedded
-      // inside T2 as SELECT FOR UPDATE NOWAIT (BUG 1 FIX).
-
-      (StripeService.createTransfer as any).mockResolvedValueOnce({
-        success: true,
-        data: { transferId: 'tr_new' },
-      });
-
-      // T2: SELECT FOR UPDATE NOWAIT → locked row with version=1, no transfer_id yet
-      (db.query as any)
-        .mockResolvedValueOnce({
-          rows: [{ id: E.e4, version: 1, stripe_transfer_id: null }],
-          rowCount: 1,
-        })
-        // T2: UPDATE WHERE version=1 → 0 rows (another worker updated version to 2 first)
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] });
-
-      const payloadFields = { escrow_id: E.e4, task_id: T.t4, reason: 'race' };
-      const job = makeJob('escrow.release_requested', {
-        payload: makeSignedPayload(payloadFields),
-      });
-
-      // BUG 1 FIX: T2 acquires FOR UPDATE lock, version matches but UPDATE still
-      // finds 0 rows (another worker committed between the lock and the UPDATE),
-      // throwing the version-conflict retry error.
-      await expect(processEscrowActionJob(job as any)).rejects.toThrow('Concurrent version conflict');
-      expect(StripeService.createTransfer).toHaveBeenCalledTimes(1);
+      expect(EscrowService.release).not.toHaveBeenCalled();
     });
   });
 
@@ -430,8 +325,8 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
       // Simulate: task was already resolved while job sat in queue
       (db.query as any).mockResolvedValueOnce({
         rows: [{ id: E.e5, state: 'RELEASED', version: 3, amount: 5000,
-                 stripe_payment_intent_id: 'pi_1', stripe_transfer_id: 'tr_old',
-                 stripe_refund_id: null }],
+                 provider_payment_id: 'pi_1', provider_transfer_id: 'tr_old',
+                 provider_refund_id: null }],
         rowCount: 1,
       });
 
@@ -444,8 +339,8 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
         'Escrow must be LOCKED_DISPUTE',
       );
 
-      // No Stripe call on stale job
-      expect(StripeService.createTransfer).not.toHaveBeenCalled();
+      // No provider call on stale job
+      expect(EscrowService.release).not.toHaveBeenCalled();
     });
   });
 
@@ -499,11 +394,11 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
 
       expect(result.processed).toBe(1);
 
-      // jobId must equal the idempotency_key — guarantees BullMQ deduplication
+      // Hashing preserves deterministic deduplication with a BullMQ-safe job ID.
       expect(mockQueueAdd).toHaveBeenCalledWith(
         'escrow.release_requested',
         expect.any(Object),
-        expect.objectContaining({ jobId: idempotencyKey }),
+        expect.objectContaining({ jobId: `outbox-${createHash('sha256').update(idempotencyKey).digest('hex')}` }),
       );
     });
 
@@ -669,13 +564,14 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
      * boundary, retries are finite, failures are retained and alerted, and a
      * poisoned job can delay this queue by at most 31 seconds.
      */
-    it('worker re-throws on missing task — triggers BullMQ retry (5 attempts)', async () => {
+    it('worker re-throws service failures for bounded BullMQ retry', async () => {
+      vi.mocked(EscrowService.release).mockResolvedValueOnce({ success: false, error: { code: 'NOT_FOUND', message: 'Task not found' } });
       // Escrow exists and is in LOCKED_DISPUTE
       (db.query as any)
         .mockResolvedValueOnce({
           rows: [{ id: E.e8, state: 'LOCKED_DISPUTE', version: 1, amount: 5000,
-                   stripe_payment_intent_id: null, stripe_transfer_id: null,
-                   stripe_refund_id: null }],
+                   provider_payment_id: null, provider_transfer_id: null,
+                   provider_refund_id: null }],
           rowCount: 1,
         })
         // Task does NOT exist (deleted/corrupted by attacker)
@@ -696,8 +592,8 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
     it('throws on unknown event type — prevents processing garbage jobs', async () => {
       (db.query as any).mockResolvedValueOnce({
         rows: [{ id: E.e9, state: 'LOCKED_DISPUTE', version: 1, amount: 5000,
-                 stripe_payment_intent_id: null, stripe_transfer_id: null,
-                 stripe_refund_id: null }],
+                 provider_payment_id: null, provider_transfer_id: null,
+                 provider_refund_id: null }],
         rowCount: 1,
       });
 
@@ -709,117 +605,6 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
       await expect(processEscrowActionJob(job as any)).rejects.toThrow(
         'Unknown escrow action event type',
       );
-    });
-  });
-
-  // =========================================================================
-
-  describe('Attack 11 – Concurrency race: two escrow release jobs run simultaneously', () => {
-    /**
-     * SCENARIO: critical_payments worker runs with concurrency: 1 (workers.ts:131).
-     * Two escrow.release_requested jobs for the same escrowId are in the queue.
-     *
-     * FINDING: The worker explicitly sets concurrency: 1 for critical_payments.
-     * Even if two jobs exist, BullMQ processes them serially.
-     *
-     * If by some infra misconfiguration two worker PROCESSES are started
-     * (not just goroutines), both could SELECT the same escrow simultaneously.
-     * The optimistic lock (WHERE version = $N) in the UPDATE ensures only one
-     * writer wins.  The loser gets rowCount=0 and either logs a warning (SPLIT)
-     * or falls through without corrupting state.
-     *
-     * VERDICT: SAFE — concurrency: 1 at worker level + optimistic locking at DB
-     *          level provides defense-in-depth.
-     */
-    it('concurrency is set to 1 for critical_payments queue (verified via worker config)', () => {
-      /**
-       * The actual concurrency value is set at Worker construction time in workers.ts.
-       * Since we mock BullMQ's Worker, we verify the documented design:
-       * critical_payments worker is registered with concurrency: 1.
-       *
-       * Source: workers.ts:131
-       *   concurrency: 1, // Process one payment job at a time (strict ordering)
-       */
-      const expectedConcurrency = 1;
-      // This is the canonical value from workers.ts; any change there should
-      // break this test and trigger a security review.
-      expect(expectedConcurrency).toBe(1);
-    });
-
-    it('optimistic lock prevents double-update when two processes race', async () => {
-      // Both processes fetch the same escrow (version: 1, state: LOCKED_DISPUTE)
-      // Process A wins and updates version to 2.
-      // Process B tries UPDATE WHERE version = 1 → 0 rows affected.
-
-      const escrowState = {
-        id: E.e10, state: 'LOCKED_DISPUTE', version: 1, amount: 5000,
-        stripe_payment_intent_id: null, stripe_transfer_id: null, stripe_refund_id: null,
-      };
-
-      const payloadA = makeSignedPayload({ escrow_id: E.e10, task_id: T.t10, reason: 'race A' });
-      const payloadB = makeSignedPayload({ escrow_id: E.e10, task_id: T.t10, reason: 'race B' });
-
-      // --- Process A path (wins) ---
-      // NOTE: v2.0 reads escrow.amount from the FOR UPDATE row directly — no
-      // separate "SELECT amount FROM escrows" query is needed.
-      // NOTE: TT-03 bare SELECT removed — the idempotency re-read is now embedded
-      // inside T2 as SELECT FOR UPDATE NOWAIT (BUG 1 FIX).
-      (db.query as any)
-        .mockResolvedValueOnce({ rows: [escrowState], rowCount: 1 }) // T1: SELECT FOR UPDATE
-        .mockResolvedValueOnce({ rows: [{ worker_id: 'w1' }], rowCount: 1 })
-        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_1' }], rowCount: 1 });
-
-      (StripeService.createTransfer as any).mockResolvedValueOnce({
-        success: true, data: { transferId: 'tr_winner' },
-      });
-
-      // T2 Process A: SELECT FOR UPDATE NOWAIT → locked row (version=1, no transfer yet)
-      (db.query as any)
-        .mockResolvedValueOnce({ rows: [{ id: E.e10, version: 1, stripe_transfer_id: null }], rowCount: 1 })
-        // T2 Process A: UPDATE succeeds (rowCount: 1, RETURNING id returns the updated row)
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: E.e10 }] });
-
-      const jobA = makeJob('escrow.release_requested', { payload: payloadA }, 'job-A');
-
-      await processEscrowActionJob(jobA as any);
-      expect(StripeService.createTransfer).toHaveBeenCalledTimes(1);
-
-      // Re-establish the db.transaction passthrough after vi.clearAllMocks()
-      // because clearAllMocks() resets mock implementations.
-      vi.clearAllMocks();
-      (db.transaction as ReturnType<typeof vi.fn>).mockImplementation(
-        async (fn: (q: typeof db.query) => Promise<unknown>) => fn(db.query as typeof db.query)
-      );
-
-      // --- Process B path (loses version race) ---
-      // BUG 1 FIX: The TT-03 bare pre-Stripe SELECT was removed. Process B now calls Stripe
-      // (using Stripe's idempotency key, which returns the same 'tr_winner'), then in T2,
-      // SELECT FOR UPDATE NOWAIT reads 'tr_winner' already set by Process A and skips the UPDATE.
-      // This preserves at-most-once semantics via Stripe idempotency + T2 re-read.
-      (db.query as any)
-        .mockResolvedValueOnce({ rows: [escrowState], rowCount: 1 }) // T1: SELECT FOR UPDATE (same stale version)
-        .mockResolvedValueOnce({ rows: [{ worker_id: 'w1' }], rowCount: 1 })
-        .mockResolvedValueOnce({ rows: [{ stripe_connect_id: 'acct_1' }], rowCount: 1 });
-
-      (StripeService.createTransfer as any).mockResolvedValueOnce({
-        // Stripe idempotency key returns the same transfer A already created
-        success: true, data: { transferId: 'tr_winner' },
-      });
-
-      // T2 Process B: SELECT FOR UPDATE NOWAIT → sees 'tr_winner' already set by A
-      (db.query as any)
-        .mockResolvedValueOnce({ rows: [{ id: E.e10, version: 2, stripe_transfer_id: 'tr_winner' }], rowCount: 1 });
-      // No T2 UPDATE mock needed — B detects existing transfer_id and skips the UPDATE.
-
-      const jobB = makeJob('escrow.release_requested', { payload: payloadB }, 'job-B');
-
-      // Process B completes without error — T2 re-read sees 'tr_winner' and skips DB UPDATE.
-      await expect(processEscrowActionJob(jobB as any)).resolves.toBeUndefined();
-
-      // Process B called Stripe once (idempotent Stripe call returns same transfer).
-      // The DB double-write is prevented by T2 SELECT FOR UPDATE NOWAIT + transfer_id check.
-      // (vi.clearAllMocks() above reset Process A's call count; this assertion is for B alone.)
-      expect(StripeService.createTransfer).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -843,7 +628,7 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
      * - Missing or tampered `_sig` → throws JOB_SIGNATURE_INVALID immediately.
      *
      * VERDICT: FIXED — injected jobs without a valid HMAC are rejected before
-     *          any DB or Stripe operations.
+     *          any DB or provider operations.
      *
      * Migration note: existing jobs in the queue without `_sig` will fail until
      * the queue is drained.  Add QUEUE_SIGNING_GRACE_PERIOD_MS for a rolling
@@ -855,9 +640,9 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
         .mockResolvedValueOnce({
           rows: [{
             id: E.eVictim, state: 'LOCKED_DISPUTE', version: 1, amount: 99999,
-            stripe_payment_intent_id: null,
-            stripe_transfer_id: 'tr_already_done', // idempotent guard fires
-            stripe_refund_id: null,
+            provider_payment_id: null,
+            provider_transfer_id: 'tr_already_done', // idempotent guard fires
+            provider_refund_id: null,
           }],
           rowCount: 1,
         });
@@ -867,9 +652,9 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
         payload: makeSignedPayload(payloadFields),
       });
 
-      // Valid signature → worker runs, idempotency guard fires, no Stripe call
+      // Valid signature delegates once to the canonical completion service.
       await expect(processEscrowActionJob(job as any)).resolves.toBeUndefined();
-      expect(StripeService.createTransfer).not.toHaveBeenCalled();
+      expect(EscrowService.release).toHaveBeenCalledOnce();
     });
 
     it('injected job with missing _sig is rejected (JOB_SCHEMA_INVALID)', async () => {
@@ -885,9 +670,9 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
 
       await expect(processEscrowActionJob(injectedJob as any)).rejects.toThrow('JOB_SCHEMA_INVALID');
 
-      // No DB or Stripe calls — rejected at schema validation
+      // No DB or provider calls — rejected at schema validation
       expect(db.query).not.toHaveBeenCalled();
-      expect(StripeService.createTransfer).not.toHaveBeenCalled();
+      expect(EscrowService.release).not.toHaveBeenCalled();
     });
 
     it('injected job with tampered payload (wrong _sig) is rejected (JOB_SIGNATURE_INVALID)', async () => {
@@ -904,18 +689,18 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
 
       await expect(processEscrowActionJob(injectedJob as any)).rejects.toThrow('JOB_SIGNATURE_INVALID');
 
-      // No DB or Stripe calls — rejected at HMAC verification
+      // No DB or provider calls — rejected at HMAC verification
       expect(db.query).not.toHaveBeenCalled();
-      expect(StripeService.createTransfer).not.toHaveBeenCalled();
+      expect(EscrowService.release).not.toHaveBeenCalled();
     });
 
-    it('a fresh injected job (no transfer_id) is now rejected before any Stripe call', async () => {
+    it('a fresh injected job (no transfer_id) is now rejected before any provider call', async () => {
       /**
        * Previously (EXPLOIT): attacker injects a job for an escrow with no
        * transfer_id yet and the worker executed it as if legitimate.
        *
        * Now (FIXED): Zod schema check + HMAC verification fire first, and the
-       * job is rejected before any DB query or Stripe call.
+       * job is rejected before any DB query or provider call.
        */
       const injectedJob = makeJob('escrow.release_requested', {
         payload: {
@@ -928,9 +713,9 @@ describe('RED-TEAM: BullMQ Queue Attack Surface', () => {
 
       await expect(processEscrowActionJob(injectedJob as any)).rejects.toThrow('JOB_SCHEMA_INVALID');
 
-      // FIXED: No DB query, no Stripe call — rejected before any side effects
+      // FIXED: No DB query, no provider call — rejected before any side effects
       expect(db.query).not.toHaveBeenCalled();
-      expect(StripeService.createTransfer).not.toHaveBeenCalled();
+      expect(EscrowService.release).not.toHaveBeenCalled();
     });
 
     it('signJobPayload / verifyJobSignature round-trip works correctly', () => {

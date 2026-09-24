@@ -16,7 +16,6 @@ import type { HustleApp } from '../../src/serverTypes';
 const enabledEnv = {
   NODE_ENV: 'development',
   ENGINE_API_MODE: 'test',
-  STRIPE_MODE: 'test',
   HXOS_ALLOW_LOCAL_TEST_AUTH: 'true',
   HXOS_LOCAL_TEST_AUTH_SECRET: 'a'.repeat(32),
   HXOS_ALLOW_LOCAL_TEST_EXECUTION: 'true',

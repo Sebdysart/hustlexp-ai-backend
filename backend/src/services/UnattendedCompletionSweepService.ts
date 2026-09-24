@@ -27,6 +27,7 @@ async function completeDue(limit: number = 50): Promise<UnattendedCompletionSwee
         AND (
           SELECT p.state FROM proofs p
            WHERE p.task_id = t.id
+             AND p.rework_id IS NULL
            ORDER BY p.created_at DESC
            LIMIT 1
         ) = 'ACCEPTED'

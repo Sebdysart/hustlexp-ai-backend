@@ -14,7 +14,6 @@
  */
 
 import { randomUUID } from 'crypto';
-import Stripe from 'stripe';
 import { db, isInvariantViolation, getErrorMessage } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { ErrorCodes } from '../types.js';
@@ -22,18 +21,11 @@ import { NotificationService } from './NotificationService.js';
 import { EscrowService } from './EscrowService.js';
 import { TaskService } from './TaskService.js';
 import { logger } from '../logger.js';
-import { config } from '../config.js';
 import { invalidateAuthCacheForUser } from '../auth-cache.js';
 import { forceDisconnectUser } from '../realtime/connection-registry.js';
 import { revokeUserSessions } from '../auth/middleware.js';
-import { stripeBreaker } from '../middleware/circuit-breaker.js'; // AUDIT FIX M3
 
-// Module-level Stripe singleton — only instantiated when a real key is present.
-// Matches the pattern used in TippingService.ts.
-let stripe: Stripe | null = null;
-if (config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder')) {
-  stripe = new Stripe(config.stripe.secretKey, { apiVersion: '2025-11-17.clover' });
-}
+
 
 // ============================================================================
 // D53-4: PER-USER IN-MEMORY RATE LIMITER FOR GDPR ENDPOINTS
@@ -1224,42 +1216,18 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
           },
         };
       }
-      // Refund any FUNDED or PENDING escrow attached to this task.
-      // PENDING escrows have a PaymentIntent created but not yet confirmed by
-      // Stripe — cancel the PI first so money never moves, then refund the
-      // escrow record. If Stripe later confirms the PI, the cancellation
-      // prevents a stranded charge.
+      // Resolve financial obligations before erasure; unsupported refunds fail closed.
       // Also handle LOCKED_DISPUTE escrows where the poster is the deleted
       // user — return the full amount to the poster (100%) since the worker
       // cannot be paid to a deleted account's task.
-      const escrowResult = await db.query<{ id: string; state: string; stripe_payment_intent_id: string | null }>(
-        `SELECT id, state, stripe_payment_intent_id FROM escrows WHERE task_id = $1 AND state IN ('FUNDED', 'PENDING', 'LOCKED_DISPUTE')`,
+      const escrowResult = await db.query<{ id: string; state: string; provider_payment_id: string | null }>(
+        `SELECT id, state, provider_payment_id FROM escrows WHERE task_id = $1 AND state IN ('FUNDED', 'PENDING', 'LOCKED_DISPUTE')`,
         [row.id]
       );
       for (const escrow of escrowResult.rows) {
-        if (escrow.state === 'PENDING' && escrow.stripe_payment_intent_id) {
-          if (!stripe) {
-            return {
-              success: false,
-              error: {
-                code: 'ACTIVE_ESCROW_RESOLUTION_FAILED',
-                message: `Cannot erase account until pending payment ${escrow.id} is cancelled.`,
-              },
-            };
-          }
-          try {
-            // AUDIT FIX M3: via stripeBreaker — GDPR deletion must not hold
-            // open calls against a failing Stripe.
-            await stripeBreaker.execute(() => stripe!.paymentIntents.cancel(escrow.stripe_payment_intent_id!));
-          } catch {
-            return {
-              success: false,
-              error: {
-                code: 'ACTIVE_ESCROW_RESOLUTION_FAILED',
-                message: `Cannot erase account until pending payment ${escrow.id} is cancelled.`,
-              },
-            };
-          }
+        if (escrow.state === 'PENDING' && escrow.provider_payment_id) {
+          return { success: false, error: { code: 'ACTIVE_ESCROW_RESOLUTION_FAILED',
+            message: 'A pending payment requires manual resolution before account erasure.' } };
         }
         if (escrow.state === 'LOCKED_DISPUTE') {
           // Poster is being deleted — return full amount to poster account
@@ -1377,28 +1345,7 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
     }
 
     // -------------------------------------------------------------------------
-    // D58-8: Delete the Stripe customer via Stripe API before nulling the ID
-    // in the DB. This is best-effort: if Stripe is unavailable or the customer
-    // was already deleted, we log a warning and continue with the DB deletion.
-    // The stripe_customer_id is still nulled in the UPDATE users SET below.
-    // -------------------------------------------------------------------------
-    const stripeCustomerRow = await db.query<{ stripe_customer_id: string | null }>(
-      `SELECT stripe_customer_id FROM users WHERE id = $1`,
-      [userId]
-    );
-    const stripeCustomerId = stripeCustomerRow.rows[0]?.stripe_customer_id ?? null;
-    if (stripeCustomerId && stripe) {
-      try {
-        // AUDIT FIX M3: via stripeBreaker
-        await stripeBreaker.execute(() => stripe!.customers.del(stripeCustomerId));
-      } catch (stripeErr) {
-        log.warn(
-          { userId, stripeCustomerId, err: stripeErr instanceof Error ? stripeErr.message : String(stripeErr) },
-          'GDPR: could not delete Stripe customer via API — continuing with DB anonymization (best-effort)'
-        );
-      }
-    }
-
+    // Historical provider identifiers are erased locally below; no deprecated processor calls.
     // Use a transaction to ensure atomicity
     await db.serializableTransaction(async (query) => {
       // 1. Immediate deletion (GDPR_COMPLIANCE_SPEC.md §3.1)
@@ -1426,6 +1373,7 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       // Delete tables added after GDPR service was written
       await query('DELETE FROM alpha_telemetry WHERE user_id = $1', [userId]);
       await query('DELETE FROM device_tokens WHERE user_id = $1', [userId]);
+      await query('DELETE FROM mobile_push_devices WHERE user_id = $1', [userId]);
       await query('DELETE FROM worker_skills WHERE user_id = $1', [userId]);
       await query('DELETE FROM xp_tax_ledger WHERE user_id = $1', [userId]);
       await query('DELETE FROM user_xp_tax_status WHERE user_id = $1', [userId]);
@@ -1660,6 +1608,8 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
              full_name = 'Deleted User',
              firebase_uid = 'deleted-' || $4,
              phone = NULL,
+             contact_phone = NULL,
+             phone_verified_at = NULL,
              account_status = 'DELETED',
              paused_at = $2,
              stripe_customer_id = NULL,

@@ -21,13 +21,16 @@ describe('engine automation production container contract', () => {
     expect(dockerfile).toContain('20260721_ai_observability_contract.sql');
   });
 
-  it('applies the migration before both web and worker runtimes', () => {
+  it('applies migrations before the web runtime and starts the worker without DDL', () => {
     const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
     expect(pkg.scripts.start).toMatch(/engine-automation-migration/);
     expect(pkg.scripts.start).toContain('SERVICE_ROLE');
     expect(pkg.scripts.start).toContain('node dist/backend/src/jobs/workers.js');
     expect(pkg.scripts.start).toContain('node dist/backend/src/server.js');
-    expect(pkg.scripts['start:workers']).toMatch(/engine-automation-migration.+&& node dist\/backend\/src\/jobs\/workers\.js/);
+    expect(pkg.scripts['start:workers']).toBe('node dist/backend/src/jobs/workers.js');
+    const workerSource = read('backend/src/jobs/workers.ts');
+    expect(workerSource).toContain('SELECT name FROM applied_migrations WHERE name = $1');
+    expect(workerSource).not.toContain('runEngineAutomationMigration');
 
     const procfile = read('Procfile');
     expect(procfile).toContain('web: npm start');

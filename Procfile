@@ -8,6 +8,6 @@ web: npm start
 # Background job workers - separate process
 worker: npm run start:workers
 
-# Release phase is read-only. Web and worker startup apply the reviewed,
-# idempotent runtime migration manifest before accepting work.
+# Release phase is read-only. Web startup applies the reviewed migration
+# manifest; worker startup verifies its final checkpoint without DDL privilege.
 release: npm run db:validate

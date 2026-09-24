@@ -158,7 +158,7 @@
         <tr><td>Email address</td><td>Account creation, login, and notifications</td></tr>
         <tr><td>Phone number (optional)</td><td>Two-factor authentication, task coordination</td></tr>
         <tr><td>Profile photo</td><td>Help other users identify you for task meetups</td></tr>
-        <tr><td>Payment information</td><td>Process payments via Stripe (see Section 4)</td></tr>
+        <tr><td>Payment information</td><td>Process payments via Tilled (see Section 4)</td></tr>
       </tbody>
     </table>
 
@@ -212,9 +212,9 @@
           <td>Email, device tokens, crash logs</td>
         </tr>
         <tr>
-          <td><strong>Stripe</strong></td>
+          <td><strong>Tilled</strong></td>
           <td>Payment processing</td>
-          <td>Payment details (handled directly by Stripe &mdash; we never store card numbers)</td>
+          <td>Payment details (handled directly by Tilled &mdash; we never store card numbers)</td>
         </tr>
         <tr>
           <td><strong>Neon</strong></td>
@@ -255,7 +255,7 @@
     <ul>
       <li>Encrypted data transmission (HTTPS/TLS)</li>
       <li>Secure authentication via Firebase</li>
-      <li>Payment data handled exclusively by Stripe's PCI-compliant infrastructure</li>
+      <li>Card details are collected through Tilled payment fields; HustleXP does not store card numbers</li>
       <li>Access controls limiting who can view user data internally</li>
     </ul>
     <p>

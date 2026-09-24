@@ -6,7 +6,7 @@ import { logEscrowEvent } from './EscrowServiceShared.js';
 import type { FundEscrowParams } from './EscrowServiceShared.js';
 
 export const fundEscrow = async (params: FundEscrowParams): Promise<ServiceResult<Escrow>> => {
-    const { escrowId, stripePaymentIntentId } = params;
+    const { escrowId, providerPaymentId } = params;
 
     try {
       const txResult = await db.transaction(async (query) => {
@@ -31,15 +31,15 @@ export const fundEscrow = async (params: FundEscrowParams): Promise<ServiceResul
         // so two concurrent fund() calls for different escrows with the same PI cannot
         // both pass this check before either commits.
         const piConflictResult = await query<{ id: string }>(
-          `SELECT id FROM escrows WHERE stripe_payment_intent_id = $1 AND id != $2`,
-          [stripePaymentIntentId, escrowId]
+          `SELECT id FROM escrows WHERE provider_payment_id = $1 AND id != $2`,
+          [providerPaymentId, escrowId]
         );
         if (piConflictResult.rows.length > 0) {
           return {
             success: false,
             error: {
               code: ErrorCodes.INVALID_STATE,
-              message: `Payment intent ${stripePaymentIntentId} is already linked to a different escrow`,
+              message: `Payment intent ${providerPaymentId} is already linked to a different escrow`,
             },
           } as ServiceResult<Escrow>;
         }
@@ -59,7 +59,7 @@ export const fundEscrow = async (params: FundEscrowParams): Promise<ServiceResul
         const result = await query<Escrow>(
           `UPDATE escrows
            SET state = 'FUNDED',
-               stripe_payment_intent_id = $2,
+               provider_payment_id = $2,
                funded_at = NOW(),
                version = version + 1,
                updated_at = NOW()
@@ -67,7 +67,7 @@ export const fundEscrow = async (params: FundEscrowParams): Promise<ServiceResul
              AND state = 'PENDING'
              AND version = $3
            RETURNING *`,
-          [escrowId, stripePaymentIntentId, version]
+          [escrowId, providerPaymentId, version]
         );
 
         if (result.rowCount === 0) {

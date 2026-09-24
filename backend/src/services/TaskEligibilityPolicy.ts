@@ -61,7 +61,7 @@ export function taskEligibilityPredicates(
     `identity_verification_is_current_v1(${worker}.id, 'PRODUCTION')`,
     `NULLIF(BTRIM(${worker}.phone), '') IS NOT NULL`,
     `NOT (${worker}.trust_hold AND (${worker}.trust_hold_until IS NULL OR ${worker}.trust_hold_until > NOW()))`,
-    `${worker}.stripe_connect_id IS NOT NULL`,
+    'FALSE /* Individual live-worker payout lane is unavailable in Stage 1. */',
     `${worker}.payouts_enabled = TRUE`,
     `${task}.automation_classification = 'PRODUCTION'`,
     `${profile}.trust_tier = ${worker}.trust_tier`,
@@ -84,7 +84,6 @@ export function taskEligibilityPredicates(
     )`,
     `(
       ${task}.risk_level <> 'HIGH'
-      OR ${worker}.plan = 'pro'
       OR EXISTS (
         SELECT 1 FROM plan_entitlements entitlement
         WHERE entitlement.user_id = ${worker}.id
@@ -116,6 +115,8 @@ export function taskEligibilityPredicates(
         SELECT 1 FROM background_checks screening
         WHERE screening.user_id = ${worker}.id
           AND upper(screening.status) = 'CLEAR'
+          AND screening.provider_environment = 'PRODUCTION'
+          AND screening.is_test IS FALSE
           AND (screening.expires_at IS NULL OR screening.expires_at > NOW())
       )
     )`,
@@ -284,7 +285,7 @@ export async function assertTaskMutationEligibility(
                AND (counter_offer.status='APPROVED_REAUTH_REQUIRED'
                  OR (counter_offer.worker_id=mutation_worker.id AND counter_offer.status='PENDING_POSTER'))
           )
-          AND (t.risk_level<>'HIGH' OR mutation_worker.plan='pro' OR EXISTS (
+          AND (t.risk_level<>'HIGH' OR EXISTS (
             SELECT 1 FROM plan_entitlements entitlement
              WHERE entitlement.user_id=mutation_worker.id
                AND (entitlement.task_id IS NULL OR entitlement.task_id=t.id)

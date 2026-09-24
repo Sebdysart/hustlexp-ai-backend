@@ -1,6 +1,7 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { checkRateLimit } from '../cache/redis.js';
+import { enforceProcedureRateLimit } from '../middleware/rateLimitPolicy.js';
 import { logger } from '../logger.js';
 
 const log = logger.child({ router: 'task' });
@@ -12,10 +13,11 @@ export const approvedProofMediaUrl = z.string().max(
 async function enforceRateLimit(userId: string, lane: string, limit: number, message: string): Promise<void> {
   try {
     const result = await checkRateLimit(userId, lane, limit, 60);
-    if (!result.allowed) throw new TRPCError({ code: 'TOO_MANY_REQUESTS', message });
+    enforceProcedureRateLimit(result, `${userId}:${lane}`, limit, 60, false, message);
   } catch (error) {
     if (error instanceof TRPCError) throw error;
-    log.warn({ err: error, userId, lane }, 'Redis unavailable for task rate limit; allowing request');
+    log.warn({ err: error, lane }, 'Task rate limit check failed');
+    throw error;
   }
 }
 

@@ -1,3 +1,5 @@
+> Archived source-dated implementation evidence. Retired processor names and commands below are historical only; they do not describe supported runtime or executable launch procedures.
+
 # EPIC-03 — Kill switch evidence (production freeze)
 
 **As of:** 2026-07-31T08:48:50Z  

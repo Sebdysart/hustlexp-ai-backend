@@ -79,8 +79,7 @@ async function enableControlledTestPayout(
   params: ReserveTaskParams,
 ): Promise<void> {
   if (params.serviceBusiness || task.automation_classification !== 'CONTROLLED_TEST') return;
-  const destinationMissing = !worker.stripe_connect_id || !worker.payouts_enabled;
-  if (localCertificationPayoutEnabled() && worker.local_test_payout_ready && destinationMissing) {
+  if (localCertificationPayoutEnabled() && worker.local_test_payout_ready) {
     await query(`SELECT set_config('hustlexp.local_test_payout_enabled', 'true', true)`);
   }
 }

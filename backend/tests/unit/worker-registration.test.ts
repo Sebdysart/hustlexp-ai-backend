@@ -4,10 +4,10 @@ const mocks = vi.hoisted(() => ({
   query: vi.fn(),
   createWorker: vi.fn(),
   notification: vi.fn(),
+  notificationRequest: vi.fn(),
   email: vi.fn(),
   biometric: vi.fn(),
   expertise: vi.fn(),
-  xpTax: vi.fn(),
   pushJob: vi.fn(),
   smsJob: vi.fn(),
   instantNotification: vi.fn(),
@@ -15,19 +15,19 @@ const mocks = vi.hoisted(() => ({
   escrowAction: vi.fn(),
   pendingPaymentCancel: vi.fn(),
   completionRelease: vi.fn(),
-  stripeEvent: vi.fn(),
   instantMatching: vi.fn(),
   instantSurge: vi.fn(),
-  payment: vi.fn(),
   trust: vi.fn(),
   fraud: vi.fn(),
   maintenance: vi.fn(),
-  tax: vi.fn(),
+  ack: vi.fn(),
   info: vi.fn(),
   error: vi.fn(),
 }));
 
 vi.mock('../../src/db', () => ({ db: { query: mocks.query } }));
+vi.mock('../../src/jobs/outbox-worker', () => ({markOutboxEventProcessed: mocks.ack}));
+vi.mock('../../src/services/NotificationRequestService.js', () => ({processNotificationRequest:mocks.notificationRequest}));
 vi.mock('../../src/logger', () => ({ workerLogger: { info: mocks.info, error: mocks.error } }));
 vi.mock('../../src/services/NotificationService', () => ({
   NotificationService: { createNotification: mocks.notification },
@@ -37,7 +37,6 @@ vi.mock('../../src/jobs/email-worker', () => ({ processEmailJob: mocks.email }))
 vi.mock('../../src/jobs/biometric-analyzer-worker', () => ({ processBiometricAnalysisJob: mocks.biometric }));
 vi.mock('../../src/jobs/expertise-recalc-worker', () => ({ processExpertiseRecalcJob: mocks.expertise }));
 vi.mock('../../src/jobs/export-worker', () => ({ processExportJob: vi.fn() }));
-vi.mock('../../src/jobs/xp-tax-reminder-worker', () => ({ processXPTaxReminderJob: mocks.xpTax }));
 vi.mock('../../src/jobs/push-worker', () => ({ processPushJob: mocks.pushJob }));
 vi.mock('../../src/jobs/sms-worker', () => ({ processSMSJob: mocks.smsJob }));
 vi.mock('../../src/jobs/instant-notification-worker', () => ({ processInstantNotificationJob: mocks.instantNotification }));
@@ -47,15 +46,11 @@ vi.mock('../../src/jobs/dispatch-expiry-payment-cancel-worker', () => ({
   processDispatchExpiryPaymentCancelJob: mocks.pendingPaymentCancel,
 }));
 vi.mock('../../src/jobs/completion-release-worker', () => ({ processCompletionReleaseJob: mocks.completionRelease }));
-vi.mock('../../src/jobs/stripe-event-worker', () => ({ processStripeEventJob: mocks.stripeEvent }));
-vi.mock('../../src/jobs/stripe-event-dispatcher', () => ({ processStripeEventDispatchJob: mocks.stripeEvent }));
 vi.mock('../../src/jobs/instant-matching-worker', () => ({ processInstantMatchingJob: mocks.instantMatching }));
 vi.mock('../../src/jobs/instant-surge-worker', () => ({ processInstantSurgeJob: mocks.instantSurge }));
-vi.mock('../../src/jobs/payment-worker', () => ({ processPaymentJob: mocks.payment }));
 vi.mock('../../src/jobs/trust-worker', () => ({ processTrustJob: mocks.trust }));
 vi.mock('../../src/jobs/fraud-detection-worker', () => ({ processFraudDetectionJob: mocks.fraud }));
 vi.mock('../../src/jobs/maintenance-worker', () => ({ processMaintenanceJob: mocks.maintenance }));
-vi.mock('../../src/jobs/tax-reporting-worker', () => ({ processTaxReportingJob: mocks.tax }));
 
 import type { Job, Worker } from 'bullmq';
 import { registerWorkers } from '../../src/jobs/worker-registration';
@@ -74,7 +69,7 @@ function registeredHandlers(): Map<string, Handler> {
   });
   const active: Worker[] = [];
   registerWorkers(active);
-  expect(active).toHaveLength(9);
+  expect(active).toHaveLength(7);
   return handlers;
 }
 
@@ -90,6 +85,7 @@ describe('worker registration executable routing', () => {
     mocks.query.mockResolvedValue({ rows: [{ poster_id: 'poster-1' }], rowCount: 1 });
 
     await handler(job('email.send_requested'));
+    await handler(job('notification.create_requested'));
     await handler(job('push.send_requested'));
     await handler(job('sms.send_requested'));
     await handler(job('task.instant_available'));
@@ -103,6 +99,7 @@ describe('worker registration executable routing', () => {
     await handler(job('unimplemented'));
 
     expect(mocks.email).toHaveBeenCalledTimes(2);
+    expect(mocks.notificationRequest).toHaveBeenCalledOnce();
     expect(mocks.pushJob).toHaveBeenCalledTimes(2);
     expect(mocks.smsJob).toHaveBeenCalledTimes(2);
     expect(mocks.instantNotification).toHaveBeenCalledOnce();
@@ -133,18 +130,14 @@ describe('worker registration executable routing', () => {
       financial_action: 'cancel_pending_payment_intent',
     }));
     await handler(job('escrow.completion_release_requested'));
-    await handler(job('stripe.event_received'));
     await handler(job('task.instant_matching_started'));
     await handler(job('task.instant_surge_evaluate'));
-    await handler(job('payment.capture_requested'));
 
     expect(mocks.escrowAction).toHaveBeenCalledTimes(3);
     expect(mocks.pendingPaymentCancel).toHaveBeenCalledOnce();
     expect(mocks.completionRelease).toHaveBeenCalledOnce();
-    expect(mocks.stripeEvent).toHaveBeenCalledOnce();
     expect(mocks.instantMatching).toHaveBeenCalledOnce();
     expect(mocks.instantSurge).toHaveBeenCalledOnce();
-    expect(mocks.payment).toHaveBeenCalledOnce();
     await expect(handler(job('unknown.money'))).rejects.toThrow('Unknown event type');
     expect(mocks.error).toHaveBeenCalled();
   });
@@ -160,11 +153,32 @@ describe('worker registration executable routing', () => {
     expect(mocks.error).toHaveBeenCalled();
   });
 
-  it('executes the dynamically registered maintenance and tax handlers', async () => {
+  it('acknowledges successful simple notifications and trust events only after handling', async () => {
+    const handlers = registeredHandlers();
+    for (const [queue, name] of [['user_notifications', 'task.progress_updated'], ['critical_trust', 'trust.dispute_resolved.worker']]) {
+      const event = job(name);
+      event.data.outbox_idempotency_key = `key:${name}`;
+      await handlers.get(queue)!(event);
+      expect(mocks.ack).toHaveBeenCalledWith(`key:${name}`);
+    }
+    const email = job('email.send_requested');
+    email.data.outbox_idempotency_key = 'email:deferred';
+    await handlers.get('user_notifications')!(email);
+    expect(mocks.ack).not.toHaveBeenCalledWith('email:deferred');
+  });
+
+  it('leaves unsuccessful events recoverable', async () => {
+    const handler = registeredHandlers().get('critical_trust')!;
+    mocks.trust.mockRejectedValueOnce(new Error('retry'));
+    const event = job('trust.dispute_resolved.worker');
+    event.data.outbox_idempotency_key = 'retry-key';
+    await expect(handler(event)).rejects.toThrow('retry');
+    expect(mocks.ack).not.toHaveBeenCalled();
+  });
+
+  it('executes the dynamically registered maintenance handler', async () => {
     const handlers = registeredHandlers();
     await handlers.get('maintenance')!(job('dispatch.expire_unfilled'));
-    await handlers.get('tax_reporting')!(job('tax.annual_filing_requested'));
     expect(mocks.maintenance).toHaveBeenCalledOnce();
-    expect(mocks.tax).toHaveBeenCalledOnce();
   });
 });

@@ -59,10 +59,44 @@ function normalizeChecklist(checklist: string[]): string[] {
   return normalized;
 }
 
-function participantRole(task: ScopeTask, userId: string): 'POSTER' | 'HUSTLER' {
-  if (task.poster_id === userId) return 'POSTER';
-  if (task.worker_id === userId) return 'HUSTLER';
-  return fail('FORBIDDEN', 'Only task participants can access execution scope.');
+async function participantRole(
+  task: ScopeTask,
+  userId: string,
+): Promise<'POSTER' | 'HUSTLER'> {
+  if (task.poster_id === userId) {
+    return 'POSTER';
+  }
+
+  if (task.worker_id === userId) {
+    return 'HUSTLER';
+  }
+
+  if (task.business_fulfiller_organization_id) {
+    const membership = await db.query<{ id: string }>(
+      `
+      SELECT id
+      FROM business_memberships
+      WHERE organization_id = $1
+        AND user_id = $2
+        AND status = 'ACTIVE'
+        AND role = 'OWNER'
+      LIMIT 1
+      `,
+      [
+        task.business_fulfiller_organization_id,
+        userId,
+      ],
+    );
+
+    if (membership.rows[0]) {
+      return 'HUSTLER';
+    }
+  }
+
+  return fail(
+    'FORBIDDEN',
+    'Only task participants can access execution scope.',
+  );
 }
 
 async function lockTask(query: Query, taskId: string): Promise<ScopeTask> {
@@ -96,13 +130,26 @@ async function activeVersion(query: Query, task: ScopeTask): Promise<ScopeVersio
 
 async function getForParticipant(taskId: string, userId: string) {
   const taskResult = await db.query<ScopeTask>(
-    `SELECT id, poster_id, worker_id, state, progress_state,
-            active_scope_version_id, scope_hash
-     FROM tasks WHERE id = $1`,
+    `
+    SELECT
+      id,
+      poster_id,
+      worker_id,
+      state,
+      progress_state,
+      active_scope_version_id,
+      scope_hash,
+      business_fulfiller_organization_id
+    FROM tasks
+    WHERE id = $1
+    `,
     [taskId],
   );
   const task = taskResult.rows[0] ?? fail('NOT_FOUND', 'Task not found.');
-  const role = participantRole(task, userId);
+  const role = await participantRole(
+    task,
+    userId,
+  );
   if (!task.active_scope_version_id) {
     return { role, legacy: true, version: null, checklist: [], pendingChange: null };
   }
@@ -165,7 +212,7 @@ async function proposeChange(params: {
     const version = await activeVersion(query, task);
     const activeProof = await query<{ id: string }>(
       `SELECT id FROM proofs
-       WHERE task_id = $1 AND state IN ('PENDING', 'SUBMITTED')
+       WHERE task_id = $1 AND rework_id IS NULL AND state IN ('PENDING', 'SUBMITTED')
        LIMIT 1 FOR UPDATE`,
       [params.taskId],
     );
@@ -218,7 +265,7 @@ async function reviewChange(params: {
 
     const activeProof = await query<{ id: string }>(
       `SELECT id FROM proofs
-       WHERE task_id = $1 AND state IN ('PENDING', 'SUBMITTED')
+       WHERE task_id = $1 AND rework_id IS NULL AND state IN ('PENDING', 'SUBMITTED')
        LIMIT 1 FOR UPDATE`,
       [params.taskId],
     );

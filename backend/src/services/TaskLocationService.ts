@@ -1,6 +1,7 @@
 import { db } from '../db.js';
 import { logger } from '../logger.js';
 import type { ServiceResult } from '../types.js';
+import { assertVerifiedProvider } from './BusinessWorkspacePolicy.js';
 import {
   decryptTaskLocation,
   encryptTaskLocation,
@@ -114,7 +115,7 @@ function assignmentReleaseDecision(
   return null;
 }
 
-function policyReleaseDecision(row: LocationReleaseRow): LocationReleaseDecision | null {
+function policyReleaseDecision(row: LocationReleaseRow, principal: 'worker' | 'business' = 'worker'): LocationReleaseDecision | null {
   if (row.escrow_state !== 'FUNDED') {
     return {
       kind: 'error',
@@ -129,7 +130,7 @@ function policyReleaseDecision(row: LocationReleaseRow): LocationReleaseDecision
       message: 'The exact-location access window closed at the task deadline.',
     };
   }
-  if (!trustPolicyAllowsRelease(row)) {
+  if (principal === 'worker' && !trustPolicyAllowsRelease(row)) {
     return {
       kind: 'error',
       code: 'TRUST_TIER_INSUFFICIENT',
@@ -188,6 +189,67 @@ function cryptoErrorResult(error: TaskLocationCryptoError): ServiceResult<never>
 }
 
 export const TaskLocationService = {
+  releaseToFulfillingBusiness: async (
+    params: { taskId: string; actorId: string },
+  ): Promise<ServiceResult<{ exactLocation: string; expiresAt: string | null }>> => {
+    try {
+      return await db.transaction(async (query): Promise<ServiceResult<{ exactLocation: string; expiresAt: string | null }>> => {
+        const taskResult = await query<LocationReleaseRow & {
+          orchestration_mode: string; business_fulfiller_organization_id: string | null;
+        }>(
+          `SELECT t.worker_id, t.state AS task_state, t.deadline, t.orchestration_mode,
+             t.business_fulfiller_organization_id, v.*,
+             (SELECT e.state FROM escrows e WHERE e.task_id = t.id ORDER BY e.created_at DESC LIMIT 1) AS escrow_state
+           FROM tasks t LEFT JOIN task_location_vault v ON v.task_id = t.id
+           WHERE t.id = $1 FOR UPDATE OF t`, [params.taskId],
+        );
+        const row = taskResult.rows[0];
+        if (!row?.business_fulfiller_organization_id || row.orchestration_mode !== 'OPS_MANUAL' || row.worker_id) {
+          return { success: false, error: { code: 'FORBIDDEN', message: 'Service address is unavailable for this account.' } };
+        }
+        // Same fulfilling-organization membership as task.getById. Lock current
+        // membership/user/org while authorizing and auditing this sensitive read.
+        const membership = await query(
+          `SELECT m.id FROM business_memberships m JOIN users u ON u.id = m.user_id
+           WHERE m.organization_id = $1 AND m.user_id = $2 AND m.status = 'ACTIVE'
+             AND u.account_status = 'ACTIVE' AND NOT u.is_banned AND NOT COALESCE(u.trust_hold, false)
+           FOR SHARE OF m, u`, [row.business_fulfiller_organization_id, params.actorId],
+        );
+        if (!membership.rows[0]) return { success: false, error: { code: 'FORBIDDEN', message: 'Service address is unavailable for this account.' } };
+        const org = await query<{ status: string; verification_status: string; provider_enabled: boolean }>(
+          'SELECT status, verification_status, provider_enabled FROM business_organizations WHERE id = $1 FOR SHARE',
+          [row.business_fulfiller_organization_id],
+        );
+        try {
+          if (!org.rows[0]) throw new Error('Unavailable business');
+          assertVerifiedProvider({ status: org.rows[0].status, verificationStatus: org.rows[0].verification_status, providerEnabled: org.rows[0].provider_enabled });
+        } catch {
+          return { success: false, error: { code: 'LOCATION_NOT_RELEASED', message: 'Service address is not yet available.' } };
+        }
+        if (row.expired_at || ['COMPLETED', 'CANCELLED', 'EXPIRED'].includes(row.task_state)) {
+          return { success: false, error: { code: 'EXACT_LOCATION_EXPIRED', message: 'Service address access has ended.' } };
+        }
+        if (row.task_state !== 'ACCEPTED') return { success: false, error: { code: 'LOCATION_NOT_RELEASED', message: 'Service address is not yet available.' } };
+        // Organization execution eligibility replaces individual hustler tiers;
+        // funding, deadline, vault expiration and encrypted material stay shared.
+        const denied = policyReleaseDecision(row, 'business') ?? materialReleaseDecision(row);
+        if (denied?.kind === 'error') return { success: false, error: { code: denied.code, message: denied.message } };
+        const exactLocation = decryptTaskLocation(params.taskId, row);
+        await query(`UPDATE task_location_vault SET released_at = COALESCE(released_at, NOW()),
+          released_to = COALESCE(released_to, $2) WHERE task_id = $1`, [params.taskId, params.actorId]);
+        // worker_id is the existing access-log user FK; record the actual member
+        // and the fulfilling organization in the existing reason field.
+        await query(`INSERT INTO task_location_access_log (task_id, worker_id, access_reason, location_key_id)
+          VALUES ($1, $2, $3, $4)`, [params.taskId, params.actorId,
+          `fulfilling_business:${row.business_fulfiller_organization_id}`, row.location_key_id]);
+        return { success: true, data: { exactLocation, expiresAt: row.deadline ? new Date(row.deadline).toISOString() : null } };
+      });
+    } catch (error) {
+      if (error instanceof TaskLocationCryptoError) return cryptoErrorResult(error);
+      log.error({ taskId: params.taskId, actorId: params.actorId }, 'Business service address release failed');
+      return { success: false, error: { code: 'DB_ERROR', message: 'Could not load the service address. Please retry.' } };
+    }
+  },
   setByPoster: async (
     params: SetLocationParams
   ): Promise<ServiceResult<{ stored: true; idempotencyReplayed: boolean }>> => {

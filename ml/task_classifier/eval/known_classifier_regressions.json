@@ -1,0 +1,34 @@
+{
+  "name": "HustleXP known classifier regressions from prior validation",
+  "note": "Development/regression cases, not blind. No exact frontend-only failure inputs were recoverable from conversation history.",
+  "cases": [
+    {
+      "raw": "Clean three rooms upstairs and bring your own supplies.",
+      "expectedCategory": "cleaning",
+      "observedCategory": null,
+      "source": "fresh validation150",
+      "status": "known miss"
+    },
+    {
+      "raw": "Pick up a dresser and carry it upstairs.",
+      "expectedCategory": "moving",
+      "observedCategory": "moving",
+      "source": "fresh validation150",
+      "status": "resolved: in-property carry without courier destination is moving"
+    },
+    {
+      "raw": "Repair the broken garden gate.",
+      "expectedCategory": "handyman",
+      "observedCategory": null,
+      "source": "fresh validation150",
+      "status": "known miss"
+    },
+    {
+      "raw": "Anniversary dinner for 18 people.",
+      "expectedCategory": "events",
+      "observedCategory": null,
+      "source": "fresh validation150",
+      "status": "known miss"
+    }
+  ]
+}

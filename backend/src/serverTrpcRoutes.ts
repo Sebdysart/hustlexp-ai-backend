@@ -1,6 +1,7 @@
 import { trpcServer } from '@hono/trpc-server';
 import type { Context } from 'hono';
 import { checkRateLimit } from './cache/redis.js';
+import { applyRateLimitPolicy, sensitiveRateLimitPath } from './middleware/rateLimitPolicy.js';
 import { appRouter } from './routers/index.js';
 import type { HustleApp } from './serverTypes.js';
 import { createContext } from './trpc.js';
@@ -21,8 +22,10 @@ function trustedClientIp(context: Context): string {
 async function consumeBatchTokens(context: Context, operationCount: number) {
   const identifier = `ip:${trustedClientIp(context)}`;
   for (let index = 1; index < operationCount; index += 1) {
-    const result = await checkRateLimit(identifier, 'general', 120, 60);
-    if (!result.allowed) {
+    const result = applyRateLimitPolicy(await checkRateLimit(identifier, 'general', 120, 60),
+      `${identifier}:general`, 120, 60, sensitiveRateLimitPath(context.req.path));
+    if (result.status === 'unavailable') return context.json({ error: 'Service Unavailable', message: 'Rate limiting temporarily unavailable' }, 503);
+    if (result.status === 'limited') {
       context.header('Retry-After', '60');
       return context.json({
         error: 'Too Many Requests',
@@ -38,6 +41,9 @@ export function registerTrpcRoutes(app: HustleApp): void {
   app.use('/trpc/*', async (context, next) => {
     const trpcPath = context.req.path.replace(/^\/trpc\//, '');
     const operationCount = trpcPath.split(',').length;
+    if (trpcPath.split(',').includes('task.getBusinessServiceAddress')) {
+      context.header('Cache-Control', 'private, no-store');
+    }
     if (operationCount > TRPC_MAX_BATCH_SIZE) {
       return context.json({
         error: 'Batch Too Large',

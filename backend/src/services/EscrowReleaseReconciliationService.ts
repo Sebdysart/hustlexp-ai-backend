@@ -14,14 +14,13 @@ import type { ServiceResult } from '../types.js';
 import { EarnedVerificationUnlockService } from './EarnedVerificationUnlockService.js';
 import { SelfInsurancePoolService } from './SelfInsurancePoolService.js';
 import { TaskProgressService } from './TaskProgressService.js';
-import { XPTaxService } from './XPTaxService.js';
 import { XPService } from './XPService.js';
 
 const log = logger.child({ service: 'EscrowReleaseReconciliationService' });
 
 interface ReconcileReleaseParams {
   escrowId: string;
-  expectedStripeTransferId?: string | null;
+  expectedProviderTransferId?: string | null;
   fromState?: string;
 }
 
@@ -42,11 +41,14 @@ type ReleasedEscrowRow = {
   state: string;
   amount: number;
   platform_fee_cents: number | null;
-  stripe_transfer_id: string | null;
+  provider_transfer_id: string | null;
   worker_id: string | null;
   business_fulfiller_organization_id: string | null;
   orchestration_mode: string | null;
   payment_method: string | null;
+  payout_provider: string | null;
+  platform_margin_cents: number | null;
+  hustler_payout_cents: number | null;
 };
 
 function failure(code: string, message: string): ServiceResult<ReconciledRelease> {
@@ -55,7 +57,7 @@ function failure(code: string, message: string): ServiceResult<ReconciledRelease
 
 export const EscrowReleaseReconciliationService = {
   reconcile: async (params: ReconcileReleaseParams): Promise<ServiceResult<ReconciledRelease>> => {
-    const { escrowId, expectedStripeTransferId, fromState = 'RELEASE_RECONCILIATION' } = params;
+    const { escrowId, expectedProviderTransferId, fromState = 'RELEASE_RECONCILIATION' } = params;
 
     try {
     const rowResult = await db.query<ReleasedEscrowRow>(
@@ -65,11 +67,14 @@ export const EscrowReleaseReconciliationService = {
           e.state,
           e.amount,
           e.platform_fee_cents,
-          e.stripe_transfer_id,
+          e.provider_transfer_id,
+          e.payout_provider,
           t.worker_id,
           t.business_fulfiller_organization_id,
           t.orchestration_mode,
-          t.payment_method
+          t.payment_method,
+          t.platform_margin_cents,
+          t.hustler_payout_cents
       FROM escrows e
       JOIN tasks t ON t.id = e.task_id
       WHERE e.id = $1`,
@@ -85,10 +90,15 @@ export const EscrowReleaseReconciliationService = {
           `Escrow ${escrowId} is ${escrow.state}; release reconciliation requires RELEASED`,
         );
       }
-      const isManualBusiness =
-        escrow.orchestration_mode === 'OPS_MANUAL'
-        && Boolean(escrow.business_fulfiller_organization_id)
-        && !escrow.worker_id;
+      const internalOnly = escrow.payout_provider === 'TILLED';
+      const isManualBusiness = Boolean(escrow.business_fulfiller_organization_id)
+        && (internalOnly || (escrow.orchestration_mode === 'OPS_MANUAL' && !escrow.worker_id));
+      if (internalOnly && (!isManualBusiness || escrow.platform_margin_cents == null
+          || escrow.hustler_payout_cents == null
+          || escrow.amount - escrow.platform_margin_cents !== escrow.hustler_payout_cents
+          || (escrow.platform_fee_cents != null && escrow.platform_fee_cents !== escrow.platform_margin_cents))) {
+        return failure(ErrorCodes.INVALID_STATE, 'Tilled completion requires consistent frozen task economics');
+      }
 
       if (!escrow.worker_id && !isManualBusiness) {
         return failure(
@@ -97,21 +107,23 @@ export const EscrowReleaseReconciliationService = {
         );
       }
       if (
-        expectedStripeTransferId !== undefined
-        && expectedStripeTransferId !== null
-        && escrow.stripe_transfer_id !== expectedStripeTransferId
+        expectedProviderTransferId !== undefined
+        && expectedProviderTransferId !== null
+        && escrow.provider_transfer_id !== expectedProviderTransferId
       ) {
         return failure(
           ErrorCodes.CONFLICT,
-          `Escrow ${escrowId} transfer ${String(escrow.stripe_transfer_id)} does not match ${expectedStripeTransferId}`,
+          `Escrow ${escrowId} transfer ${String(escrow.provider_transfer_id)} does not match ${expectedProviderTransferId}`,
         );
       }
 
       const breakdown = computeFeeBreakdown(
         escrow.amount,
-        config.stripe.platformFeePercent,
-        escrow.platform_fee_cents,
+        config.payments.platformFeePercent,
+        internalOnly ? escrow.platform_margin_cents : escrow.platform_fee_cents,
       );
+      const payoutCents = isManualBusiness
+        ? breakdown.netBeforeInsuranceCents : breakdown.netPayoutCents;
 
       await db.query(
         `INSERT INTO escrow_events (
@@ -121,12 +133,12 @@ export const EscrowReleaseReconciliationService = {
         [
           escrowId,
           fromState,
-          JSON.stringify({ reconciled: true, stripe_transfer_id: escrow.stripe_transfer_id }),
+          JSON.stringify({ reconciled: true, provider_transfer_id: escrow.provider_transfer_id }),
           `escrow.released:${escrowId}`,
         ],
       );
 
-      if (escrow.worker_id) {
+      if (escrow.worker_id && !internalOnly) {
         const insurance = await SelfInsurancePoolService.recordContribution(
           escrow.task_id,
           escrow.worker_id,
@@ -152,26 +164,6 @@ export const EscrowReleaseReconciliationService = {
             earnings.error.code,
             `Earnings reconciliation failed: ${earnings.error.message}`,
           );
-        }
-
-        if (
-          escrow.payment_method === 'offline_cash'
-          || escrow.payment_method === 'offline_venmo'
-          || escrow.payment_method === 'offline_cashapp'
-        ) {
-          const tax = await XPTaxService.recordOfflinePayment(
-            escrow.worker_id,
-            escrow.task_id,
-            escrow.payment_method,
-            escrow.amount,
-          );
-
-          if (!tax.success) {
-            return failure(
-              tax.error.code,
-              `Offline-tax reconciliation failed: ${tax.error.message}`,
-            );
-          }
         }
 
         const xp = await XPService.awardXP({
@@ -210,10 +202,10 @@ export const EscrowReleaseReconciliationService = {
         grossAmountCents: escrow.amount,
         platformFeeCents: breakdown.platformFeeCents,
         insuranceContributionCents:
-          escrow.worker_id
+          escrow.worker_id && !internalOnly
             ? breakdown.insuranceContributionCents
             : 0,
-        netPayoutCents: breakdown.netPayoutCents,
+        netPayoutCents: payoutCents,
       };
       log.info(data, 'Escrow release witnesses reconciled');
       return { success: true, data };

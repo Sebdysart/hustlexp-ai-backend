@@ -78,8 +78,9 @@ export const HustlerIdentityLinkService = {
           return { success: false, error: { code: 'IDENTITY_CONFLICT', message: 'Roster identity is already linked' } };
         }
 
+        // A roster claim is contact evidence, not Firebase authentication proof.
         await query(
-          `UPDATE users SET phone = $1, updated_at = NOW() WHERE id = $2`,
+          `UPDATE users SET contact_phone = $1, updated_at = NOW() WHERE id = $2`,
           [input.phoneE164, input.engineHustlerRef],
         );
         await query(

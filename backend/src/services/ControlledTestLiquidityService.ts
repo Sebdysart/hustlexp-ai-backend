@@ -162,7 +162,7 @@ export function controlledTestLiquidityEnabled(env: Environment = process.env): 
   return env.NODE_ENV !== 'production'
     && env.HXOS_ALLOW_LOCAL_TEST_LIQUIDITY === 'true'
     && env.ENGINE_API_MODE === 'test'
-    && env.STRIPE_MODE === 'test'
+
     && secret(env).length >= 32;
 }
 
@@ -216,7 +216,7 @@ function providerEligible(task: TaskRow, worker: WorkerRow, at: Date): boolean {
     && task.risk_level !== 'IN_HOME'
     && worker.risk_clearance.includes(task.risk_level.toLowerCase())
     && task.price <= trustPriceAuthority(worker.trust_tier)
-    && (task.risk_level !== 'HIGH' || worker.plan === 'pro' || worker.high_entitlement === true)
+    && (task.risk_level !== 'HIGH' || worker.high_entitlement === true)
     && (!task.license_required || worker.license_ready === true)
     && (!task.insurance_required || worker.insurance_ready === true)
     && worker.background_check_valid === true

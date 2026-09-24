@@ -18,7 +18,6 @@ const enabled = {
   NODE_ENV: 'test',
   HXOS_ALLOW_LOCAL_TEST_PAYMENT: 'true',
   ENGINE_API_MODE: 'test',
-  STRIPE_MODE: 'test',
   HXOS_LOCAL_TEST_PAYMENT_SECRET: 'local-payment-secret-is-at-least-thirty-two-chars',
 };
 
@@ -38,9 +37,20 @@ describe('local certification payment provider', () => {
       { NODE_ENV: 'production' },
       { HXOS_ALLOW_LOCAL_TEST_PAYMENT: 'false' },
       { ENGINE_API_MODE: 'live' },
-      { STRIPE_MODE: 'live' },
       { HXOS_LOCAL_TEST_PAYMENT_SECRET: 'weak' },
     ]) expect(localCertificationPaymentEnabled({ ...enabled, ...override })).toBe(false);
+  });
+
+  it('keeps the canonical production override conditional on every existing task-payment gate', () => {
+    const production = { ...enabled, NODE_ENV: 'production', HXOS_ALLOW_LOCAL_TEST_PAYMENT_IN_PRODUCTION: 'true' };
+    expect(localCertificationPaymentEnabled(production)).toBe(true);
+    expect(localCertificationPaymentEnabled({ ...production, HXOS_ALLOW_LOCAL_TEST_PAYMENT_IN_PRODUCTION: 'false' })).toBe(false);
+    expect(localCertificationPaymentEnabled({ ...enabled, NODE_ENV: 'production' })).toBe(false);
+    for (const invalid of [
+      { HXOS_ALLOW_LOCAL_TEST_PAYMENT: 'false' },
+      { ENGINE_API_MODE: 'live' },
+      { HXOS_LOCAL_TEST_PAYMENT_SECRET: 'weak' },
+    ]) expect(localCertificationPaymentEnabled({ ...production, ...invalid })).toBe(false);
   });
 
   it('creates a deterministic TEST intent and reuses only equivalent state', async () => {

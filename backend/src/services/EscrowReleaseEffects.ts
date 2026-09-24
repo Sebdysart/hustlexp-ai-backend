@@ -5,7 +5,6 @@ import { SelfInsurancePoolService } from './SelfInsurancePoolService.js';
 import { logEscrowEvent } from './EscrowServiceShared.js';
 import type { ReleasePost } from './EscrowReleaseTypes.js';
 import { XPService } from './XPService.js';
-import { XPTaxService } from './XPTaxService.js';
 
 async function recordReleaseEvent(
   escrowId: string,
@@ -22,7 +21,7 @@ async function recordReleaseEvent(
       payout_recipient_user_id:post.payoutRecipientUserId,
       provider_transfer_id:post.providerTransferId,
       provider_transfer_status:post.payoutProvider==='LOCAL_CERTIFICATION_TEST'
-        ? 'paid' : post.payoutProvider==='STRIPE' ? 'submitted' : 'manual_reconciliation',
+        ? 'paid' : post.payoutProvider==='TILLED' ? 'not_applicable' : 'manual_reconciliation',
     },
     `escrow.released:${escrowId}`,
   );
@@ -67,7 +66,7 @@ async function recordInsurance(
   escrowId: string,
   post: ReleasePost,
 ): Promise<void> {
-  if (!post.workerId) return;
+  if (!post.workerId || post.payoutProvider === 'TILLED') return;
 
   try {
     await SelfInsurancePoolService.recordContribution(
@@ -91,7 +90,7 @@ async function recordEarnings(
   post: ReleasePost,
   escrowId: string,
 ): Promise<void> {
-  if (!post.workerId) return;
+  if (!post.workerId || post.payoutProvider === 'TILLED') return;
   if (post.serviceBusinessProvider) return;
 
   await EarnedVerificationUnlockService.recordEarnings(
@@ -102,34 +101,11 @@ async function recordEarnings(
   );
 }
 
-async function recordOfflineTax(
-  post: ReleasePost,
-): Promise<void> {
-  if (!post.workerId) return;
-
-  if (
-    !['offline_cash', 'offline_venmo', 'offline_cashapp']
-      .includes(post.paymentMethod)
-  ) {
-    return;
-  }
-
-  await XPTaxService.recordOfflinePayment(
-    post.workerId,
-    post.taskId,
-    post.paymentMethod as
-      | 'offline_cash'
-      | 'offline_venmo'
-      | 'offline_cashapp',
-    post.grossPayoutCents,
-  );
-}
-
 async function awardXp(
   post: ReleasePost,
   escrowId: string,
 ): Promise<void> {
-  if (!post.workerId) return;
+  if (!post.workerId || post.payoutProvider === 'TILLED') return;
 
   try {
     await XPService.awardXP({
@@ -163,7 +139,6 @@ export async function runReleaseEffects(input:{
   await recordPlatformFee(input.escrowId,input.post,input.adminOverride);
   await recordInsurance(input.escrowId,input.post);
   await recordEarnings(input.post,input.escrowId);
-  await recordOfflineTax(input.post);
   await awardXp(input.post,input.escrowId);
 }
 

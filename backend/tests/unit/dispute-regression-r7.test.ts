@@ -61,10 +61,6 @@ vi.mock('../../src/services/EarnedVerificationUnlockService', () => ({
   EarnedVerificationUnlockService: { recordEarnings: vi.fn().mockResolvedValue(undefined) },
 }));
 
-vi.mock('../../src/services/XPTaxService', () => ({
-  XPTaxService: { recordOfflinePayment: vi.fn().mockResolvedValue(undefined) },
-}));
-
 vi.mock('../../src/services/XPService', () => ({
   XPService: {
     awardXP: vi.fn().mockResolvedValue(undefined),
@@ -313,89 +309,5 @@ describe('Bug 3 — escrowOverride closes open dispute row', () => {
     const [sql, params] = disputeUpdateCall as [string, unknown[]];
     expect(sql).toContain("state = 'RESOLVED'");
     expect(params[0]).toBe('esc-1');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Bug 4: Chargeback LOST must NOT unfreeze payouts
-// ---------------------------------------------------------------------------
-
-describe('Bug 4 — Chargeback LOST path does not unfreeze payouts', () => {
-  /**
-   * These tests use source-level assertions against ChargebackService.ts.
-   * This is the most reliable approach: it avoids fragile mock-sequencing issues
-   * while still precisely verifying the structural invariant — that the
-   * payouts_locked = FALSE query is ONLY inside the WON branch, never the LOST branch.
-   */
-
-  it('WON branch retains payouts unlock logic (regression guard)', async () => {
-    const src = await import('fs').then(fs =>
-      fs.promises.readFile(
-        fileURLToPath(new URL('../../src/services/ChargebackService.ts', import.meta.url)),
-        'utf-8'
-      )
-    );
-
-    // Scope to the handleDisputeClosed function body to avoid false positives
-    // from handleDisputeCreated (which has `AND payouts_locked = FALSE` in a WHERE clause).
-    const closedFnStart = src.indexOf('handleDisputeClosed');
-    expect(closedFnStart).toBeGreaterThan(-1);
-    const closedFnSrc = src.slice(closedFnStart);
-
-    // The WON check must exist inside handleDisputeClosed
-    expect(closedFnSrc).toMatch(/status === 'won'/);
-
-    // The payouts unlock must exist inside handleDisputeClosed (SET payouts_locked = FALSE)
-    expect(closedFnSrc).toMatch(/SET payouts_locked = FALSE/);
-
-    // The unlock must appear AFTER the 'won' check in the scoped source
-    const wonIdx = closedFnSrc.indexOf("status === 'won'");
-    const unlockIdx = closedFnSrc.indexOf('SET payouts_locked = FALSE');
-    expect(wonIdx).toBeGreaterThan(-1);
-    expect(unlockIdx).toBeGreaterThan(-1);
-    expect(wonIdx).toBeLessThan(unlockIdx);
-  });
-
-  it('LOST branch does NOT contain payouts_locked = FALSE assignment', async () => {
-    const src = await import('fs').then(fs =>
-      fs.promises.readFile(
-        fileURLToPath(new URL('../../src/services/ChargebackService.ts', import.meta.url)),
-        'utf-8'
-      )
-    );
-
-    // Scope to handleDisputeClosed to avoid false positives from handleDisputeCreated.
-    const closedFnStart = src.indexOf('handleDisputeClosed');
-    const closedFnSrc = src.slice(closedFnStart);
-
-    // Find the LOST branch: the else block after the WON if-statement
-    const wonIdx = closedFnSrc.indexOf("status === 'won'");
-    const elseIdx = closedFnSrc.indexOf('} else {', wonIdx);
-    expect(elseIdx).toBeGreaterThan(wonIdx);
-
-    // Find the end of the else block using the shared '// 4. Mark dispute' marker
-    const finalUpdateIdx = closedFnSrc.indexOf('// 4. Mark dispute', elseIdx);
-    expect(finalUpdateIdx).toBeGreaterThan(elseIdx);
-
-    const lostBranchContent = closedFnSrc.slice(elseIdx, finalUpdateIdx);
-
-    // The LOST branch must NOT contain SET payouts_locked = FALSE (the unlock query)
-    expect(lostBranchContent).not.toContain('SET payouts_locked = FALSE');
-
-    // The LOST branch must still increment dispute_lost_count
-    expect(lostBranchContent).toContain('dispute_lost_count');
-  });
-
-  it('LOST branch contains explicit admin-review warning comment', async () => {
-    const src = await import('fs').then(fs =>
-      fs.promises.readFile(
-        fileURLToPath(new URL('../../src/services/ChargebackService.ts', import.meta.url)),
-        'utf-8'
-      )
-    );
-
-    // The Bug 4 fix must include an explanatory comment so future engineers
-    // understand why the LOST path intentionally does NOT unlock payouts.
-    expect(src).toMatch(/payouts remain frozen/i);
   });
 });

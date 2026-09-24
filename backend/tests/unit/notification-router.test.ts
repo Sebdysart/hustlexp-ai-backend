@@ -1,3 +1,4 @@
+import { db } from '../../src/db';
 /**
  * Notification Router Unit Tests — notification.getList offset-based pagination
  *
@@ -58,6 +59,16 @@ import { NotificationService } from '../../src/services/NotificationService';
 import { notificationRouter } from '../../src/routers/notification';
 
 const mockNotificationService = vi.mocked(NotificationService);
+
+it('projects canonical category/body despite web-column migration defaults', async () => {
+  mockNotificationService.getUserNotifications.mockResolvedValueOnce({ success: true, data: [
+    { ...makeNotification(), type: 'general', category: 'task_accepted', message: '', body: 'Your task was accepted.', deep_link: '/support' },
+    { ...makeNotification(), type: 'SUPPORT_OPS_REPLY', category: 'general', message: 'Support replied.', body: 'Legacy body', action_url: '/support' },
+  ] } as any);
+  const rows = await makeUserCaller().list({});
+  expect(rows[0]).toMatchObject({ type: 'task_accepted', message: 'Your task was accepted.' });
+  expect(rows[1]).toMatchObject({ type: 'SUPPORT_OPS_REPLY', message: 'Support replied.' });
+});
 
 // ---------------------------------------------------------------------------
 // Row type and helpers
@@ -278,5 +289,28 @@ describe('notification.getList — offset-based pagination (returns array)', () 
         makeUserCaller().getList({ limit: 20, offset: 0, unreadOnly: false })
       ).rejects.toThrow('Database connection lost');
     });
+  });
+});
+
+
+describe('notification.list web projection', () => {
+  beforeEach(() => vi.clearAllMocks());
+  const taskId = '10000000-0000-4000-8000-000000000001';
+  it('resolves task destinations from participant authority, not default mode', async () => {
+    mockNotificationService.getUserNotifications.mockResolvedValueOnce({ success: true, data: [
+      { ...makeNotification(), deep_link: `/tasks/${taskId}/proof` },
+    ] } as any);
+    vi.mocked(db.query).mockResolvedValueOnce({ rows: [{ id: taskId, poster_id: 'user-abc', worker_id: 'other', business_member: false }] } as any);
+    const result = await makeUserCaller().list({ limit: 20, unreadOnly: false });
+    expect(result[0].action_url).toBe(`/dashboard/tasks/${taskId}`);
+    expect(db.query).toHaveBeenCalledWith(expect.stringContaining("m.status = 'ACTIVE'"), [[taskId], 'user-abc']);
+  });
+  it('omits a legacy task action if the recipient is not a participant', async () => {
+    mockNotificationService.getUserNotifications.mockResolvedValueOnce({ success: true, data: [
+      { ...makeNotification(), deep_link: `/tasks/${taskId}` },
+    ] } as any);
+    vi.mocked(db.query).mockResolvedValueOnce({ rows: [{ id: taskId, poster_id: 'other', worker_id: 'another', business_member: false }] } as any);
+    const result = await makeUserCaller().list({ limit: 20, unreadOnly: false });
+    expect(result[0].action_url).toBeNull();
   });
 });

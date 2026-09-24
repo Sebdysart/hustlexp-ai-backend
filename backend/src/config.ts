@@ -26,14 +26,8 @@ export const config = {
     url: process.env.UPSTASH_REDIS_URL || process.env.REDIS_URL || '', // Direct TCP connection string
   },
 
-  // Payments (Stripe)
-  stripe: {
-    secretKey: process.env.STRIPE_SECRET_KEY || '',
-    // Platform-account events cover customer funding, refunds, disputes, and
-    // transfers. Connect events cover worker account and bank-payout state.
-    // Stripe assigns a distinct signing secret to each destination.
-    webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
-    connectWebhookSecret: process.env.STRIPE_CONNECT_WEBHOOK_SECRET || '',
+  // Provider-neutral task economics. Quote payments use persisted Tilled/local-test bindings.
+  payments: {
     // SECURITY FIX (v2.9.3): Clamp to [0, 100] at parse time. A negative or
     // non-numeric env var would silently pass through parseInt and could cause
     // the fee calculation to produce a negative value (overpaying the worker).
@@ -48,20 +42,6 @@ export const config = {
       const raw = parseInt(process.env.MIN_TASK_VALUE_CENTS || '1500', 10);
       return Number.isFinite(raw) ? Math.max(1500, raw) : 1500;
     })(), // Binding HustleXP specification: $15.00 global task minimum
-    plans: {
-      premium: {
-        monthlyPriceCents: 1499,
-        yearlyPriceCents: 14999,
-        priceIdMonthly: process.env.STRIPE_PREMIUM_MONTHLY_PRICE_ID || '',
-        priceIdYearly: process.env.STRIPE_PREMIUM_YEARLY_PRICE_ID || '',
-      },
-      pro: {
-        monthlyPriceCents: 2999,
-        yearlyPriceCents: 29999,
-        priceIdMonthly: process.env.STRIPE_PRO_MONTHLY_PRICE_ID || '',
-        priceIdYearly: process.env.STRIPE_PRO_YEARLY_PRICE_ID || '',
-      },
-    },
   },
 
   // Authentication (Firebase)
@@ -170,11 +150,7 @@ export const config = {
     maxUsers: 100,
     maxTasks: 200,
     maxGmvCents: 1_000_000, // $10,000
-    plans: {
-      free: { priceId: process.env.STRIPE_FREE_PRICE_ID || '', name: 'Free' },
-      premium: { priceId: process.env.STRIPE_PREMIUM_PRICE_ID || '', name: 'Premium' },
-      pro: { priceId: process.env.STRIPE_PRO_PRICE_ID || '', name: 'Pro' },
-    },
+
   },
 
   // Error Tracking (Sentry)
@@ -200,6 +176,9 @@ export const config = {
     // Generate with: openssl rand -hex 32
     encryptionKey: process.env.TAX_TIN_ENCRYPTION_KEY || '',
   },
+
+  launchRegionCode:
+    process.env.HX_LAUNCH_REGION_CODE?.trim().toUpperCase() || 'US-WA',
 
   // Job Queue Security
   // SECURITY: No hardcoded fallback. In production the validator enforces this is set.
@@ -233,63 +212,12 @@ function firebaseConfigurationErrors(): string[] {
   return errors;
 }
 
-function stripeSecretKeyErrors(): string[] {
-  if (!config.stripe.secretKey || config.stripe.secretKey.includes('placeholder')) {
-    return ['STRIPE_SECRET_KEY is required (not placeholder)'];
-  }
-  return [];
-}
-
-function stripeModeErrors(): string[] {
-  const stripeMode = process.env.STRIPE_MODE?.trim().toLowerCase();
-  if (stripeMode && stripeMode !== 'test' && stripeMode !== 'live') {
-    return ['STRIPE_MODE must be either test or live'];
-  }
-  if (stripeMode === 'test' && config.stripe.secretKey.startsWith('sk_live_')) {
-    return ['STRIPE_MODE=test cannot be used with a live Stripe secret key'];
-  }
-  if (stripeMode === 'live' && config.stripe.secretKey.startsWith('sk_test_')) {
-    return ['STRIPE_MODE=live cannot be used with a test Stripe secret key'];
-  }
-  return [];
-}
-
 function paymentCreationModeErrors(): string[] {
   const mode = process.env.HX_PAYMENT_CREATION_MODE?.trim().toLowerCase();
   if (mode && mode !== 'enabled' && mode !== 'frozen') {
     return ['HX_PAYMENT_CREATION_MODE must be either enabled or frozen'];
   }
   return [];
-}
-
-function stripeWebhookSecretErrors(name: string, value: string): string[] {
-  if (!value || value.includes('placeholder')) return [`${name} is required (not placeholder)`];
-  if (!value.startsWith('whsec_')) return [`${name} must be a Stripe webhook signing secret`];
-  return [];
-}
-
-function stripeWebhookConfigurationErrors(): string[] {
-  const webhookSecrets = [
-    ['STRIPE_WEBHOOK_SECRET', config.stripe.webhookSecret],
-    ['STRIPE_CONNECT_WEBHOOK_SECRET', config.stripe.connectWebhookSecret],
-  ] as const;
-  const errors = webhookSecrets.flatMap(([name, value]) => stripeWebhookSecretErrors(name, value));
-  if (
-    config.stripe.webhookSecret
-    && config.stripe.webhookSecret === config.stripe.connectWebhookSecret
-  ) {
-    errors.push('Stripe platform and Connect webhook secrets must be distinct');
-  }
-  return errors;
-}
-
-function stripeConfigurationErrors(): string[] {
-  return [
-    ...stripeSecretKeyErrors(),
-    ...stripeModeErrors(),
-    ...paymentCreationModeErrors(),
-    ...stripeWebhookConfigurationErrors(),
-  ];
 }
 
 function redisConfigurationErrors(): string[] {
@@ -363,7 +291,7 @@ function productionConfigurationErrors(): string[] {
   return [
     ...queueErrors,
     ...firebaseConfigurationErrors(),
-    ...stripeConfigurationErrors(),
+    ...paymentCreationModeErrors(),
     ...redisConfigurationErrors(),
     ...taxConfigurationErrors(),
     ...storageConfigurationErrors(),

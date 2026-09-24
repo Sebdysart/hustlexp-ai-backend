@@ -63,7 +63,7 @@ export function controlledTestDurationEvidenceEnabled(env: Environment = process
   return env.NODE_ENV !== 'production'
     && env.HXOS_ALLOW_LOCAL_TEST_DURATION_EVIDENCE === 'true'
     && env.ENGINE_API_MODE === 'test'
-    && env.STRIPE_MODE === 'test'
+
     && secret(env).length >= 32;
 }
 

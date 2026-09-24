@@ -13,11 +13,14 @@
 
 import { randomUUID } from 'crypto';
 import { db, isInvariantViolation, getErrorMessage } from '../db.js';
+import type { QueryFn } from '../db.js';
 import type { ServiceResult } from '../types.js';
 import { ErrorCodes } from '../types.js';
 import { logger } from '../logger.js';
 import { Redis } from '@upstash/redis';
 import { config } from '../config.js';
+import { businessNotificationDestinations } from './BusinessNotificationDestination.js';
+import { mobileVariantsForDestination } from './MobilePushRouting.js';
 import {
   applyNotificationPresentation,
   NOTIFICATION_POLICY,
@@ -100,6 +103,11 @@ export type NotificationPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 
 export interface Notification {
   id: string;
+  type?: string | null;
+  message?: string | null;
+  entity_type?: string | null;
+  entity_id?: string | null;
+  action_url?: string | null;
   user_id: string;
   category: string; // VARCHAR(50) - flexible category
   title: string; // VARCHAR(200)
@@ -179,6 +187,61 @@ export interface UpdatePreferencesParams {
   emailEnabled?: boolean;
   smsEnabled?: boolean;
   categoryPreferences?: Record<string, unknown>;
+}
+
+export interface CreateInAppNotificationInput {
+  userId: string;
+  type: string;
+  title: string;
+  message: string;
+  entityType?: string | null;
+  entityId?: string | null;
+  actionUrl?: string | null;
+  metadata?: Record<string, unknown>;
+  dedupeKey?: string | null;
+}
+
+async function getBusinessNotificationUserIds(
+  query: QueryFn,
+  organizationId: string,
+): Promise<string[]> {
+  const result = await query<{ user_id: string }>(
+    `
+    SELECT m.user_id
+    FROM business_memberships m JOIN users u ON u.id=m.user_id
+    WHERE m.organization_id = $1
+      AND m.status = 'ACTIVE'
+      AND u.account_status = 'ACTIVE'
+      AND NOT COALESCE(u.is_banned, false) AND NOT COALESCE(u.trust_hold, false)
+      AND business_membership_has_action(m.organization_id, m.user_id, 'READ_WORKSPACE')
+      AND m.role IN (
+        'OWNER',
+        'ADMIN',
+        'DISPATCHER',
+        'APPROVER',
+        'REQUESTER'
+      )
+    `,
+    [organizationId],
+  );
+
+  return result.rows.map((row) => row.user_id);
+}
+
+async function getOperationsNotificationUserIds(
+  query: QueryFn,
+): Promise<string[]> {
+  const result = await query<{ user_id: string }>(
+    `
+    SELECT DISTINCT a.user_id
+    FROM admin_roles a JOIN users u ON u.id=a.user_id
+    WHERE (a.role IN ('admin', 'founder') OR a.can_manage_operations = TRUE)
+      AND u.account_status = 'ACTIVE'
+      AND NOT COALESCE(u.is_banned, false) AND NOT COALESCE(u.trust_hold, false)
+    `,
+  );
+
+  return result.rows.map((row) => row.user_id);
 }
 
 // BUG 5 FIX: Categories that bypass the frequency cap entirely.
@@ -322,7 +385,192 @@ async function findMatchingReplay(
 // SERVICE
 // ============================================================================
 
+async function insertNotification(
+  query: QueryFn,
+  input: CreateInAppNotificationInput,
+): Promise<void> {
+  const eventKey =
+    input.dedupeKey ??
+    `${input.type}:${input.entityId ?? input.userId}`;
+  // The canonical schema also has a global dedupe-key index. Fan-out identity
+  // must include the recipient, including when several users share one event.
+  const dedupeKey = `in_app:${input.userId}:${eventKey}`;
+
+  const objectId =
+    input.entityId ?? 'general';
+
+  const preferences = await query<Pick<NotificationPreferences,
+    'push_enabled' | 'quiet_hours_enabled' | 'quiet_hours_start' | 'quiet_hours_end' |
+    'quiet_hours_timezone' | 'category_preferences'>>(
+      `SELECT push_enabled, quiet_hours_enabled, quiet_hours_start, quiet_hours_end,
+         quiet_hours_timezone, category_preferences
+       FROM notification_preferences WHERE user_id = $1`, [input.userId],
+    );
+  const preference = preferences.rows[0];
+  const pushEnabled = mobileVariantsForDestination(input.actionUrl).length > 0
+    && preference?.push_enabled !== false
+    && preference?.category_preferences?.[input.type]?.enabled !== false;
+  // Only a saved preference row opts this user into quiet-hour scheduling.
+  const quietHoursEnd = pushEnabled && preference && (preference.quiet_hours_enabled ?? true)
+    ? nextQuietHoursEnd(new Date(), preference?.quiet_hours_start ?? '22:00:00',
+      preference?.quiet_hours_end ?? '07:00:00', preference?.quiet_hours_timezone ?? 'America/Los_Angeles')
+    : null;
+  const pushAvailableAt = quietHoursEnd ?? new Date();
+  const inserted = await query<Notification>(
+    `
+    INSERT INTO notifications (
+      user_id,
+      type,
+      title,
+      message,
+      entity_type,
+      entity_id,
+      action_url,
+      metadata,
+      category,
+      body,
+      deep_link,
+      priority,
+      notification_class,
+      object_type,
+      object_id,
+      dedupe_key,
+      supersession_key,
+      channels,
+      available_at,
+      delivery_state
+    )
+    SELECT
+      $1::uuid,
+      $2::text,
+      $3::varchar,
+      $4::text,
+      $5::text,
+      $6::uuid,
+      $7::text,
+      $8::jsonb,
+      $9::varchar,
+      $10::text,
+      $11::text,
+      $12::varchar,
+      $13::text,
+      $14::text,
+      $15::text,
+      $16::text,
+      $17::text,
+      CASE WHEN $19::boolean THEN ARRAY['in_app','push']::text[] ELSE ARRAY['in_app']::text[] END,
+      $20::timestamptz,
+      CASE WHEN $21::boolean THEN 'deferred_quiet_hours' ELSE 'pending' END
+    WHERE NOT EXISTS (
+      SELECT 1 FROM notifications WHERE user_id = $1::uuid AND dedupe_key = $18::text
+    )
+    ON CONFLICT DO NOTHING
+    RETURNING *
+    `,
+    [
+      input.userId,
+      input.type,
+      input.title,
+      input.message,
+      input.entityType ?? null,
+      input.entityId ?? null,
+      input.actionUrl ?? null,
+      JSON.stringify(input.metadata ?? {}),
+      input.type,
+      input.message,
+      input.actionUrl ?? '/dashboard',
+      'MEDIUM',
+      'status',
+      input.entityType ?? 'notification',
+      objectId,
+      dedupeKey,
+      dedupeKey,
+      eventKey,
+      pushEnabled,
+      pushAvailableAt,
+      Boolean(quietHoursEnd),
+    ],
+  );
+  const notification = inserted.rows[0];
+  if (!notification) return;
+  await query(
+    `INSERT INTO notification_deliveries
+       (notification_id, channel, state, max_attempts, available_at, provider_accepted_at, delivered_at)
+     SELECT $1, channel, CASE WHEN channel = 'in_app' THEN 'delivered'
+       WHEN $3::boolean THEN 'deferred_quiet_hours' ELSE 'pending' END,
+       3, CASE WHEN channel = 'in_app' THEN NOW() ELSE $4::timestamptz END,
+       CASE WHEN channel = 'in_app' THEN NOW() END,
+       CASE WHEN channel = 'in_app' THEN NOW() END
+     FROM unnest($2::text[]) AS channel
+     ON CONFLICT (notification_id, channel) DO NOTHING`,
+    [notification.id, notification.channels, Boolean(quietHoursEnd), pushAvailableAt],
+  );
+  if (notification.channels.includes('push')) {
+    // Callers may be inside a task/payment transaction. An outbox write error
+    // must not roll back the canonical in-app notification or product change.
+    // PostgreSQL needs a savepoint to recover a transaction after SQL failure.
+    await query('SAVEPOINT hustlexp_mobile_push_queue');
+    try {
+      await queuePushNotification(notification, pushAvailableAt, query, true);
+      await query('RELEASE SAVEPOINT hustlexp_mobile_push_queue');
+    } catch {
+      await query('ROLLBACK TO SAVEPOINT hustlexp_mobile_push_queue');
+      await query('RELEASE SAVEPOINT hustlexp_mobile_push_queue');
+      await query(
+        `UPDATE notification_deliveries
+         SET state = 'retry_pending', next_retry_at = NOW() + INTERVAL '1 minute',
+             last_error = 'outbox_queue_failed', updated_at = NOW()
+         WHERE notification_id = $1 AND channel = 'push'`,
+        [notification.id],
+      );
+      log.warn({ notificationId: notification.id, category: 'outbox_queue_failed' },
+        'Mobile push queue failed; notification retained for recovery');
+    }
+  }
+}
+
 export const NotificationService = {
+  async create(input: CreateInAppNotificationInput): Promise<void> {
+    await db.transaction(async (query) => insertNotification(query, input));
+  },
+  async createInTransaction(query: QueryFn, input: CreateInAppNotificationInput): Promise<void> {
+    await insertNotification(query, input);
+  },
+  async createManyInTransaction(query: QueryFn, inputs: CreateInAppNotificationInput[]): Promise<void> {
+    for (const input of inputs) await NotificationService.createInTransaction(query, input);
+  },
+  async createForBusinessInTransaction(
+    query: QueryFn,
+    organizationId: string,
+    input: Omit<CreateInAppNotificationInput, 'userId'>,
+  ): Promise<void> {
+    const userIds = await getBusinessNotificationUserIds(query, organizationId);
+    if (input.entityId && (input.entityType === 'quote' || input.entityType === 'assessment')) {
+      const destinations = await businessNotificationDestinations(query,
+        [{ id: input.entityId, entityId: input.entityId, entityType: input.entityType }], { organizationId });
+      input = { ...input, actionUrl: destinations.get(input.entityId) ?? null };
+    }
+
+    for (const userId of userIds) {
+      await NotificationService.createInTransaction(query, {
+        ...input,
+        userId,
+      });
+    }
+  },
+  async createForOperationsInTransaction(
+    query: QueryFn,
+    input: Omit<CreateInAppNotificationInput, 'userId'>,
+  ): Promise<void> {
+    const userIds = await getOperationsNotificationUserIds(query);
+
+    for (const userId of userIds) {
+      await NotificationService.createInTransaction(query, {
+        ...input,
+        userId,
+      });
+    }
+  },
   // --------------------------------------------------------------------------
   // CREATE OPERATIONS
   // --------------------------------------------------------------------------
@@ -737,7 +985,12 @@ export const NotificationService = {
       const availableAt = new Date(notification.delivery_available_at);
       if (!Number.isFinite(availableAt.getTime())) throw new Error('Invalid delivery availability');
       if (channel === 'email') await queueEmailNotification(notification, availableAt);
-      else if (channel === 'push') await queuePushNotification(notification, availableAt);
+      else if (channel === 'push') {
+        // Direct in-app events use this stable key namespace and target Expo
+        // installations only. Keep that scope when recovering a failed write.
+        await queuePushNotification(notification, availableAt, db.query.bind(db),
+          notification.dedupe_key?.startsWith('in_app:') ?? false);
+      }
       else await queueSMSNotification(notification, availableAt);
 
       const deferred = availableAt.getTime() > Date.now();
@@ -799,7 +1052,7 @@ export const NotificationService = {
       // Filter expired notifications
       sql += ` AND (expires_at IS NULL OR expires_at > NOW())`;
       
-      sql += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+      sql += ` ORDER BY created_at DESC, id DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
       params.push(limit, offset);
       
       const result = await db.query<Notification>(sql, params);
@@ -1026,7 +1279,7 @@ export const NotificationService = {
           data: {
             id: '',
             user_id: userId,
-            quiet_hours_enabled: true,
+            quiet_hours_enabled: false,
             quiet_hours_start: '22:00:00',
             quiet_hours_end: '07:00:00',
             quiet_hours_timezone: 'America/Los_Angeles',
@@ -1703,13 +1956,14 @@ async function queueEmailNotification(notification: Notification, availableAt: D
  *
  * @param notification Notification to push
  */
-async function queuePushNotification(notification: Notification, availableAt: Date): Promise<void> {
+async function queuePushNotification(notification: Notification, availableAt: Date, query: QueryFn = db.query.bind(db), mobileOnly = false): Promise<void> {
   // Build data payload from notification metadata
   const data: Record<string, string> = {
     notificationId: notification.id,
     category: notification.category,
     deepLink: notification.deep_link,
   };
+  if (mobileOnly) data.mobileOnly = 'true';
 
   if (notification.task_id) {
     data.taskId = notification.task_id;
@@ -1728,7 +1982,7 @@ async function queuePushNotification(notification: Notification, availableAt: Da
   // A single atomic INSERT eliminates the racy SELECT+INSERT pattern: two concurrent
   // callers with the same idempotency_key will both attempt the INSERT but only one
   // will produce a row; the other gets rowCount === 0 and returns early.
-  const insertResult = await db.query(
+  const insertResult = await query(
     `INSERT INTO outbox_events (
       event_type, aggregate_type, aggregate_id, event_version,
       idempotency_key, payload, queue_name, status, available_at

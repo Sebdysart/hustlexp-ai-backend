@@ -40,6 +40,7 @@ describe('business workspace authenticated router', () => {
     await caller.createWorkspace({
       legalName: 'Eastside Property Services LLC',
       displayName: 'Eastside Property Services',
+      washingtonUbi: '123456789', federalEin: '987654321',
       providerEnabled: true,
       clientEnabled: true,
       idempotencyKey: 'workspace:eps:001',

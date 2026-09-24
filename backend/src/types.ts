@@ -20,8 +20,8 @@ export * from './types-errors.js';
 export interface User {
   id: string;
   firebase_uid?: string;
-  email: string;
-  phone?: string;
+  email: string | null;
+  phone?: string | null;
   full_name: string;
   bio?: string;
   avatar_url?: string;
@@ -58,8 +58,6 @@ export interface User {
   student_id_verified: boolean;
   is_banned?: boolean;
   is_admin?: boolean;
-  stripe_customer_id?: string;
-  stripe_connect_id?: string;
   plan: 'free' | 'premium' | 'pro';
   plan_subscribed_at?: Date;
   plan_expires_at?: Date;
@@ -117,6 +115,7 @@ export interface Task {
   instant_mode: boolean;
   surge_level?: number;
   deadline?: Date;
+  scheduled_service_date?: Date;
   matched_at?: Date;
   accepted_at?: Date;
   proof_submitted_at?: Date;
@@ -146,6 +145,11 @@ export interface Task {
   proof_instructions?: string;
   created_at: Date;
   updated_at: Date;
+  business_organization_id?: string | null;
+  business_location_id?: string | null;
+  provider_organization_id?: string | null;
+  provider_service_profile_id?: string | null;
+  business_fulfiller_organization_id?: string | null;
 }
 
 export interface Escrow {
@@ -157,12 +161,11 @@ export interface Escrow {
   state: EscrowState;
   refund_amount?: number;
   release_amount?: number;
-  stripe_payment_intent_id?: string;
-  stripe_transfer_id?: string;
-  stripe_refund_id?: string;
-  payout_provider?: 'STRIPE' | 'LOCAL_CERTIFICATION_TEST' | 'MANUAL_RECONCILIATION';
+  provider_payment_id?: string;
   provider_transfer_id?: string;
-  provider_transfer_status?: 'submitted' | 'processing' | 'paid' | 'manual_reconciliation';
+  provider_refund_id?: string;
+  payout_provider?: 'TILLED' | 'LOCAL_CERTIFICATION_TEST' | 'MANUAL_RECONCILIATION';
+  provider_transfer_status?: 'submitted' | 'processing' | 'paid' | 'manual_reconciliation' | 'not_applicable';
   provider_transfer_paid_at?: Date;
   poster_id?: string;
   worker_id?: string;

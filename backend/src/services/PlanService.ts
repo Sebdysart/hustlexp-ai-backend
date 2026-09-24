@@ -11,7 +11,7 @@
  * Hard rules:
  * - All checks are read-only (no state mutation)
  * - All checks are idempotent
- * - No pricing logic here (handled by Stripe)
+ * - No pricing logic here (billing is unavailable)
  * 
  * @see STEP_9_MONETIZATION_PRICING.md
  */
@@ -69,33 +69,7 @@ export const PlanService = {
   /**
    * Get user plan (with expiration check)
    */
-  getUserPlan: async (userId: string): Promise<UserPlan> => {
-    const result = await db.query<{
-      plan: UserPlan;
-      plan_expires_at: Date | null;
-    }>(
-      `SELECT plan, plan_expires_at FROM users WHERE id = $1`,
-      [userId]
-    );
-
-    if (result.rows.length === 0) {
-      return 'free'; // Default to free if user not found
-    }
-
-    const user = result.rows[0];
-
-    // Check if plan has expired
-    if (user.plan_expires_at && user.plan_expires_at < new Date()) {
-      // Plan expired - reset to free
-      await db.query(
-        `UPDATE users SET plan = 'free', plan_expires_at = NULL WHERE id = $1`,
-        [userId]
-      );
-      return 'free';
-    }
-
-    return user.plan;
-  },
+  getUserPlan: async (_userId: string): Promise<UserPlan> => 'free',
 
   /**
    * Check if user can create task with given risk level
@@ -125,7 +99,7 @@ export const PlanService = {
       if (hasEntitlement) {
         return { allowed: true };
       }
-      // Free users can create but must pay per-task fee (handled by Stripe)
+      // Free users can create but must pay per-task fee (billing is unavailable)
       return { allowed: true, requiredPlan: 'premium' };
     }
 
@@ -190,7 +164,7 @@ export const PlanService = {
     // HIGH/IN_HOME: Pro workers only (trust tier 3+ required)
     if (riskLevel === 'HIGH' || riskLevel === 'IN_HOME') {
       const hasEntitlement = await PlanService.hasActiveEntitlement(userId, riskLevel);
-      if ((user.plan === 'pro' || hasEntitlement) && user.trust_tier >= 3 && !user.trust_hold) {
+      if (hasEntitlement && user.trust_tier >= 3 && !user.trust_hold) {
         return { allowed: true };
       }
       return {

@@ -12,6 +12,7 @@ import {
 } from './ProofPolicy.js';
 import type { SubmitProofParams } from './ProofTypes.js';
 import { consumeFinalizedMediaReceipt } from './MediaUploadReceiptService.js';
+import { assertVerifiedProvider } from './BusinessWorkspacePolicy.js';
 
 interface ProofTaskRow {
   worker_id: string | null;
@@ -145,6 +146,34 @@ async function assertSubmitter(
 
   // Business-fulfilled task
   if (task.business_fulfiller_organization_id) {
+    const organizationResult = await query<{
+      status: string;
+      verification_status: string;
+      provider_enabled: boolean;
+    }>(
+      `SELECT status, verification_status, provider_enabled
+       FROM business_organizations
+       WHERE id = $1
+       FOR SHARE`,
+      [task.business_fulfiller_organization_id],
+    );
+    const organization = organizationResult.rows[0];
+    if (!organization) {
+      throw new TRPCError({ code: 'FORBIDDEN', message: 'The fulfilling Business is unavailable.' });
+    }
+    try {
+      assertVerifiedProvider({
+        status: organization.status,
+        verificationStatus: organization.verification_status,
+        providerEnabled: organization.provider_enabled,
+      });
+    } catch (error) {
+      throw new TRPCError({
+        code: 'FORBIDDEN',
+        message: error instanceof Error ? error.message : 'The fulfilling Business is not eligible for proof submission.',
+      });
+    }
+
     const result = await query<{ allowed: boolean }>(
       `SELECT EXISTS (
          SELECT 1
@@ -217,7 +246,7 @@ async function replayedProof(
     reconciliation_contract_version: number;
   }>(
     `SELECT * FROM proofs
-     WHERE task_id = $1 AND client_submission_id = $2
+     WHERE task_id = $1 AND rework_id IS NULL AND client_submission_id = $2
      LIMIT 1`,
     [params.taskId, params.clientSubmissionId],
   );
@@ -255,7 +284,7 @@ async function assertOfflineSyncOrder(
   const last = await query<{ client_sequence: string | number | null }>(
     `SELECT MAX(client_sequence) AS client_sequence
        FROM proofs
-      WHERE task_id=$1 AND submitter_id=$2 AND sync_contract_version=1`,
+      WHERE task_id=$1 AND rework_id IS NULL AND submitter_id=$2 AND sync_contract_version=1`,
     [params.taskId, params.submitterId],
   );
   if (Number(params.clientSequence) <= Number(last.rows[0]?.client_sequence ?? 0)) {
@@ -269,7 +298,7 @@ async function assertOfflineSyncOrder(
 async function assertNoActiveProof(query: QueryFn, taskId: string): Promise<void> {
   const existing = await query(
     `SELECT id FROM proofs
-     WHERE task_id = $1 AND state IN ('pending', 'submitted', 'PENDING', 'SUBMITTED')
+     WHERE task_id = $1 AND rework_id IS NULL AND state IN ('pending', 'submitted', 'PENDING', 'SUBMITTED')
      FOR UPDATE`,
     [taskId],
   );

@@ -21,7 +21,6 @@ const enabled = {
   NODE_ENV: 'test',
   HXOS_ALLOW_LOCAL_TEST_PAYOUT: 'true',
   ENGINE_API_MODE: 'test',
-  STRIPE_MODE: 'test',
   HXOS_LOCAL_TEST_PAYOUT_SECRET: 'p'.repeat(64),
 };
 
@@ -29,6 +28,7 @@ const original = { ...process.env };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  query.mockReset();
   Object.assign(process.env, enabled);
 });
 
@@ -37,13 +37,39 @@ afterEach(() => {
 });
 
 describe('LocalCertificationPayoutProvider', () => {
+  it('pays the frozen business amount without worker self-insurance deduction', async () => {
+    let insertedAmount = 0;
+    query.mockImplementation(async (sql: string, params?: unknown[]) => {
+      if (sql.includes('FROM hxos_local_test_business_payout_transfers')) return { rows: [], rowCount: 0 };
+      if (sql.includes('FROM tasks t') && sql.includes('business_fulfiller_organization_id')) {
+        return { rows: [{
+          task_state: 'COMPLETED', payout_ready_at: new Date(), automation_classification: 'CONTROLLED_TEST',
+          business_fulfiller_organization_id: 'org-1', hustler_payout_cents: 4000,
+          platform_margin_cents: 1000, escrow_state: 'FUNDED', amount: 5000,
+          platform_fee_cents: 1000, destination_id: 'destination-1', destination_status: 'ACTIVE',
+        }], rowCount: 1 };
+      }
+      if (sql.includes('INSERT INTO hxos_local_test_business_payout_transfers')) {
+        insertedAmount = Number(params?.[6]);
+      }
+      if (sql.includes("SET status = 'paid'") && sql.includes('hxos_local_test_business_payout_transfers')) {
+        return { rows: [{ id: 'transfer-1', amount_cents: insertedAmount }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 1 };
+    });
+    const result = await LocalCertificationPayoutProvider.createPaidBusinessTransfer({
+      taskId: 'task-1', escrowId: 'escrow-1', organizationId: 'org-1',
+      payoutRecipientUserId: 'owner-1', idempotencyKey: 'settle-business-1',
+    });
+    expect(insertedAmount).toBe(4000);
+    expect(result).toMatchObject({ success: true, data: { amountCents: 4000 } });
+  });
   it('is disabled by default and rejects every production-shaped configuration', () => {
     expect(localCertificationPayoutEnabled(enabled)).toBe(true);
     for (const override of [
       { NODE_ENV: 'production' },
       { HXOS_ALLOW_LOCAL_TEST_PAYOUT: 'false' },
       { ENGINE_API_MODE: 'live' },
-      { STRIPE_MODE: 'live' },
       { HXOS_LOCAL_TEST_PAYOUT_SECRET: 'short' },
     ]) {
       expect(localCertificationPayoutEnabled({ ...enabled, ...override })).toBe(false);

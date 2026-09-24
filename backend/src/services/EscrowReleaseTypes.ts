@@ -7,10 +7,11 @@ export interface ReleaseEscrowRow {
   platform_fee_cents: number | null;
   state: string;
   version: number;
-  stripe_transfer_id: string | null;
+  provider_payment_id: string | null;
 }
 
 export interface ReleaseTaskRow {
+  state: string;
   worker_id: string | null;
   payout_recipient_user_id: string | null;
   provider_organization_id: string | null;
@@ -25,14 +26,14 @@ export interface ReleaseTaskRow {
 }
 
 export type ReleasePayoutProvider =
-  | 'STRIPE'
+  | 'TILLED'
   | 'LOCAL_CERTIFICATION_TEST'
   | 'MANUAL_RECONCILIATION';
 
 export interface ReleasePost {
   workerId: string | null;
   businessFulfillerOrganizationId: string | null;
-  payoutRecipientUserId: string;
+  payoutRecipientUserId: string | null;
   serviceBusinessProvider: boolean;
   grossPayoutCents: number;
   netPayoutCents: number;

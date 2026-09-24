@@ -46,7 +46,7 @@ const serviceBusinessOpportunityFrom = `
          AND fulfiller.trust_tier>=COALESCE(task.trust_tier_required,1)
          AND task.price<=CASE WHEN fulfiller.trust_tier=1 THEN 5000
            WHEN fulfiller.trust_tier=2 THEN 20000 ELSE 9999900 END
-         AND (task.risk_level<>'HIGH' OR fulfiller.plan='pro' OR EXISTS (
+         AND (task.risk_level<>'HIGH' OR EXISTS (
            SELECT 1 FROM plan_entitlements entitlement
             WHERE entitlement.user_id=fulfiller.id
               AND (entitlement.task_id IS NULL OR entitlement.task_id=task.id)
@@ -105,13 +105,7 @@ const serviceBusinessOpportunityWhere = `
           AND active.provider_service_profile_id=profile.id
           AND active.id<>task.id
           AND active.state IN ('ACCEPTED','PROOF_SUBMITTED','DISPUTED'))
-     AND EXISTS (
-       SELECT 1 FROM business_provider_payout_accounts payout
-       JOIN users payee ON payee.id=payout.payout_recipient_user_id
-       WHERE payout.organization_id=$1 AND payout.status='ACTIVE'
-         AND payee.account_status='ACTIVE' AND payee.stripe_connect_id IS NOT NULL
-         AND payee.payouts_enabled=TRUE
-     )`;
+     AND FALSE /* Live service-assignment payouts have no supported provider. */`;
 
 export const serviceBusinessOpportunitySelect = `${serviceBusinessOpportunityColumns}
   ${serviceBusinessOpportunityFrom}

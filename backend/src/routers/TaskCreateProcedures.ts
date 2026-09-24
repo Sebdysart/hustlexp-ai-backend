@@ -9,7 +9,7 @@ import { assertImplementedFields } from '../services/TaskCreationPolicy.js';
 import { TaskService } from '../services/TaskService.js';
 import type { CreateTaskParams } from '../services/TaskServiceShared.js';
 import { getTemplate } from '../services/TaskTemplateRegistry.js';
-import { hustlerProcedure, posterProcedure, Schemas } from '../trpc.js';
+import { hustlerProcedure, posterProcedure, protectedProcedure, Schemas } from '../trpc.js';
 import type { AuthedContext } from '../trpc-context.js';
 import type { Task } from '../types.js';
 import { checkDraftEvalRateLimit, checkTaskCreateRateLimit } from './task-router-common.js';
@@ -145,6 +145,17 @@ async function handleCreateTask({ ctx, input }: { ctx: AuthedContext; input: Cre
 }
 
 export const TaskCreateProcedures = {
+getBusinessServiceAddress: protectedProcedure
+    .input(z.object({ taskId: Schemas.uuid }).strict())
+    .query(async ({ ctx, input }) => {
+      const result = await TaskLocationService.releaseToFulfillingBusiness({ taskId: input.taskId, actorId: ctx.user.id });
+      if (result.success) return { status: 'available' as const, ...result.data };
+      if (result.error.code === 'FORBIDDEN') throw new TRPCError({ code: 'FORBIDDEN', message: 'Service address is unavailable for this account.' });
+      if (['EXACT_LOCATION_EXPIRED', 'LOCATION_WINDOW_CLOSED'].includes(result.error.code)) return { status: 'expired' as const };
+      if (['LOCATION_NOT_RELEASED', 'TASK_NOT_FUNDED'].includes(result.error.code)) return { status: 'not_yet_available' as const };
+      if (['EXACT_LOCATION_MISSING', 'LOCATION_REENCRYPTION_REQUIRED'].includes(result.error.code)) return { status: 'unavailable' as const };
+      throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Could not load the service address. Please retry.' });
+    }),
 create: posterProcedure
     .input(Schemas.createTask)
     .mutation(handleCreateTask),

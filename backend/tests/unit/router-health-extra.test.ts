@@ -8,7 +8,7 @@
  *                 invalid when items missing, error when DB not connected
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -36,10 +36,6 @@ vi.mock('../../src/config', () => ({
     firebase: { projectId: 'test-project' },
     redis: { url: 'redis://localhost:6379' },
   },
-}));
-
-vi.mock('../../src/services/StripeService', () => ({
-  StripeService: { isConfigured: vi.fn().mockReturnValue(true) },
 }));
 
 // ---------------------------------------------------------------------------
@@ -75,7 +71,7 @@ function makeAdminCaller() {
 // All expected tables, triggers, views from the router source
 const ALL_TABLES = [
   'schema_versions', 'users', 'tasks', 'escrows', 'proofs', 'proof_photos', 'proof_videos',
-  'xp_ledger', 'trust_ledger', 'badges', 'disputes', 'stripe_events',
+  'xp_ledger', 'trust_ledger', 'badges', 'disputes',
   'ai_events', 'ai_jobs', 'ai_proposals', 'ai_decisions', 'evidence',
   'admin_roles', 'admin_actions', 'live_sessions', 'live_broadcasts',
   'poster_ratings', 'session_forecasts', 'task_matching_scores',
@@ -124,6 +120,7 @@ describe('health.ping', () => {
 
 describe('health.status', () => {
   beforeEach(() => vi.clearAllMocks());
+  afterEach(() => vi.unstubAllEnvs());
 
   it('returns healthy status when DB is connected', async () => {
     seedAdminRoleCheck();
@@ -155,7 +152,8 @@ describe('health.status', () => {
     expect(result.services.database.connected).toBe(false);
   });
 
-  it('includes stripe, firebase, redis in services', async () => {
+  it('includes tilled, firebase, redis in services', async () => {
+    vi.stubEnv('TILLED_SECRET_KEY', 'test-configured-secret');
     seedAdminRoleCheck();
     (mockDb.healthCheck as any).mockResolvedValueOnce({
       connected: true, schemaVersion: '1.1.0', latencyMs: 3,
@@ -163,10 +161,10 @@ describe('health.status', () => {
 
     const result = await makeAdminCaller().status();
 
-    expect(result.services.stripe).toBeDefined();
+    expect(result.services.tilled).toBeDefined();
     expect(result.services.firebase).toBeDefined();
     expect(result.services.redis).toBeDefined();
-    expect(result.services.stripe.configured).toBe(true);
+    expect(result.services.tilled.configured).toBe(true);
     expect(result.services.firebase.configured).toBe(true);
     expect(result.services.redis.configured).toBe(true);
   });

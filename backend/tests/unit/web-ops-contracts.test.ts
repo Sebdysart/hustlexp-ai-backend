@@ -17,9 +17,11 @@ vi.mock('../../src/services/OpsLiquidityService', () => ({
   getOpsLiquidityPayload: mocks.getLiquidity,
 }));
 vi.mock('../../src/auth/firebase', () => ({ firebaseAuth: { verifyIdToken: vi.fn() } }));
-vi.mock('../../src/logger', () => ({
-  logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }) },
-}));
+vi.mock('../../src/logger', () => {
+  const logger = { child: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+  logger.child.mockReturnValue(logger);
+  return { logger, authLogger: logger, taskLogger: logger, escrowLogger: logger, workerLogger: logger, dbLogger: logger, aiLogger: logger };
+});
 
 import { webOpsRouter } from '../../src/routers/web/ops';
 
@@ -48,10 +50,12 @@ function publicCaller() {
 }
 
 function grantOpsCapability() {
-  mocks.query.mockResolvedValueOnce({
+  const authorization = {
     rows: [{ role: 'admin', capability_granted: true }],
     rowCount: 1,
-  });
+  };
+  // The current middleware checks fresh Operations eligibility and capability.
+  mocks.query.mockResolvedValueOnce(authorization).mockResolvedValueOnce(authorization);
 }
 
 beforeEach(() => {
@@ -100,12 +104,15 @@ describe('webOps operationsAdminProcedure gates', () => {
       }],
       rowCount: 1,
     });
+    mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // quotes
+    mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // assessments
     const result = await opsCaller().getTaskDraft({ id: DRAFT_ID });
     expect(result.ok).toBe(true);
     expect(result.draft).not.toHaveProperty('card_token_hash');
     expect(result.draft).not.toHaveProperty('ip_hash');
-    expect(String(mocks.query.mock.calls.at(-1)?.[0])).toContain('d.id');
-    expect(String(mocks.query.mock.calls.at(-1)?.[0])).not.toContain('card_token_hash');
+    const draftQuery = mocks.query.mock.calls.find(([sql]) => String(sql).includes('FROM task_drafts d'))?.[0];
+    expect(draftQuery).toContain('d.id');
+    expect(draftQuery).not.toContain('card_token_hash');
   });
 
   it('redacts hustler phone and email from listHustlers', async () => {

@@ -33,7 +33,7 @@ async function loadReviewProof(proofId: string): Promise<ProofWithSignals | null
        SELECT storage_key FROM proof_photos WHERE proof_id = p.id
        ORDER BY sequence_number ASC, created_at ASC, id ASC LIMIT 1
      ) pp ON TRUE
-     WHERE p.id = $1
+     WHERE p.id = $1 AND p.rework_id IS NULL
      LIMIT 1`,
     [proofId],
   );
@@ -105,7 +105,7 @@ async function attachPrivateReviewMedia(
 
 async function lockProofForReview(query: Query, proofId: string): Promise<string> {
   const result = await query<{ state: string; task_id: string }>(
-    `SELECT state, task_id FROM proofs WHERE id = $1 FOR UPDATE`,
+    `SELECT state, task_id FROM proofs WHERE id = $1 AND rework_id IS NULL FOR UPDATE`,
     [proofId],
   );
   if (!result.rows[0]) {
@@ -134,8 +134,13 @@ async function commitReview(
   params: ReviewProofParams,
   judgeVerdict: JudgeVerdict | null,
 ): Promise<Proof> {
-  const taskId = await lockProofForReview(query, params.proofId);
+  const proofTask = await query<{ task_id: string }>(
+    'SELECT task_id FROM proofs WHERE id = $1 AND rework_id IS NULL', [params.proofId]);
+  if (!proofTask.rows[0]) throw new TRPCError({ code: 'NOT_FOUND', message: 'Proof not found' });
+  const taskId = proofTask.rows[0].task_id;
   await assertTaskReviewState(query, taskId);
+  const lockedTaskId = await lockProofForReview(query, params.proofId);
+  if (lockedTaskId !== taskId) throw new TRPCError({ code: 'CONFLICT', message: 'Proof task changed' });
   if (judgeVerdict) {
     const audit = await JudgeAIService.logVerdict(
       params.proofId,
@@ -155,8 +160,9 @@ async function commitReview(
   }
   const result = await query<Proof>(
     `UPDATE proofs
-     SET state = $1, reviewed_by = $2, reviewed_at = NOW(), rejection_reason = $3
-     WHERE id = $4 AND state = 'SUBMITTED'
+     SET state = $1, reviewed_by = $2, reviewed_at = NOW(), rejection_reason = $3,
+         review_source = 'CUSTOMER'
+     WHERE id = $4 AND rework_id IS NULL AND state = 'SUBMITTED'
      RETURNING *`,
     [params.decision, params.reviewerId, params.reason, params.proofId],
   );

@@ -1,19 +1,11 @@
 import type { PaymentProvider } from './PaymentProvider.js';
-import { StripePaymentProvider } from './StripePaymentProvider.js';
+import { TRPCError } from '@trpc/server';
 import { LocalCertificationPaymentProviderAdapter } from './LocalCertificationPaymentProviderAdapter.js';
 
-export type PaymentProviderName = 'stripe' | 'local_test';
+export type PaymentProviderName = 'tilled' | 'local_test';
 
-export function resolvePaymentProvider(
-  provider: PaymentProviderName,
-): PaymentProvider {
-  switch (provider) {
-    case 'stripe':
-      return StripePaymentProvider;
-
-    case 'local_test':
-      return LocalCertificationPaymentProviderAdapter;
-    default:
-        throw new Error(`Unsupported payment provider: ${provider}`);
-  }
+/** Live marketplace checkout is quote-bound. Direct escrow funding is test-only. */
+export function resolvePaymentProvider(provider: PaymentProviderName): PaymentProvider {
+  if (provider === 'local_test') return LocalCertificationPaymentProviderAdapter;
+  throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Direct task payment is unavailable. Use the accepted quote checkout.' });
 }

@@ -20,7 +20,7 @@ function aggregateQuery(counts = {}, failure) {
 test('readiness SQL is aggregate-only, read-only, and contains no projected identity data', () => {
   assert.deepEqual(
     ROLE_READINESS_CHECKS.map((check) => check.name),
-    ['poster', 'hustler', 'business-client', 'service-business', 'operations']
+    ['poster', 'business-client', 'service-business', 'operations']
   );
   for (const check of ROLE_READINESS_CHECKS) {
     assert.match(check.sql, /^SELECT COUNT\(\*\)::int AS count/iu);
@@ -36,12 +36,12 @@ test('healthy infrastructure requires at least one ready account for every authe
     now: () => new Date('2026-07-22T14:30:00.000Z'),
   });
   assert.equal(report.ok, true);
-  assert.equal(report.pass, 5);
+  assert.equal(report.pass, 4);
   assert.equal(report.fail, 0);
   assert.equal(report.controlled_fixture_evidence_required, true);
   assert.deepEqual(
     report.checks.map((check) => check.ready_accounts),
-    [1, 1, 1, 1, 1]
+    [1, 1, 1, 1]
   );
 });
 
@@ -49,7 +49,6 @@ test('every absent role fails independently without hiding healthy roles', async
   const report = await auditProductionRoleReadiness({
     query: aggregateQuery({
       poster: 0,
-      hustler: 0,
       'business-client': 0,
       'service-business': 0,
       operations: 0,
@@ -57,7 +56,7 @@ test('every absent role fails independently without hiding healthy roles', async
   });
   assert.equal(report.ok, false);
   assert.equal(report.pass, 0);
-  assert.equal(report.fail, 5);
+  assert.equal(report.fail, 4);
   assert.ok(report.checks.every((check) => check.ready_accounts === 0));
   assert.ok(report.checks.every((check) => check.error === 'no ready production account'));
 });
@@ -134,4 +133,11 @@ test('database execution is transactionally read-only and rolls back a failed ga
   );
   assert.equal(failedCommands[0], 'BEGIN READ ONLY');
   assert.equal(failedCommands.at(-1), 'ROLLBACK');
+});
+
+test('Stage-1 business readiness requires the active production Tilled charge account', () => {
+  const sql = ROLE_READINESS_CHECKS.find((check) => check.name === 'service-business').sql;
+  assert.match(sql, /payment_account\.provider = 'tilled'/u);
+  assert.match(sql, /payment_account\.environment = 'production'/u);
+  assert.match(sql, /payment_account\.charges_enabled IS TRUE/u);
 });

@@ -5,6 +5,8 @@ const workspace = vi.hoisted(() => ({
   setBusinessMemberRole: vi.fn(), setBusinessMemberRoleByEmail: vi.fn(),
   listBusinessMembers: vi.fn(), createBusinessLocation: vi.fn(), listBusinessLocations: vi.fn(),
 }));
+const credentials = vi.hoisted(() => ({ submitOrganizationCredential: vi.fn() }));
+vi.mock('../../src/services/BusinessCredentialService.js', () => credentials);
 const operations = vi.hoisted(() => ({
   upsertBusinessBudgetPolicy: vi.fn(), listBusinessBudgetPolicies: vi.fn(),
   requestBusinessSpend: vi.fn(), listBusinessApprovalQueue: vi.fn(),
@@ -108,17 +110,15 @@ describe('business operations authenticated router', () => {
   });
 
   it('forces credential verification to remain outside the browser boundary', async () => {
-    operations.submitBusinessCredential.mockResolvedValue({
-      success: true, data: { id: REQUEST, status: 'PENDING' },
-    });
+    credentials.submitOrganizationCredential.mockResolvedValue({ id: REQUEST, status: 'PENDING', versionId:PROFILE });
     await caller.submitCredential({
       organizationId: ORG, membershipId: MEMBERSHIP,
-      credentialType: 'ELECTRICAL_LICENSE', evidenceReference: 'upload-token-001',
+      credentialTypeId: PROFILE, jurisdictionCode:'US-WA',credentialNumber:'LICENSE-1',uploadReceiptIds:[REQUEST],idempotencyKey:'credential:test:001',
     });
-    expect(operations.submitBusinessCredential).toHaveBeenCalledWith(expect.objectContaining({ actorId: ACTOR }));
+    expect(credentials.submitOrganizationCredential).toHaveBeenCalledWith(expect.objectContaining({ actorId: ACTOR }));
     await expect(caller.submitCredential({
       organizationId: ORG, membershipId: MEMBERSHIP,
-      credentialType: 'ELECTRICAL_LICENSE', evidenceReference: 'upload-token-002',
+      credentialTypeId: PROFILE, jurisdictionCode:'US-WA',credentialNumber:'LICENSE-1',uploadReceiptIds:[REQUEST],idempotencyKey:'credential:test:002',
       status: 'ACTIVE', verifiedBy: ACTOR,
     } as any)).rejects.toThrow();
   });

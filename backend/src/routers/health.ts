@@ -7,7 +7,6 @@
 import { router, publicProcedure, platformAdminProcedure } from '../trpc.js';
 import { db } from '../db.js';
 import { config } from '../config.js';
-import { StripeService } from '../services/StripeService.js';
 import { z } from 'zod';
 
 export const healthRouter = router({
@@ -35,8 +34,8 @@ export const healthRouter = router({
             schemaVersion: dbHealth.schemaVersion,
             latencyMs: dbHealth.latencyMs,
           },
-          stripe: {
-            configured: StripeService.isConfigured(),
+          tilled: {
+            configured: Boolean(process.env.TILLED_SECRET_KEY),
           },
           firebase: {
             configured: !!config.firebase.projectId,
@@ -86,7 +85,6 @@ export const healthRouter = router({
         'trust_ledger',
         'badges',
         'disputes',
-        'stripe_events',
         'ai_events',
         'ai_jobs',
         'ai_proposals',

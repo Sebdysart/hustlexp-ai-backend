@@ -91,7 +91,7 @@ async function transitionToDispute(
   const result = await query<Escrow>(
     `UPDATE escrows
         SET state = 'LOCKED_DISPUTE',
-            stripe_transfer_id = CASE WHEN state = 'RELEASED' THEN NULL ELSE stripe_transfer_id END,
+            provider_transfer_id = CASE WHEN state = 'RELEASED' THEN NULL ELSE provider_transfer_id END,
             version = version + 1,
             updated_at = NOW()
       WHERE id = $1

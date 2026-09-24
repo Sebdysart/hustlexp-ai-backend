@@ -457,10 +457,10 @@ async function materialize(params: {
       if (source.poster_id !== params.posterId || source.state !== 'CANCELLED') {
         fail('REFUND_REQUIRED', 'Cancel the original task after its provider-confirmed refund.');
       }
-      const escrow = await query<{ state: string; stripe_refund_id: string | null }>(
-        'SELECT state,stripe_refund_id FROM escrows WHERE task_id=$1 FOR UPDATE', [source.id],
+      const escrow = await query<{ state: string; provider_refund_id: string | null }>(
+        'SELECT state,provider_refund_id FROM escrows WHERE task_id=$1 FOR UPDATE', [source.id],
       );
-      if (escrow.rows[0]?.state !== 'REFUNDED' || !escrow.rows[0].stripe_refund_id) {
+      if (escrow.rows[0]?.state !== 'REFUNDED' || !escrow.rows[0].provider_refund_id) {
         fail('REFUND_REQUIRED', 'Provider-confirmed refund evidence is required before replacement.');
       }
       const created = await TaskCreateService.createInTransaction(query, {

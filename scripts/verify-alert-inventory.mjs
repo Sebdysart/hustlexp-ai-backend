@@ -11,7 +11,6 @@ const yaml = readFileSync(resolve(root, 'ops/alerts/critical.yml'), 'utf8');
 
 const requiredAlerts = [
   'EscrowStuckInFunded',
-  'StripeWebhookFailures',
   'EscrowInvariantViolation',
   'HighErrorRate',
 ];

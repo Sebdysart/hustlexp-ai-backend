@@ -6,9 +6,10 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('../../src/db', () => ({
-  db: { query: vi.fn() },
-}));
+vi.mock('../../src/db', () => {
+  const query = vi.fn();
+  return { db: { query, transaction: vi.fn((callback) => callback(query)) } };
+});
 
 vi.mock('../../src/logger', () => ({
   logger: {
@@ -64,21 +65,19 @@ describe('BackgroundCheckService', () => {
   // initiateBackgroundCheck
   // --------------------------------------------------------------------------
   describe('initiateBackgroundCheck', () => {
-    it('creates a new background check', async () => {
+    it('does not fabricate an external background check when no provider adapter is connected', async () => {
       mockDb.query
         .mockResolvedValueOnce({ rows: [{ id: 'consent-1', provider: 'checkr', disclosure_version: 'hx-worker-screening-rights-v1' }], rowCount: 1 } as never)
-        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never) // No existing
-        .mockResolvedValueOnce({ rows: [makeRow()], rowCount: 1 } as never) // Insert
-        .mockResolvedValueOnce({ rows: [], rowCount: 1 } as never); // Event
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
-      const result = await initiateBackgroundCheck({
+      await expect(initiateBackgroundCheck({
         userId: 'user-1',
         provider: 'checkr',
         consentId: 'consent-1',
-      });
+      })).rejects.toThrow('not connected');
 
-      expect(result.id).toBe('bc-1');
-      expect(result.status).toBe('PENDING');
+      expect(mockDb.query).toHaveBeenCalledTimes(2);
+      expect(mockDb.query.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO background_checks'))).toBe(false);
     });
 
     it('throws CONFLICT when check in progress', async () => {
@@ -129,16 +128,24 @@ describe('BackgroundCheckService', () => {
   // updateBackgroundCheckStatus
   // --------------------------------------------------------------------------
   describe('updateBackgroundCheckStatus', () => {
+    const event = { id: 'checkr-event-1', occurredAt: '2025-03-02T00:00:00Z' };
     it('updates status to CLEAR and triggers capability recompute', async () => {
       mockDb.query.mockResolvedValueOnce({
         rows: [makeRow({ status: 'CLEAR', completed_at: '2025-03-02' })],
         rowCount: 1,
       } as never);
 
-      const result = await updateBackgroundCheckStatus('bc_123_abc', 'CLEAR', 'All clear');
+      const result = await updateBackgroundCheckStatus('bc_123_abc', 'CLEAR', event, 'All clear');
 
       expect(result.status).toBe('CLEAR');
-      expect(recomputeCapabilityProfile).toHaveBeenCalledWith('user-1', expect.objectContaining({ reason: 'background_check_cleared' }));
+      expect(recomputeCapabilityProfile).toHaveBeenCalledWith('user-1',
+        expect.objectContaining({ reason: 'background_check_provider_clear' }), expect.any(Function));
+      const sql = String(mockDb.query.mock.calls[0]?.[0]);
+      expect(sql).toContain("check_row.provider_environment = 'PRODUCTION'");
+      expect(sql).toContain('check_row.is_test IS FALSE');
+      expect(sql).toContain('check_row.last_provider_event_at < $6::timestamptz');
+      expect(sql).toContain('check_row.reviewed_at IS NULL');
+      expect(sql).toContain("dispute.status = 'OPEN'");
     });
 
     it('updates status to IN_PROGRESS without recompute', async () => {
@@ -147,10 +154,10 @@ describe('BackgroundCheckService', () => {
         rowCount: 1,
       } as never);
 
-      const result = await updateBackgroundCheckStatus('bc_123_abc', 'IN_PROGRESS');
+      const result = await updateBackgroundCheckStatus('bc_123_abc', 'IN_PROGRESS', event);
 
       expect(result.status).toBe('IN_PROGRESS');
-      expect(recomputeCapabilityProfile).not.toHaveBeenCalled();
+      expect(recomputeCapabilityProfile).toHaveBeenCalled();
     });
 
     it('updates to CONSIDER (requires manual review)', async () => {
@@ -159,15 +166,29 @@ describe('BackgroundCheckService', () => {
         rowCount: 1,
       } as never);
 
-      const result = await updateBackgroundCheckStatus('bc_123_abc', 'CONSIDER', 'Minor offense');
+      const result = await updateBackgroundCheckStatus('bc_123_abc', 'CONSIDER', event, 'Minor offense');
 
       expect(result.status).toBe('CONSIDER');
+      expect(recomputeCapabilityProfile).toHaveBeenCalled();
     });
 
     it('throws NOT_FOUND when check not found', async () => {
-      mockDb.query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never);
 
-      await expect(updateBackgroundCheckStatus('nonexistent', 'CLEAR')).rejects.toThrow('not found');
+      await expect(updateBackgroundCheckStatus('nonexistent', 'CLEAR', event)).rejects.toThrow('not found');
+    });
+
+    it('leaves an already reviewed or newer check unchanged on stale replay', async () => {
+      mockDb.query
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 } as never)
+        .mockResolvedValueOnce({ rows: [makeRow({ status: 'DISPUTED', reviewed_at: '2025-03-03' })], rowCount: 1 } as never);
+
+      const result = await updateBackgroundCheckStatus('bc_123_abc', 'CLEAR', event, 'clear');
+
+      expect(result.status).toBe('DISPUTED');
+      expect(recomputeCapabilityProfile).not.toHaveBeenCalled();
     });
   });
 

@@ -44,7 +44,7 @@ When implementing from an issue or fixing review comments:
 - Database queries use parameterized queries — no string interpolation
 - All tRPC procedures need Zod input validation
 - Admin endpoints use `adminProcedure` (not `protectedProcedure`)
-- Stripe webhooks must verify signatures before processing
+- Payment-provider webhooks must verify signatures before processing
 
 ## Branch Naming
 
@@ -52,6 +52,8 @@ When implementing from an issue or fixing review comments:
 - Human branches: any other pattern (require manual merge)
 
 ## Decision Log
+
+Historical implementation evidence below is source-dated. Retired processor references do not authorize or describe current runtime support.
 
 **2026-06-11 — audit-fixes-2026-06-11 (full-codebase audit remediation):**
 - **Money math convention = `Math.round`**, single source of truth in `backend/src/lib/money.ts` (`computePlatformFeeCents`, `computeFeeBreakdown`, `xpForPriceCents`). Decompositions are complements of gross: fee + insurance + net === gross, always. Insurance basis is **GROSS** (F54-2) on every release path. Do not reintroduce inline fee/XP math.

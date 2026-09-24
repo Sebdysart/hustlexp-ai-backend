@@ -5,6 +5,8 @@ import { db, type QueryFn } from '../db.js';
 import { localCertificationAuthEnabled } from '../auth/local-certification-token.js';
 import { notifyWorkerAssigned } from '../lib/task-lifecycle-notifications.js';
 import { assertTaskMutationEligibility } from '../services/TaskEligibilityPolicy.js';
+import { reserveIndividualTask } from '../services/IndividualTaskReservation.js';
+import { TaskProgressService } from '../services/TaskProgressService.js';
 import { hustlerProcedure, posterProcedure, Schemas, type AuthedContext } from '../trpc.js';
 
 interface AssignmentInput { taskId: string; workerId: string }
@@ -112,12 +114,17 @@ async function assignWorker(ctx: AuthedContext, input: AssignmentInput) {
       requireCurrentOffer: true,
     });
     await verifyFunded(txn, input.taskId);
-    return { ...await commitAssignment(txn, input, applicationId), taskTitle: task.title };
+    await reserveIndividualTask(txn, { taskId: input.taskId, workerId: input.workerId, actorId: ctx.user.id });
+    const assigned = await commitAssignment(txn, input, applicationId);
+    const progress = await TaskProgressService.advanceProgress(
+      { taskId: input.taskId, to: 'ACCEPTED', actor: { type: 'system' } }, txn,
+    );
+    if (!progress.success) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: progress.error.message });
+    if (assigned.worker_id) await notifyWorkerAssigned(assigned.worker_id, input.taskId, task.title, txn);
+    return assigned;
   });
   await invalidateTask(input.taskId);
-  if (result.worker_id) await notifyWorkerAssigned(result.worker_id, input.taskId, result.taskTitle);
-  const { taskTitle: _taskTitle, ...assignedTask } = result;
-  return assignedTask;
+  return result;
 }
 
 async function shortlistApplicant(ctx: AuthedContext, input: AssignmentInput) {

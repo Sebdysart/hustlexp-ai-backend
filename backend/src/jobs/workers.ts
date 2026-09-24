@@ -29,7 +29,10 @@ import {
   startWorkerHealthServer,
   type WorkerHealthServer,
 } from './worker-health-server.js';
-import { runEngineAutomationMigration } from "./engine-automation-migration.js";
+import { db } from '../db.js';
+import { REQUIRED_MIGRATION_FILES } from './engine-automation-migration-files.js';
+import { verifyQueueRedisConnection } from './queues.js';
+import { buildIdentity } from '../buildIdentity.js';
 
 // Track all registered workers and outbox interval handles for graceful shutdown
 const activeWorkers: Worker[] = [];
@@ -71,7 +74,19 @@ async function startWorkers(): Promise<void> {
 
   try {
     log.info('Starting HustleXP Worker Runtime...');
-    await runEngineAutomationMigration();
+    // Schema changes belong to the migration/API startup identity. The worker
+    // needs only read access to the migration ledger and must fail closed if a
+    // deployment starts it before the reviewed manifest has been applied.
+    const latestMigration = REQUIRED_MIGRATION_FILES.at(-1)?.name;
+    if (!latestMigration) throw new Error('Required migration manifest is empty');
+    const applied = await db.query<{ name: string }>(
+      'SELECT name FROM applied_migrations WHERE name = $1',
+      [latestMigration],
+    );
+    if (!applied.rows[0]) {
+      throw new Error(`Worker schema is not ready: ${latestMigration} has not been applied`);
+    }
+    await verifyQueueRedisConnection();
     // Register all BullMQ workers
     registerWorkers();
 
@@ -164,7 +179,7 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
  *
  * Runs fail-fast config validation BEFORE starting any workers. In production
  * validateConfig() calls process.exit(1) on missing/invalid required vars
- * (DATABASE_URL, Redis TCP for BullMQ, QUEUE_HMAC_SECRET, Stripe, Firebase,
+ * (DATABASE_URL, Redis TCP for BullMQ, QUEUE_HMAC_SECRET, Tilled, Firebase,
  * TAX_TIN_ENCRYPTION_KEY); in dev/test it is a no-op that never exits.
  *
  * IMPORTANT: validateConfig() is intentionally NOT called inside startWorkers().
@@ -174,8 +189,18 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
  * this process-entry guard means direct startWorkers() unit calls are unaffected.
  */
 export async function bootWorkerProcess(): Promise<void> {
+  log.info({
+    buildRevision: buildIdentity.revision,
+    pid: process.pid,
+    serviceRole: process.env.SERVICE_ROLE ?? null,
+    workerIdentity: 'hustlexp-worker',
+  }, 'Worker process starting');
   validateConfig();
-  workerHealthServer = await startWorkerHealthServer();
+  workerHealthServer = await startWorkerHealthServer({
+    readinessCheck: () => outboxHandles !== null
+      && activeWorkers.length > 0
+      && activeWorkers.every((worker) => worker.isRunning() && !worker.isPaused()),
+  });
   await startWorkers();
   workerHealthServer.markReady();
 }

@@ -69,7 +69,7 @@ export function controlledTestProviderCapabilityEnabled(env: Environment = proce
   return env.NODE_ENV !== 'production'
     && env.HXOS_ALLOW_LOCAL_TEST_PROVIDER_CAPABILITY === 'true'
     && env.ENGINE_API_MODE === 'test'
-    && env.STRIPE_MODE === 'test'
+
     && secret(env).length >= 32;
 }
 

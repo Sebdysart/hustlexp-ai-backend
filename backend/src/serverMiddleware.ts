@@ -57,11 +57,20 @@ function allowedOrigins(): string[] {
       'http://localhost:5173',
       'http://localhost:5174',
       'http://localhost:8081',
+
+      'https://localhost:5173',
+      'https://192.168.0.197:5173',
+
+      'http://192.168.0.197:5173',
     ];
   }
   return config.app.allowedOrigins.length > 0
     ? config.app.allowedOrigins
-    : ['https://hustlexp.app', 'https://www.hustlexp.app'];
+    : [
+        'https://hustlexp.app',
+        'https://www.hustlexp.app',
+        'https://hustlexp-site-copy-production.up.railway.app',
+      ];
 }
 
 export function registerCoreMiddleware(app: HustleApp): void {
@@ -114,8 +123,6 @@ function registerSpecificRateLimits(app: HustleApp): void {
   auth.forEach((path) => app.use(path, rateLimitMiddleware('auth')));
   const financial = [
     '/trpc/escrow.release*',
-    '/trpc/stripe.*',
-    '/trpc/stripeConnect.*',
     '/trpc/subscription.*',
     '/trpc/fraud.*',
   ];

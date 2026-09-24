@@ -55,18 +55,6 @@ echo "Response: $HTTP_CODE - $BODY"
 test_result "Hustler escrow/create blocked" "403\|INSUFFICIENT_ROLE" "$RESP"
 echo ""
 
-# Test 2: Poster tries connect/create (should get 403 - wrong role)
-echo "TEST 2: Poster tries connect/create"
-RESP=$(curl -s -w "\n%{http_code}" -X POST "$HOST/api/stripe/connect/create" \
-  -H "Authorization: Bearer $POSTER_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"userId": "test-poster-001", "email": "poster@test.com"}')
-HTTP_CODE=$(echo "$RESP" | tail -n1)
-BODY=$(echo "$RESP" | sed '$d')
-echo "Response: $HTTP_CODE - $BODY"
-test_result "Poster connect/create blocked" "403\|INSUFFICIENT_ROLE" "$RESP"
-echo ""
-
 # Test 3: No token on escrow/create (should get 401)
 echo "TEST 3: No token on escrow/create"
 RESP=$(curl -s -w "\n%{http_code}" -X POST "$HOST/api/escrow/create" \
@@ -87,36 +75,6 @@ RESP=$(curl -s -w "\n%{http_code}" -X POST "$HOST/api/escrow/create" \
 HTTP_CODE=$(echo "$RESP" | tail -n1)
 echo "Response: $HTTP_CODE"
 test_result "No-role user blocked" "403\|401\|INSUFFICIENT" "$RESP"
-echo ""
-
-# Test 5: Poster tries payout endpoint (should get 403 - not a hustler)  
-echo "TEST 5: Poster tries to access hustler payout status"
-RESP=$(curl -s -w "\n%{http_code}" -X GET "$HOST/api/stripe/connect/$HUSTLER_UID/status" \
-  -H "Authorization: Bearer $POSTER_TOKEN")
-HTTP_CODE=$(echo "$RESP" | tail -n1)
-BODY=$(echo "$RESP" | sed '$d')
-echo "Response: $HTTP_CODE - $BODY"
-test_result "Poster accessing hustler connect blocked" "403\|401\|Unauthorized" "$RESP"
-echo ""
-
-echo "=== PHASE 2B: OWNER-BOUNDARY TESTS ==="
-echo ""
-
-# Test 6: Random user tries to view hustler's connect status
-echo "TEST 6: Random user tries to view hustler's connect status"
-RESP=$(curl -s -w "\n%{http_code}" -X GET "$HOST/api/stripe/connect/$HUSTLER_UID/status" \
-  -H "Authorization: Bearer $RANDOM_TOKEN")
-HTTP_CODE=$(echo "$RESP" | tail -n1)
-echo "Response: $HTTP_CODE"
-test_result "Random user blocked from hustler status" "403\|401\|Unauthorized" "$RESP"
-echo ""
-
-# Test 7: No auth on connect status (should get 401)
-echo "TEST 7: Unauthenticated tries connect status"
-RESP=$(curl -s -w "\n%{http_code}" -X GET "$HOST/api/stripe/connect/$HUSTLER_UID/status")
-HTTP_CODE=$(echo "$RESP" | tail -n1)
-echo "Response: $HTTP_CODE"
-test_result "Unauthenticated blocked from connect status" "401\|MISSING" "$RESP"
 echo ""
 
 echo "=== PHASE 3: OUT-OF-ORDER TESTS ==="

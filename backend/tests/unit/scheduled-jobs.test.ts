@@ -14,6 +14,7 @@ const queueAddCalls: Array<{ queueName: string; jobName: string; data: unknown; 
 
 vi.mock('../../src/jobs/queues', () => {
   return {
+    verifyQueueRedisConnection: vi.fn(async () => undefined),
     enqueueRepeatableJob: vi.fn(async (queueName: string, jobName: string, data: unknown, pattern: string) => {
       queueAddCalls.push({ queueName, jobName, data, opts: { repeat: { pattern } } });
       return { id: `mock-job-${queueName}-${jobName}` };
@@ -47,9 +48,6 @@ vi.mock('../../src/jobs/expertise-recalc-worker', () => ({
   processExpertiseRecalcJob: vi.fn(),
 }));
 
-vi.mock('../../src/jobs/xp-tax-reminder-worker', () => ({
-  processXPTaxReminderJob: vi.fn(),
-}));
 
 vi.mock('../../src/logger', () => ({
   workerLogger: {
@@ -66,12 +64,11 @@ vi.mock('../../src/logger', () => ({
 }));
 
 vi.mock('../../src/db', () => ({
-  db: { query: vi.fn() },
+  db: { query: vi.fn(async () => ({ rows: [{ name: 'migration-applied' }] })) },
 }));
 
 vi.mock('../../src/config', () => ({
   config: {
-    stripe: { secretKey: null },
     redis: { url: 'redis://localhost:6379' },
     // W-5 FIX: workers.ts now imports PushNotificationService → firebase.ts → config.firebase.
     // Provide the firebase sub-object so property access does not throw.
@@ -101,19 +98,6 @@ describe('Scheduled Jobs Registration', () => {
 
     // Verify scheduled jobs were registered
     expect(queueAddCalls.length).toBeGreaterThanOrEqual(4);
-  });
-
-  it('registers recover_stuck_stripe_events on maintenance queue', async () => {
-    const { startWorkers } = await import('../../src/jobs/workers');
-    await startWorkers();
-
-    const recoverJob = queueAddCalls.find(
-      c => c.queueName === 'maintenance' && c.jobName === 'recover_stuck_stripe_events'
-    );
-    expect(recoverJob).toBeDefined();
-    expect((recoverJob!.opts as Record<string, unknown>).repeat).toBeDefined();
-    expect(((recoverJob!.opts as Record<string, Record<string, string>>).repeat).pattern).toBe('*/10 * * * *');
-    expect((recoverJob!.data as Record<string, unknown>).timeoutMinutes).toBe(10);
   });
 
   it('registers the bounded unfilled-dispatch expiry sweep every minute', async () => {
@@ -297,7 +281,7 @@ describe('Worker Routing', () => {
     expect(workersSource).toContain('./fraud-detection-worker');
   });
 
-  it('worker registration registers workers for all 9 queues', async () => {
+  it('worker registration registers workers for all 7 supported queues', async () => {
     const fs = await import('fs');
     const path = await import('path');
     const workersPath = path.resolve(__dirname, '../../src/jobs/worker-registration.ts');
@@ -308,9 +292,7 @@ describe('Worker Routing', () => {
     expect(workersSource).toContain("'critical_payments'");
     expect(workersSource).toContain("'critical_trust'");
     expect(workersSource).toContain("'maintenance'");
-    expect(workersSource).toContain("'tax_reporting'");
     expect(workersSource).toContain("'biometric_analysis'");
     expect(workersSource).toContain("'expertise_recalc'");
-    expect(workersSource).toContain("'xp_tax_reminders'");
   });
 });

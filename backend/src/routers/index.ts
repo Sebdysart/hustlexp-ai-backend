@@ -23,9 +23,6 @@ import { taskDiscoveryRouter } from './taskDiscovery.js';
 import { taskExternalBridgeRouter } from './taskExternalBridge.js';
 import { instantRouter } from './instant.js';
 import { liveRouter } from './live.js';
-import { stripeConnectRouter } from './stripeConnect.js';
-import { hustlerWalletRouter } from './hustlerWallet.js';
-import { xpTaxRouter } from './xpTax.js';
 import { skillsRouter } from './skills.js';
 import { referralRouter } from './referral.js';
 import { geofenceRouter } from './geofence.js';
@@ -35,7 +32,6 @@ import { insuranceRouter } from './insurance.js';
 import { challengesRouter } from './challenges.js';
 import { capabilityRouter } from './capability.js';
 import { batchingRouter } from './batching.js';
-import { tippingRouter } from './tipping.js';
 import { expertiseSupplyRouter } from './expertiseSupply.js';
 import { biometricRouter } from './biometric.js';
 import { aiRouter } from './ai.js';
@@ -49,7 +45,6 @@ import { hustlerOnboardingRouter } from './hustlerOnboarding.js';
 import { recurringTaskRouter } from './recurringTask.js';
 import { featuredRouter } from './featured.js';
 import { pricingRouter } from './pricing.js';
-import { subscriptionRouter } from './subscription.js';
 
 // ── SHARED DOMAIN ───────────────────────────────────────────────────────
 // Both roles use these. Mixed routers (task, escrow, squad) contain
@@ -73,6 +68,10 @@ import { assignmentRouter } from './assignment.js';
 import { automationRouter } from './automation.js';
 import { businessWorkspaceRouter } from './businessWorkspace.js';
 import { serviceBusinessRouter } from './serviceBusiness.js';
+import { businessTaskRouter } from './businessTask.js';
+import { taskReworkRouter } from './taskRework.js';
+import { businessQuoteRouter } from './businessQuote.js';
+import { customerDraftClaimRouter } from './customerDraftClaim.js';
 
 // ── ADMIN DOMAIN ────────────────────────────────────────────────────────
 // Requires admin_roles table entry. Platform operations.
@@ -97,10 +96,19 @@ import { alphaTelemetryRouter } from './alphaTelemetry.js';
 import { webPostTaskRouter } from './web/postTask.js';
 
 import { quotePaymentRouter } from './quotePayment.js';
+import { customerAddressRouter } from './customerAddress.js';
 
 import { testPayoutRouter } from './testPayout.js';
 
 import { businessClaimRouter } from './businessClaim.js';
+import { providerOsRouter } from './providerOs.js';
+import { supportRouter } from './support.js';
+import { businessPaymentRouter } from './businessPayment.js';
+
+import { quoteDecisionRouter } from './quoteDecision.js';
+import { businessAssessmentRouter } from './businessAssessment.js';
+import { businessProposalRouter } from './businessProposal.js';
+import { completionVerificationRouter } from './completionVerification.js';
 
 
 // ============================================================================
@@ -113,9 +121,6 @@ export const appRouter = router({
   externalTaskBridge: taskExternalBridgeRouter,
   instant: instantRouter,
   live: liveRouter,
-  stripeConnect: stripeConnectRouter,
-  wallet: hustlerWalletRouter,
-  xpTax: xpTaxRouter,
   skills: skillsRouter,
   referral: referralRouter,
   geofence: geofenceRouter,
@@ -125,7 +130,6 @@ export const appRouter = router({
   challenges: challengesRouter,
   capability: capabilityRouter,
   batching: batchingRouter,
-  tipping: tippingRouter,
   expertiseSupply: expertiseSupplyRouter,
   biometric: biometricRouter,
   ai: aiRouter,
@@ -137,7 +141,6 @@ export const appRouter = router({
   recurringTask: recurringTaskRouter,
   featured: featuredRouter,
   pricing: pricingRouter,
-  subscription: subscriptionRouter,
 
   // ── Shared Domain (per-procedure role guards inside) ───────────────────
   task: taskRouter,
@@ -159,6 +162,10 @@ export const appRouter = router({
   automation: automationRouter,
   businessWorkspace: businessWorkspaceRouter,
   serviceBusiness: serviceBusinessRouter,
+  businessTask: businessTaskRouter,
+  taskRework: taskReworkRouter,
+  businessQuote: businessQuoteRouter,
+  customerDraftClaim: customerDraftClaimRouter,
 
   // ── Admin Domain ───────────────────────────────────────────────────────
   admin: adminRouter,
@@ -180,10 +187,19 @@ export const appRouter = router({
   webPostTask: webPostTaskRouter,
 
   quotePayment: quotePaymentRouter,
+  customerAddress: customerAddressRouter,
 
   testPayout: testPayoutRouter,
   
   businessClaim: businessClaimRouter,
+  providerOs: providerOsRouter,
+  support: supportRouter,
+  businessPayment: businessPaymentRouter,
+
+  quoteDecision: quoteDecisionRouter,
+  businessAssessment: businessAssessmentRouter,
+  businessProposal: businessProposalRouter,
+  completionVerification: completionVerificationRouter,
   
   // ── Web Platform Domain ─────────────────────────────────────────────────
   // Replaces Supabase edge functions for the website and ops cockpit.

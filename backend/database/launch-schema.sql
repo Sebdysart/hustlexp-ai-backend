@@ -463,6 +463,7 @@ CREATE TABLE IF NOT EXISTS proofs (
     
     -- Reference
     task_id UUID NOT NULL REFERENCES tasks(id),
+    rework_id UUID,
     submitter_id UUID NOT NULL REFERENCES users(id),
     
     -- State
@@ -1532,7 +1533,7 @@ SELECT
 FROM users u
 LEFT JOIN tasks t ON t.poster_id = u.id AND t.created_at > NOW() - INTERVAL '90 days'
 LEFT JOIN disputes d ON d.task_id = t.id
-LEFT JOIN proofs p ON p.task_id = t.id
+LEFT JOIN proofs p ON p.task_id = t.id AND p.rework_id IS NULL
 LEFT JOIN poster_ratings pr ON pr.poster_id = u.id AND pr.created_at > NOW() - INTERVAL '90 days'
 GROUP BY u.id
 HAVING COUNT(DISTINCT t.id) >= 5;  -- POSTER-2: Minimum 5 tasks

@@ -83,7 +83,7 @@ vi.mock('../../src/config.js', () => ({
       maxTasks: 200,
       maxGmvCents: 1_000_000,
     },
-    stripe: { platformFeePercent: 15 },
+    payments: { platformFeePercent: 15 },
     redis: { restUrl: '', restToken: '' },
   },
 }));
@@ -168,10 +168,6 @@ vi.mock('../../src/services/EscrowService.js', () => ({
     isValidTransition: vi.fn(),
     getValidTransitions: vi.fn(),
   },
-}));
-
-vi.mock('../../src/services/XPTaxService.js', () => ({
-  XPTaxService: { recordOfflinePayment: vi.fn() },
 }));
 
 vi.mock('../../src/services/EarnedVerificationUnlockService.js', () => ({

@@ -9,6 +9,7 @@
  * @see ARCHITECTURE.md §1
  */
 
+import { BUSINESS_ELIGIBILITY_APPLICATION_CODES } from './services/BusinessTaskEligibilityService.js';
 import { initTRPC, TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { db } from './db.js';
@@ -35,7 +36,9 @@ export type { AuthedContext, Context } from './trpc-context.js';
 function publicApplicationCode(cause: unknown): string | undefined {
   if (typeof cause !== 'object' || cause === null || Array.isArray(cause)) return undefined;
   const code = (cause as { applicationCode?: unknown }).applicationCode;
-  return code === PAYMENT_CREATION_FROZEN_CODE ? code : undefined;
+  return code === PAYMENT_CREATION_FROZEN_CODE || code === 'QUOTE_PAYMENT_MANUAL_COMPENSATION_REQUIRED' ||
+    (typeof code === 'string' && (Object.values(BUSINESS_ELIGIBILITY_APPLICATION_CODES) as string[]).includes(code))
+    ? code : undefined;
 }
 
 export function publicTRPCErrorShape<T extends { message: string; data: { code?: string; stack?: string } }>(
@@ -68,7 +71,9 @@ const isAuthenticated = t.middleware(async ({ ctx, next }) => {
   if (!ctx.user) {
     throw new TRPCError({
       code: 'UNAUTHORIZED',
-      message: 'Authentication required',
+      message: ctx.authErrorCode === 'PHONE_ALREADY_LINKED'
+        ? 'This verified phone number is already linked to another HustleXP account. Sign in with the original account or contact support.'
+        : 'Authentication required',
     });
   }
   // Secondary defense: check is_banned on every request even if the auth cache
@@ -133,6 +138,25 @@ type AdminCapability =
 const PRIVILEGED_ADMIN_ROLES = ['admin', 'founder'] as const;
 const VALID_ADMIN_ROLES = ['admin', 'support', 'finance', 'moderator', 'founder'] as const;
 
+export async function canManageOperations(userId: string): Promise<boolean> {
+  const result = await db.query<{ role: string; capability_granted: boolean }>(
+    `SELECT role, COALESCE(can_manage_operations, false) AS capability_granted
+     FROM admin_roles
+     WHERE user_id = $1 AND role = ANY($2::text[])
+     LIMIT 1`,
+    [userId, [...VALID_ADMIN_ROLES]],
+  );
+
+  const row = result.rows[0];
+  if (!row) {
+    return false;
+  }
+
+  return PRIVILEGED_ADMIN_ROLES.includes(
+    row.role as (typeof PRIVILEGED_ADMIN_ROLES)[number],
+  ) || row.capability_granted === true;
+}
+
 /**
  * Require a current administrator role plus an explicit capability for
  * high-impact Operations actions. Admin and founder retain break-glass access;
@@ -148,6 +172,9 @@ function capabilityAdminMiddleware(capability: AdminCapability | null) {
     // time capability-specific database paths.
     if (ctx.user!.is_admin === false) {
       throw new TRPCError({ code: 'FORBIDDEN', message: 'Administrator access required' });
+    }
+    if (capability === 'can_manage_operations' && !(await canManageOperations(ctx.user!.id))) {
+      throw new TRPCError({ code: 'FORBIDDEN', message: 'Required administrator capability missing' });
     }
     const capabilitySelection = capability
       ? `, COALESCE(${capability}, false) AS capability_granted`
@@ -184,6 +211,7 @@ export const disputeAdminProcedure = protectedProcedure.use(capabilityAdminMiddl
 export const trustAdminProcedure = protectedProcedure.use(capabilityAdminMiddleware('can_modify_trust'));
 export const safetyAdminProcedure = protectedProcedure.use(capabilityAdminMiddleware('can_manage_incidents'));
 export const operationsAdminProcedure = protectedProcedure.use(capabilityAdminMiddleware('can_manage_operations'));
+export const operationsFinancialAdminProcedure = operationsAdminProcedure.use(capabilityAdminMiddleware('can_access_financials'));
 
 const isAdminOrEngineBridge = t.middleware(async ({ ctx, next }) => {
   if (ctx.engineBridgeAuthorized === true && ctx.engineBridgeActorId) {
@@ -309,16 +337,16 @@ export const Schemas = {
   // Escrow
   fundEscrow: z.object({
     escrowId: z.string().uuid(),
-    stripePaymentIntentId: z.string().min(1).max(255),
+    providerPaymentId: z.string().min(1).max(255),
   }),
 
   releaseEscrow: z.object({
     escrowId: z.string().uuid(),
-    // stripeTransferId is required for poster-initiated releases so the caller
-    // must have already created the Stripe transfer before marking escrow as
+    // providerTransferId is required for poster-initiated releases so the caller
+    // must have already created the provider transfer before marking escrow as
     // released.  Admin override releases use the separate adminRelease procedure
     // where this field remains optional.
-    stripeTransferId: z.string().min(1).max(255),
+    providerTransferId: z.string().min(1).max(255),
   }),
   
   // Proof

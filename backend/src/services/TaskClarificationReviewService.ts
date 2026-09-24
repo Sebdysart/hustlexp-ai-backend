@@ -94,14 +94,14 @@ async function approvalContext(
   );
   const currentVersion = versionResult.rows[0]
     ?? rejectClarification('INVALID_STATE', 'The active scope version is unavailable.');
-  const escrowResult = await query<{ id: string; state: string; stripe_payment_intent_id: string | null }>(
-    `SELECT id, state, stripe_payment_intent_id FROM escrows
+  const escrowResult = await query<{ id: string; state: string; provider_payment_id: string | null }>(
+    `SELECT id, state, provider_payment_id FROM escrows
       WHERE task_id = $1 FOR UPDATE`,
     [params.taskId],
   );
   const escrow = escrowResult.rows[0]
     ?? rejectClarification('INVALID_STATE', 'The task escrow is unavailable.');
-  if (escrow.state !== 'PENDING' || escrow.stripe_payment_intent_id !== null) {
+  if (escrow.state !== 'PENDING' || escrow.provider_payment_id !== null) {
     rejectClarification(
       'PAYMENT_REAUTHORIZATION_REQUIRED',
       'Cancel the existing payment authorization before approving repriced scope.',
@@ -181,7 +181,7 @@ async function persistApprovedRevision(query: ClarificationQuery, input: Persist
   await query(
     `UPDATE escrows
         SET amount = $2, version = version + 1, updated_at = NOW()
-      WHERE id = $1 AND state = 'PENDING' AND stripe_payment_intent_id IS NULL`,
+      WHERE id = $1 AND state = 'PENDING' AND provider_payment_id IS NULL`,
     [context.escrowId, revision.proposed_customer_total_cents],
   );
   return {

@@ -10,11 +10,44 @@
 
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { router, protectedProcedure, platformAdminProcedure, Schemas } from '../trpc.js';
+import { router, publicProcedure, protectedProcedure, platformAdminProcedure, operationsAdminProcedure, Schemas } from '../trpc.js';
+import { behaviorEventSchema, analyticsRangeSchema } from '../services/analytics/contract.js';
+import { checkRateLimit } from '../cache/redis.js';
+import { applyRateLimitPolicy } from '../middleware/rateLimitPolicy.js';
+import { createHash } from 'node:crypto';
 import { AnalyticsService, type EventType } from '../services/AnalyticsService.js';
 import { db } from '../db.js';
 
 export const analyticsRouter = router({
+  collect: publicProcedure.input(z.unknown()).mutation(async ({ input, ctx }) => {
+    const limiterKey = createHash('sha256').update(ctx.user?.id || ctx.ip || 'unknown').digest('hex');
+    try {
+      const allowed = applyRateLimitPolicy(await checkRateLimit(limiterKey, 'product-analytics', 30, 60),
+        `${limiterKey}:product-analytics`, 30, 60, false);
+      if (allowed.status !== 'allowed') {
+        void AnalyticsService.recordHealth('rate_limited');
+        return { accepted: 0, available: false };
+      }
+      // Validate here so rejection counts contain only counters, never rejected payloads.
+      const parsed = z.object({ events: z.array(behaviorEventSchema).min(1).max(20) }).strict().safeParse(input);
+      if (!parsed.success) {
+        void AnalyticsService.recordHealth('invalid');
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Invalid analytics batch' });
+      }
+      // Do not have one normal batch compete with itself for the small shared
+      // analytics budget. Concurrent requests still drop on exhausted capacity.
+      const results = [];
+      for (const event of parsed.data.events) results.push(await AnalyticsService.collect(event, {
+        userId: ctx.user?.id, internal: ctx.user?.is_admin === true,
+      }));
+      return { accepted: results.filter((r) => r.accepted).length,
+        available: !results.some((r) => r.reason === 'unavailable' || r.reason === 'capacity') };
+    } catch (error) {
+      if (error instanceof TRPCError && error.code === 'BAD_REQUEST') throw error;
+      return { accepted: 0, available: false };
+    }
+  }),
+  productDashboard: operationsAdminProcedure.input(analyticsRangeSchema).query(({ input }) => AnalyticsService.productDashboard(input)),
   // --------------------------------------------------------------------------
   // EVENT TRACKING
   // --------------------------------------------------------------------------

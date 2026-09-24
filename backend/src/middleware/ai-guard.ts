@@ -82,10 +82,10 @@ const LEAKAGE_PATTERNS = [
 const PII_PATTERNS = [
   /\b\d{3}-\d{2}-\d{4}\b/,          // SSN
   /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/, // Credit card
-  /\bsk_live_[a-zA-Z0-9]+\b/,       // Stripe secret key
-  /\bsk_test_[a-zA-Z0-9]+\b/,       // Stripe test key
-  /\brk_live_[a-zA-Z0-9]+\b/,       // Stripe restricted key
-  /\bwhsec_[a-zA-Z0-9]+\b/,         // Stripe webhook secret
+  /\bsk_live_[a-zA-Z0-9]+\b/,       // Historical processor secret pattern
+  /\bsk_test_[a-zA-Z0-9]+\b/,       // Historical processor test secret pattern
+  /\brk_live_[a-zA-Z0-9]+\b/,       // Historical restricted secret pattern
+  /\bwhsec_[a-zA-Z0-9]+\b/,         // Historical webhook secret pattern
   /\bAIza[0-9A-Za-z_-]{35}\b/,      // Google API key
   /\bghp_[a-zA-Z0-9]{36}\b/,        // GitHub PAT
   /-----BEGIN (RSA |EC )?PRIVATE KEY-----/, // Private keys

@@ -376,11 +376,14 @@ export async function resolveScreeningAppeal(params: {
         `appeal-resolve:${params.idempotencyKey}`,
         status === 'CLEAR' ? 'A new human review overturned the decision and cleared the screening.' : 'A new human review upheld the decision.'],
     );
+    if (status === 'CLEAR') {
+      await recomputeCapabilityProfile(row.worker_id, {
+        reason: 'background_check_appeal_overturned',
+        sourceVerificationId: row.background_check_id,
+      }, query);
+    }
     return { workerId: row.worker_id, checkId: row.background_check_id, status };
   });
-  if (result.status === 'CLEAR') {
-    await recomputeCapabilityProfile(result.workerId, { reason: 'background_check_appeal_overturned', sourceVerificationId: result.checkId });
-  }
   return { status: result.status };
 }
 

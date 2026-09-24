@@ -4,17 +4,19 @@ import { db } from '../db.js';
 import { EscrowService } from '../services/EscrowService.js';
 import { protectedProcedure, Schemas } from '../trpc.js';
 
-type EscrowWithPrivateIds = Record<string, unknown> & {
-  stripe_payment_intent_id?: string;
-  stripe_transfer_id?: string;
-};
+type EscrowWithPrivateIds = Record<string, unknown>;
 
-function redactEscrow<T extends EscrowWithPrivateIds>(escrow: T, isAdmin?: boolean): T | Omit<T, 'stripe_payment_intent_id' | 'stripe_transfer_id'> {
+function redactEscrow<T extends EscrowWithPrivateIds>(escrow: T, isAdmin?: boolean): T | Record<string, unknown> {
   if (isAdmin) return escrow;
-  const { stripe_payment_intent_id: _payment, stripe_transfer_id: _transfer, ...safe } = escrow;
-  void _payment;
-  void _transfer;
-  return safe;
+  // Allowlist avoids leaking either current provider IDs or historical columns
+  // retained during the forward schema migration.
+  const publicFields = new Set([
+    'id', 'task_id', 'version', 'amount', 'platform_fee_cents', 'state',
+    'refund_amount', 'release_amount', 'payout_provider', 'provider_transfer_status',
+    'provider_transfer_paid_at', 'poster_id', 'worker_id', 'funded_at',
+    'released_at', 'refunded_at', 'created_at', 'updated_at',
+  ]);
+  return Object.fromEntries(Object.entries(escrow).filter(([key]) => publicFields.has(key)));
 }
 
 function assertParticipant(

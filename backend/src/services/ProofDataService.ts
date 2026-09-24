@@ -28,7 +28,7 @@ export async function getProofById(proofId: string): Promise<ServiceResult<Proof
 export async function getProofByTaskId(taskId: string): Promise<ServiceResult<Proof | null>> {
   try {
     const result = await db.query<Proof>(
-      'SELECT * FROM proofs WHERE task_id = $1 ORDER BY created_at DESC LIMIT 1',
+      'SELECT * FROM proofs WHERE task_id = $1 AND rework_id IS NULL ORDER BY created_at DESC LIMIT 1',
       [taskId],
     );
     return { success: true, data: result.rows[0] || null };

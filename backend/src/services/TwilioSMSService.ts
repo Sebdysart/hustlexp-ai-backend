@@ -60,18 +60,18 @@ function getClient(): ReturnType<typeof twilio> | null {
 export async function sendSMS(
   to: string,
   body: string
-): Promise<{ success: boolean; sid?: string; error?: string }> {
+): Promise<{ success: boolean; sid?: string; error?: string; definitelyNotSent?: boolean }> {
   const client = getClient();
 
   if (!client) {
     log.warn('Cannot send SMS - Twilio client not configured');
-    return { success: false, error: 'Twilio client not configured' };
+    return { success: false, error: 'Twilio client not configured', definitelyNotSent: true };
   }
 
   const fromPhone = process.env.TWILIO_FROM_PHONE ?? '';
   if (!fromPhone) {
     log.warn('Cannot send SMS - TWILIO_FROM_PHONE not configured');
-    return { success: false, error: 'TWILIO_FROM_PHONE not configured' };
+    return { success: false, error: 'TWILIO_FROM_PHONE not configured', definitelyNotSent: true };
   }
 
   try {
@@ -89,7 +89,10 @@ export async function sendSMS(
 
     log.error({ err: errorMessage, to }, 'sms_send_error');
 
-    return { success: false, error: errorMessage };
+    // Only a definite API rejection is safe to retry for premium delivery.
+    // Transport errors/5xx may have occurred after Twilio accepted the request.
+    const status = typeof error === 'object' && error !== null && 'status' in error ? Number(error.status) : 0;
+    return { success: false, error: errorMessage, definitelyNotSent: status >= 400 && status < 500 };
   }
 }
 

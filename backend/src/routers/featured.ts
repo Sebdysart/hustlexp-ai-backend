@@ -29,7 +29,7 @@ export const featuredRouter = router({
   confirmPromotion: posterProcedure
     .input(z.object({
       listingId: z.string().uuid(),
-      stripePaymentIntentId: z.string(),
+      providerPaymentId: z.string(),
     }))
     .mutation(() => promotionDisabled()),
 

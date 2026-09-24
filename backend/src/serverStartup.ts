@@ -6,7 +6,7 @@ import { runStartupMigrations } from './serverStartupMigrations.js';
 const endpoints = {
   health: ['/health', '/health/detailed', '/health/readiness', '/health/liveness'],
   trpc: '/trpc/*',
-  webhooks: ['/webhooks/stripe', '/webhooks/checkr'],
+  webhooks: ['/webhooks/tilled', '/webhooks/checkr'],
   rest: [
     '/api/users/:userId/xp-celebration-status',
     '/api/users/:userId/xp-celebration-shown',
@@ -29,7 +29,7 @@ export async function startServer(): Promise<void> {
     configStatus: {
       database: Boolean(config.database.url),
       firebase: Boolean(config.firebase.projectId),
-      stripe: Boolean(config.stripe.secretKey && !config.stripe.secretKey.includes('placeholder')),
+      tilled: Boolean(process.env.TILLED_SECRET_KEY),
       redis: Boolean(config.redis.url),
     },
   }, 'Configuration check');

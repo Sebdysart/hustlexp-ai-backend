@@ -1,5 +1,11 @@
 import crypto from 'node:crypto';
-import { db , type QueryFn} from '../db.js';
+import { db } from '../db.js';
+import { logger } from '../logger.js';
+
+const log = logger.child({ service: 'QuoteGenerationService' });
+import {
+  computePreferredArrivalWindow,
+} from './QuoteTiming.js';
 
 type JsonObject = Record<string, unknown>;
 
@@ -109,27 +115,6 @@ type PriceBookRow = {
   min_trust_tier: number;
 };
 
-type CandidateRow = {
-  id: string;
-  is_test: boolean;
-  created_by: string | null;
-  notes: string | null;
-  active_for_dispatch: boolean;
-  available: boolean;
-  status: string;
-  phone_e164: string | null;
-  categories_accepted: string[] | null;
-  home_zip: string | null;
-  radius_miles: number | null;
-  vehicle: string | null;
-  min_payout_cents: number | null;
-  trust_tier: number | null;
-  checkr_status: string | null;
-  tools_available: string[] | null;
-  same_day_available: boolean | null;
-  updated_at: Date;
-};
-
 type HustlerCandidateRow = {
   id: string;
   trust_tier: number;
@@ -139,7 +124,6 @@ type HustlerCandidateRow = {
   account_status: string;
   default_mode: string;
   phone: string | null;
-  stripe_connect_id: string | null;
   payouts_enabled: boolean;
 
   trust_hold: boolean;
@@ -223,26 +207,26 @@ export class QuoteGenerationService {
 
     try {
       return await db.transaction(async (query) => {
-        console.log('[quote-generation] step=load-draft');
+        log.info('[quote-generation] step=load-draft');
         const draft = await this.loadDraft(query, taskDraftId);
 
-        console.log('[quote-generation] step=validate-scope');
+        log.info('[quote-generation] step=validate-scope');
         this.assertDraftEligible(draft);
         const scope = this.validateScope(draft);
 
-        console.log('[quote-generation] step=load-price-book');
+        log.info('[quote-generation] step=load-price-book');
         const priceBook = await this.loadPriceBook(
           query,
           draft.category,
         );
 
-        console.log('[quote-generation] step=price-book-check');
+        log.info('[quote-generation] step=price-book-check');
         this.assertPriceBookUsable(
           priceBook,
           environment,
         );
 
-        console.log('[quote-generation] step=calculate-pricing');
+        log.info('[quote-generation] step=calculate-pricing');
         const pricing = await this.calculatePriceBook(
           query,
           draft,
@@ -250,12 +234,9 @@ export class QuoteGenerationService {
           environment,
         );
 
-        console.log(
-          '[quote-generation] price book decision',
-          pricing,
-        );
+        log.info({ pricing }, '[quote-generation] price book decision');
 
-        console.log(
+        log.info(
           '[quote-generation] step=supply-confidence',
         );
 
@@ -268,14 +249,11 @@ export class QuoteGenerationService {
             environment,
           );
 
-        console.log(
-          '[quote-generation] confidence',
-          confidence,
-        );
+        log.info({ confidence }, '[quote-generation] confidence');
 
         //this.assertConfidence(confidence);
         
-        console.log('[quote-generation] step=create-quote');
+        log.info('[quote-generation] step=create-quote');
 
         if (!record) {
           return this.previewQuote(
@@ -1013,9 +991,7 @@ export class QuoteGenerationService {
           blockers.push('BLOCKED_TRUST');
         }
 
-        if (!candidate.stripe_connect_id || !candidate.payouts_enabled) {
-          blockers.push('BLOCKED_PAYOUT_DESTINATION');
-        }
+        blockers.push('BLOCKED_PAYOUT_DESTINATION'); // No supported live individual-worker payout rail.
       }
 
       // ------------------------------------------------------------
@@ -1519,7 +1495,6 @@ export class QuoteGenerationService {
           u.account_status,
           u.default_mode,
           u.phone,
-          u.stripe_connect_id,
           COALESCE(u.payouts_enabled, false) AS payouts_enabled,
           COALESCE(u.trust_hold, false) AS trust_hold,
           u.trust_hold_until,
@@ -1916,28 +1891,6 @@ function resolveMinimumTrust(answers: JsonObject): number {
     : 1;
 }
 
-function containsAll(
-  available: string[],
-  required: string[],
-): boolean {
-  return required.every((value) =>
-    available.includes(value),
-  );
-}
-
-function vehicleMatches(
-  vehicle: string,
-  required: 'none' | 'any_vehicle' | 'cargo_vehicle',
-): boolean {
-  if (required === 'none') return true;
-
-  if (required === 'any_vehicle') {
-    return vehicle !== 'none';
-  }
-
-  return ['suv', 'van', 'truck'].includes(vehicle);
-}
-
 function buildSupplyBlockers(
   evaluations: CandidateEvaluation[],
   requiredWorkers: number,
@@ -2047,45 +2000,42 @@ function computeQuoteTiming(
 } {
   const now = Date.now();
 
-  const windows: Record<string, [number, number]> = {
-    today_or_tomorrow: [12, 36],
-    this_week: [96, 168],
-    next_week: [192, 336],
-    flexible: [96, 336],
-  };
-
-  const [startHours, endHours] =
-    windows[preferredWindow] ?? windows.flexible;
-
-  const arrivalStart = new Date(
-    now + startHours * 60 * 60 * 1000,
-  );
-
-  const arrivalEnd = new Date(
-    now + endHours * 60 * 60 * 1000,
+  const {
+    arrivalStart,
+    arrivalEnd,
+  } = computePreferredArrivalWindow(
+    preferredWindow,
   );
 
   const dispatchExpires = new Date(
-    arrivalStart.getTime()
-    - dispatchExpiresHoursBeforeWindow * 60 * 60 * 1000,
+    arrivalStart.getTime() -
+      dispatchExpiresHoursBeforeWindow *
+        60 *
+        60 *
+        1000,
   );
 
   const requestedQuoteExpiry = new Date(
-    now + quoteExpiresHours * 60 * 60 * 1000,
+    now +
+      quoteExpiresHours *
+        60 *
+        60 *
+        1000,
   );
 
   const quoteExpires = new Date(
     Math.min(
       requestedQuoteExpiry.getTime(),
-      dispatchExpires.getTime() - 60 * 60 * 1000,
+      dispatchExpires.getTime() -
+        60 * 60 * 1000,
     ),
   );
 
   if (
-    quoteExpires.getTime() <= now
-    || dispatchExpires <= quoteExpires
-    || arrivalStart <= dispatchExpires
-    || arrivalEnd <= arrivalStart
+    quoteExpires.getTime() <= now ||
+    dispatchExpires <= quoteExpires ||
+    arrivalStart <= dispatchExpires ||
+    arrivalEnd <= arrivalStart
   ) {
     throw new QuoteGenerationError(
       'BLOCKED_QUOTE_TIMING',
