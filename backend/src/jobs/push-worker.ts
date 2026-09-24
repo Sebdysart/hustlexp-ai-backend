@@ -120,8 +120,8 @@ export async function processPushJob(job: Job<PushJobData>): Promise<void> {
     } else if (!result.success) {
       throw new Error(`Push provider failed: ${result.reason ?? 'unknown_provider_error'}`);
     } else {
-      // FCM multicast acceptance is provider acceptance, not device delivery.
-      await markNotificationProviderAccepted(notificationId, 'push', 'fcm', null);
+      // Expo/FCM ticket acceptance is provider acceptance, not device delivery.
+      await markNotificationProviderAccepted(notificationId, 'push', data?.mobileOnly === 'true' ? 'expo' : data?.notificationId ? 'fcm_or_expo' : 'fcm', null);
     }
 
     // Structured log: push result

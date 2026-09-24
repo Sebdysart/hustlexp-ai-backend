@@ -169,6 +169,7 @@ export const REQUIRED_MIGRATION_FILES = [
   { name: '20260923_task_rework_completion_verifications', fileName: '20260923_task_rework_completion_verifications.sql' },
   { name: '20260924_quote_payment_refunds', fileName: '20260924_quote_payment_refunds.sql' },
   { name: '20260924_task_completion_overrides', fileName: '20260924_task_completion_overrides.sql' },
+  { name: '20260924_mobile_expo_push_devices', fileName: '20260924_mobile_expo_push_devices.sql' },
 ] as const;
 
 

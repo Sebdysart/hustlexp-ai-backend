@@ -143,6 +143,13 @@ async function recoverNotificationDelivery(job: Job): Promise<void> {
   const { NotificationDeliveryRecoveryService } = await import('../services/NotificationDeliveryRecoveryService.js');
   const result = await NotificationDeliveryRecoveryService.recoverDue(boundedJobLimit(job, 100));
   log.info(result, 'Notification delivery recovery batch completed');
+  try {
+    const { checkExpoPushReceipts } = await import('../services/ExpoPushService.js');
+    await checkExpoPushReceipts();
+  } catch (error) {
+    // Receipt lookup is best effort; it must not break delivery recovery.
+    log.warn({ kind: error instanceof Error ? error.message : 'unknown' }, 'Expo receipt check failed');
+  }
 }
 
 async function releaseFocusDeferredNotifications(job: Job): Promise<void> {

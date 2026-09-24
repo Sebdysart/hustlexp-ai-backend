@@ -18,6 +18,7 @@ import { sendPushNotification } from '../services/PushNotificationService.js';
 import { db } from '../db.js';
 
 export const DEVICE_TOKEN_CAP = 10;
+const expoPushToken = z.string().regex(/^(?:Expo|Exponent)PushToken\[[A-Za-z0-9_-]{8,128}\]$/).max(256);
 
 export const notificationRouter = router({
   list: protectedProcedure
@@ -165,6 +166,35 @@ export const notificationRouter = router({
       }
       
       return result.data;
+    }),
+
+  /** Re-project a tapped push from the authenticated canonical row. Push data is never a route authority. */
+  getMobileDestination: protectedProcedure
+    .input(z.object({ notificationId: Schemas.uuid }).strict())
+    .query(async ({ input, ctx }) => {
+      const result = await NotificationService.getNotificationById(input.notificationId, ctx.user.id);
+      if (!result.success) throw new TRPCError({ code: 'NOT_FOUND' });
+      const row = result.data;
+      let destination: string | null = row.action_url ?? row.deep_link ?? null;
+      if (row.entity_id && (row.entity_type === 'quote' || row.entity_type === 'assessment') &&
+          ['QUOTE_ACCEPTED', 'QUOTE_REJECTED', 'ASSESSMENT_PAID', 'ASSESSMENT_SCHEDULED', 'ASSESSMENT_REJECTED'].includes(row.type ?? '')) {
+        const resolved = await businessNotificationDestinations(db.query.bind(db),
+          [{ id: row.id, entityId: row.entity_id, entityType: row.entity_type }], { actorId: ctx.user.id });
+        destination = resolved.get(row.id) ?? null;
+      }
+      const taskId = notificationTaskId(destination);
+      let taskViewer: 'poster' | 'provider' | undefined;
+      if (taskId) {
+        const task = await db.query<{ poster_id: string; worker_id: string | null; business_member: boolean }>(
+          `SELECT t.poster_id, t.worker_id, EXISTS (
+             SELECT 1 FROM business_memberships m
+             WHERE m.organization_id = t.business_fulfiller_organization_id
+               AND m.user_id = $2 AND m.status = 'ACTIVE'
+           ) AS business_member FROM tasks t WHERE t.id = $1`, [taskId, ctx.user.id]);
+        if (task.rows[0]?.poster_id === ctx.user.id) taskViewer = 'poster';
+        else if (task.rows[0]?.worker_id === ctx.user.id || task.rows[0]?.business_member) taskViewer = 'provider';
+      }
+      return { actionUrl: webNotificationDestination(destination, taskViewer) };
     }),
   
   // --------------------------------------------------------------------------
@@ -332,6 +362,52 @@ export const notificationRouter = router({
   // --------------------------------------------------------------------------
   // DEVICE TOKEN MANAGEMENT
   // --------------------------------------------------------------------------
+
+  /** Register this installation only for the authenticated identity. */
+  registerPushDevice: protectedProcedure
+    .input(z.object({
+      installationId: Schemas.uuid,
+      appVariant: z.enum(['poster', 'business']),
+      platform: z.enum(['android', 'ios']),
+      expoPushToken,
+    }).strict())
+    .mutation(async ({ input, ctx }) => {
+      const row = await db.transaction(async (query) => {
+        // The token can migrate between accounts on the same phone. Remove its
+        // old binding before upserting the stable app installation identity.
+        await query(
+          `DELETE FROM mobile_push_devices WHERE expo_push_token = $1
+             AND (app_variant, installation_id) IS DISTINCT FROM ($2, $3::uuid)`,
+          [input.expoPushToken, input.appVariant, input.installationId],
+        );
+        return query<{ id: string }>(
+          `INSERT INTO mobile_push_devices
+             (user_id, installation_id, app_variant, platform, expo_push_token)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (app_variant, installation_id) DO UPDATE SET
+             user_id = EXCLUDED.user_id,
+             platform = EXCLUDED.platform,
+             expo_push_token = EXCLUDED.expo_push_token,
+             is_active = TRUE,
+             updated_at = NOW(),
+             last_seen_at = NOW()
+           RETURNING id`,
+          [ctx.user.id, input.installationId, input.appVariant, input.platform, input.expoPushToken],
+        );
+      });
+      return { registered: row.rows.length === 1 };
+    }),
+
+  unregisterPushDevice: protectedProcedure
+    .input(z.object({ installationId: Schemas.uuid, appVariant: z.enum(['poster', 'business']) }).strict())
+    .mutation(async ({ input, ctx }) => {
+      await db.query(
+        `UPDATE mobile_push_devices SET is_active = FALSE, updated_at = NOW()
+         WHERE user_id = $1 AND installation_id = $2 AND app_variant = $3`,
+        [ctx.user.id, input.installationId, input.appVariant],
+      );
+      return { ok: true };
+    }),
 
   /**
    * Register a device token for push notifications (FCM)

@@ -27,9 +27,21 @@ describe.skipIf(!url)('in-app recipient dedupe against the shipped PostgreSQL un
       type TEXT, title VARCHAR, message TEXT, entity_type TEXT, entity_id UUID,
       action_url TEXT, metadata JSONB, category VARCHAR, body TEXT, deep_link TEXT,
       priority VARCHAR, notification_class TEXT, object_type TEXT, object_id TEXT,
-      dedupe_key TEXT UNIQUE, supersession_key TEXT, read_at TIMESTAMPTZ, clicked_at TIMESTAMPTZ,
+      dedupe_key TEXT UNIQUE, supersession_key TEXT, channels TEXT[] DEFAULT ARRAY['in_app']::text[],
+      available_at TIMESTAMPTZ DEFAULT NOW(), delivery_state TEXT DEFAULT 'pending',
+      read_at TIMESTAMPTZ, clicked_at TIMESTAMPTZ,
       expires_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW());
-      CREATE UNIQUE INDEX notifications_user_dedupe ON notifications(user_id,dedupe_key);`);
+      CREATE UNIQUE INDEX notifications_user_dedupe ON notifications(user_id,dedupe_key);
+      CREATE TABLE notification_preferences(user_id UUID PRIMARY KEY, push_enabled BOOLEAN DEFAULT TRUE,
+        quiet_hours_enabled BOOLEAN DEFAULT FALSE, quiet_hours_start TEXT DEFAULT '22:00:00',
+        quiet_hours_end TEXT DEFAULT '07:00:00', quiet_hours_timezone TEXT DEFAULT 'America/Los_Angeles',
+        category_preferences JSONB DEFAULT '{}');
+      CREATE TABLE notification_deliveries(notification_id UUID, channel TEXT, state TEXT,
+        max_attempts INT, available_at TIMESTAMPTZ, provider_accepted_at TIMESTAMPTZ,
+        delivered_at TIMESTAMPTZ, UNIQUE(notification_id,channel));
+      CREATE TABLE outbox_events(event_type TEXT, aggregate_type TEXT, aggregate_id UUID,
+        event_version INT, idempotency_key TEXT UNIQUE, payload JSONB, queue_name TEXT,
+        status TEXT, available_at TIMESTAMPTZ);`);
     await query(`CREATE TABLE task_drafts(id UUID PRIMARY KEY, task_id UUID, quote_id UUID);
       CREATE TABLE users(id UUID PRIMARY KEY,account_status TEXT DEFAULT 'ACTIVE',is_banned BOOLEAN DEFAULT FALSE,trust_hold BOOLEAN DEFAULT FALSE);
       CREATE TABLE admin_roles(user_id UUID,role TEXT,can_manage_operations BOOLEAN DEFAULT FALSE);
@@ -85,7 +97,14 @@ describe.skipIf(!url)('in-app recipient dedupe against the shipped PostgreSQL un
     const link = async () => (await businessNotificationDestinations(query, refs, { actorId: users[0] })).get('notice');
     expect(await link()).toBe(`/business/proposals/${proposal}`);
     expect((await businessNotificationDestinations(query, refs, { organizationId: other })).get('notice')).toBeNull();
-    await NotificationService.createForBusinessInTransaction(query, org, { ...event, entityType: 'quote', entityId: quote, actionUrl: `/business/claims/${draft}` });
+    await query('BEGIN');
+    try {
+      await NotificationService.createForBusinessInTransaction(query, org, { ...event, entityType: 'quote', entityId: quote, actionUrl: `/business/claims/${draft}` });
+      await query('COMMIT');
+    } catch (error) {
+      await query('ROLLBACK');
+      throw error;
+    }
     expect((await query('SELECT action_url FROM notifications')).rows).toEqual([{action_url:`/business/proposals/${proposal}`},{action_url:`/business/proposals/${proposal}`}]);
     await query('DELETE FROM business_task_proposals');
     await query('UPDATE quotes SET acquisition_origin=NULL');

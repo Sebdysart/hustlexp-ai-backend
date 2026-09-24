@@ -20,6 +20,7 @@ import { logger } from '../logger.js';
 import { Redis } from '@upstash/redis';
 import { config } from '../config.js';
 import { businessNotificationDestinations } from './BusinessNotificationDestination.js';
+import { mobileVariantsForDestination } from './MobilePushRouting.js';
 import {
   applyNotificationPresentation,
   NOTIFICATION_POLICY,
@@ -398,7 +399,25 @@ async function insertNotification(
   const objectId =
     input.entityId ?? 'general';
 
-  await query(
+  const preferences = await query<Pick<NotificationPreferences,
+    'push_enabled' | 'quiet_hours_enabled' | 'quiet_hours_start' | 'quiet_hours_end' |
+    'quiet_hours_timezone' | 'category_preferences'>>(
+      `SELECT push_enabled, quiet_hours_enabled, quiet_hours_start, quiet_hours_end,
+         quiet_hours_timezone, category_preferences
+       FROM notification_preferences WHERE user_id = $1`, [input.userId],
+    );
+  const preference = preferences.rows[0];
+  const pushEnabled = mobileVariantsForDestination(input.actionUrl).length > 0
+    && preference?.push_enabled !== false
+    && preference?.category_preferences?.[input.type]?.enabled !== false;
+  // Match getPreferences() and the database defaults when this user has not
+  // written a preference row yet.
+  const quietHoursEnd = pushEnabled && (preference?.quiet_hours_enabled ?? true)
+    ? nextQuietHoursEnd(new Date(), preference?.quiet_hours_start ?? '22:00:00',
+      preference?.quiet_hours_end ?? '07:00:00', preference?.quiet_hours_timezone ?? 'America/Los_Angeles')
+    : null;
+  const pushAvailableAt = quietHoursEnd ?? new Date();
+  const inserted = await query<Notification>(
     `
     INSERT INTO notifications (
       user_id,
@@ -417,7 +436,10 @@ async function insertNotification(
       object_type,
       object_id,
       dedupe_key,
-      supersession_key
+      supersession_key,
+      channels,
+      available_at,
+      delivery_state
     )
     SELECT
       $1::uuid,
@@ -436,11 +458,15 @@ async function insertNotification(
       $14::text,
       $15::text,
       $16::text,
-      $17::text
+      $17::text,
+      CASE WHEN $19::boolean THEN ARRAY['in_app','push']::text[] ELSE ARRAY['in_app']::text[] END,
+      $20::timestamptz,
+      CASE WHEN $21::boolean THEN 'deferred_quiet_hours' ELSE 'pending' END
     WHERE NOT EXISTS (
       SELECT 1 FROM notifications WHERE user_id = $1::uuid AND dedupe_key = $18::text
     )
     ON CONFLICT DO NOTHING
+    RETURNING *
     `,
     [
       input.userId,
@@ -461,13 +487,52 @@ async function insertNotification(
       dedupeKey,
       dedupeKey,
       eventKey,
+      pushEnabled,
+      pushAvailableAt,
+      Boolean(quietHoursEnd),
     ],
   );
+  const notification = inserted.rows[0];
+  if (!notification) return;
+  await query(
+    `INSERT INTO notification_deliveries
+       (notification_id, channel, state, max_attempts, available_at, provider_accepted_at, delivered_at)
+     SELECT $1, channel, CASE WHEN channel = 'in_app' THEN 'delivered'
+       WHEN $3::boolean THEN 'deferred_quiet_hours' ELSE 'pending' END,
+       3, CASE WHEN channel = 'in_app' THEN NOW() ELSE $4::timestamptz END,
+       CASE WHEN channel = 'in_app' THEN NOW() END,
+       CASE WHEN channel = 'in_app' THEN NOW() END
+     FROM unnest($2::text[]) AS channel
+     ON CONFLICT (notification_id, channel) DO NOTHING`,
+    [notification.id, notification.channels, Boolean(quietHoursEnd), pushAvailableAt],
+  );
+  if (notification.channels.includes('push')) {
+    // Callers may be inside a task/payment transaction. An outbox write error
+    // must not roll back the canonical in-app notification or product change.
+    // PostgreSQL needs a savepoint to recover a transaction after SQL failure.
+    await query('SAVEPOINT hustlexp_mobile_push_queue');
+    try {
+      await queuePushNotification(notification, pushAvailableAt, query, true);
+      await query('RELEASE SAVEPOINT hustlexp_mobile_push_queue');
+    } catch {
+      await query('ROLLBACK TO SAVEPOINT hustlexp_mobile_push_queue');
+      await query('RELEASE SAVEPOINT hustlexp_mobile_push_queue');
+      await query(
+        `UPDATE notification_deliveries
+         SET state = 'retry_pending', next_retry_at = NOW() + INTERVAL '1 minute',
+             last_error = 'outbox_queue_failed', updated_at = NOW()
+         WHERE notification_id = $1 AND channel = 'push'`,
+        [notification.id],
+      );
+      log.warn({ notificationId: notification.id, category: 'outbox_queue_failed' },
+        'Mobile push queue failed; notification retained for recovery');
+    }
+  }
 }
 
 export const NotificationService = {
   async create(input: CreateInAppNotificationInput): Promise<void> {
-    await insertNotification(db.query.bind(db), input);
+    await db.transaction(async (query) => insertNotification(query, input));
   },
   async createInTransaction(query: QueryFn, input: CreateInAppNotificationInput): Promise<void> {
     await insertNotification(query, input);
@@ -921,7 +986,12 @@ export const NotificationService = {
       const availableAt = new Date(notification.delivery_available_at);
       if (!Number.isFinite(availableAt.getTime())) throw new Error('Invalid delivery availability');
       if (channel === 'email') await queueEmailNotification(notification, availableAt);
-      else if (channel === 'push') await queuePushNotification(notification, availableAt);
+      else if (channel === 'push') {
+        // Direct in-app events use this stable key namespace and target Expo
+        // installations only. Keep that scope when recovering a failed write.
+        await queuePushNotification(notification, availableAt, db.query.bind(db),
+          notification.dedupe_key?.startsWith('in_app:') ?? false);
+      }
       else await queueSMSNotification(notification, availableAt);
 
       const deferred = availableAt.getTime() > Date.now();
@@ -1887,13 +1957,14 @@ async function queueEmailNotification(notification: Notification, availableAt: D
  *
  * @param notification Notification to push
  */
-async function queuePushNotification(notification: Notification, availableAt: Date): Promise<void> {
+async function queuePushNotification(notification: Notification, availableAt: Date, query: QueryFn = db.query.bind(db), mobileOnly = false): Promise<void> {
   // Build data payload from notification metadata
   const data: Record<string, string> = {
     notificationId: notification.id,
     category: notification.category,
     deepLink: notification.deep_link,
   };
+  if (mobileOnly) data.mobileOnly = 'true';
 
   if (notification.task_id) {
     data.taskId = notification.task_id;
@@ -1912,7 +1983,7 @@ async function queuePushNotification(notification: Notification, availableAt: Da
   // A single atomic INSERT eliminates the racy SELECT+INSERT pattern: two concurrent
   // callers with the same idempotency_key will both attempt the INSERT but only one
   // will produce a row; the other gets rowCount === 0 and returns early.
-  const insertResult = await db.query(
+  const insertResult = await query(
     `INSERT INTO outbox_events (
       event_type, aggregate_type, aggregate_id, event_version,
       idempotency_key, payload, queue_name, status, available_at

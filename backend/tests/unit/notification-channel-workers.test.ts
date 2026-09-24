@@ -60,6 +60,7 @@ import { processSMSJob } from '../../src/jobs/sms-worker.js';
 const emailJob = {
   id: 'email.send_requested:email-1',
   data: {
+    outbox_idempotency_key: 'email.send_requested:email-1',
     aggregate_type: 'email',
     aggregate_id: 'email-1',
     event_version: 1,
@@ -80,6 +81,7 @@ const emailJob = {
 const smsJob = {
   id: 'sms.send_requested:sms-1',
   data: {
+    outbox_idempotency_key: 'sms.send_requested:sms-1',
     aggregate_type: 'sms',
     aggregate_id: 'sms-1',
     event_version: 1,

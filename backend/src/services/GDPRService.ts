@@ -1373,6 +1373,7 @@ async function deleteAndAnonymizeUserData(userId: string): Promise<ServiceResult
       // Delete tables added after GDPR service was written
       await query('DELETE FROM alpha_telemetry WHERE user_id = $1', [userId]);
       await query('DELETE FROM device_tokens WHERE user_id = $1', [userId]);
+      await query('DELETE FROM mobile_push_devices WHERE user_id = $1', [userId]);
       await query('DELETE FROM worker_skills WHERE user_id = $1', [userId]);
       await query('DELETE FROM xp_tax_ledger WHERE user_id = $1', [userId]);
       await query('DELETE FROM user_xp_tax_status WHERE user_id = $1', [userId]);

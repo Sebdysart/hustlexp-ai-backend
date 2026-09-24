@@ -208,6 +208,13 @@ export async function revokeUserSessions(uid: string): Promise<void> {
          AND dt.is_active = true`,
       [uid],
     );
+    await db.query(
+      `UPDATE mobile_push_devices d
+       SET is_active = false, updated_at = NOW()
+       FROM users u
+       WHERE d.user_id = u.id AND u.firebase_uid = $1 AND d.is_active`,
+      [uid],
+    );
   } catch (tokenErr) {
     authLogger.error({ uid, err: tokenErr }, 'Failed to deactivate device tokens during session revocation');
   }

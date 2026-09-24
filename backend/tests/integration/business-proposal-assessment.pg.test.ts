@@ -74,7 +74,19 @@ describe.skipIf(!testUrl)('businessProposal.requestAssessment (isolated PostgreS
         type TEXT, title VARCHAR, message TEXT, entity_type TEXT, entity_id UUID,
         action_url TEXT, metadata JSONB, category VARCHAR, body TEXT, deep_link TEXT,
         priority VARCHAR, notification_class TEXT, object_type TEXT, object_id TEXT,
-        dedupe_key TEXT UNIQUE, supersession_key TEXT);
+        dedupe_key TEXT UNIQUE, supersession_key TEXT,
+        channels TEXT[] DEFAULT ARRAY['in_app']::text[], available_at TIMESTAMPTZ DEFAULT NOW(),
+        delivery_state TEXT DEFAULT 'pending');
+      CREATE TABLE notification_preferences(user_id UUID PRIMARY KEY, push_enabled BOOLEAN DEFAULT TRUE,
+        quiet_hours_enabled BOOLEAN DEFAULT FALSE, quiet_hours_start TEXT DEFAULT '22:00:00',
+        quiet_hours_end TEXT DEFAULT '07:00:00', quiet_hours_timezone TEXT DEFAULT 'America/Los_Angeles',
+        category_preferences JSONB DEFAULT '{}');
+      CREATE TABLE notification_deliveries(notification_id UUID, channel TEXT, state TEXT,
+        max_attempts INT, available_at TIMESTAMPTZ, provider_accepted_at TIMESTAMPTZ,
+        delivered_at TIMESTAMPTZ, UNIQUE(notification_id,channel));
+      CREATE TABLE outbox_events(event_type TEXT, aggregate_type TEXT, aggregate_id UUID,
+        event_version INT, idempotency_key TEXT UNIQUE, payload JSONB, queue_name TEXT,
+        status TEXT, available_at TIMESTAMPTZ);
       CREATE TABLE business_audit_events(id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         organization_id UUID, actor_id UUID, action TEXT, object_type TEXT, object_id UUID, after_state JSONB);
       CREATE FUNCTION business_require_action(org UUID, actor UUID, action TEXT) RETURNS void
